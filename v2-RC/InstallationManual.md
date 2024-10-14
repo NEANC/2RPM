@@ -323,6 +323,8 @@ class TestProcessMonitor(unittest.TestCase):
         # 设置默认配置
         global CONFIG
         CONFIG = get_default_config()
+        # 禁用日志文件输出以防止影响测试环境
+        CONFIG['log_settings']['enable_log_file'] = False
 
     def tearDown(self):
         """在每个测试用例之后运行，关闭事件循环。"""
@@ -350,7 +352,13 @@ class TestProcessMonitor(unittest.TestCase):
         # 为了使测试不无限循环，设置一个短的超时时间
         CONFIG['monitor_settings']['monitor_loop_interval_ms'] = 100
         CONFIG['wait_process_settings']['max_wait_time_ms'] = 100
-        self.loop.run_until_complete(monitor_processes())
+        CONFIG['monitor_settings']['timeout_warning_interval_ms'] = 500
+        try:
+            self.loop.run_until_complete(
+                asyncio.wait_for(monitor_processes(), timeout=1)
+            )
+        except asyncio.TimeoutError:
+            pass  # 超时退出，表示监视器正在运行
 
     def test_format_time_ns(self):
         """测试时间格式化函数。"""

@@ -35,8 +35,8 @@
 
 | 版本                                     | 备注 |
 | ---------------------------------------- | ---- |
-| [v1.10.0](.\v1-RC\InstallationManual.md) |      |
-| [v2.14.2](.\v2-RC\InstallationManual.md) |      |
+| [v1](.\v1-RC\InstallationManual.md) |      |
+| [v2](.\v2-RC\InstallationManual.md) |      |
 
 ## License
 

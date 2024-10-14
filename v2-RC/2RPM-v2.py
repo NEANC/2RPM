@@ -6,7 +6,7 @@
 
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
 
-- 版本: v2.14.2  
+- 版本: v2.14.4  
 
 ## License
 
@@ -105,7 +105,7 @@ def get_default_config():
                         '主机: {host_name}\n\n'
                         '当前时间: {current_time}\n\n'
                         '进程: {process_name} (PID: {process_pid}) '
-                        '于 {short_current_time} 时已超时运行超过预期: '
+                        '于 {short_current_time} 时已运行超过预期: '
                         '{process_run_time}\n\n'
                         '正在运行的进程状态: {other_running_processes}\n\n'
                         '其他未运行的进程: {process_list}\n\n'
@@ -140,7 +140,7 @@ def get_default_config():
             'external_program_path': 'C:\\path\\to\\your\\script.bat'
         }),
         'log_settings': CommentedMap({
-            'enable_log_file': True,
+            'enable_log_file': False,
             'log_level': 'INFO',
             'log_directory': 'logs',
             'max_log_files': 15,
@@ -151,17 +151,18 @@ def get_default_config():
 
     LOGGER.debug("正在为配置文件添加注释")
     # 添加注释
+    # 添加注释到 'monitor_settings'
     config['monitor_settings'].yaml_set_comment_before_after_key(
         'process_name_list',
         before=(
-            "监视设置\n"
+            "监视设置\n\n"
             "要监视的进程名称列表"
         )
     )
     config['monitor_settings'].yaml_set_comment_before_after_key(
         'timeout_warning_interval_ms',
         before=(
-            "超时警告间隔，默认值900000毫秒（15分钟），单位为毫秒\n"
+            "\n超时警告间隔，默认值900000毫秒（15分钟），单位为毫秒\n"
             "时间换算可通过搜索引擎搜索: 分钟换毫秒工具，也可查看下列公式: \n"
             "分钟换算毫秒：分钟×60×1000；例 30分钟换算成毫秒：30×60×1000=1800000"
         )
@@ -169,46 +170,54 @@ def get_default_config():
     config['monitor_settings'].yaml_set_comment_before_after_key(
         'monitor_loop_interval_ms',
         before=(
-            "监视循环间隔，默认值1000毫秒（1秒），单位为毫秒\n"
+            "\n监视循环间隔，默认值1000毫秒（1秒），单位为毫秒\n"
             "时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
             "秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
         )
     )
 
+    # 添加注释到 'wait_process_settings'
     config['wait_process_settings'].yaml_set_comment_before_after_key(
         'max_wait_time_ms',
         before=(
-            "等待进程设置\n"
+            "等待进程设置\n\n"
             "最长等待时间，默认值: 30000毫秒（30秒），单位为毫秒\n"
         )
     )
     config['wait_process_settings'].yaml_set_comment_before_after_key(
         'wait_process_check_interval_ms',
         before=(
-            "等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒。\n"
+            "\n等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒。\n"
             "时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
             "秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
         )
     )
 
+    # 添加注释到 'push_settings'
     config['push_settings'].yaml_set_comment_before_after_key(
         'push_templates',
         before=(
-            "推送设置\n"
-            "支持的变量有：\n"
-            "{host_name}, {current_time}, {short_current_time},\n"
-            "{process_name}, {process_pid}, {process_run_time},\n"
-            "{other_running_processes}, {process_list}\n"
+            "推送设置\n\n"
+            "支持的变量如下：\n"
+            "主机名: {host_name}\n"
+            "当前时间(YY-mm-dd HH-MM-SS): {current_time}\n"
+            "当前时间(HH-MM-SS): {short_current_time}\n"
+            "进程名: {process_name}\n"
+            "进程PID: {process_pid}\n"
+            "进程运行时间: {process_run_time}\n"
+            "进程积累等待时间: {process_wait_time}\n"
+            "正在运行的进程状态列表: {other_running_processes}\n"
+            "进程列表: {process_list}\n\n"
             "推送模板配置，可自定义通知的标题和内容\n"
         )
     )
 
-    # 为推送模板添加注释
+    # 添加注释到 'push_templates'
     push_templates = config['push_settings']['push_templates']
     push_templates.yaml_set_comment_before_after_key(
         'process_end_notification',
         before=(
-            "进程结束通知模板。\n"
+            "\n进程结束通知模板\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
@@ -216,7 +225,7 @@ def get_default_config():
     push_templates.yaml_set_comment_before_after_key(
         'process_timeout_warning',
         before=(
-            "进程超时运行警告模板\n"
+            "\n进程超时运行警告模板\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
@@ -224,87 +233,89 @@ def get_default_config():
     push_templates.yaml_set_comment_before_after_key(
         'process_wait_timeout_warning',
         before=(
-            "等待超时未运行报告模板\n"
+            "\n等待超时未运行报告模板\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
     )
 
-    # 为推送渠道设置添加注释
+    # 添加注释到 'push_channel_settings'
     push_channel_settings = config['push_settings']['push_channel_settings']
     push_channel_settings.yaml_set_comment_before_after_key(
         'choose',
         before=(
-            "推送通道设置\n"
+            "推送通道设置\n\n"
             "请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'。"
         )
     )
     push_channel_settings.yaml_set_comment_before_after_key(
         'serverchan_key',
-        before="ServerChan密钥"
+        before="\nServerChan密钥"
     )
     push_channel_settings.yaml_set_comment_before_after_key(
         'push_channel',
         before=(
-            "OnePush推送通道（请查看 https://pypi.org/project/onepush/ "
+            "\nOnePush推送通道（请查看 https://pypi.org/project/onepush/ "
             "来获得如何使用帮助）"
         )
     )
     push_channel_settings.yaml_set_comment_before_after_key(
         'push_channel_key',
-        before="OnePush推送通道密钥"
+        before="\nOnePush推送通道密钥"
     )
 
-    # 为推送错误重试设置添加注释
+    # 添加注释到 'push_error_retry'
     push_error_retry = config['push_settings']['push_error_retry']
     push_error_retry.yaml_set_comment_before_after_key(
         'retry_interval_ms',
         before=(
-            "推送错误重试设置\n"
+            "推送错误重试设置\n\n"
             "重试间隔，默认值: 3000毫秒（3秒）单位为毫秒"
         )
     )
     push_error_retry.yaml_set_comment_before_after_key(
         'max_retry_count',
         before=(
-            "最大重试次数，默认值: 3次\n"
+            "\n最大重试次数，默认值: 3次"
         )
     )
 
+    # 添加注释到 'external_program_settings'
     config['external_program_settings'].yaml_set_comment_before_after_key(
         'enable_external_program_call',
         before=(
-            "外部程序调用设置\n"
+            "外部程序调用设置\n\n"
             "是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False\n"
         )
     )
     config['external_program_settings'].yaml_set_comment_before_after_key(
         'trigger_process_name',
         before=(
-            "指定当哪一个进程结束后触发外部程序调用，例如: notepad.exe\n"
+            "\n指定当哪一个进程结束后触发外部程序调用，例如: notepad.exe\n"
             "当程序检测到 'notepad.exe' 结束运行时，会执行外部程序调用"
         )
     )
     config['external_program_settings'].yaml_set_comment_before_after_key(
         'external_program_path',
         before=(
-            "需要调用的外部程序/BAT脚本的详细路径，例如: "
+            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
             "C:\\path\\to\\your\\script.bat"
         )
     )
 
+    # 添加注释到 'log_settings'
     config['log_settings'].yaml_set_comment_before_after_key(
         'enable_log_file',
         before=(
-            "日志设置\n"
-            "是否输出日志文件，默认为 True\n"
+            "日志设置\n\n"
+            "是否输出日志文件，默认为 False\n"
             "False 为 不输出，True 为 输出"
         )
     )
     config['log_settings'].yaml_set_comment_before_after_key(
         'log_level',
         before=(
-            "日志输出等级，默认为 INFO\n"
+            "\n日志输出等级，默认为 INFO\n"
             "请根据需要进行设置，否则不建议改动\n"
             "DEBUG > INFO > WARNING > ERROR > CRITICAL"
         )
@@ -312,27 +323,27 @@ def get_default_config():
     config['log_settings'].yaml_set_comment_before_after_key(
         'log_directory',
         before=(
-            "日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
-            "请根据需要进行设置，否则不建议改动\n"
+            "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
+            "请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
             "若不需要日志文件输出，请在 'enable_log_file' 中设置为 False\n"
         )
     )
     config['log_settings'].yaml_set_comment_before_after_key(
         'max_log_files',
         before=(
-            "日志最大保存数量，默认值: 15个\n"
+            "\n日志最大保存数量，默认值: 15个"
         )
     )
     config['log_settings'].yaml_set_comment_before_after_key(
         'log_retention_days',
         before=(
-            "日志保存天数，单位为天，默认值: 3天\n"
+            "\n日志保存天数，单位为天，默认值: 3天"
         )
     )
     config['log_settings'].yaml_set_comment_before_after_key(
         'log_filename',
         before=(
-            "日志文件名，时间戳不可修改，默认值: 2RPM"
+            "\n日志文件名，时间戳不可修改，默认值: 2RPM"
         )
     )
 
@@ -477,18 +488,15 @@ def setup_logging():
     global LOGGER
     LOGGER.debug("开始执行函数: 日志配置")
     log_config = CONFIG.get('log_settings', {})
-    enable_log_file = log_config.get('enable_log_file', True)
+    enable_log_file = log_config.get('enable_log_file', False)
     log_level_str = log_config.get('log_level', 'INFO')
     log_level = getattr(logging, log_level_str.upper(), logging.INFO)
-    log_dir = os.path.abspath(log_config.get('log_directory', 'logs'))
-    os.makedirs(log_dir, exist_ok=True)
-    LOGGER.debug(f"日志目录设置: {log_dir}")
+    log_dir = log_config.get('log_directory', 'logs')
 
-    # 日志文件名
-    log_filename = log_config.get('log_filename', '2RPM')
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    log_file = os.path.join(log_dir, f"{log_filename}_{timestamp}.log")
-    LOGGER.info(f"日志文件输出: {log_file}")
+    # 设置日志目录为程序所在目录下的 logs 文件夹
+    program_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(program_dir, log_dir)
+    LOGGER.debug(f"日志目录设置: {log_dir}")
 
     # 日志格式
     file_formatter = logging.Formatter(
@@ -555,6 +563,14 @@ def setup_logging():
 
     # 日志文件处理器
     if enable_log_file:
+        os.makedirs(log_dir, exist_ok=True)  # 仅在启用日志时创建日志目录
+
+        # 日志文件名
+        log_filename = log_config.get('log_filename', '2RPM')
+        timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        log_file = os.path.join(log_dir, f"{log_filename}_{timestamp}.log")
+        LOGGER.info(f"日志文件输出: {log_file}")
+
         file_handler = RotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,
@@ -565,9 +581,11 @@ def setup_logging():
         LOGGER.addHandler(file_handler)
         LOGGER.info("日志文件处理器已就绪")
 
-    # 日志自清洁
-    clean_logs(log_dir)
-    LOGGER.debug("准备清理日志文件")
+        # 日志自清洁
+        clean_logs(log_dir)
+        LOGGER.debug("准备清理日志文件")
+    else:
+        LOGGER.info("日志文件输出已禁用")
 
 
 def clean_logs(log_dir):
@@ -663,7 +681,7 @@ async def monitor_processes():
             LOGGER.debug("正在执行: 等待进程启动循环")
             waited_time_ns = time.perf_counter_ns() - start_time_ns
             if waited_time_ns // 1_000_000 > max_wait_time_ms:
-                LOGGER.warning("已等待超时")
+                LOGGER.debug("已等待超时，正在尝试发送通知")
                 break
 
             current_processes = {
@@ -726,7 +744,7 @@ async def monitor_processes():
                     processes),
                 process_list=list(missing_processes)
             )
-            LOGGER.warning(f"等待超时，进程未运行: {process_name}")
+            LOGGER.error(f"等待超时，进程未运行: {process_name}")
     else:
         LOGGER.info("所有监视进程均已启动")
 
@@ -930,14 +948,14 @@ async def send_notification(template_key, **kwargs):
             if channel == 'ServerChan':
                 key = push_channel_settings.get('serverchan_key', '')
                 if not key:
-                    LOGGER.critical("ServerChan密钥未配置，无法发送通知")
+                    LOGGER.error("ServerChan密钥未配置，无法发送通知")
                     break
                 await asyncio.to_thread(sc_send, title, content, key)
             elif channel == 'OnePush':
                 notifier_name = push_channel_settings.get('push_channel', '')
                 token = push_channel_settings.get('push_channel_key', '')
                 if not notifier_name or not token:
-                    LOGGER.critical("OnePush推送渠道或密钥未配置，无法发送通知")
+                    LOGGER.error("OnePush推送渠道或密钥未配置，无法发送通知")
                     break
                 await asyncio.to_thread(
                     onepush_send, notifier_name, token, title, content)
@@ -1087,7 +1105,7 @@ def main():
     # 重新获取 LOGGER，以确保使用新的配置
     LOGGER = logging.getLogger(__name__)
 
-    # 捕获 Ctrl+C 中断
+    # 捕获 Ctrl+C 中断，立即退出程序
     try:
         # 运行主监视器
         LOGGER.info("正在运行主程序")
