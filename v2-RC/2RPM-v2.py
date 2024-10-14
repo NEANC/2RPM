@@ -6,7 +6,7 @@
 
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
 
-- 版本: v2.14.4  
+- 版本: v2.14.6
 
 ## License
 
@@ -494,7 +494,8 @@ def setup_logging():
     log_dir = log_config.get('log_directory', 'logs')
 
     # 设置日志目录为程序所在目录下的 logs 文件夹
-    program_dir = os.path.dirname(os.path.abspath(__file__))
+    program_dir = get_program_directory()
+    LOGGER.debug(f"读取程序所在目录: {program_dir}")
     log_dir = os.path.join(program_dir, log_dir)
     LOGGER.debug(f"日志目录设置: {log_dir}")
 
@@ -583,9 +584,23 @@ def setup_logging():
 
         # 日志自清洁
         clean_logs(log_dir)
-        LOGGER.debug("准备清理日志文件")
     else:
         LOGGER.info("日志文件输出已禁用")
+
+
+def get_program_directory():
+    """获取程序所在的目录，兼容打包后的可执行文件。
+
+    Returns:
+        str: 程序所在的目录路径。
+    """
+    if getattr(sys, 'frozen', False):
+        # 如果是被打包的可执行文件
+        program_dir = os.path.dirname(sys.executable)
+    else:
+        # 普通的 Python 脚本
+        program_dir = os.path.dirname(os.path.abspath(__file__))
+    return program_dir
 
 
 def clean_logs(log_dir):
@@ -602,22 +617,22 @@ def clean_logs(log_dir):
     now = time.time()
 
     # 按天数清理
-    for file in files:
-        if now - file.stat().st_mtime > max_days * 86400:
+    for file_path in files:
+        if now - file_path.stat().st_mtime > max_days * 86400:
             try:
-                file.unlink()
-                LOGGER.info(f"删除过期的日志文件: {file}")
+                file_path.unlink()
+                LOGGER.info(f"删除过期的日志文件: {file_path}")
             except Exception as e:
-                LOGGER.warning(f"删除日志文件 {file} 失败: {e}")
+                LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
 
     # 按数量清理
     if len(files) > max_files:
-        for file in files[:len(files) - max_files]:
+        for file_path in files[:len(files) - max_files]:
             try:
-                file.unlink()
-                LOGGER.info(f"删除多余的日志文件: {file}")
+                file_path.unlink()
+                LOGGER.info(f"删除多余的日志文件: {file_path}")
             except Exception as e:
-                LOGGER.warning(f"删除日志文件 {file} 失败: {e}")
+                LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
 
     LOGGER.debug("日志清理完成")
 
