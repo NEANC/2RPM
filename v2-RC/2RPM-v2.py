@@ -5,8 +5,9 @@
 # Running-Runtime Process Monitoring
 
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
+    - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.14.6
+- 版本: v2.14.7
 
 ## License
 
@@ -69,7 +70,7 @@ def get_default_config():
     """获取默认配置，并嵌入完整的注释。
 
     Returns:
-        CommentedMap: 默认配置字典，包含注释。
+        CommentedMap: 包含注释的默认配置字典。
     """
     LOGGER.debug("正在读取默认配置")
     config = CommentedMap({
@@ -150,7 +151,6 @@ def get_default_config():
     })
 
     LOGGER.debug("正在为配置文件添加注释")
-    # 添加注释
     # 添加注释到 'monitor_settings'
     config['monitor_settings'].yaml_set_comment_before_after_key(
         'process_name_list',
@@ -483,8 +483,30 @@ def check_and_update_config(user_config, default_config, parent_key=''):
     return updated
 
 
+def setup_default_logging():
+    """在加载配置文件前设置默认的日志配置。"""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(levelname)s | %(message)s')
+
+    # 控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # 文件处理器，日志输出到默认的日志文件
+    program_dir = get_program_directory()
+    default_log_file = os.path.join(program_dir, 'default.log')
+    file_handler = logging.FileHandler(default_log_file)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+
 def setup_logging():
-    """设置日志配置。"""
+    """设置日志配置。
+
+    根据配置文件中的设置，初始化日志系统，包括控制台输出和文件输出。
+    """
     global LOGGER
     LOGGER.debug("开始执行函数: 日志配置")
     log_config = CONFIG.get('log_settings', {})
@@ -507,13 +529,13 @@ def setup_logging():
         datefmt='%H:%M:%S')
 
     # 更新日志级别
-    LOGGER.setLevel(log_level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
     LOGGER.info(f"日志级别设置: {log_level_str.upper()}")
 
     # 清除之前的处理器
-    while LOGGER.handlers:
-        handler = LOGGER.handlers.pop()
-        handler.close()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     LOGGER.debug("已清除之前的日志处理器")
 
     # 控制台日志处理器
@@ -539,7 +561,7 @@ def setup_logging():
                 """格式化日志记录。
 
                 Args:
-                    record (LogRecord): 日志记录。
+                    record: 日志记录对象。
 
                 Returns:
                     str: 格式化后的日志字符串。
@@ -559,7 +581,7 @@ def setup_logging():
         console_handler.setFormatter(console_formatter)
         LOGGER.warning("colorama 未安装，将使用无颜色渲染的控制台输出")
 
-    LOGGER.addHandler(console_handler)
+    root_logger.addHandler(console_handler)
     LOGGER.info("控制台日志处理器已就绪")
 
     # 日志文件处理器
@@ -1094,9 +1116,17 @@ def parse_args():
 
 
 def main():
-    """主函数。"""
+    """主函数。
+
+    初始化程序，加载配置，设置日志，并运行主监视器。
+    """
     global CONFIG, LOGGER
 
+    # 初始化基本日志配置
+    logging.basicConfig(level=logging.INFO,
+                        format='%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
+                        datefmt='%H:%M:%S')
+    LOGGER = logging.getLogger(__name__)
     LOGGER.info("程序正在初始化...")
 
     # 解析命令行参数
@@ -1117,8 +1147,6 @@ def main():
     # 设置日志
     setup_logging()
     LOGGER.info("已完成日志配置")
-    # 重新获取 LOGGER，以确保使用新的配置
-    LOGGER = logging.getLogger(__name__)
 
     # 捕获 Ctrl+C 中断，立即退出程序
     try:
