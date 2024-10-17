@@ -43,27 +43,33 @@ push_settings:
   push_templates:
 
 # 进程结束通知模板
+# - enable: 是否启用通知，True 为启用，False 为禁用
 # - title: 通知标题
 # - content: 通知内容
     process_end_notification:
+      enable: true
       title: 进程结束通报
       content: "主机: {host_name}\n\n当前时间: {current_time}\n\n进程: {process_name} (PID:
         {process_pid}) 于 {short_current_time} 时已结束运行\n\n运行时间: {process_run_time}\n
         \n正在运行的进程状态: {other_running_processes}\n\n其他未运行的进程: {process_list}\n\n"
 
 # 进程超时运行警告模板
+# - enable: 是否启用通知，True 为启用，False 为禁用
 # - title: 通知标题
 # - content: 通知内容
     process_timeout_warning:
+      enable: true
       title: 进程超时运行警告
       content: "主机: {host_name}\n\n当前时间: {current_time}\n\n进程: {process_name} (PID:
         {process_pid}) 于 {short_current_time} 时已运行超过预期: {process_run_time}\n\n正在运行的进程状态:
         {other_running_processes}\n\n其他未运行的进程: {process_list}\n\n"
 
 # 等待超时未运行报告模板
+# - enable: 是否启用通知，True 为启用，False 为禁用
 # - title: 通知标题
 # - content: 通知内容
     process_wait_timeout_warning:
+      enable: true
       title: 等待超时未运行报告
       content: "主机: {host_name}\n\n当前时间: {current_time}\n\n进程: {process_name} 超时未运行\n
         \n已等待时间: {process_wait_time}\n\n正在运行的进程状态: {other_running_processes}\n\n其他未运行的进程:
