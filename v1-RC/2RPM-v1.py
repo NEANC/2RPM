@@ -6,7 +6,7 @@
 
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
 
-- 版本: v1.10.0  
+- 版本: v1.10.1
 
 ## License
 
@@ -547,10 +547,22 @@ def monitor_processes(process_start_times, key):
         time.sleep(SLEEP_INTERVAL / 1000)
 
 
+def print_info():
+    # 打印版本信息
+    print("+ " + " Running-Runtime Process Monitoring ".center(80, "="), "+")
+    print("||" + "".center(80, " ") + "||")
+    print("||" + "本项目使用 GPT AI，GPT 模型为：o1-preview".center(70, " ") + "||")
+    print("|| " + "".center(78, "-") + " ||")
+    print("||" + "Version: v1.10.1    License: WTFPL".center(80, " ") + "||")
+    print("||" + "".center(80, " ") + "||")
+    print("+ " + "".center(80, "=") + " +")
+
+
 def main():
     """
     主函数，控制程序的执行流程
     """
+    print_info()
     # 获取进程启动时间和名称
     process_start_times = get_process_start_times(PROCESS_NAMES)
 
@@ -595,8 +607,8 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         # 捕获 Ctrl+C 中断，正常退出
-        logger.info(f"捕获到 Ctrl+C 中断，程序终止运行。")
-        logger.error(f"用户手动终止。")
+        logger.warning("捕获到 Ctrl+C 中断，程序终止运行。")
+        logger.critical("用户手动终止。")
         sys.exit(0)
     except SystemExit:
         # 正常退出，或通过 sys.exit() 退出

@@ -235,8 +235,8 @@ exit
 
 ```bat
 @echo off
-set "RPM=C:\T O\2RPM使用控制台.exe"
-set "config=C:\T O\my_config.yaml"
+set "RPM=C:\T O\2RPM.py"
+set "config=C:\T O\my config.yaml"
 start "C:\Windows\System32\cmd.exe"
 python "%RPM%" -c "%config%"
 taskkill /f /im cmd.exe

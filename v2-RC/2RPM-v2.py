@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.14.7
+- 版本: v2.15.3
 
 ## License
 
@@ -89,6 +89,7 @@ def get_default_config():
         'push_settings': CommentedMap({
             'push_templates': CommentedMap({
                 'process_end_notification': CommentedMap({
+                    'enable': True,
                     'title': '进程结束通报',
                     'content': (
                         '主机: {host_name}\n\n'
@@ -101,6 +102,7 @@ def get_default_config():
                     )
                 }),
                 'process_timeout_warning': CommentedMap({
+                    'enable': True,
                     'title': '进程超时运行警告',
                     'content': (
                         '主机: {host_name}\n\n'
@@ -113,6 +115,7 @@ def get_default_config():
                     )
                 }),
                 'process_wait_timeout_warning': CommentedMap({
+                    'enable': True,
                     'title': '等待超时未运行报告',
                     'content': (
                         '主机: {host_name}\n\n'
@@ -218,6 +221,7 @@ def get_default_config():
         'process_end_notification',
         before=(
             "\n进程结束通知模板\n"
+            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
@@ -226,6 +230,7 @@ def get_default_config():
         'process_timeout_warning',
         before=(
             "\n进程超时运行警告模板\n"
+            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
@@ -234,6 +239,7 @@ def get_default_config():
         'process_wait_timeout_warning',
         before=(
             "\n等待超时未运行报告模板\n"
+            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
             "- title: 通知标题\n"
             "- content: 通知内容\n"
         )
@@ -360,7 +366,7 @@ def create_default_config(config_file):
     Raises:
         Exception: 如果无法创建配置文件。
     """
-    LOGGER.info(f"正在创建配置文件: {config_file}")
+    LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
     default_config = get_default_config()
     try:
         yaml = YAML()
@@ -368,7 +374,7 @@ def create_default_config(config_file):
         yaml.preserve_quotes = True
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(default_config, f)
-        LOGGER.info(f"配置文件创建成功: {config_file}")
+        LOGGER.info("配置文件创建成功")
     except Exception as e:
         LOGGER.critical(f"创建配置文件失败: {e}")
         raise
@@ -386,34 +392,37 @@ def load_config(config_file):
     Raises:
         Exception: 如果配置文件无效。
     """
-    LOGGER.debug(f"加载配置文件: {config_file}")
+    LOGGER.info(f"正在加载配置文件: {os.path.abspath(config_file)}")
     if not os.path.exists(config_file):
-        LOGGER.warning(f"配置文件不存在: {config_file}，正在创建默认配置文件。")
+        LOGGER.warning(
+            f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
 
     try:
         yaml = YAML()
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
-            LOGGER.info(f"成功加载配置文件: {config_file}")
+            LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
-        LOGGER.critical(f"无法加载配置文件: {config_file}：{e}")
+        LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
         raise
 
     # 检查并更新配置
     default_config = get_default_config()
     updated = check_and_update_config(user_config, default_config)
     if updated:
-        LOGGER.info("配置文件已更新，正在写回配置文件。")
+        LOGGER.debug("配置文件已更新，正在写回配置文件。")
         try:
             yaml = YAML()
             yaml.indent(mapping=2, sequence=4, offset=2)
             yaml.preserve_quotes = True
             with open(config_file, 'w', encoding='utf-8') as f:
                 yaml.dump(user_config, f)
-            LOGGER.info(f"已更新配置文件: {config_file}")
+            LOGGER.info(f"已更新配置文件: {os.path.abspath(config_file)}")
         except Exception as e:
-            LOGGER.error(f"无法写回配置文件 {config_file}：{e}")
+            LOGGER.error(
+                f"无法写回配置文件 {os.path.abspath(config_file)}: {e}"
+            )
 
     LOGGER.debug("配置参数版本差异检查完成")
     return user_config
@@ -464,7 +473,9 @@ def check_and_update_config(user_config, default_config, parent_key=''):
                 LOGGER.warning(f"参数缺失: {full_key}")
                 user_config[key] = default_value
                 updated = True
-                LOGGER.info(f"正在对参数 {full_key}，应用默认值: {default_value}")
+                LOGGER.info(
+                    f"正在对参数 {full_key}，应用默认值: {default_value}"
+                )
         else:
             if isinstance(default_value, CommentedMap):
                 if not isinstance(user_config[key], CommentedMap):
@@ -487,8 +498,10 @@ def setup_default_logging():
     """在加载配置文件前设置默认的日志配置。"""
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(levelname)s | %(message)s')
-
+    formatter = logging.Formatter(
+        format='%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
+        datefmt='%H:%M:%S'
+    )
     # 控制台处理器
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
@@ -497,7 +510,9 @@ def setup_default_logging():
     # 文件处理器，日志输出到默认的日志文件
     program_dir = get_program_directory()
     default_log_file = os.path.join(program_dir, 'default.log')
-    file_handler = logging.FileHandler(default_log_file)
+    file_handler = logging.FileHandler(
+        default_log_file, encoding='utf-8'
+    )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -597,7 +612,8 @@ def setup_logging():
         file_handler = RotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,
-            backupCount=log_config.get('max_log_files', 15)
+            backupCount=log_config.get('max_log_files', 15),
+            encoding='utf-8'
         )
         file_handler.setFormatter(file_formatter)
         file_handler.setLevel(log_level)
@@ -707,6 +723,12 @@ async def monitor_processes():
 
     LOGGER.debug("初始化监视参数")
     processes = {}
+
+    # 检查 process_name_list 是否有效
+    if not process_name_list:
+        LOGGER.critical("未设置要监视的进程，请检查配置文件！")
+        sys.exit(1)
+
     LOGGER.info(
         f"等待监视进程启动，每 {wait_process_check_interval_ms} ms 检查一次"
     )
@@ -787,7 +809,7 @@ async def monitor_processes():
 
     # 如果没有任何进程需要监视，退出程序
     if not processes:
-        LOGGER.critical("未检测到任意目标进程，程序退出。")
+        LOGGER.critical("未检测到任意目标进程，程序终止运行。")
         sys.exit(1)
 
     # 监视已启动的进程
@@ -881,7 +903,7 @@ async def monitor_processes():
                     process_info['last_warning_time_ns'] = current_time_ns
 
             if not processes:
-                LOGGER.info("所有进程已结束，程序退出。")
+                LOGGER.info("所有进程已结束，程序终止运行。")
                 break
 
             # 计算下一次循环的时间点，确保循环间隔精确
@@ -893,7 +915,7 @@ async def monitor_processes():
             await asyncio.sleep(sleep_time_ns / 1_000_000_000)
             next_loop_time_ns += monitor_loop_interval_ms * 1_000_000
     except asyncio.CancelledError:
-        LOGGER.critical("任务被取消，退出监视循环")
+        LOGGER.critical("任务被取消，正在结束监视循环")
         return
 
 
@@ -954,6 +976,12 @@ async def send_notification(template_key, **kwargs):
     push_settings = CONFIG.get('push_settings', {})
     templates = push_settings.get('push_templates', {})
     template = templates.get(template_key, {})
+
+    # 检查是否启用了该通知
+    if not template.get('enable', True):
+        LOGGER.warning(f"通知推送已被禁用: {template_key}")
+        return
+
     title = template.get('title', '')
     content = template.get('content', '')
 
@@ -1106,13 +1134,25 @@ def parse_args():
     LOGGER.debug("解析命令行参数")
     parser = argparse.ArgumentParser(description='2RPM V2')
     parser.add_argument(
-        '-c', '--config',
+        '-c', '-C', '-config', '-Config', '--config', '--Config',
         default=DEFAULT_CONFIG_FILE,
         help="指定配置文件路径，示例 -c C:\\path\\config.yaml"
     )
     args = parser.parse_args()
     LOGGER.debug(f"命令行参数解析结果: {args}")
     return args
+
+
+def print_info():
+    # 打印版本信息
+    print("+ " + " Running-Runtime Process Monitoring ".center(80, "="), "+")
+    print("||" + "".center(80, " ") + "||")
+    print("||" + "本项目使用 GPT AI 与 Claude AI 生成".center(72, " ") + "||")
+    print("||" + "GPT 模型为：o1-preview，Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
+    print("|| " + "".center(78, "-") + " ||")
+    print("||" + "Version: v2.15.3    License: WTFPL".center(80, " ") + "||")
+    print("||" + "".center(80, " ") + "||")
+    print("+ " + "".center(80, "=") + " +")
 
 
 def main():
@@ -1123,22 +1163,26 @@ def main():
     global CONFIG, LOGGER
 
     # 初始化基本日志配置
-    logging.basicConfig(level=logging.INFO,
-                        format='%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
-                        datefmt='%H:%M:%S')
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
+        datefmt='%H:%M:%S'
+    )
     LOGGER = logging.getLogger(__name__)
+    print_info()
     LOGGER.info("程序正在初始化...")
 
     # 解析命令行参数
     args = parse_args()
-    config_file = args.config
+    program_dir = get_program_directory()
+    config_file = os.path.join(program_dir, args.config)
 
     try:
         # 加载配置
         CONFIG = load_config(config_file)
         LOGGER.info("配置已加载")
     except SystemExit:
-        LOGGER.critical("程序因缺少关键配置而退出")
+        LOGGER.critical("程序因缺少关键配置终止运行")
         sys.exit(1)
     except Exception as e:
         LOGGER.critical(f"加载配置失败: {e}")
@@ -1148,7 +1192,6 @@ def main():
     setup_logging()
     LOGGER.info("已完成日志配置")
 
-    # 捕获 Ctrl+C 中断，立即退出程序
     try:
         # 运行主监视器
         LOGGER.info("正在运行主程序")
@@ -1161,7 +1204,7 @@ def main():
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        LOGGER.info("程序已退出")
+        LOGGER.info("程序已终止运行")
 
 
 if __name__ == '__main__':

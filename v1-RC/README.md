@@ -8,7 +8,7 @@
 
 # 2RPM v1
 
-版本：v1.10.0  
+版本：v1.10.1  
 状态：Release Candidate
 
 ## 功能列表
