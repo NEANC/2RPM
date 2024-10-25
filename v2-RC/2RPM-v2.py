@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.15.6
+- 版本: v2.16.5
 
 ## License
 
@@ -32,20 +32,18 @@ import sys
 import time
 import psutil
 import socket
-import ctypes
 import logging
 import asyncio
 import argparse
 import datetime
-import platform
 import colorama
 import urllib.parse
 import urllib.request
+from io import StringIO
 from pathlib import Path
 from onepush import get_notifier
 from colorama import Back, Fore, Style
 from logging.handlers import RotatingFileHandler
-
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
@@ -60,10 +58,193 @@ DEFAULT_CONFIG_FILE = 'config.yaml'
 CRITICAL_KEYS = [
     'monitor_settings.process_name_list',
     'push_settings.push_channel_settings.choose',
+    'push_settings.push_channel_settings.serverchan_key',
+    'push_settings.push_channel_settings.push_channel',
+    'push_settings.push_channel_settings.push_channel_key',
     'external_program_settings.enable_external_program_call',
     'external_program_settings.trigger_process_name',
     'external_program_settings.external_program_path',
 ]
+
+
+# 注释集中管理
+COMMENTS = {
+    'monitor_settings': {
+        '_comment': (
+            "监视设置\n"
+            "- 监视程序相关配置\n"
+        ),
+        'process_name_list': (
+            "\n要监视的进程名称列表"
+        ),
+        'timeout_warning_interval_ms': (
+            "\n超时警告间隔，默认值900000毫秒（15分钟），单位为毫秒\n"
+            "- 时间换算可通过搜索引擎搜索: 分钟换毫秒工具，也可查看下列公式: \n"
+            "- 分钟换算毫秒：分钟×60×1000；例 30分钟换算成毫秒：30×60×1000=1800000"
+        ),
+        'monitor_loop_interval_ms': (
+            "\n监视循环间隔，默认值1000毫秒（1秒），单位为毫秒\n"
+            "- 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
+            "- 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
+        ),
+    },
+    'wait_process_settings': {
+        '_comment': (
+            "等待进程设置\n"
+            "- 配置等待进程启动的相关参数\n"
+        ),
+        'max_wait_time_ms': (
+            "\n最长等待时间，默认值: 30000毫秒（30秒），单位为毫秒"
+        ),
+        'wait_process_check_interval_ms': (
+            "\n等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒\n"
+            "- 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
+            "- 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
+        ),
+    },
+    'push_settings': {
+        '_comment': (
+            "推送设置\n"
+            "- 包含推送通知的相关配置\n"
+        ),
+        'push_templates': {
+            '_comment': (
+                "推送模板配置\n"
+                "- 可自定义通知的标题和内容\n\n"
+                "支持的变量如下：\n"
+                "主机名: {host_name}\n"
+                "当前时间(YY-mm-dd HH-MM-SS): {current_time}\n"
+                "当前时间(HH-MM-SS): {short_current_time}\n"
+                "进程名: {process_name}\n"
+                "进程PID: {process_pid}\n"
+                "进程运行时间: {process_run_time}\n"
+                "进程积累等待时间: {process_wait_time}\n"
+                "正在运行的进程状态列表: {other_running_processes}\n"
+                "进程列表: {process_list}\n"
+                "调用的程序名: {external_program_name}\n"
+                "调用的程序路径: {external_program_path}\n"
+            ),
+            'process_end_notification': (
+                "\n进程结束通知模板\n"
+                "- enable: 是否启用该通知\n"
+                "- title: 通知标题\n"
+                "- content: 通知内容\n"
+            ),
+            'process_timeout_warning': (
+                "\n进程超时运行警告模板\n"
+                "- enable: 是否启用该通知\n"
+                "- title: 通知标题\n"
+                "- content: 通知内容\n"
+            ),
+            'process_wait_timeout_warning': (
+                "\n等待超时未运行报告模板\n"
+                "- enable: 是否启用该通知\n"
+                "- title: 通知标题\n"
+                "- content: 通知内容\n"
+            ),
+            'external_program_execution_notification': (
+                "\n外部程序执行通知模板\n"
+                "- enable: 是否启用该通知\n"
+                "- title: 通知标题\n"
+                "- content: 通知内容\n"
+            ),
+        },
+        'push_channel_settings': {
+            '_comment': (
+                "推送通道设置\n"
+            ),
+            'choose': (
+                "\n请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'"
+            ),
+            'serverchan_key': "\nServerChan密钥",
+            'push_channel': (
+                "\nOnePush推送通道（请查看 https://pypi.org/project/onepush/ "
+                "来获得如何使用帮助）"
+            ),
+            'push_channel_key': "\nOnePush推送通道密钥",
+        },
+        'push_error_retry': {
+            '_comment': "推送错误重试设置\n",
+            'retry_interval_ms': (
+                "\n重试间隔，默认值: 3000毫秒（3秒）单位为毫秒"
+            ),
+            'max_retry_count': "\n最大重试次数，默认值: 3次",
+        },
+        'enable_push_on_external_program_execution': (
+            "\n是否在外部程序执行后推送通知，默认值为 False\n"
+        ),
+    },
+    'external_program_settings': {
+        '_comment': (
+            "外部程序调用设置\n"
+        ),
+        'enable_external_program_call': (
+            "\n============================================================\n"
+            "\n进程结束后是否执行外部程序调用\n"
+            "- False 为 不执行，True 为 执行，默认为 False\n"
+        ),
+        'trigger_process_name': (
+            "\n指定进程结束后执行外部程序调用\n"
+            "- 当程序检测到 'notepad.exe' 结束运行时，会执行外部程序调用"
+        ),
+        'external_program_path': (
+            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
+            "C:\\path\\end\\script.bat"
+        ),
+        'enable_another_external_program_on_timeout': (
+            "\n============================================================\n"
+            "\n进程运行超时后触发外部程序调用\n"
+            "- False 为 不执行，True 为 执行，默认为 False\n"
+        ),
+        'another_trigger_process_name': (
+            "\n指定进程运行超时次数达到阈值时触发外部程序调用\n"
+            "- 当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用\n"
+        ),
+        'another_external_program_path': (
+            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
+            "C:\\path\\timeout\\timeout_script.bat"
+        ),
+        'timeout_count_threshold': (
+            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
+        ),
+        'exit_after_external_program': (
+            "\n设置进程运行超时调用外部程序后是否退出程序\n"
+            "- False 为 不退出，True 为 退出，默认值为 False\n"
+        ),
+        'enable_external_program_on_wait_timeout': (
+            "\n============================================================\n"
+            "\n等待进程启动超时后触发外部程序调用\n"
+            "- False 为 不执行，True 为 执行，默认为 False\n"
+        ),
+        'external_program_on_wait_timeout_path': (
+            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
+            "- 例如: C:\\path\\wait_timeout\\wait_timeout_script.bat"
+        ),
+    },
+    'log_settings': {
+        '_comment': (
+            "日志设置\n"
+            "- 配置日志输出的相关参数\n"
+        ),
+        'enable_log_file': (
+            "\n是否输出日志文件，默认为 False\n"
+            "- False 为 不输出，True 为 输出"
+        ),
+        'log_level': (
+            "\n日志输出等级，默认为 INFO\n"
+            "- 请根据需要进行设置，否则不建议改动\n"
+            "- DEBUG > INFO > WARNING > ERROR > CRITICAL"
+        ),
+        'log_directory': (
+            "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
+            "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
+            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False\n"
+        ),
+        'max_log_files': "\n日志最大保存数量，默认值: 15个",
+        'log_retention_days': "\n日志保存天数，单位为天，默认值: 3天",
+        'log_filename': "\n日志文件名，时间戳不可修改，默认值: 2RPM",
+    },
+}
 
 
 def get_default_config():
@@ -125,18 +306,30 @@ def get_default_config():
                         '正在运行的进程状态: {other_running_processes}\n\n'
                         '其他未运行的进程: {process_list}\n\n'
                     )
+                }),
+                'external_program_execution_notification': CommentedMap({
+                    'enable': False,
+                    'title': '外部程序执行通知',
+                    'content': (
+                        '主机: {host_name}\n\n'
+                        '当前时间: {current_time}\n\n'
+                        '外部程序已执行:\n\n'
+                        '程序名: {external_program_name}\n\n'
+                        '程序路径: {external_program_path}\n\n'
+                    )
                 })
             }),
             'push_channel_settings': CommentedMap({
                 'choose': 'ServerChan',
                 'serverchan_key': '',
-                'push_channel': None,
+                'push_channel': '',
                 'push_channel_key': ''
             }),
             'push_error_retry': CommentedMap({
                 'retry_interval_ms': 3000,
                 'max_retry_count': 3
-            })
+            }),
+            'enable_push_on_external_program_execution': False
         }),
         'external_program_settings': CommentedMap({
             'enable_external_program_call': False,
@@ -144,9 +337,13 @@ def get_default_config():
             'external_program_path': 'C:\\path\\to\\your\\script.bat',
             'enable_another_external_program_on_timeout': False,
             'another_trigger_process_name': 'notepad.exe',
-            'another_external_program_path': 'C:\\path\\to\\another_script.bat',
+            'another_external_program_path':
+                'C:\\path\\to\\another_script.bat',
             'timeout_count_threshold': 3,
-            'exit_after_external_program': False
+            'exit_after_external_program': False,
+            'enable_external_program_on_wait_timeout': False,
+            'external_program_on_wait_timeout_path':
+                'C:\\path\\to\\wait_timeout_script.bat'
         }),
         'log_settings': CommentedMap({
             'enable_log_file': False,
@@ -158,243 +355,45 @@ def get_default_config():
         })
     })
 
-    LOGGER.debug("正在为配置文件添加注释")
-    # 添加注释到 'monitor_settings'
-    config['monitor_settings'].yaml_set_comment_before_after_key(
-        'process_name_list',
-        before=(
-            "监视设置\n\n"
-            "要监视的进程名称列表"
-        )
-    )
-    config['monitor_settings'].yaml_set_comment_before_after_key(
-        'timeout_warning_interval_ms',
-        before=(
-            "\n超时警告间隔，默认值900000毫秒（15分钟），单位为毫秒\n"
-            "时间换算可通过搜索引擎搜索: 分钟换毫秒工具，也可查看下列公式: \n"
-            "分钟换算毫秒：分钟×60×1000；例 30分钟换算成毫秒：30×60×1000=1800000"
-        )
-    )
-    config['monitor_settings'].yaml_set_comment_before_after_key(
-        'monitor_loop_interval_ms',
-        before=(
-            "\n监视循环间隔，默认值1000毫秒（1秒），单位为毫秒\n"
-            "时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
-            "秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
-        )
-    )
-
-    # 添加注释到 'wait_process_settings'
-    config['wait_process_settings'].yaml_set_comment_before_after_key(
-        'max_wait_time_ms',
-        before=(
-            "等待进程设置\n\n"
-            "最长等待时间，默认值: 30000毫秒（30秒），单位为毫秒\n"
-        )
-    )
-    config['wait_process_settings'].yaml_set_comment_before_after_key(
-        'wait_process_check_interval_ms',
-        before=(
-            "\n等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒。\n"
-            "时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: \n"
-            "秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000"
-        )
-    )
-
-    # 添加注释到 'push_settings'
-    config['push_settings'].yaml_set_comment_before_after_key(
-        'push_templates',
-        before=(
-            "推送设置\n\n"
-            "支持的变量如下：\n"
-            "主机名: {host_name}\n"
-            "当前时间(YY-mm-dd HH-MM-SS): {current_time}\n"
-            "当前时间(HH-MM-SS): {short_current_time}\n"
-            "进程名: {process_name}\n"
-            "进程PID: {process_pid}\n"
-            "进程运行时间: {process_run_time}\n"
-            "进程积累等待时间: {process_wait_time}\n"
-            "正在运行的进程状态列表: {other_running_processes}\n"
-            "进程列表: {process_list}\n\n"
-            "推送模板配置，可自定义通知的标题和内容\n"
-        )
-    )
-
-    # 添加注释到 'push_templates'
-    push_templates = config['push_settings']['push_templates']
-    push_templates.yaml_set_comment_before_after_key(
-        'process_end_notification',
-        before=(
-            "\n进程结束通知模板\n"
-            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
-            "- title: 通知标题\n"
-            "- content: 通知内容\n"
-        )
-    )
-    push_templates.yaml_set_comment_before_after_key(
-        'process_timeout_warning',
-        before=(
-            "\n进程超时运行警告模板\n"
-            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
-            "- title: 通知标题\n"
-            "- content: 通知内容\n"
-        )
-    )
-    push_templates.yaml_set_comment_before_after_key(
-        'process_wait_timeout_warning',
-        before=(
-            "\n等待超时未运行报告模板\n"
-            "- enable: 是否启用通知，True 为启用，False 为禁用\n"
-            "- title: 通知标题\n"
-            "- content: 通知内容\n"
-        )
-    )
-
-    # 添加注释到 'push_channel_settings'
-    push_channel_settings = config['push_settings']['push_channel_settings']
-    push_channel_settings.yaml_set_comment_before_after_key(
-        'choose',
-        before=(
-            "推送通道设置\n\n"
-            "请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'。"
-        )
-    )
-    push_channel_settings.yaml_set_comment_before_after_key(
-        'serverchan_key',
-        before="\nServerChan密钥"
-    )
-    push_channel_settings.yaml_set_comment_before_after_key(
-        'push_channel',
-        before=(
-            "\nOnePush推送通道（请查看 https://pypi.org/project/onepush/ "
-            "来获得如何使用帮助）"
-        )
-    )
-    push_channel_settings.yaml_set_comment_before_after_key(
-        'push_channel_key',
-        before="\nOnePush推送通道密钥"
-    )
-
-    # 添加注释到 'push_error_retry'
-    push_error_retry = config['push_settings']['push_error_retry']
-    push_error_retry.yaml_set_comment_before_after_key(
-        'retry_interval_ms',
-        before=(
-            "推送错误重试设置\n\n"
-            "重试间隔，默认值: 3000毫秒（3秒）单位为毫秒"
-        )
-    )
-    push_error_retry.yaml_set_comment_before_after_key(
-        'max_retry_count',
-        before=(
-            "\n最大重试次数，默认值: 3次"
-        )
-    )
-
-    # 添加注释到 'external_program_settings'
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'enable_external_program_call',
-        before=(
-            "外部程序调用设置\n\n"
-            "是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False\n"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'trigger_process_name',
-        before=(
-            "\n指定当哪一个进程结束后触发外部程序调用，例如: notepad.exe\n"
-            "当程序检测到 'notepad.exe' 结束运行时，会执行外部程序调用"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'external_program_path',
-        before=(
-            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
-            "C:\\path\\to\\your\\script.bat"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'enable_another_external_program_on_timeout',
-        before=(
-            "\n\n指定一个进程运行超时后触发外部程序调用\n"
-            "是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False\n"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'another_trigger_process_name',
-        before=(
-            "\n指定当哪一个进程运行超时次数达到阈值时触发外部程序调用，"
-            "例如: notepad.exe\n"
-            "当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'another_external_program_path',
-        before=(
-            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
-            "C:\\path\\to\\another_script.bat"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'timeout_count_threshold',
-        before=(
-            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
-        )
-    )
-    config['external_program_settings'].yaml_set_comment_before_after_key(
-        'exit_after_external_program',
-        before=(
-            "\n设置触发外部程序调用后是否退出程序，"
-            "False 为 不退出，True 为 退出，默认值为 False\n"
-        )
-    )
-
-    # 添加注释到 'log_settings'
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'enable_log_file',
-        before=(
-            "日志设置\n\n"
-            "是否输出日志文件，默认为 False\n"
-            "False 为 不输出，True 为 输出"
-        )
-    )
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'log_level',
-        before=(
-            "\n日志输出等级，默认为 INFO\n"
-            "请根据需要进行设置，否则不建议改动\n"
-            "DEBUG > INFO > WARNING > ERROR > CRITICAL"
-        )
-    )
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'log_directory',
-        before=(
-            "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
-            "请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
-            "若不需要日志文件输出，请在 'enable_log_file' 中设置为 False\n"
-        )
-    )
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'max_log_files',
-        before=(
-            "\n日志最大保存数量，默认值: 15个"
-        )
-    )
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'log_retention_days',
-        before=(
-            "\n日志保存天数，单位为天，默认值: 3天"
-        )
-    )
-    config['log_settings'].yaml_set_comment_before_after_key(
-        'log_filename',
-        before=(
-            "\n日志文件名，时间戳不可修改，默认值: 2RPM"
-        )
-    )
-
+    LOGGER.debug("正在应用注释到默认配置")
+    apply_comments(config, COMMENTS)
     LOGGER.debug("内置配置读取完成")
     return config
+
+
+def apply_comments(config_section, comments_section):
+    """递归地将注释应用到配置字典中。
+
+    Args:
+        config_section (CommentedMap): 配置的一个部分。
+        comments_section (dict or str): 对应的注释部分。
+    """
+    if isinstance(comments_section, str):
+        # 如果注释是字符串，应用到整个节
+        if not config_section.ca.comment:
+            config_section.yaml_set_start_comment(comments_section)
+        return
+    elif isinstance(comments_section, dict):
+        if '_comment' in comments_section:
+            # 应用节的注释
+            if not config_section.ca.comment:
+                config_section.yaml_set_start_comment(comments_section['_comment'])
+        for key, value in config_section.items():
+            if key in comments_section:
+                comment = comments_section[key]
+                if isinstance(comment, dict):
+                    apply_comments(value, comment)
+                else:
+                    # 检查是否已经有注释，避免重复添加
+                    if not config_section.ca.items.get(key):
+                        config_section.yaml_set_comment_before_after_key(
+                            key, before=comment
+                        )
+            elif isinstance(value, CommentedMap):
+                # 如果没有对应的注释，继续递归
+                apply_comments(value, {})
+            else:
+                continue
 
 
 def create_default_config(config_file):
@@ -434,67 +433,43 @@ def load_config(config_file):
     """
     LOGGER.info(f"正在加载配置文件: {os.path.abspath(config_file)}")
     if not os.path.exists(config_file):
-        LOGGER.warning(
-            f"配置文件不存在: {os.path.abspath(config_file)}")
+        LOGGER.warning(f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
 
     try:
         yaml = YAML()
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
-            LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
+        LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
         raise
 
     # 检查并更新配置
     default_config = get_default_config()
-    updated = check_and_update_config(user_config, default_config)
+    updated = check_and_update_config(user_config, default_config, COMMENTS)
     if updated:
         LOGGER.debug("配置文件已更新，正在写回配置文件。")
         try:
-            yaml = YAML()
             yaml.indent(mapping=2, sequence=4, offset=2)
             yaml.preserve_quotes = True
             with open(config_file, 'w', encoding='utf-8') as f:
                 yaml.dump(user_config, f)
             LOGGER.info(f"已更新配置文件: {os.path.abspath(config_file)}")
         except Exception as e:
-            LOGGER.error(
-                f"无法写回配置文件 {os.path.abspath(config_file)}: {e}"
-            )
+            LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
 
     LOGGER.debug("配置参数版本差异检查完成")
     return user_config
 
 
-def update_comments(user_config, default_config, key):
-    """更新配置参数的注释。
-
-    Args:
-        user_config (CommentedMap): 用户配置字典。
-        default_config (CommentedMap): 默认配置字典。
-        key (str): 当前键名。
-    """
-    if default_config.ca.items.get(key):
-        before_comment_token = default_config.ca.items[key][0]
-        if before_comment_token:
-            before_comment = before_comment_token.value
-            user_config.yaml_set_comment_before_after_key(
-                key, before=before_comment
-            )
-        eol_comment_token = default_config.ca.items[key][2]
-        if eol_comment_token:
-            eol_comment = eol_comment_token.value.strip()
-            user_config.yaml_add_eol_comment(eol_comment, key)
-
-
-def check_and_update_config(user_config, default_config, parent_key=''):
+def check_and_update_config(user_config, default_config, comments_section, parent_key=''):
     """检查并更新用户配置，添加缺失的参数，并更新注释。
 
     Args:
         user_config (CommentedMap): 用户配置字典。
         default_config (CommentedMap): 默认配置字典。
+        comments_section (dict or str): 对应的注释部分。
         parent_key (str): 父级键，用于递归。
 
     Returns:
@@ -502,10 +477,28 @@ def check_and_update_config(user_config, default_config, parent_key=''):
     """
     LOGGER.debug(f"正在检查配置信息，parent_key: {parent_key}")
     updated = False
+
+    if isinstance(comments_section, str):
+        # 应用节的注释
+        user_config.yaml_set_start_comment(comments_section)
+
     for key, default_value in default_config.items():
         full_key = f"{parent_key}.{key}" if parent_key else key
         LOGGER.debug(f"检查关键配置信息: {full_key}")
-        if key not in user_config:
+
+        user_value = user_config.get(key, None)
+        comment = None
+        sub_comments_section = {}
+
+        if isinstance(comments_section, dict):
+            if key in comments_section:
+                sub_comments_section = comments_section[key]
+            else:
+                sub_comments_section = {}
+            if '_comment' in comments_section:
+                comment = comments_section['_comment']
+
+        if user_value is None:
             if full_key in CRITICAL_KEYS:
                 LOGGER.critical(f"关键参数缺失: {full_key}")
                 sys.exit(1)
@@ -513,25 +506,58 @@ def check_and_update_config(user_config, default_config, parent_key=''):
                 LOGGER.warning(f"参数缺失: {full_key}")
                 user_config[key] = default_value
                 updated = True
-                LOGGER.info(
-                    f"正在对参数 {full_key}，应用默认值: {default_value}"
-                )
+                LOGGER.info(f"正在对参数 {full_key}，应用默认值: {default_value}")
+
+                # 应用注释
+                if isinstance(sub_comments_section, str):
+                    user_config.yaml_set_comment_before_after_key(
+                        key, before=sub_comments_section)
         else:
             if isinstance(default_value, CommentedMap):
-                if not isinstance(user_config[key], CommentedMap):
+                if not isinstance(user_value, CommentedMap):
                     LOGGER.warning(f"参数类型不匹配: {full_key}")
                     user_config[key] = default_value
                     updated = True
                     LOGGER.info(f"使用默认值更新参数: {full_key}")
+                    # 应用注释
+                    if isinstance(sub_comments_section, str):
+                        user_config.yaml_set_comment_before_after_key(
+                            key, before=sub_comments_section)
                 else:
                     nested_updated = check_and_update_config(
-                        user_config[key], default_value, full_key)
+                        user_value, default_value, sub_comments_section, full_key)
                     if nested_updated:
                         updated = True
-        # 更新注释
-        update_comments(user_config, default_config, key)
-    LOGGER.debug(f"配置参数检查完成，正在更新: {updated}")
+                    # 应用节的注释
+                    if isinstance(sub_comments_section, dict) and '_comment' in sub_comments_section:
+                        user_value.yaml_set_start_comment(sub_comments_section['_comment'])
+            else:
+                # 应用注释
+                if isinstance(sub_comments_section, str):
+                    user_config.yaml_set_comment_before_after_key(
+                        key, before=sub_comments_section)
+
+    LOGGER.debug(f"配置参数检查完成，是否更新: {updated}")
     return updated
+
+
+def get_comments_section(full_key):
+    """根据完整的键路径获取对应的注释部分。
+
+    Args:
+        full_key (str): 完整的键路径，以 '.' 分隔。
+
+    Returns:
+        dict or str: 对应的注释部分。
+    """
+    keys = full_key.split('.')
+    comments_section = COMMENTS
+    for key in keys:
+        if key in comments_section:
+            comments_section = comments_section[key]
+        else:
+            return None
+    return comments_section
 
 
 def setup_default_logging():
@@ -563,7 +589,7 @@ def setup_logging():
     根据配置文件中的设置，初始化日志系统，包括控制台输出和文件输出。
     """
     global LOGGER
-    LOGGER.debug("开始执行函数: 日志配置")
+    LOGGER.debug("开始执行函数: setup_logging")
     log_config = CONFIG.get('log_settings', {})
     enable_log_file = log_config.get('enable_log_file', False)
     log_level_str = log_config.get('log_level', 'INFO')
@@ -572,16 +598,13 @@ def setup_logging():
 
     # 设置日志目录为程序所在目录下的 logs 文件夹
     program_dir = get_program_directory()
-    LOGGER.debug(f"读取程序所在目录: {program_dir}")
+    LOGGER.debug(f"程序所在目录: {program_dir}")
     log_dir = os.path.join(program_dir, log_dir)
     LOGGER.debug(f"日志目录设置: {log_dir}")
 
     # 日志格式
     file_formatter = logging.Formatter(
         '%(asctime)s | %(levelname)s | %(message)s')
-    console_formatter = logging.Formatter(
-        '%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
-        datefmt='%H:%M:%S')
 
     # 更新日志级别
     root_logger = logging.getLogger()
@@ -597,45 +620,39 @@ def setup_logging():
     console_handler = logging.StreamHandler()
     console_handler.setLevel(log_level)
 
-    if colorama:
-        # 初始化 colorama
-        colorama.init()
+    # 初始化 colorama
+    colorama.init()
 
-        class ColorLogFormatter(logging.Formatter):
-            """带颜色的日志格式化器。"""
+    class ColorLogFormatter(logging.Formatter):
+        """带颜色的日志格式化器。"""
 
-            LEVEL_COLORS = {
-                'DEBUG': Fore.CYAN,
-                'INFO': Fore.WHITE,
-                'WARNING': Fore.YELLOW,
-                'ERROR': Fore.RED,
-                'CRITICAL': Back.RED + Fore.BLACK + Style.BRIGHT,
-            }
+        LEVEL_COLORS = {
+            'DEBUG': Fore.CYAN,
+            'INFO': Fore.WHITE,
+            'WARNING': Fore.YELLOW,
+            'ERROR': Fore.RED,
+            'CRITICAL': Back.RED + Fore.BLACK + Style.BRIGHT,
+        }
 
-            def format(self, record):
-                """格式化日志记录。
+        def format(self, record):
+            """格式化日志记录。
 
-                Args:
-                    record: 日志记录对象。
+            Args:
+                record: 日志记录对象。
 
-                Returns:
-                    str: 格式化后的日志字符串。
-                """
-                level_color = self.LEVEL_COLORS.get(record.levelname, '')
-                reset = Style.RESET_ALL
-                message = super().format(record)
-                return f"{level_color}{message}{reset}"
+            Returns:
+                str: 格式化后的日志字符串。
+            """
+            level_color = self.LEVEL_COLORS.get(record.levelname, '')
+            reset = Style.RESET_ALL
+            message = super().format(record)
+            return f"{level_color}{message}{reset}"
 
-        color_formatter = ColorLogFormatter(
-            '%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
-            datefmt='%H:%M:%S'
-        )
-        console_handler.setFormatter(color_formatter)
-        LOGGER.info("控制台输出已渲染颜色")
-    else:
-        console_handler.setFormatter(console_formatter)
-        LOGGER.warning("colorama 未安装，将使用无颜色渲染的控制台输出")
-
+    color_formatter = ColorLogFormatter(
+        '%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(color_formatter)
     root_logger.addHandler(console_handler)
     LOGGER.info("控制台日志处理器已就绪")
 
@@ -687,7 +704,7 @@ def clean_logs(log_dir):
     Args:
         log_dir (str): 日志目录。
     """
-    LOGGER.debug("开始执行函数: 清理日志文件")
+    LOGGER.debug("开始执行函数: clean_logs")
     log_config = CONFIG.get('log_settings', {})
     max_days = log_config.get('log_retention_days', 3)
     max_files = log_config.get('max_log_files', 15)
@@ -711,8 +728,6 @@ def clean_logs(log_dir):
                 LOGGER.info(f"删除多余的日志文件: {file_path}")
             except Exception as e:
                 LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
-
-    LOGGER.debug("日志清理完成")
 
 
 def format_time_ns(nanoseconds):
@@ -747,8 +762,134 @@ def run_external_program(program_path):
         return
     try:
         os.startfile(program_path)
+        LOGGER.info(f"成功调用外部程序: {program_path}")
     except Exception as e:
         LOGGER.error(f"调用外部程序失败: {e}")
+
+
+def get_other_running_processes(processes, exclude_pid=None):
+    """获取其他正在运行的进程信息。
+
+    Args:
+        processes (dict): 当前监视的进程信息。
+        exclude_pid (int, optional): 要排除的进程 PID。默认为 None。
+
+    Returns:
+        str: 其他正在运行的进程信息字符串。
+    """
+    LOGGER.debug("获取其他正在运行的进程信息")
+    other_processes = [
+        f"{info['name']} (PID: {pid})"
+        for pid, info in processes.items() if pid != exclude_pid
+    ]
+    result = ', '.join(other_processes) if other_processes else '无'
+    LOGGER.info(f"其他正在运行的进程信息: {result}")
+    return result
+
+
+def get_missing_processes(process_name_list, processes, exclude_pid=None):
+    """获取未运行的进程列表。
+
+    Args:
+        process_name_list (list): 要监视的进程名称列表。
+        processes (dict): 当前监视的进程信息。
+        exclude_pid (int, optional): 要排除的进程 PID。默认为 None。
+
+    Returns:
+        list: 未运行的进程名称列表。
+    """
+    LOGGER.debug("获取未运行的进程列表")
+    running_process_names = [
+        info['name']
+        for pid, info in processes.items() if pid != exclude_pid
+    ]
+    missing_processes = set(process_name_list) - set(running_process_names)
+    result = list(missing_processes)
+    LOGGER.info(f"未运行的进程列表: {result}")
+    return result
+
+
+async def send_notification(template_key, **kwargs):
+    """发送通知。
+
+    Args:
+        template_key (str): 模板键。
+        **kwargs: 模板参数。
+    """
+    LOGGER.info(f"使用模板: {template_key} 推送报告")
+    push_settings = CONFIG.get('push_settings', {})
+    push_templates = push_settings.get('push_templates', {})
+    template = push_templates.get(template_key, {})
+
+    # 检查是否启用了该通知
+    if not template.get('enable', True):
+        LOGGER.warning(f"通知推送已被禁用: {template_key}")
+        return
+
+    title = template.get('title', '')
+    content = template.get('content', '')
+
+    # 填充模板参数
+    current_time = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')
+    short_current_time = datetime.datetime.now().strftime('%H:%M:%S')
+    host_name = socket.gethostname()
+
+    kwargs.update({
+        'host_name': host_name,
+        'current_time': current_time,
+        'short_current_time': short_current_time,
+    })
+
+    title = title.format(**kwargs)
+    content = content.format(**kwargs)
+    LOGGER.info(f"通知内容: {content}")
+
+    # 获取推送通道
+    push_channel_settings = push_settings.get('push_channel_settings', {})
+    push_channel = push_channel_settings.get('choose', 'ServerChan')
+    serverchan_key = push_channel_settings.get('serverchan_key', '')
+    push_channel_name = push_channel_settings.get('push_channel', '')
+    push_channel_key = push_channel_settings.get('push_channel_key', '')
+
+    retry_settings = push_settings.get('push_error_retry', {})
+    retry_interval_ms = retry_settings.get('retry_interval_ms', 3000)
+    max_retry_count = retry_settings.get('max_retry_count', 3)
+
+    # 推送通知
+    LOGGER.info(f"推送通道: {push_channel}")
+    for attempt in range(1, max_retry_count + 1):
+        try:
+            if push_channel == 'ServerChan':
+                if not serverchan_key:
+                    LOGGER.error("ServerChan 密钥未配置，无法发送通知")
+                    return
+                url = f"https://sc.ftqq.com/{serverchan_key}.send"
+                data = urllib.parse.urlencode({
+                    'text': title,
+                    'desp': content
+                }).encode('utf-8')
+                req = urllib.request.Request(url, data=data)
+                with urllib.request.urlopen(req) as response:
+                    response_data = response.read().decode('utf-8')
+                    LOGGER.info(f"推送成功: {response_data}")
+            elif push_channel == 'OnePush':
+                if not push_channel_key:
+                    LOGGER.error("OnePush 密钥未配置，无法发送通知")
+                    return
+                notifier = get_notifier(push_channel_name)
+                notifier.notify(
+                    title=title, content=content, key=push_channel_key)
+                LOGGER.info(f"通知发送成功: {title}")
+            else:
+                LOGGER.critical(f"推送通道未配置: {push_channel}")
+            break
+        except Exception as e:
+            LOGGER.error(f"通知发送失败 (尝试 {attempt}/{max_retry_count}): {e}")
+            if attempt < max_retry_count:
+                await asyncio.sleep(retry_interval_ms / 1000)
+            else:
+                LOGGER.critical("通知发送失败，已达到最大重试次数。")
+                sys.exit(1)
 
 
 async def monitor_processes():
@@ -756,10 +897,11 @@ async def monitor_processes():
 
     等待指定的进程启动，监视其运行状态，并在进程结束或超时时发送通知。
     """
-    LOGGER.debug("开始执行函数: 监视进程列表")
+    LOGGER.debug("开始执行函数: monitor_processes")
     monitor_settings = CONFIG.get('monitor_settings', {})
     wait_settings = CONFIG.get('wait_process_settings', {})
     external_settings = CONFIG.get('external_program_settings', {})
+    push_settings = CONFIG.get('push_settings', {})
 
     process_name_list = monitor_settings.get('process_name_list', [])
     timeout_warning_interval_ms = monitor_settings.get(
@@ -788,6 +930,14 @@ async def monitor_processes():
     exit_after_external_program = external_settings.get(
         'exit_after_external_program', False)
 
+    enable_external_program_on_wait_timeout = external_settings.get(
+        'enable_external_program_on_wait_timeout', False)
+    external_program_on_wait_timeout_path = external_settings.get(
+        'external_program_on_wait_timeout_path', '')
+
+    enable_push_on_external_program_execution = push_settings.get(
+        'enable_push_on_external_program_execution', False)
+
     LOGGER.debug("初始化监视参数")
     processes = {}
 
@@ -804,7 +954,7 @@ async def monitor_processes():
     try:
         # 等待进程启动
         while True:
-            LOGGER.debug("正在执行: 等待进程启动循环")
+            LOGGER.debug("执行等待进程启动循环")
             waited_time_ns = time.perf_counter_ns() - start_time_ns
             if waited_time_ns // 1_000_000 > max_wait_time_ms:
                 LOGGER.debug("已等待超时，正在尝试发送通知")
@@ -814,7 +964,6 @@ async def monitor_processes():
                 p.pid: p.info for p in psutil.process_iter(
                     ['pid', 'name', 'create_time'])
             }
-            # LOGGER.debug(f"当前进程列表: {current_processes}")
             found_processes = {
                 pid: info for pid, info in current_processes.items()
                 if info['name'] in process_name_list
@@ -830,7 +979,6 @@ async def monitor_processes():
                         'start_time_ns': start_time_offset_ns,
                         'last_warning_time_ns': start_time_offset_ns,
                         'timeout_count': 0,
-                        'another_external_program_executed': False,
                     }
                     LOGGER.info(f"检测到进程启动: {info['name']} (PID: {pid})")
 
@@ -860,7 +1008,7 @@ async def monitor_processes():
     # 超过等待时间或所有进程已启动
     if missing_processes:
         # 超过等待时间且有进程未启动
-        LOGGER.debug("正在执行: 等待进程启动超时报告与推送")
+        LOGGER.debug("执行等待进程启动超时报告与推送")
         waited_time_ns = time.perf_counter_ns() - start_time_ns
         formatted_waited_time = format_time_ns(waited_time_ns)
         for process_name in missing_processes:
@@ -873,6 +1021,29 @@ async def monitor_processes():
                 process_list=list(missing_processes)
             )
             LOGGER.error(f"等待超时，进程未运行: {process_name}")
+
+        # 执行外部程序
+        if enable_external_program_on_wait_timeout:
+            LOGGER.info("等待进程启动超时，正在执行外部程序...")
+            try:
+                run_external_program(external_program_on_wait_timeout_path)
+                LOGGER.info(
+                    f"外部程序 {external_program_on_wait_timeout_path} 执行成功")
+                # 推送通知
+                if enable_push_on_external_program_execution:
+                    await send_notification(
+                        'external_program_execution_notification',
+                        external_program_name=os.path.basename(
+                            external_program_on_wait_timeout_path),
+                        external_program_path=(
+                            external_program_on_wait_timeout_path)
+                    )
+            except Exception as e:
+                LOGGER.error(
+                    f"执行外部程序 {external_program_on_wait_timeout_path} "
+                    f"时发生错误: {e}",
+                    exc_info=True
+                )
     else:
         LOGGER.info("所有监视进程均已启动")
 
@@ -888,7 +1059,7 @@ async def monitor_processes():
     next_loop_time_ns = time.perf_counter_ns()
     try:
         while processes:
-            LOGGER.debug("正在执行: 监视循环")
+            LOGGER.debug("执行监视循环")
             current_time_ns = time.perf_counter_ns()
             current_processes = {
                 p.pid: p.info for p in psutil.process_iter(
@@ -896,12 +1067,9 @@ async def monitor_processes():
             }
             current_pids = set(current_processes.keys())
             monitored_pids = set(processes.keys())
-            # LOGGER.debug(f"当前 PID 集合：{current_pids}")
-            LOGGER.debug(f"当前监视的 PID 集合：{monitored_pids}")
 
             # 检查进程结束
             ended_pids = monitored_pids - current_pids
-            # LOGGER.debug(f"已结束的 PID：{ended_pids}")
             for pid in ended_pids:
                 process_info = processes[pid]
                 process_name = process_info['name']
@@ -919,7 +1087,7 @@ async def monitor_processes():
                         process_name_list, processes, exclude_pid=pid)
                 )
                 LOGGER.info(
-                    f"进程结束: {process_name} (PID: {pid})"
+                    f"进程结束: {process_name} (PID: {pid}) "
                     f"运行时间: {formatted_run_time}"
                 )
 
@@ -931,7 +1099,15 @@ async def monitor_processes():
                     )
                     try:
                         run_external_program(external_program_path)
-                        LOGGER.info(f"成功调用外部程序 {external_program_path} ")
+                        LOGGER.info(f"成功调用外部程序 {external_program_path}")
+                        # 推送通知
+                        if enable_push_on_external_program_execution:
+                            await send_notification(
+                                'external_program_execution_notification',
+                                external_program_name=os.path.basename(
+                                    external_program_path),
+                                external_program_path=external_program_path
+                            )
                     except Exception as e:
                         LOGGER.error(
                             f"调用外部程序 {external_program_path} 时发生错误: {e}",
@@ -984,15 +1160,25 @@ async def monitor_processes():
                             f"正在调用外部程序..."
                         )
                         try:
-                            run_external_program(another_external_program_path)
+                            run_external_program(
+                                another_external_program_path)
                             LOGGER.info(
-                                f"成功调用外部程序 {another_external_program_path} "
+                                f"外部程序 {another_external_program_path} "
+                                f"执行成功"
                             )
+                            # 推送通知
+                            if enable_push_on_external_program_execution:
+                                await send_notification(
+                                    'external_program_execution_notification',
+                                    external_program_name=os.path.basename(
+                                        another_external_program_path),
+                                    external_program_path=(
+                                        another_external_program_path)
+                                )
                             if exit_after_external_program:
                                 LOGGER.critical(
-                                    f"检查到参数 exit_after_external_program "
-                                    f"配置为 {exit_after_external_program} ，"
-                                    f"正在结束运行"
+                                    "参数 exit_after_external_program 配置为 True，"
+                                    "正在结束运行"
                                 )
                                 sys.exit(0)
                         except Exception as e:
@@ -1019,212 +1205,6 @@ async def monitor_processes():
         return
 
 
-def get_other_running_processes(processes, exclude_pid=None):
-    """获取其他正在运行的进程状态。
-
-    Args:
-        processes (dict): 当前监视的进程。
-        exclude_pid (int, optional): 要排除的进程PID。默认为 None。
-
-    Returns:
-        str: 其他正在运行的进程状态。
-    """
-    LOGGER.debug("正在获取: 其他正在运行的进程状态")
-    processes_info = []
-    current_time_ns = time.perf_counter_ns()
-    for pid, info in processes.items():
-        if pid != exclude_pid:
-            run_time_ns = current_time_ns - info['start_time_ns']
-            formatted_run_time = format_time_ns(run_time_ns)
-            processes_info.append(
-                f"{info['name']} (PID: {pid}, 运行时间: {formatted_run_time})"
-            )
-    result = '\n'.join(processes_info) if processes_info else '无'
-    LOGGER.info(f"其他正在运行的进程状态: {result}")
-    return result
-
-
-def get_missing_processes(process_name_list, processes, exclude_pid=None):
-    """获取未运行的进程列表。
-
-    Args:
-        process_name_list (list): 配置的进程名称列表。
-        processes (dict): 当前监视的进程。
-        exclude_pid (int, optional): 要排除的进程PID对应的进程名称。默认为 None。
-
-    Returns:
-        list: 未运行的进程列表。
-    """
-    LOGGER.debug("正在获取: 未运行的进程列表")
-    running_process_names = [
-        info['name'] for pid, info in processes.items() if pid != exclude_pid
-    ]
-    missing_processes = set(process_name_list) - set(running_process_names)
-    result = list(missing_processes)
-    LOGGER.info(f"未运行的进程列表: {result}")
-    return result
-
-
-async def send_notification(template_key, **kwargs):
-    """发送通知。
-
-    Args:
-        template_key (str): 模板键。
-        **kwargs: 模板中使用的变量。
-    """
-    LOGGER.info(f"使用模板: {template_key}推送报告")
-    push_settings = CONFIG.get('push_settings', {})
-    templates = push_settings.get('push_templates', {})
-    template = templates.get(template_key, {})
-
-    # 检查是否启用了该通知
-    if not template.get('enable', True):
-        LOGGER.warning(f"通知推送已被禁用: {template_key}")
-        return
-
-    title = template.get('title', '')
-    content = template.get('content', '')
-
-    # 获取主机名和时间
-    host_name = socket.gethostname()
-    current_time = datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S')
-    short_current_time = datetime.datetime.now().strftime('%H:%M:%S')
-
-    # 格式化内容
-    content = content.format(
-        host_name=host_name,
-        current_time=current_time,
-        short_current_time=short_current_time,
-        **kwargs
-    )
-    LOGGER.info(f"通知内容: {content}")
-
-    # 选择推送渠道
-    push_channel_settings = push_settings.get('push_channel_settings', {})
-    channel = push_channel_settings.get('choose', 'ServerChan')
-    max_retry_count = push_settings.get('push_error_retry', {}).get(
-        'max_retry_count', 3)
-    retry_interval_ms = push_settings.get('push_error_retry', {}).get(
-        'retry_interval_ms', 3000)
-
-    LOGGER.info(f"推送通道: {channel}")
-    for attempt in range(max_retry_count):
-        try:
-            if channel == 'ServerChan':
-                key = push_channel_settings.get('serverchan_key', '')
-                if not key:
-                    LOGGER.error("ServerChan密钥未配置，无法发送通知")
-                    break
-                await asyncio.to_thread(sc_send, title, content, key)
-            elif channel == 'OnePush':
-                notifier_name = push_channel_settings.get('push_channel', '')
-                token = push_channel_settings.get('push_channel_key', '')
-                if not notifier_name or not token:
-                    LOGGER.error("OnePush推送渠道或密钥未配置，无法发送通知")
-                    break
-                await asyncio.to_thread(
-                    onepush_send, notifier_name, token, title, content)
-            LOGGER.info(f"通知发送成功: {title}")
-            break
-        except Exception as e:
-            LOGGER.error(
-                f"通知发送失败 (尝试 {attempt + 1}/{max_retry_count}): {e}")
-            await asyncio.sleep(retry_interval_ms / 1000)
-    else:
-        LOGGER.critical("通知发送失败，已达到最大重试次数。")
-        sys.exit(1)
-
-
-def sc_send(text, desp='', key=''):
-    """ServerChan消息发送处理函数。
-
-    Args:
-        text (str): 消息标题。
-        desp (str): 消息内容。
-        key (str): ServerChan密钥。
-
-    Returns:
-        str: ServerChan 返回的结果。
-    """
-    LOGGER.info("调用 ServerChan 发送通知")
-    postdata = urllib.parse.urlencode({'text': text, 'desp': desp}).encode(
-        'utf-8')
-    url = f'https://sctapi.ftqq.com/{key}.send'
-    req = urllib.request.Request(url, data=postdata, method='POST')
-    with urllib.request.urlopen(req) as response:
-        result = response.read().decode('utf-8')
-    LOGGER.info(f"返回结果: {result}")
-    return result
-
-
-def onepush_send(notifier_name, token, title, content):
-    """OnePush消息发送处理函数。
-
-    Args:
-        notifier_name (str): 推送渠道名称。
-        token (str): 推送渠道密钥。
-        title (str): 消息标题。
-        content (str): 消息内容。
-
-    Returns:
-        str: OnePush 返回的结果。
-    """
-    LOGGER.info(f"调用 OnePush ({notifier_name}) 发送通知")
-    notifier = get_notifier(notifier_name)
-    response = notifier.notify(token=token, title=title, content=content)
-    LOGGER.info(f"返回结果: {response.text}")
-    return response.text
-
-
-def run_external_program(program_path):
-    """执行外部程序，处理可能的异常和平台差异。
-
-    Args:
-        program_path (str): 外部程序的路径。
-
-    Raises:
-        FileNotFoundError: 当外部程序不存在时抛出。
-        Exception: 执行外部程序时发生的其他异常。
-    """
-    LOGGER.info(f"正在检查外部程序是否存在: {program_path}")
-    if not os.path.exists(program_path):
-        LOGGER.error(f"外部程序不存在: {program_path}")
-        raise FileNotFoundError(f"外部程序不存在: {program_path}")
-
-    if platform.system() == 'Windows':
-        LOGGER.debug("正在检查当前操作系统是否为 Windows")
-        try:
-            result = ctypes.windll.shell32.ShellExecuteW(
-                None, 'open', program_path, None, None, 1
-            )
-            if result <= 32:
-                error_message = f"ShellExecuteW 执行失败，错误码：{result}"
-                LOGGER.error(error_message)
-                raise Exception(error_message)
-            LOGGER.debug("外部程序已启动")
-        except Exception as e:
-            LOGGER.error(
-                f"执行外部程序 {program_path} 时发生错误：{e}",
-                exc_info=True
-            )
-            raise
-    else:
-        LOGGER.info("当前操作系统非 Windows")
-        try:
-            if platform.system() == 'Darwin':
-                cmd = ['open', program_path]
-            else:
-                cmd = ['xdg-open', program_path]
-            os.spawnvp(os.P_NOWAIT, cmd[0], cmd)
-            LOGGER.debug("外部程序已启动")
-        except Exception as e:
-            LOGGER.error(
-                f"执行外部程序 {program_path} 时发生错误：{e}",
-                exc_info=True
-            )
-            raise
-
-
 def parse_args():
     """解析命令行参数。
 
@@ -1244,20 +1224,22 @@ def parse_args():
 
 
 def print_info():
-    # 打印版本信息
+    """打印程序的版本和版权信息。"""
     print("\n")
     print("+ " + " Running-Runtime Process Monitoring ".center(80, "="), "+")
     print("||" + "".center(80, " ") + "||")
     print("||" + "本项目使用 GPT AI 与 Claude AI 生成".center(72, " ") + "||")
-    print("||" + "GPT 模型为：o1-preview，Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
+    print("||" + "GPT 模型为：o1-preview，"
+          "Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v2.15.6    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v2.16.5    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
     print("\n")
 
 
 def print_exit_info():
+    """在程序结束时打印信息。"""
     print_info()
     LOGGER.info("程序运行结束")
 
@@ -1287,7 +1269,7 @@ def main():
     try:
         # 加载配置
         CONFIG = load_config(config_file)
-        LOGGER.info("配置已加载")
+        LOGGER.debug("配置已加载")
     except SystemExit:
         LOGGER.critical("程序因缺少关键配置终止运行")
         sys.exit(1)
@@ -1301,7 +1283,7 @@ def main():
 
     try:
         # 运行主监视器
-        LOGGER.info("正在运行主程序")
+        LOGGER.info("初始化结束，正在运行主程序")
         asyncio.run(monitor_processes())
         LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:

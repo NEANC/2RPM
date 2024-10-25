@@ -1,5 +1,6 @@
 monitor_settings:
 # 监视设置
+# - 监视程序相关配置
 
 # 要监视的进程名称列表
   process_name_list:
@@ -7,26 +8,31 @@ monitor_settings:
     - calc.exe
 
 # 超时警告间隔，默认值900000毫秒（15分钟），单位为毫秒
-# 时间换算可通过搜索引擎搜索: 分钟换毫秒工具，也可查看下列公式: 
-# 分钟换算毫秒：分钟×60×1000；例 30分钟换算成毫秒：30×60×1000=1800000
+# - 时间换算可通过搜索引擎搜索: 分钟换毫秒工具，也可查看下列公式: 
+# - 分钟换算毫秒：分钟×60×1000；例 30分钟换算成毫秒：30×60×1000=1800000
   timeout_warning_interval_ms: 900000
 
 # 监视循环间隔，默认值1000毫秒（1秒），单位为毫秒
-# 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: 
-# 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000
+# - 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: 
+# - 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000
   monitor_loop_interval_ms: 1000
 wait_process_settings:
 # 等待进程设置
+# - 配置等待进程启动的相关参数
 
 # 最长等待时间，默认值: 30000毫秒（30秒），单位为毫秒
   max_wait_time_ms: 30000
 
-# 等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒。
-# 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: 
-# 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000
+# 等待进程检查间隔，默认值1000毫秒（1秒），单位为毫秒
+# - 时间换算可通过搜索引擎搜索: 秒换毫秒工具，也可查看下列公式: 
+# - 秒换算毫秒：秒×1000；例 15秒换算成毫秒：15×1000=15000
   wait_process_check_interval_ms: 1000
 push_settings:
 # 推送设置
+# - 包含推送通知的相关配置
+  push_templates:
+# 推送模板配置
+# - 可自定义通知的标题和内容
 
 # 支持的变量如下：
 # 主机名: {host_name}
@@ -38,12 +44,11 @@ push_settings:
 # 进程积累等待时间: {process_wait_time}
 # 正在运行的进程状态列表: {other_running_processes}
 # 进程列表: {process_list}
-
-# 推送模板配置，可自定义通知的标题和内容
-  push_templates:
+# 调用的程序名: {external_program_name}
+# 调用的程序路径: {external_program_path}
 
 # 进程结束通知模板
-# - enable: 是否启用通知，True 为启用，False 为禁用
+# - enable: 是否启用该通知
 # - title: 通知标题
 # - content: 通知内容
     process_end_notification:
@@ -54,7 +59,7 @@ push_settings:
         \n正在运行的进程状态: {other_running_processes}\n\n其他未运行的进程: {process_list}\n\n"
 
 # 进程超时运行警告模板
-# - enable: 是否启用通知，True 为启用，False 为禁用
+# - enable: 是否启用该通知
 # - title: 通知标题
 # - content: 通知内容
     process_timeout_warning:
@@ -65,7 +70,7 @@ push_settings:
         {other_running_processes}\n\n其他未运行的进程: {process_list}\n\n"
 
 # 等待超时未运行报告模板
-# - enable: 是否启用通知，True 为启用，False 为禁用
+# - enable: 是否启用该通知
 # - title: 通知标题
 # - content: 通知内容
     process_wait_timeout_warning:
@@ -74,17 +79,27 @@ push_settings:
       content: "主机: {host_name}\n\n当前时间: {current_time}\n\n进程: {process_name} 超时未运行\n
         \n已等待时间: {process_wait_time}\n\n正在运行的进程状态: {other_running_processes}\n\n其他未运行的进程:
         {process_list}\n\n"
+
+# 外部程序执行通知模板
+# - enable: 是否启用该通知
+# - title: 通知标题
+# - content: 通知内容
+    external_program_execution_notification:
+      enable: false
+      title: 外部程序执行通知
+      content: "主机: {host_name}\n\n当前时间: {current_time}\n\n外部程序已执行:\n\n程序名: {external_program_name}\n
+        \n程序路径: {external_program_path}\n\n"
   push_channel_settings:
 # 推送通道设置
 
-# 请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'。
+# 请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'
     choose: ServerChan
 
 # ServerChan密钥
     serverchan_key: ''
 
 # OnePush推送通道（请查看 https://pypi.org/project/onepush/ 来获得如何使用帮助）
-    push_channel:
+    push_channel: ''
 
 # OnePush推送通道密钥
     push_channel_key: ''
@@ -96,51 +111,69 @@ push_settings:
 
 # 最大重试次数，默认值: 3次
     max_retry_count: 3
+
+# 是否在外部程序执行后推送通知，默认值为 False
+  enable_push_on_external_program_execution: false
 external_program_settings:
 # 外部程序调用设置
 
-# 是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False
+# ============================================================
+
+# 进程结束后是否执行外部程序调用
+# - False 为 不执行，True 为 执行，默认为 False
   enable_external_program_call: false
 
-# 指定当哪一个进程结束后触发外部程序调用，例如: notepad.exe
-# 当程序检测到 'notepad.exe' 结束运行时，会执行外部程序调用
+# 指定进程结束后执行外部程序调用
+# - 当程序检测到 'notepad.exe' 结束运行时，会执行外部程序调用
   trigger_process_name: notepad.exe
 
-# 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\to\your\script.bat
+# 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\end\script.bat
   external_program_path: C:\path\to\your\script.bat
 
+# ============================================================
 
-# 指定一个进程运行超时后触发外部程序调用
-# 是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False
+# 进程运行超时后触发外部程序调用
+# - False 为 不执行，True 为 执行，默认为 False
   enable_another_external_program_on_timeout: false
 
-# 指定当哪一个进程运行超时次数达到阈值时触发外部程序调用，例如: notepad.exe
-# 当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用
+# 指定进程运行超时次数达到阈值时触发外部程序调用
+# - 当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用
   another_trigger_process_name: notepad.exe
 
-# 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\to\another_script.bat
+# 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\timeout\timeout_script.bat
   another_external_program_path: C:\path\to\another_script.bat
 
 # 设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3
   timeout_count_threshold: 3
 
-# 设置触发外部程序调用后是否退出程序，False 为 不退出，True 为 退出，默认值为 False
+# 设置进程运行超时调用外部程序后是否退出程序
+# - False 为 不退出，True 为 退出，默认值为 False
   exit_after_external_program: false
+
+# ============================================================
+
+# 等待进程启动超时后触发外部程序调用
+# - False 为 不执行，True 为 执行，默认为 False
+  enable_external_program_on_wait_timeout: false
+
+# 需要调用的外部程序/BAT脚本的详细路径，例如: - 例如: C:\path\wait_timeout\wait_timeout_script.bat
+  external_program_on_wait_timeout_path: C:\path\to\wait_timeout_script.bat
 log_settings:
 # 日志设置
+# - 配置日志输出的相关参数
 
 # 是否输出日志文件，默认为 False
-# False 为 不输出，True 为 输出
+# - False 为 不输出，True 为 输出
   enable_log_file: false
 
 # 日志输出等级，默认为 INFO
-# 请根据需要进行设置，否则不建议改动
-# DEBUG > INFO > WARNING > ERROR > CRITICAL
+# - 请根据需要进行设置，否则不建议改动
+# - DEBUG > INFO > WARNING > ERROR > CRITICAL
   log_level: INFO
 
 # 日志输出的目录，默认为程序目录下的 'logs' 文件夹
-# 请根据需要进行设置，例如: C:\Path\2RPM\v2\logs
-# 若不需要日志文件输出，请在 'enable_log_file' 中设置为 False
+# - 请根据需要进行设置，例如: C:\Path\2RPM\v2\logs
+# - 若不需要日志文件输出，请将 'enable_log_file' 设置为 False
   log_directory: logs
 
 # 日志最大保存数量，默认值: 15个
