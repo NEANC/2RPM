@@ -108,6 +108,24 @@ external_program_settings:
 
 # 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\to\your\script.bat
   external_program_path: C:\path\to\your\script.bat
+
+
+# 指定一个进程运行超时后触发外部程序调用
+# 是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False
+  enable_another_external_program_on_timeout: false
+
+# 指定当哪一个进程运行超时次数达到阈值时触发外部程序调用，例如: notepad.exe
+# 当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用
+  another_trigger_process_name: notepad.exe
+
+# 需要调用的外部程序/BAT脚本的详细路径，例如: C:\path\to\another_script.bat
+  another_external_program_path: C:\path\to\another_script.bat
+
+# 设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3
+  timeout_count_threshold: 3
+
+# 设置触发外部程序调用后是否退出程序，False 为 不退出，True 为 退出，默认值为 False
+  exit_after_external_program: false
 log_settings:
 # 日志设置
 

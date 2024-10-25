@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.15.3
+- 版本: v2.15.6
 
 ## License
 
@@ -141,7 +141,12 @@ def get_default_config():
         'external_program_settings': CommentedMap({
             'enable_external_program_call': False,
             'trigger_process_name': 'notepad.exe',
-            'external_program_path': 'C:\\path\\to\\your\\script.bat'
+            'external_program_path': 'C:\\path\\to\\your\\script.bat',
+            'enable_another_external_program_on_timeout': False,
+            'another_trigger_process_name': 'notepad.exe',
+            'another_external_program_path': 'C:\\path\\to\\another_script.bat',
+            'timeout_count_threshold': 3,
+            'exit_after_external_program': False
         }),
         'log_settings': CommentedMap({
             'enable_log_file': False,
@@ -306,6 +311,41 @@ def get_default_config():
         before=(
             "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
             "C:\\path\\to\\your\\script.bat"
+        )
+    )
+    config['external_program_settings'].yaml_set_comment_before_after_key(
+        'enable_another_external_program_on_timeout',
+        before=(
+            "\n\n指定一个进程运行超时后触发外部程序调用\n"
+            "是否执行外部程序调用，False 为 不执行，True 为 执行，默认为 False\n"
+        )
+    )
+    config['external_program_settings'].yaml_set_comment_before_after_key(
+        'another_trigger_process_name',
+        before=(
+            "\n指定当哪一个进程运行超时次数达到阈值时触发外部程序调用，"
+            "例如: notepad.exe\n"
+            "当程序检测到 'notepad.exe' 运行超时次数达到阈值时，会执行外部程序调用"
+        )
+    )
+    config['external_program_settings'].yaml_set_comment_before_after_key(
+        'another_external_program_path',
+        before=(
+            "\n需要调用的外部程序/BAT脚本的详细路径，例如: "
+            "C:\\path\\to\\another_script.bat"
+        )
+    )
+    config['external_program_settings'].yaml_set_comment_before_after_key(
+        'timeout_count_threshold',
+        before=(
+            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
+        )
+    )
+    config['external_program_settings'].yaml_set_comment_before_after_key(
+        'exit_after_external_program',
+        before=(
+            "\n设置触发外部程序调用后是否退出程序，"
+            "False 为 不退出，True 为 退出，默认值为 False\n"
         )
     )
 
@@ -695,6 +735,22 @@ def format_time_ns(nanoseconds):
     return formatted_time
 
 
+def run_external_program(program_path):
+    """运行外部程序。
+
+    Args:
+        program_path (str): 外部程序的路径。
+    """
+    LOGGER.info(f"正在调用外部程序: {program_path}")
+    if not os.path.exists(program_path):
+        LOGGER.error(f"外部程序不存在: {program_path}")
+        return
+    try:
+        os.startfile(program_path)
+    except Exception as e:
+        LOGGER.error(f"调用外部程序失败: {e}")
+
+
 async def monitor_processes():
     """监视进程列表。
 
@@ -720,6 +776,17 @@ async def monitor_processes():
         'enable_external_program_call', False)
     trigger_process_name = external_settings.get('trigger_process_name', '')
     external_program_path = external_settings.get('external_program_path', '')
+
+    enable_another_external_program_on_timeout = external_settings.get(
+        'enable_another_external_program_on_timeout', False)
+    another_trigger_process_name = external_settings.get(
+        'another_trigger_process_name', '')
+    another_external_program_path = external_settings.get(
+        'another_external_program_path', '')
+    timeout_count_threshold = external_settings.get(
+        'timeout_count_threshold', 3)
+    exit_after_external_program = external_settings.get(
+        'exit_after_external_program', False)
 
     LOGGER.debug("初始化监视参数")
     processes = {}
@@ -762,6 +829,8 @@ async def monitor_processes():
                         'name': info['name'],
                         'start_time_ns': start_time_offset_ns,
                         'last_warning_time_ns': start_time_offset_ns,
+                        'timeout_count': 0,
+                        'another_external_program_executed': False,
                     }
                     LOGGER.info(f"检测到进程启动: {info['name']} (PID: {pid})")
 
@@ -858,14 +927,14 @@ async def monitor_processes():
                 if (enable_external_program_call and
                         process_name == trigger_process_name):
                     LOGGER.info(
-                        f"检测到进程 {process_name} 结束，正在执行外部程序..."
+                        f"检测到进程 {process_name} 结束，正在调用外部程序..."
                     )
                     try:
                         run_external_program(external_program_path)
-                        LOGGER.info(f"外部程序 {external_program_path} 执行成功")
+                        LOGGER.info(f"成功调用外部程序 {external_program_path} ")
                     except Exception as e:
                         LOGGER.error(
-                            f"执行外部程序 {external_program_path} 时发生错误: {e}",
+                            f"调用外部程序 {external_program_path} 时发生错误: {e}",
                             exc_info=True
                         )
 
@@ -901,6 +970,37 @@ async def monitor_processes():
                         f"已运行超时 {formatted_run_time}"
                     )
                     process_info['last_warning_time_ns'] = current_time_ns
+                    process_info['timeout_count'] += 1
+
+                    # 检查是否需要执行外部程序
+                    if (enable_another_external_program_on_timeout and
+                            process_info['name'] ==
+                            another_trigger_process_name and
+                            process_info['timeout_count'] %
+                            timeout_count_threshold == 0):
+                        LOGGER.info(
+                            f"进程 {process_info['name']} (PID: {pid}) "
+                            f"超时次数达到阈值 {timeout_count_threshold}，"
+                            f"正在调用外部程序..."
+                        )
+                        try:
+                            run_external_program(another_external_program_path)
+                            LOGGER.info(
+                                f"成功调用外部程序 {another_external_program_path} "
+                            )
+                            if exit_after_external_program:
+                                LOGGER.critical(
+                                    f"检查到参数 exit_after_external_program "
+                                    f"配置为 {exit_after_external_program} ，"
+                                    f"正在结束运行"
+                                )
+                                sys.exit(0)
+                        except Exception as e:
+                            LOGGER.error(
+                                f"调用外部程序 {another_external_program_path} "
+                                f"时发生错误: {e}",
+                                exc_info=True
+                            )
 
             if not processes:
                 LOGGER.info("所有进程已结束，程序终止运行。")
@@ -1092,7 +1192,7 @@ def run_external_program(program_path):
         raise FileNotFoundError(f"外部程序不存在: {program_path}")
 
     if platform.system() == 'Windows':
-        LOGGER.info("已确认当前操作系统为 Windows")
+        LOGGER.debug("正在检查当前操作系统是否为 Windows")
         try:
             result = ctypes.windll.shell32.ShellExecuteW(
                 None, 'open', program_path, None, None, 1
@@ -1101,7 +1201,7 @@ def run_external_program(program_path):
                 error_message = f"ShellExecuteW 执行失败，错误码：{result}"
                 LOGGER.error(error_message)
                 raise Exception(error_message)
-            LOGGER.info("外部程序已启动")
+            LOGGER.debug("外部程序已启动")
         except Exception as e:
             LOGGER.error(
                 f"执行外部程序 {program_path} 时发生错误：{e}",
@@ -1145,14 +1245,21 @@ def parse_args():
 
 def print_info():
     # 打印版本信息
+    print("\n")
     print("+ " + " Running-Runtime Process Monitoring ".center(80, "="), "+")
     print("||" + "".center(80, " ") + "||")
     print("||" + "本项目使用 GPT AI 与 Claude AI 生成".center(72, " ") + "||")
     print("||" + "GPT 模型为：o1-preview，Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v2.15.3    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v2.15.6    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
+    print("\n")
+
+
+def print_exit_info():
+    print_info()
+    LOGGER.info("程序运行结束")
 
 
 def main():
@@ -1204,7 +1311,7 @@ def main():
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        LOGGER.info("程序已终止运行")
+        print_exit_info()
 
 
 if __name__ == '__main__':
