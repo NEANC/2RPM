@@ -89,7 +89,8 @@ PS.**请注意：Python 版本 不能低于 3.6**
 - **colorama**: 用于在控制台输出彩色日志。
 - **psutil**: 用于获取和监控系统进程信息。
 - **ruamel.yaml**: 用于处理 YAML 配置文件。
-- **onepush**: 用于发送 OnePush 推送通知。
+- **onepush**: 用于通过 OnePush 发送推送通知。
+- **serverchan_sdk**: 用于通过 ServerChan 发送推送通知。
 
 请按照以下步骤安装依赖库：
 
@@ -113,10 +114,10 @@ PS.**请注意：Python 版本 不能低于 3.6**
    安装完成后，输入以下命令检查是否安装成功：
 
    ```bash
-   pip show psutil colorama ruamel.yaml onepush
+   pip show psutil colorama ruamel.yaml onepush serverchan_sdk
    ```
 
-   如果显示了 `psutil`、`colorama`、`ruamel.yaml`、`onepush` 的版本信息，表示安装成功。
+   如果显示了 `psutil`、`colorama`、`ruamel.yaml`、`onepush`、`serverchan_sdk` 的版本信息，表示安装成功。
 
 ---
 

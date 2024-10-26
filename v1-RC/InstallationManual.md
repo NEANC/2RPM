@@ -65,28 +65,28 @@
 
 ## 3. 安装依赖库
 
-该脚本依赖于 `psutil` 库，请按照以下步骤安装依赖库：
+该脚本依赖于 `psutil` 与 `serverchan_sdk` 库，请按照以下步骤安装依赖库：
 
 1. **打开命令行或终端**
 
    - 按 `Win + R`，输入 `cmd`，然后按回车。
 
-2. **安装 `psutil` 库**
+2. **安装 `psutil` 与 `serverchan_sdk` 库**
 
-   输入以下命令安装 `psutil`：
+   输入以下命令安装 `psutil` 与 `serverchan_sdk`：
 
    ```bash
-   pip install psutil
+   pip install psutil serverchan_sdk
    ```
 
-   如果提示 `pip` 未安装，可以尝试使用 `python -m pip install psutil`。
+   如果提示 `pip` 未安装，可以尝试使用 `python -m pip install psutil serverchan_sdk`。
 
 3. **验证安装**
 
    安装完成后，输入以下命令检查是否安装成功：
 
    ```bash
-   pip show psutil
+   pip show psutil serverchan_sdk
    ```
 
    如果显示了 `psutil` 的版本信息，表示安装成功。

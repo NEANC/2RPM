@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.16.6
+- 版本: v2.16.8
 
 ## License
 
@@ -37,15 +37,13 @@ import asyncio
 import argparse
 import datetime
 import colorama
-import urllib.parse
-import urllib.request
-from io import StringIO
 from pathlib import Path
 from onepush import get_notifier
 from colorama import Back, Fore, Style
 from logging.handlers import RotatingFileHandler
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from serverchan_sdk import sc_send
 
 # 全局变量
 CONFIG = {}
@@ -368,6 +366,16 @@ def apply_comments(config_section, comments_section):
         config_section (CommentedMap): 配置的一个部分。
         comments_section (dict or str): 对应的注释部分。
     """
+    # 删除现有的注释，避免重复
+    if hasattr(config_section, 'ca'):
+        config_section.ca.comment = None
+        for key in config_section:
+            if (
+                hasattr(config_section.ca, 'items') and
+                key in config_section.ca.items
+            ):
+                config_section.ca.items[key] = [None, None, None, None]
+
     if isinstance(comments_section, str):
         # 如果注释是字符串，应用到整个节
         if not config_section.ca.comment:
@@ -377,7 +385,9 @@ def apply_comments(config_section, comments_section):
         if '_comment' in comments_section:
             # 应用节的注释
             if not config_section.ca.comment:
-                config_section.yaml_set_start_comment(comments_section['_comment'])
+                config_section.yaml_set_start_comment(
+                    comments_section['_comment']
+                )
         for key, value in config_section.items():
             if key in comments_section:
                 comment = comments_section[key]
@@ -463,7 +473,9 @@ def load_config(config_file):
     return user_config
 
 
-def check_and_update_config(user_config, default_config, comments_section, parent_key=''):
+def check_and_update_config(user_config, default_config,
+                            comments_section, parent_key=''
+                            ):
     """检查并更新用户配置，添加缺失的参数，并更新注释。
 
     Args:
@@ -525,12 +537,19 @@ def check_and_update_config(user_config, default_config, comments_section, paren
                             key, before=sub_comments_section)
                 else:
                     nested_updated = check_and_update_config(
-                        user_value, default_value, sub_comments_section, full_key)
+                        user_value,
+                        default_value,
+                        sub_comments_section,
+                        full_key
+                    )
                     if nested_updated:
                         updated = True
                     # 应用节的注释
-                    if isinstance(sub_comments_section, dict) and '_comment' in sub_comments_section:
-                        user_value.yaml_set_start_comment(sub_comments_section['_comment'])
+                    if (isinstance(sub_comments_section, dict) and
+                       '_comment' in sub_comments_section):
+                        user_value.yaml_set_start_comment(
+                            sub_comments_section['_comment']
+                        )
             else:
                 # 应用注释
                 if isinstance(sub_comments_section, str):
@@ -842,7 +861,9 @@ async def send_notification(template_key, **kwargs):
 
     title = title.format(**kwargs)
     content = content.format(**kwargs)
-    LOGGER.info(f"通知内容: {content}")
+    LOGGER.info(
+        f"通知标题: {title}\r\n"
+        f"通知内容: {content}")
 
     # 获取推送通道
     push_channel_settings = push_settings.get('push_channel_settings', {})
@@ -863,23 +884,20 @@ async def send_notification(template_key, **kwargs):
                 if not serverchan_key:
                     LOGGER.error("ServerChan 密钥未配置，无法发送通知")
                     return
-                url = f"https://sctapi.ftqq.com/{serverchan_key}.send"
-                data = urllib.parse.urlencode({
-                    'text': title,
-                    'desp': content
-                }).encode('utf-8')
-                req = urllib.request.Request(url, data=data)
-                with urllib.request.urlopen(req) as response:
-                    response_data = response.read().decode('utf-8')
-                    LOGGER.info(f"推送成功: {response_data}")
+                options = {}  # 可根据需要添加额外的选项
+                response = sc_send(serverchan_key, title, content, options)
+                LOGGER.info(f"推送成功: {response}")
             elif push_channel == 'OnePush':
                 if not push_channel_key:
                     LOGGER.error("OnePush 密钥未配置，无法发送通知")
                     return
                 notifier = get_notifier(push_channel_name)
                 notifier.notify(
-                    title=title, content=content, key=push_channel_key)
-                LOGGER.info(f"通知发送成功: {title}")
+                    title=title,
+                    content=content,
+                    key=push_channel_key
+                )
+                LOGGER.info(f"通知发送成功: {response.text}\r\n{title}")
             else:
                 LOGGER.critical(f"推送通道未配置: {push_channel}")
             break
@@ -1155,7 +1173,7 @@ async def monitor_processes():
                             process_info['timeout_count'] %
                             timeout_count_threshold == 0):
                         LOGGER.info(
-                            f"进程 {process_info['name']} (PID: {pid}) "
+                            f"进程 {process_info['name']} (PID: {pid})，\r\n"
                             f"超时次数达到阈值 {timeout_count_threshold}，"
                             f"正在调用外部程序..."
                         )
@@ -1189,7 +1207,7 @@ async def monitor_processes():
                             )
 
             if not processes:
-                LOGGER.info("所有进程已结束，程序终止运行。")
+                LOGGER.info("所有被监视进程已结束运行。")
                 break
 
             # 计算下一次循环的时间点，确保循环间隔精确
@@ -1219,7 +1237,7 @@ def parse_args():
         help="指定配置文件路径，示例 -c C:\\path\\config.yaml"
     )
     args = parser.parse_args()
-    LOGGER.debug(f"命令行参数解析结果: {args}")
+    LOGGER.info(f"命令行参数解析结果: {args}")
     return args
 
 
@@ -1232,7 +1250,7 @@ def print_info():
     print("||" + "GPT 模型为：o1-preview，"
           "Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v2.16.6    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v2.16.8    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
     print("\n")

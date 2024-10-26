@@ -6,7 +6,7 @@
 
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
 
-- 版本: v1.10.1
+- 版本: v1.10.3
 
 ## License
 
@@ -30,10 +30,9 @@ import psutil
 import time
 import os
 import sys
-import urllib.parse
-import urllib.request
 from datetime import datetime
 import logging
+from serverchan_sdk import sc_send as serverchan_sc_send
 
 # ========================= 配置部分 =========================
 
@@ -97,9 +96,12 @@ PROCESS_CHECK_INTERVAL = 1000
 # 'send_no_process_found':
 #   - {hostname}, {current_time}, {process_list}, {wait_time}
 # 'send_process_end':
-#   - {hostname}, {current_time}, {short_current_time}, {process_name}, {process_pid}, {run_time}, {other_processes}, {wait_time}
+#   - {hostname}, {current_time}, {short_current_time},
+#     {process_name}, {process_pid}, {run_time},
+#     {other_processes}, {wait_time}
 # 'send_alert':
-#   - {hostname}, {current_time}, {process_name}, {process_pid}, {total_minutes}, {run_time}
+#   - {hostname}, {current_time}, {process_name},
+#     {process_pid}, {total_minutes}, {run_time}
 
 # 配置通知模板
 NOTIFICATION_TEMPLATES = {
@@ -115,7 +117,8 @@ NOTIFICATION_TEMPLATES = {
     'send_process_end': {
         'title': '进程结束报告',
         'template': (
-            "**{process_name}** (PID: {process_pid})  于 **{short_current_time}** 时运行结束。\n\n"
+            "**{process_name}** (PID: {process_pid}) "
+            "于 **{short_current_time}** 时运行结束。\n\n"
             "**主机**：{hostname}\n\n"
             "**当前时间**：{current_time}\n\n"
             "**等待运行时间**：{wait_time}\n\n"
@@ -127,7 +130,8 @@ NOTIFICATION_TEMPLATES = {
     'send_alert': {
         'title': '进程运行时间超过预期计划',
         'template': (
-            "**注意**：**{process_name}** (PID: {process_pid}) 已运行超过 **{total_minutes}** 分钟。\n\n"
+            "**注意**：**{process_name}** (PID: {process_pid}) "
+            "已运行超过 **{total_minutes}** 分钟。\n\n"
             "**主机**：{hostname}\n\n"
             "**当前时间**：{current_time}\n\n"
             "**已运行时间**：{run_time}"
@@ -149,10 +153,16 @@ logger.setLevel(logging.INFO)  # 设置日志级别
 
 # 日志格式设置
 # 文件日志格式：'%(asctime)s | %(levelname)s │ %(message)s'
-formatter_file = logging.Formatter('%(asctime)s | %(levelname)s │ %(message)s')
+formatter_file = logging.Formatter(
+    '%(asctime)s | %(levelname)s │ %(message)s'
+)
 
-# 控制台日志格式：'%(levelname)s │ %(asctime)s │ %(message)s'，时间格式为 HH:MM:SS.SSS
-formatter_console = logging.Formatter('%(levelname)s │ %(asctime)s.%(msecs)03d │ %(message)s', datefmt='%H:%M:%S')
+# 控制台日志格式：'%(levelname)s │ %(asctime)s │ %(message)s'，
+# 时间格式为 HH:MM:SS.SSS
+formatter_console = logging.Formatter(
+    '%(levelname)s │ %(asctime)s.%(msecs)03d │ %(message)s',
+    datefmt='%H:%M:%S'
+)
 
 # 设置控制台日志处理器
 handler_console = logging.StreamHandler()
@@ -186,7 +196,16 @@ if LOG_TO_FILE:
     logger.info(f"日志将输出到文件：{log_file}")
 
     # 删除过期或超过数量限制的日志文件
-    def clean_old_logs(log_dir, retention_days=LOG_RETENTION_DAYS, max_files=MAX_LOG_FILES):
+    def clean_old_logs(log_dir, retention_days=LOG_RETENTION_DAYS,
+                       max_files=MAX_LOG_FILES):
+        """
+        清理过期或超过数量限制的日志文件。
+
+        Args:
+            log_dir (str): 日志目录路径。
+            retention_days (int): 保留天数。
+            max_files (int): 最大日志文件数量。
+        """
         now = time.time()
         log_files = []
         for filename in os.listdir(log_dir):
@@ -198,7 +217,9 @@ if LOG_TO_FILE:
                 # 删除超过 retention_days 天的日志文件
                 if now - file_modified_time > retention_days * 86400:
                     os.remove(file_path)
-                    logger.info(f"日志清理：删除超过 {retention_days} 天的日志文件: {filename}")
+                    logger.info(
+                        f"日志清理：删除超过 {retention_days} 天的日志文件: {filename}"
+                    )
                     log_files.remove((file_modified_time, file_path))
 
         # 按文件修改时间排序（从最旧到最新）
@@ -209,7 +230,9 @@ if LOG_TO_FILE:
             oldest_file = log_files.pop(0)
             os.remove(oldest_file[1])
             filename = os.path.basename(oldest_file[1])
-            logger.info(f"日志清理：删除超过最大数量限制的日志文件: {filename}")
+            logger.info(
+                f"日志清理：删除超过最大数量限制的日志文件: {filename}"
+            )
 
     clean_old_logs(log_dir)
 else:
@@ -222,7 +245,8 @@ def get_current_time():
     """
     获取当前时间，格式为 'YYYY/MM/DD HH:MM:SS'
 
-    :return: 当前时间的字符串表示
+    Returns:
+        str: 当前时间的字符串表示
     """
     return datetime.now().strftime('%Y/%m/%d %H:%M:%S')
 
@@ -231,7 +255,8 @@ def get_short_current_time():
     """
     获取当前时间的短格式，格式为 'HH:MM:SS'
 
-    :return: 当前时间的短格式字符串表示
+    Returns:
+        str: 当前时间的短格式字符串表示
     """
     return datetime.now().strftime('%H:%M:%S')
 
@@ -240,37 +265,43 @@ def get_hostname():
     """
     获取当前计算机的主机名
 
-    :return: 主机名字符串
+    Returns:
+        str: 主机名字符串
     """
     return os.environ.get("COMPUTERNAME") or os.uname().nodename
 
 
-def sc_send(text, desp='', key=NOTIFICATION_KEY):
+def sc_send(title, desp, key=NOTIFICATION_KEY, options=None):
     """
-    消息发送处理函数，通过 Server 酱发送通知，包含错误重试机制
+    消息发送处理函数，通过 ServerChan 发送通知，包含错误重试机制
 
-    :param text: 通知标题
-    :param desp: 通知内容
-    :param key: 通知密钥
-    :return: 发送结果
+    Args:
+        title (str): 通知标题
+        desp (str): 通知内容
+        key (str): 通知密钥
+        options (dict, optional): 可选参数，如标签等
+
+    Returns:
+        dict: 发送结果
     """
-    postdata = urllib.parse.urlencode({'text': text, 'desp': desp}).encode('utf-8')
-    url = f'https://sctapi.ftqq.com/{key}.send'
-    req = urllib.request.Request(url, data=postdata, method='POST')
+
     attempt = 0
     while attempt < MAX_RETRIES:
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                result = response.read().decode('utf-8')
-            logger.info(f"推送成功：{text}")
-            return result
+            response = serverchan_sc_send(key, title, desp, options or {})
+            logger.info(f"推送成功：{title}")
+            return response
         except Exception as e:
             attempt += 1
-            logger.error(f"推送失败，重试：{attempt}/{MAX_RETRIES}；错误代码: {e}")
+            logger.error(
+                f"推送失败，重试：{attempt}/{MAX_RETRIES}；错误代码: {e}"
+            )
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_INTERVAL_SECONDS)
             else:
-                logger.critical(f"推送失败，已达到最大重试次数：{MAX_RETRIES}次；终止运行。")
+                logger.critical(
+                    f"推送失败，已达到最大重试次数：{MAX_RETRIES}次；终止运行。"
+                )
                 sys.exit(1)  # 终止运行
 
 
@@ -278,8 +309,11 @@ def format_time(seconds):
     """
     将秒数转换为 'HH:MM:SS' 格式
 
-    :param seconds: 时间秒数
-    :return: 格式化后的时间字符串
+    Args:
+        seconds (float): 时间秒数
+
+    Returns:
+        str: 格式化后的时间字符串
     """
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -291,34 +325,48 @@ def get_process_start_times(process_names):
     """
     获取要监视的进程的启动时间和名称
 
-    :param process_names: 要监视的进程名称列表
-    :return: 包含进程信息的字典
+    Args:
+        process_names (list): 要监视的进程名称列表
+
+    Returns:
+        dict: 包含进程信息的字典
     """
     process_start_times = {}
     for proc in psutil.process_iter(['pid', 'name', 'create_time']):
         try:
             if proc.info['name'] in process_names:
                 process_start_times[proc.info['pid']] = {
-                    'create_time': proc.info['create_time'],  # 进程创建时间
-                    'process_name': proc.info['name'],        # 进程名称
-                    'last_alert_interval': 0                  # 用于记录最后一次发送警告的间隔次数
+                    # 进程创建时间
+                    'create_time': proc.info['create_time'],
+                    # 进程名称
+                    'process_name': proc.info['name'],
+                    # 用于记录最后一次发送警告的间隔次数
+                    'last_alert_interval': 0
                 }
-                logger.info(f"监视进程: {proc.info['name']} (PID: {proc.info['pid']})")
+                logger.info(
+                    f"监视进程: {proc.info['name']} (PID: {proc.info['pid']})"
+                )
         except (psutil.NoSuchProcess, psutil.AccessDenied):
-            logger.error(f"无法访问进程: {proc.info['name']} (PID {proc.pid})")
+            logger.error(
+                f"无法访问进程: {proc.info['name']} (PID {proc.pid})"
+            )
             continue
     return process_start_times
 
 
-def send_process_end_notification(ended_process, monitored_processes, key, wait_time, template_info=NOTIFICATION_TEMPLATES['send_process_end']):
+def send_process_end_notification(ended_process, monitored_processes, key,
+                                  wait_time,
+                                  template_info=NOTIFICATION_TEMPLATES[
+                                   'send_process_end']):
     """
     发送进程结束的通知
 
-    :param ended_process: 已结束的进程信息
-    :param monitored_processes: 当前被监视的进程状态
-    :param key: 通知密钥
-    :param wait_time: 等待时间（格式为 'HH:MM:SS'）
-    :param template_info: 通知模板信息
+    Args:
+        ended_process (dict): 已结束的进程信息
+        monitored_processes (dict): 当前被监视的进程状态
+        key (str): 通知密钥
+        wait_time (str): 等待时间（格式为 'HH:MM:SS'）
+        template_info (dict): 通知模板信息
     """
     current_time = get_current_time()
     short_current_time = get_short_current_time()
@@ -329,8 +377,13 @@ def send_process_end_notification(ended_process, monitored_processes, key, wait_
     for pid, proc in monitored_processes.items():
         if pid != ended_process['process_pid']:
             status = "运行中" if proc['running'] else "已结束"
-            other_lines.append(f"- {proc['process_name']} (PID: {pid}) 状态：{status}")
-    other_processes = "\n".join(other_lines) if other_lines else "无其他被监视的进程。"
+            other_lines.append(
+                f"- {proc['process_name']} (PID: {pid}) 状态：{status}"
+            )
+    other_processes = (
+        "\n".join(other_lines)
+        if other_lines else "无其他被监视的进程。"
+    )
 
     # 填充模板
     desp = template_info['template'].format(
@@ -345,19 +398,29 @@ def send_process_end_notification(ended_process, monitored_processes, key, wait_
     )
 
     # 发送通知
-    ret = sc_send(text=template_info['title'], desp=desp, key=key)
-    logger.info(f"推送结束通知: {ended_process['process_name']} (PID: {ended_process['process_pid']})")
+    ret = sc_send(
+        title=template_info['title'],
+        desp=desp,
+        key=key
+    )
+    logger.info(
+        f"推送结束通知: {ended_process['process_name']} "
+        f"(PID: {ended_process['process_pid']})"
+    )
     logger.info(f"推送结果: {ret}")
 
 
-def send_no_process_found_notification(process_names, key, wait_time, template_info=NOTIFICATION_TEMPLATES['send_no_process_found']):
+def send_no_process_found_notification(process_names, key, wait_time,
+                                       template_info=NOTIFICATION_TEMPLATES[
+                                        'send_no_process_found']):
     """
     发送未找到进程的通知并终止脚本
 
-    :param process_names: 未找到的进程名称列表
-    :param key: 通知密钥
-    :param wait_time: 等待时间（格式为 'HH:MM:SS'）
-    :param template_info: 通知模板信息
+    Args:
+        process_names (list): 未找到的进程名称列表
+        key (str): 通知密钥
+        wait_time (str): 等待时间（格式为 'HH:MM:SS'）
+        template_info (dict): 通知模板信息
     """
     current_time = get_current_time()
     hostname = get_hostname()
@@ -375,22 +438,26 @@ def send_no_process_found_notification(process_names, key, wait_time, template_i
     )
 
     # 发送通知
-    ret = sc_send(text=template_info['title'], desp=desp, key=key)
+    ret = sc_send(title=template_info['title'], desp=desp, key=key)
     logger.info("推送通知：未找到进程")
     logger.info(f"推送结果: {ret}")
     sys.exit(0)  # 终止运行
 
 
-def send_alert_notification(process_name, process_pid, run_time_formatted, total_minutes, key, template_info=NOTIFICATION_TEMPLATES['send_alert']):
+def send_alert_notification(process_name, process_pid, run_time_formatted,
+                            total_minutes, key,
+                            template_info=NOTIFICATION_TEMPLATES['send_alert']
+                            ):
     """
     发送运行时间超过指定间隔的警告通知
 
-    :param process_name: 进程名称
-    :param process_pid: 进程PID
-    :param run_time_formatted: 格式化的运行时间
-    :param total_minutes: 总运行分钟数
-    :param key: 通知密钥
-    :param template_info: 通知模板信息
+    Args:
+        process_name (str): 进程名称
+        process_pid (int): 进程PID
+        run_time_formatted (str): 格式化的运行时间
+        total_minutes (int): 总运行分钟数
+        key (str): 通知密钥
+        template_info (dict): 通知模板信息
     """
     current_time = get_current_time()
     hostname = get_hostname()
@@ -406,8 +473,15 @@ def send_alert_notification(process_name, process_pid, run_time_formatted, total
     )
 
     # 发送通知
-    ret = sc_send(text=template_info['title'], desp=desp, key=key)
-    logger.info(f"发送警告通知: {process_name} (PID: {process_pid}) 已运行超过 {total_minutes} 分钟")
+    ret = sc_send(
+        title=template_info['title'],
+        desp=desp,
+        key=key
+    )
+    logger.info(
+        f"发送警告通知: {process_name} (PID: {process_pid}) "
+        f"已运行超过 {total_minutes} 分钟"
+    )
     logger.info(f"通知返回结果: {ret}")
 
 
@@ -415,11 +489,12 @@ def monitor_processes(process_start_times, key):
     """
     监视进程，并记录运行时间
 
-    :param process_start_times: 进程启动时间信息
-    :param key: 通知密钥
+    Args:
+        process_start_times (dict): 进程启动时间信息
+        key (str): 通知密钥
     """
     while True:
-        current_time_epoch = time.time()  # 获取当前时间的时间戳，避免在循环中多次调用
+        current_time_epoch = time.time()  # 获取当前时间的时间戳
         for pid in list(process_start_times.keys()):
             try:
                 proc = psutil.Process(pid)
@@ -431,11 +506,17 @@ def monitor_processes(process_start_times, key):
                 if run_time > ALERT_INTERVAL_SECONDS:
                     # 计算已超过的 ALERT_INTERVAL_SECONDS 次数
                     intervals_passed = int(run_time // ALERT_INTERVAL_SECONDS)
-                    last_notified_interval = process_start_times[pid].get('last_alert_interval', 0)
+                    last_notified_interval = (
+                        process_start_times[pid].get(
+                            'last_alert_interval', 0
+                        )
+                    )
 
                     if intervals_passed > last_notified_interval:
                         run_time_formatted = format_time(run_time)
-                        total_minutes = intervals_passed * (ALERT_INTERVAL_SECONDS // 60)
+                        total_minutes = (
+                            intervals_passed * (ALERT_INTERVAL_SECONDS // 60)
+                        )
                         # 发送警告通知
                         send_alert_notification(
                             process_name=process_name,
@@ -446,13 +527,19 @@ def monitor_processes(process_start_times, key):
                             template_info=NOTIFICATION_TEMPLATES['send_alert']
                         )
                         # 更新已通知的时间
-                        process_start_times[pid]['last_alert_interval'] = intervals_passed
+                        process_start_times[pid]['last_alert_interval'] = (
+                            intervals_passed
+                        )
 
                 # 检查进程是否已结束
-                if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                if (not proc.is_running() or
+                        proc.status() == psutil.STATUS_ZOMBIE):
                     short_current_time = get_short_current_time()
                     run_time_formatted = format_time(run_time)
-                    logger.info(f"进程：{process_name} (PID: {pid}) 已结束运行，运行时间: {run_time_formatted}")
+                    logger.info(
+                        f"进程：{process_name} (PID: {pid}) 已结束运行，"
+                        f"运行时间: {run_time_formatted}"
+                    )
 
                     # 添加到已结束进程信息
                     finished_process = {
@@ -467,10 +554,14 @@ def monitor_processes(process_start_times, key):
                     for other_pid in process_start_times.keys():
                         if other_pid != pid:
                             other_proc_info = process_start_times[other_pid]
-                            other_process_name = other_proc_info['process_name']
+                            other_process_name = other_proc_info[
+                                'process_name']
                             try:
                                 other_proc = psutil.Process(other_pid)
-                                is_running = other_proc.is_running() and other_proc.status() != psutil.STATUS_ZOMBIE
+                                is_running = (
+                                    other_proc.is_running() and
+                                    other_proc.status() != psutil.STATUS_ZOMBIE
+                                )
                             except psutil.NoSuchProcess:
                                 is_running = False
                             monitored_processes_status[other_pid] = {
@@ -484,7 +575,9 @@ def monitor_processes(process_start_times, key):
                         monitored_processes=monitored_processes_status,
                         key=key,
                         wait_time=format_time(SLEEP_INTERVAL / 1000),
-                        template_info=NOTIFICATION_TEMPLATES['send_process_end']
+                        template_info=NOTIFICATION_TEMPLATES[
+                            'send_process_end'
+                        ]
                     )
 
                     # 从监视列表中移除该进程
@@ -493,10 +586,15 @@ def monitor_processes(process_start_times, key):
             except psutil.NoSuchProcess:
                 # 进程已结束
                 process_name = process_start_times[pid]['process_name']
-                run_time = current_time_epoch - process_start_times[pid]['create_time']
+                run_time = current_time_epoch - process_start_times[pid][
+                    'create_time'
+                ]
                 run_time_formatted = format_time(run_time)
                 short_current_time = get_short_current_time()
-                logger.info(f"进程：{process_name} (PID: {pid}) 已结束运行，运行时间: {run_time_formatted}")
+                logger.info(
+                    f"进程：{process_name} (PID: {pid}) 已结束运行，"
+                    f"运行时间: {run_time_formatted}"
+                )
 
                 # 添加到已结束进程信息
                 finished_process = {
@@ -514,7 +612,10 @@ def monitor_processes(process_start_times, key):
                         other_process_name = other_proc_info['process_name']
                         try:
                             other_proc = psutil.Process(other_pid)
-                            is_running = other_proc.is_running() and other_proc.status() != psutil.STATUS_ZOMBIE
+                            is_running = (
+                                other_proc.is_running() and
+                                other_proc.status() != psutil.STATUS_ZOMBIE
+                            )
                         except psutil.NoSuchProcess:
                             is_running = False
                         monitored_processes_status[other_pid] = {
@@ -528,7 +629,9 @@ def monitor_processes(process_start_times, key):
                     monitored_processes=monitored_processes_status,
                     key=key,
                     wait_time=format_time(SLEEP_INTERVAL / 1000),
-                    template_info=NOTIFICATION_TEMPLATES['send_process_end']
+                    template_info=NOTIFICATION_TEMPLATES[
+                        'send_process_end'
+                    ]
                 )
 
                 # 从监视列表中移除该进程
@@ -548,12 +651,14 @@ def monitor_processes(process_start_times, key):
 
 
 def print_info():
-    # 打印版本信息
+    """
+    打印版本信息
+    """
     print("+ " + " Running-Runtime Process Monitoring ".center(80, "="), "+")
     print("||" + "".center(80, " ") + "||")
     print("||" + "本项目使用 GPT AI，GPT 模型为：o1-preview".center(70, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v1.10.1    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v1.10.3    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
 
@@ -580,19 +685,27 @@ def main():
 
             if process_start_times:
                 formatted_wait_time = format_time(wait_time_elapsed)
-                logger.info(f"目标进程已启动，程序继续运行。等待时间：{wait_time_elapsed} 秒")
+                logger.info(
+                    f"目标进程已启动，程序继续运行。等待时间："
+                    f"{wait_time_elapsed} 秒"
+                )
                 break
 
         # 如果仍未找到进程，记录日志并终止程序
         if not process_start_times:
             formatted_wait_time = format_time(wait_time_elapsed)
-            logger.error(f"等待超时，目标进程未启动，程序终止运行。等待时间：{wait_time_elapsed} 秒")
+            logger.error(
+                f"等待超时，目标进程未启动，程序终止运行。"
+                f"等待时间：{wait_time_elapsed} 秒"
+            )
             # 发送通知，指定的进程未运行并终止脚本
             send_no_process_found_notification(
                 PROCESS_NAMES,
                 NOTIFICATION_KEY,
                 wait_time=formatted_wait_time,
-                template_info=NOTIFICATION_TEMPLATES['send_no_process_found']
+                template_info=NOTIFICATION_TEMPLATES[
+                    'send_no_process_found'
+                ]
             )
             sys.exit(0)
 
