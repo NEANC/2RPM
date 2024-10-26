@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.16.5
+- 版本: v2.16.6
 
 ## License
 
@@ -863,7 +863,7 @@ async def send_notification(template_key, **kwargs):
                 if not serverchan_key:
                     LOGGER.error("ServerChan 密钥未配置，无法发送通知")
                     return
-                url = f"https://sc.ftqq.com/{serverchan_key}.send"
+                url = f"https://sctapi.ftqq.com/{serverchan_key}.send"
                 data = urllib.parse.urlencode({
                     'text': title,
                     'desp': content
@@ -1232,7 +1232,7 @@ def print_info():
     print("||" + "GPT 模型为：o1-preview，"
           "Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v2.16.5    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v2.16.6    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
     print("\n")
