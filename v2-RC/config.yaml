@@ -111,9 +111,6 @@ push_settings:
 
 # 最大重试次数，默认值: 3次
     max_retry_count: 3
-
-# 是否在外部程序执行后推送通知，默认值为 False
-  enable_push_on_external_program_execution: false
 external_program_settings:
 # 外部程序调用设置
 

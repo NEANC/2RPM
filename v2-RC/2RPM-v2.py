@@ -7,7 +7,7 @@
     - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
 
-- 版本: v2.16.8
+- 版本: v2.17.0
 
 ## License
 
@@ -168,9 +168,6 @@ COMMENTS = {
             ),
             'max_retry_count': "\n最大重试次数，默认值: 3次",
         },
-        'enable_push_on_external_program_execution': (
-            "\n是否在外部程序执行后推送通知，默认值为 False\n"
-        ),
     },
     'external_program_settings': {
         '_comment': (
@@ -327,7 +324,6 @@ def get_default_config():
                 'retry_interval_ms': 3000,
                 'max_retry_count': 3
             }),
-            'enable_push_on_external_program_execution': False
         }),
         'external_program_settings': CommentedMap({
             'enable_external_program_call': False,
@@ -370,10 +366,8 @@ def apply_comments(config_section, comments_section):
     if hasattr(config_section, 'ca'):
         config_section.ca.comment = None
         for key in config_section:
-            if (
-                hasattr(config_section.ca, 'items') and
-                key in config_section.ca.items
-            ):
+            if (hasattr(config_section.ca, 'items') and
+                    key in config_section.ca.items):
                 config_section.ca.items[key] = [None, None, None, None]
 
     if isinstance(comments_section, str):
@@ -423,7 +417,7 @@ def create_default_config(config_file):
         yaml.preserve_quotes = True
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(default_config, f)
-        LOGGER.info("配置文件创建成功")
+        LOGGER.info(f"配置文件创建成功: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(f"创建配置文件失败: {e}")
         raise
@@ -445,6 +439,9 @@ def load_config(config_file):
     if not os.path.exists(config_file):
         LOGGER.warning(f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
+        LOGGER.info("配置文件已生成，请根据需要修改配置文件后再次运行程序。")
+        input("请按任意键退出...")
+        sys.exit(0)
 
     try:
         yaml = YAML()
@@ -546,7 +543,7 @@ def check_and_update_config(user_config, default_config,
                         updated = True
                     # 应用节的注释
                     if (isinstance(sub_comments_section, dict) and
-                       '_comment' in sub_comments_section):
+                            '_comment' in sub_comments_section):
                         user_value.yaml_set_start_comment(
                             sub_comments_section['_comment']
                         )
@@ -657,7 +654,7 @@ def setup_logging():
             """格式化日志记录。
 
             Args:
-                record: 日志记录对象。
+                record (LogRecord): 日志记录对象。
 
             Returns:
                 str: 格式化后的日志字符串。
@@ -863,7 +860,8 @@ async def send_notification(template_key, **kwargs):
     content = content.format(**kwargs)
     LOGGER.info(
         f"通知标题: {title}\r\n"
-        f"通知内容: {content}")
+        f"通知内容: {content}"
+    )
 
     # 获取推送通道
     push_channel_settings = push_settings.get('push_channel_settings', {})
@@ -952,9 +950,6 @@ async def monitor_processes():
         'enable_external_program_on_wait_timeout', False)
     external_program_on_wait_timeout_path = external_settings.get(
         'external_program_on_wait_timeout_path', '')
-
-    enable_push_on_external_program_execution = push_settings.get(
-        'enable_push_on_external_program_execution', False)
 
     LOGGER.debug("初始化监视参数")
     processes = {}
@@ -1047,15 +1042,6 @@ async def monitor_processes():
                 run_external_program(external_program_on_wait_timeout_path)
                 LOGGER.info(
                     f"外部程序 {external_program_on_wait_timeout_path} 执行成功")
-                # 推送通知
-                if enable_push_on_external_program_execution:
-                    await send_notification(
-                        'external_program_execution_notification',
-                        external_program_name=os.path.basename(
-                            external_program_on_wait_timeout_path),
-                        external_program_path=(
-                            external_program_on_wait_timeout_path)
-                    )
             except Exception as e:
                 LOGGER.error(
                     f"执行外部程序 {external_program_on_wait_timeout_path} "
@@ -1118,14 +1104,6 @@ async def monitor_processes():
                     try:
                         run_external_program(external_program_path)
                         LOGGER.info(f"成功调用外部程序 {external_program_path}")
-                        # 推送通知
-                        if enable_push_on_external_program_execution:
-                            await send_notification(
-                                'external_program_execution_notification',
-                                external_program_name=os.path.basename(
-                                    external_program_path),
-                                external_program_path=external_program_path
-                            )
                     except Exception as e:
                         LOGGER.error(
                             f"调用外部程序 {external_program_path} 时发生错误: {e}",
@@ -1184,15 +1162,6 @@ async def monitor_processes():
                                 f"外部程序 {another_external_program_path} "
                                 f"执行成功"
                             )
-                            # 推送通知
-                            if enable_push_on_external_program_execution:
-                                await send_notification(
-                                    'external_program_execution_notification',
-                                    external_program_name=os.path.basename(
-                                        another_external_program_path),
-                                    external_program_path=(
-                                        another_external_program_path)
-                                )
                             if exit_after_external_program:
                                 LOGGER.critical(
                                     "参数 exit_after_external_program 配置为 True，"
@@ -1250,16 +1219,10 @@ def print_info():
     print("||" + "GPT 模型为：o1-preview，"
           "Claude 模型为: claude-3-5-sonnet".center(72, " ") + "||")
     print("|| " + "".center(78, "-") + " ||")
-    print("||" + "Version: v2.16.8    License: WTFPL".center(80, " ") + "||")
+    print("||" + "Version: v2.17.0    License: WTFPL".center(80, " ") + "||")
     print("||" + "".center(80, " ") + "||")
     print("+ " + "".center(80, "=") + " +")
     print("\n")
-
-
-def print_exit_info():
-    """在程序结束时打印信息。"""
-    print_info()
-    LOGGER.info("程序运行结束")
 
 
 def main():
@@ -1311,7 +1274,9 @@ def main():
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        print_exit_info()
+        print_info()
+        LOGGER.info("程序运行结束")
+        os._exit(0)
 
 
 if __name__ == '__main__':
