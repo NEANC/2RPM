@@ -18,7 +18,7 @@ def get_program_directory():
         str: 程序所在的目录路径。
     """
     if getattr(sys, 'frozen', False):
-        # 如果是被打包的可执行文件
+        # 如果是被打包的可执行文件，使用可执行文件所在目录
         program_dir = os.path.dirname(sys.executable)
     else:
         # 使用主脚本所在目录

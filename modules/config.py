@@ -251,7 +251,7 @@ def get_default_config():
                 'C:\\path\\to\\wait_timeout_script.bat'
         }),
         'log_settings': CommentedMap({
-            'enable_log_file': False,
+            'enable_log_file': True,
             'log_level': 'INFO',
             'log_directory': 'logs',
             'max_log_files': 15,
@@ -364,7 +364,7 @@ def load_config(config_file):
     """
     LOGGER.info(f"正在加载配置文件: {os.path.abspath(config_file)}")
     if not os.path.exists(config_file):
-        LOGGER.warning(f"配置文件不存在: {os.path.abspath(config_file)}")
+        LOGGER.critical(f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
         LOGGER.info("配置文件已生成，请根据需要修改配置文件后再次运行程序。")
         input("请按任意键退出...")

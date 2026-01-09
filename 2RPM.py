@@ -8,7 +8,7 @@
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
     - 该版本使用 TRAE IDE 迭代
 
-- 版本: v3.10.0
+- 版本: v3.12.0
 
 ## License
 
@@ -55,7 +55,7 @@ def print_info():
     print("||" + "".center(60, " ") + "||")
     print("|| " + "".center(58, "-") + " ||")
     print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.10.0    License: WTFPL".center(60, " ") + "||")
+    print("||" + "Version: v3.12.0    License: WTFPL".center(60, " ") + "||")
     print("||" + "".center(60, " ") + "||")
     print("+ " + "".center(60, "=") + " +")
     print("\n")
@@ -86,16 +86,18 @@ def main():
     """
     global CONFIG, LOGGER
 
+    print_info()
+    
     # 初始化基本日志配置
     setup_default_logging()
     LOGGER = logging.getLogger(__name__)
-    print_info()
     LOGGER.info("程序正在初始化...")
 
     # 解析命令行参数
     args = parse_args()
-    # 计算程序根目录（主程序文件所在目录）
-    program_dir = os.path.dirname(os.path.abspath(__file__))
+    # 计算程序根目录（使用当前工作目录）
+    from modules.utils import get_program_directory
+    program_dir = get_program_directory()
     config_file = os.path.join(program_dir, args.config)
 
     try:
