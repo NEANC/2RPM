@@ -1,5 +1,6 @@
 > [!CAUTION]
 > 本项目使用 GPT AI 与 Claude AI 生成，GPT 模型：o1-preview，Claude 模型: claude-3-5-sonnet
+> 
 
 > [!WARNING]
 > 请注意：由 GPT AI 生成的代码可能有：不可预知的风险和错误！
@@ -30,12 +31,8 @@
 
 ### 仅 Windows
 
-请查阅下列列表选择您要使用的版本
+[使用说明](.\InstallationManual.md)
 
-| 版本                                | 备注                                |
-| ----------------------------------- | ----------------------------------- |
-| [v1](.\v1-RC\InstallationManual.md) |                                     |
-| [v2](.\v2-RC\InstallationManual.md) | 引入了 Claude AI 对已知问题进行修复 |
 
 ## License
 
