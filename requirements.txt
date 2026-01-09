@@ -1,0 +1,5 @@
+colorama>=0.4.4
+psutil>=5.9.0
+ruamel.yaml>=0.17.21
+onepush>=1.0.0
+serverchan_sdk>=1.0.6
