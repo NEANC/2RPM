@@ -2,8 +2,12 @@ name: Automatic Build and Release
 
 on:
   push:
+    #branches:
+    #  - v3  # 在 v3 分支上运行
     tags:
       - 'v*.*.*'  # 匹配 vx.xx.xx 格式的标签
+  # 手动触发
+  workflow_dispatch:
 
 jobs:
   build:
