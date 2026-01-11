@@ -33,11 +33,17 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        pyinstaller --onefile --name 2RPM --clean 2RPM.py
+        python -m pyinstaller --onefile --name 2RPM --clean 2RPM.py
     
     - name: Test the build
       run: |
-        .\dist\2RPM.exe --version 2>&1 || echo "Version command not available, but build completed"
+        if (Test-Path -Path ".\dist\2RPM.exe" -PathType Leaf) {
+          Write-Host "Build successful! Executable created at .\dist\2RPM.exe"
+          Get-ChildItem -Path ".\dist"
+        } else {
+          Write-Host "Build failed! Executable not found."
+          Get-ChildItem -Path "." -Recurse | Where-Object { $_.Name -like "*.exe" }
+        }
     
     - name: Create release
       id: create_release
