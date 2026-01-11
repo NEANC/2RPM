@@ -328,6 +328,102 @@ def create_default_config(config_file):
         raise
 
 
+def ms_to_hms(milliseconds):
+    """将毫秒转换为H/M/S格式。
+
+    Args:
+        milliseconds (int): 毫秒数。
+
+    Returns:
+        str: 转换后的H/M/S格式字符串。
+    """
+    total_seconds = milliseconds // 1000
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    if hours > 0:
+        return f"{hours}h"
+    elif minutes > 0:
+        return f"{minutes}m"
+    else:
+        return f"{seconds}s"
+
+
+def migrate_old_config(old_config):
+    """将旧版本配置迁移到新版本配置。
+
+    Args:
+        old_config (dict): 旧版本配置字典。
+
+    Returns:
+        dict: 迁移后的配置字典。
+    """
+    LOGGER.info("正在检查并迁移旧版本配置...")
+    migrated_config = {}
+    
+    # 复制所有原始配置，然后逐步替换需要迁移的项
+    for key, value in old_config.items():
+        if isinstance(value, dict):
+            migrated_config[key] = value.copy()
+        else:
+            migrated_config[key] = value
+    
+    # 处理 monitor_settings
+    if 'monitor_settings' in migrated_config:
+        monitor_settings = migrated_config['monitor_settings']
+        
+        # 处理 process_name_list -> process_name
+        if 'process_name_list' in monitor_settings:
+            process_list = monitor_settings['process_name_list']
+            if isinstance(process_list, list) and process_list:
+                migrated_config['monitor_settings']['process_name'] = process_list[0]
+                LOGGER.info(f"已迁移 process_name_list 到 process_name: {migrated_config['monitor_settings']['process_name']}")
+        elif 'process_name' not in monitor_settings:
+            migrated_config['monitor_settings']['process_name'] = 'notepad.exe'
+        
+        # 处理时间参数
+        if 'timeout_warning_interval_ms' in monitor_settings:
+            migrated_config['monitor_settings']['timeout_warning_interval'] = ms_to_hms(monitor_settings['timeout_warning_interval_ms'])
+            LOGGER.info(f"已迁移 timeout_warning_interval_ms 到 timeout_warning_interval: {migrated_config['monitor_settings']['timeout_warning_interval']}")
+        elif 'timeout_warning_interval' not in monitor_settings:
+            migrated_config['monitor_settings']['timeout_warning_interval'] = '15m'
+        
+        if 'monitor_loop_interval_ms' in monitor_settings:
+            migrated_config['monitor_settings']['monitor_loop_interval'] = ms_to_hms(monitor_settings['monitor_loop_interval_ms'])
+            LOGGER.info(f"已迁移 monitor_loop_interval_ms 到 monitor_loop_interval: {migrated_config['monitor_settings']['monitor_loop_interval']}")
+        elif 'monitor_loop_interval' not in monitor_settings:
+            migrated_config['monitor_settings']['monitor_loop_interval'] = '1s'
+    
+    # 处理 wait_process_settings
+    if 'wait_process_settings' in migrated_config:
+        wait_settings = migrated_config['wait_process_settings']
+        
+        # 处理时间参数
+        if 'max_wait_time_ms' in wait_settings:
+            migrated_config['wait_process_settings']['max_wait_time'] = ms_to_hms(wait_settings['max_wait_time_ms'])
+            LOGGER.info(f"已迁移 max_wait_time_ms 到 max_wait_time: {migrated_config['wait_process_settings']['max_wait_time']}")
+        elif 'max_wait_time' not in wait_settings:
+            migrated_config['wait_process_settings']['max_wait_time'] = '30s'
+        
+        if 'wait_process_check_interval_ms' in wait_settings:
+            migrated_config['wait_process_settings']['wait_process_check_interval'] = ms_to_hms(wait_settings['wait_process_check_interval_ms'])
+            LOGGER.info(f"已迁移 wait_process_check_interval_ms 到 wait_process_check_interval: {migrated_config['wait_process_settings']['wait_process_check_interval']}")
+        elif 'wait_process_check_interval' not in wait_settings:
+            migrated_config['wait_process_settings']['wait_process_check_interval'] = '1s'
+    
+    # 处理 push_settings
+    if 'push_settings' in migrated_config and 'push_error_retry' in migrated_config['push_settings']:
+        push_error_retry = migrated_config['push_settings']['push_error_retry']
+        
+        if 'retry_interval_ms' in push_error_retry:
+            migrated_config['push_settings']['push_error_retry']['retry_interval'] = ms_to_hms(push_error_retry['retry_interval_ms'])
+            LOGGER.info(f"已迁移 retry_interval_ms 到 retry_interval: {migrated_config['push_settings']['push_error_retry']['retry_interval']}")
+        elif 'retry_interval' not in push_error_retry:
+            migrated_config['push_settings']['push_error_retry']['retry_interval'] = '3s'
+    
+    return migrated_config
+
+
 def merge_configs(user_config, default_config):
     """将用户配置合并到默认配置中。
 
@@ -380,11 +476,53 @@ def load_config(config_file):
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
         raise
 
+    # 迁移旧版本配置
+    migrated_config = migrate_old_config(user_config)
+    
+    # 检查是否需要迁移
+    needs_migration = False
+    if 'monitor_settings' in user_config:
+        ms = user_config['monitor_settings']
+        if 'process_name_list' in ms or 'timeout_warning_interval_ms' in ms or 'monitor_loop_interval_ms' in ms:
+            needs_migration = True
+    
+    if 'wait_process_settings' in user_config:
+        ws = user_config['wait_process_settings']
+        if 'max_wait_time_ms' in ws or 'wait_process_check_interval_ms' in ws:
+            needs_migration = True
+    
+    if 'push_settings' in user_config and 'push_error_retry' in user_config['push_settings']:
+        pr = user_config['push_settings']['push_error_retry']
+        if 'retry_interval_ms' in pr:
+            needs_migration = True
+    
     # 加载默认配置
     default_config = get_default_config()
     
-    # 合并用户配置到默认配置中
-    merged_config = merge_configs(user_config, default_config)
+    # 合并迁移后的配置到默认配置中
+    merged_config = merge_configs(migrated_config, default_config)
+    
+    # 如果需要迁移，存档旧配置并写回新配置
+    if needs_migration:
+        # 存档旧配置
+        old_config_file = f"{os.path.splitext(config_file)[0]}.old.v2{os.path.splitext(config_file)[1]}"
+        try:
+            with open(old_config_file, 'w', encoding='utf-8') as f:
+                yaml.dump(user_config, f)
+            LOGGER.info(f"已将旧版本配置存档为: {os.path.abspath(old_config_file)}")
+        except Exception as e:
+            LOGGER.error(f"无法存档旧配置文件: {e}")
+        
+        # 写回迁移后的配置
+        try:
+            yaml = YAML()
+            yaml.indent(mapping=2, sequence=4, offset=2)
+            yaml.preserve_quotes = True
+            with open(config_file, 'w', encoding='utf-8') as f:
+                yaml.dump(merged_config, f)
+            LOGGER.info(f"已将迁移后的配置写回: {os.path.abspath(config_file)}")
+        except Exception as e:
+            LOGGER.error(f"无法写回配置文件: {e}")
     
     # 检查是否有更新
     updated = False
@@ -400,16 +538,11 @@ def load_config(config_file):
             elif isinstance(value, CommentedMap) and isinstance(config.get(key), dict):
                 check_missing_keys(config[key], value, full_key)
     
-    check_missing_keys(user_config, default_config)
+    check_missing_keys(migrated_config if needs_migration else user_config, default_config)
     
-    if updated:
+    if updated and not needs_migration:
         LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
         try:
-            # 删除原配置文件
-            if os.path.exists(config_file):
-                os.remove(config_file)
-                LOGGER.debug(f"已删除原配置文件: {os.path.abspath(config_file)}")
-            
             # 重新创建并写入更新后的配置（包含原有有效配置和新配置的混合）
             yaml = YAML()
             yaml.indent(mapping=2, sequence=4, offset=2)

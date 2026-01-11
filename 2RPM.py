@@ -8,7 +8,7 @@
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
     - 该版本使用 TRAE IDE 迭代
 
-- 版本: v3.12.0
+- 版本: v3.15.0
 
 ## License
 
@@ -37,6 +37,7 @@ import logging
 from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
+from modules.utils import get_program_directory
 
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
@@ -55,7 +56,7 @@ def print_info():
     print("||" + "".center(60, " ") + "||")
     print("|| " + "".center(58, "-") + " ||")
     print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.12.0    License: WTFPL".center(60, " ") + "||")
+    print("||" + "Version: v3.15.0    License: WTFPL".center(60, " ") + "||")
     print("||" + "".center(60, " ") + "||")
     print("+ " + "".center(60, "=") + " +")
     print("\n")
@@ -96,9 +97,14 @@ def main():
     # 解析命令行参数
     args = parse_args()
     # 计算程序根目录（使用当前工作目录）
-    from modules.utils import get_program_directory
     program_dir = get_program_directory()
-    config_file = os.path.join(program_dir, args.config)
+    
+    # 处理配置文件路径，自动添加 .yaml 扩展名（如果没有提供）
+    config_name = args.config
+    if not config_name.endswith('.yaml') and not config_name.endswith('.yml'):
+        config_name += '.yaml'
+    
+    config_file = os.path.join(program_dir, config_name)
 
     try:
         # 加载配置

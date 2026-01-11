@@ -26,7 +26,7 @@
 
 ## 版本信息
 
-版本：v3.12.0  
+版本：v3.15.0  
 状态：Beta
 
 - [`OnePush 库`](https://github.com/y1ndan/onepush)调用未验证

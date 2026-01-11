@@ -8,6 +8,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import colorama
 
+from ruamel.yaml import YAML
 from modules.utils import get_program_directory
 
 LOGGER = logging.getLogger(__name__)
@@ -66,7 +67,6 @@ def setup_default_logging():
             # 尝试读取配置文件以获取日志目录设置
             config_file = os.path.join(program_dir, 'config.yaml')
             if os.path.exists(config_file):
-                from ruamel.yaml import YAML
                 yaml = YAML()
                 with open(config_file, 'r', encoding='utf-8') as f:
                     config = yaml.load(f)
