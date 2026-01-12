@@ -14,6 +14,7 @@ from modules.utils import (
     parse_time_string
 )
 from modules.notification import send_notification
+from modules.config import DEFAULT_VALUES
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,15 +33,15 @@ async def monitor_processes(config):
     external_settings = config.get('external_program_settings', {})
     push_settings = config.get('push_settings', {})
 
-    process_name = monitor_settings.get('process_name', '')
+    process_name = monitor_settings.get('process_name', DEFAULT_VALUES['monitor_settings']['process_name'])
     timeout_warning_interval_ms = parse_time_string(monitor_settings.get(
-        'timeout_warning_interval', '15m'))
+        'timeout_warning_interval', DEFAULT_VALUES['monitor_settings']['timeout_warning_interval']))
     monitor_loop_interval_ms = parse_time_string(monitor_settings.get(
-        'monitor_loop_interval', '1s'))
+        'monitor_loop_interval', DEFAULT_VALUES['monitor_settings']['monitor_loop_interval']))
 
-    max_wait_time_ms = parse_time_string(wait_settings.get('max_wait_time', '30s'))
+    max_wait_time_ms = parse_time_string(wait_settings.get('max_wait_time', DEFAULT_VALUES['wait_process_settings']['max_wait_time']))
     wait_process_check_interval_ms = parse_time_string(wait_settings.get(
-        'wait_process_check_interval', '1s'))
+        'wait_process_check_interval', DEFAULT_VALUES['wait_process_settings']['wait_process_check_interval']))
 
     # 外部程序调用设置
     external_program_path = external_settings.get('external_program_path', '')

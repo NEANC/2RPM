@@ -9,6 +9,7 @@ import sys
 
 from serverchan_sdk import sc_send
 from onepush import get_notifier
+from modules.config import DEFAULT_VALUES
 
 LOGGER = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ async def send_notification(config, template_key, **kwargs):
     push_channel_key = push_channel_settings.get('push_channel_key', '')
 
     retry_settings = push_settings.get('push_error_retry', {})
-    retry_interval_ms = retry_settings.get('retry_interval_ms', 3000)
-    max_retry_count = retry_settings.get('max_retry_count', 3)
+    retry_interval_ms = retry_settings.get('retry_interval_ms', 3000)  # 保留毫秒单位的默认值
+    max_retry_count = retry_settings.get('max_retry_count', DEFAULT_VALUES['push_settings']['push_error_retry']['max_retry_count'])
 
     # 推送通知
     LOGGER.info(f"推送通道: {push_channel}")
