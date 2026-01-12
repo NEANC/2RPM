@@ -1,4 +1,4 @@
-name: Build Executable with Nuitka
+name: 使用 Nuitka 构建并发布
 
 on:
   push:
@@ -25,14 +25,6 @@ jobs:
       - name: Check-out repository
         uses: actions/checkout@v4
 
-      # 提取版本号
-      - name: Extract Version
-        id: extract_version
-        run: |
-          $version = Select-String -Path "2RPM.py" -Pattern "版本: (v[\d\.]+)" | ForEach-Object { $_.Matches.Groups[1].Value }
-          echo "version=$version" >> $env:GITHUB_OUTPUT
-          echo "Extracted version: $version"
-
       # 设置 Python 环境
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -45,7 +37,7 @@ jobs:
       # 安装依赖
       - name: Install Dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       # 使用 Nuitka 编译为可执行文件
@@ -54,7 +46,7 @@ jobs:
         with:
           nuitka-version: main
           script-name: 2RPM.py
-          mode: standalone
+          mode: onefile
           windows-console-mode: force
           assume-yes-for-downloads: true
           follow-imports: true
@@ -66,9 +58,9 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 2RPM_${{ steps.extract_version.outputs.version }}
-          path: build/2RPM.dist/2RPM.exe
-          include-hidden-files: true
+          name: 2RPM-Nuitka-${{ github.ref_name }}
+          path: build/2RPM.exe
+          retention-days: 7
 
       # 检查是否已存在 Release（仅在 tag 触发时）
       - name: Check for existing Release
@@ -122,6 +114,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
-          asset_path: build/2RPM.dist/2RPM.exe
-          asset_name: 2RPM-${{ github.ref_name }}.exe
+          asset_path: build/2RPM.exe
+          asset_name: 2RPM-Nuitka-${{ github.ref_name }}.exe
           asset_content_type: application/octet-stream
