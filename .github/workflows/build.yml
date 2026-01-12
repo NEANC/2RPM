@@ -4,12 +4,17 @@ on:
   push:
     branches: [ v3 ]
     tags:
-      - 'v*'  # 支持版本号标记，例如 v3.20.0
+      - 'v*'  # 版本号标记
+    paths:
+      - '2RPM.py'  # 只在更新 2RPM.py 时触发
   pull_request:
     branches: [ v3 ]
-  release:
-    types: [ published ]  # 当发布新版本时触发
+    paths:
+      - '2RPM.py'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -19,6 +24,14 @@ jobs:
       # 检查代码库
       - name: Check-out repository
         uses: actions/checkout@v4
+
+      # 提取版本号
+      - name: Extract Version
+        id: extract_version
+        run: |
+          $version = Select-String -Path "2RPM.py" -Pattern "版本: (v[\d\.]+)" | ForEach-Object { $_.Matches.Groups[1].Value }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "Extracted version: $version"
 
       # 设置 Python 环境
       - name: Setup Python
@@ -53,15 +66,62 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 2RPM_${{ github.ref_name }}
+          name: 2RPM_${{ steps.extract_version.outputs.version }}
           path: build/2RPM.dist/2RPM.exe
           include-hidden-files: true
 
-      # 当发布新版本或推送标签时，将可执行文件上传到 release
-      - name: Upload to Release
-        if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/2RPM.dist/2RPM.exe
+      # 检查是否已存在 Release（仅在 tag 触发时）
+      - name: Check for existing Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        id: check_release
+        shell: bash  # 强制使用 Bash 解释器
+        run: |
+          release_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" | jq -r '.url')
+          
+          if [ "$release_url" != "null" ]; then
+            echo "Release exists, URL: $release_url"
+            upload_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}" | jq -r '.upload_url')
+            echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 创建 GitHub Release（仅在 tag 触发且 Release 不存在时）
+      - name: Create Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && steps.check_release.outputs.release_exists == 'false'
+        id: create_release
+        uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      # 设置 upload_url（如果 Release 已存在，使用现有 URL）
+      - name: Set upload_url
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        id: set_upload_url
+        shell: bash  # 强制使用 Bash 解释器
+        run: |
+          if [ "${{ steps.check_release.outputs.release_exists }}" == "true" ]; then
+            echo "upload_url=${{ steps.check_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
+          fi
+
+      # 上传 Release 资产（仅在 tag 触发时）
+      - name: Upload Release Asset
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
+          asset_path: build/2RPM.dist/2RPM.exe
+          asset_name: 2RPM-${{ github.ref_name }}.exe
+          asset_content_type: application/octet-stream
