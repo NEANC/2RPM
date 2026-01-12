@@ -53,6 +53,8 @@ jobs:
           include-plugin-directory: modules
           output-dir: build
           include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama
+          no-deployment-flag: self-execution
+          nofollow-import-to: colorama.tests
 
       # 上传编译后的可执行文件
       - name: Upload Artifact
