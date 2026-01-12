@@ -53,13 +53,13 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: 2RPM-Executable
+          name: 2RPM_${{ github.ref_name }}
           path: build/2RPM.dist/2RPM.exe
           include-hidden-files: true
 
-      # 当发布新版本时，将可执行文件上传到 release
+      # 当发布新版本或推送标签时，将可执行文件上传到 release
       - name: Upload to Release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
         uses: softprops/action-gh-release@v2
         with:
           files: build/2RPM.dist/2RPM.exe
