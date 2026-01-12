@@ -8,7 +8,7 @@
     - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
     - 该版本使用 TRAE IDE 迭代
 
-- 版本: v3.20.0
+- 版本: v3.20.2
 
 ## License
 
@@ -56,7 +56,7 @@ def print_info():
     print("||" + "".center(60, " ") + "||")
     print("|| " + "".center(58, "-") + " ||")
     print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.20.0    License: WTFPL".center(60, " ") + "||")
+    print("||" + "Version: v3.20.2    License: WTFPL".center(60, " ") + "||")
     print("||" + "".center(60, " ") + "||")
     print("+ " + "".center(60, "=") + " +")
     print("\n")
