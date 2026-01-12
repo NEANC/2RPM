@@ -1,0 +1,67 @@
+name: Build Executable with Nuitka
+
+on:
+  push:
+    branches: [ v3 ]
+    tags:
+      - 'v*'  # 支持版本号标记，例如 v3.20.0
+  pull_request:
+    branches: [ v3 ]
+  release:
+    types: [ published ]  # 当发布新版本时触发
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      # 检查代码库
+      - name: Check-out repository
+        uses: actions/checkout@v4
+
+      # 设置 Python 环境
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      # 安装依赖
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 使用 Nuitka 编译为可执行文件
+      - name: Build Executable with Nuitka
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: 2RPM.py
+          mode: standalone
+          windows-console-mode: force
+          assume-yes-for-downloads: true
+          follow-imports: true
+          include-plugin-directory: modules
+          output-dir: build
+          include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama
+
+      # 上传编译后的可执行文件
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2RPM-Executable
+          path: build/2RPM.dist/2RPM.exe
+          include-hidden-files: true
+
+      # 当发布新版本时，将可执行文件上传到 release
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/2RPM.dist/2RPM.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
