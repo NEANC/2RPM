@@ -56,6 +56,38 @@ jobs:
             echo "prerelease=true" | tee -a $GITHUB_OUTPUT
           fi
 
+      # 自动生成变更日志
+      - name: Generate Changelog
+        id: generate_changelog
+        run: |
+          echo "=== Generating Changelog ==="
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Get previous tag
+            previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [[ -n "$previous_tag" ]]; then
+              echo "Generating changelog from $previous_tag to ${{ steps.set_tag.outputs.tag }}"
+              git log --oneline "$previous_tag..HEAD" | grep -v "Merge pull request" | head -50 > CHANGELOG.md
+            else
+              echo "First release, no previous tag found"
+              git log --oneline | grep -v "Merge pull request" | head -50 > CHANGELOG.md
+            fi
+          else
+            echo "Generating changelog for development build"
+            git log --oneline --since="1 week ago" | grep -v "Merge pull request" | head -30 > CHANGELOG.md
+          fi
+          
+          # Add header to changelog
+          echo "# Changelog for ${{ steps.set_tag.outputs.tag }}" > temp_changelog.md
+          echo "" >> temp_changelog.md
+          echo "## Changes" >> temp_changelog.md
+          echo "" >> temp_changelog.md
+          cat CHANGELOG.md >> temp_changelog.md
+          mv temp_changelog.md CHANGELOG.md
+          
+          echo "Changelog generated:"
+          cat CHANGELOG.md
+          echo "===================="
+
       # 更新版本号
       - name: Update version in 2RPM.py
         run: |
@@ -218,88 +250,62 @@ jobs:
 
   # 发布步骤
   release:
+    name: Publish Release
     needs: [prepare, build-nuitka, build-pyinstaller]
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     steps:
-      # 检查代码库
-      - name: Check-out repository
-        uses: actions/checkout@v4
-
-      # 下载 Nuitka 构建的 artifact
-      - name: Download Nuitka artifact
+      # 下载所有构建产物
+      - name: Download artifacts from GitHub
         uses: actions/download-artifact@v4
         with:
-          name: 2RPM-Nuitka-${{ needs.prepare.outputs.tag }}
-          path: build
+          path: assets
 
-      # 下载 PyInstaller 构建的 artifact
-      - name: Download PyInstaller artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}
-          path: dist
-
-      # 检查是否已存在 Release
-      - name: Check for existing Release
-        id: check_release
-        shell: bash  # 强制使用 Bash 解释器
+      # 整理和清理文件
+      - name: Clean up files
         run: |
-          release_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.prepare.outputs.tag }}" | jq -r '.url')
+          # 检查并创建必要的目录
+          mkdir -p release
           
-          if [ "$release_url" != "null" ]; then
-            echo "Release exists, URL: $release_url"
-            upload_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.prepare.outputs.tag }}" | jq -r '.upload_url')
-            echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
-            echo "release_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "release_exists=false" >> $GITHUB_OUTPUT
+          # 移动和重命名 Nuitka 构建产物
+          if [ -d "assets/2RPM-Nuitka-${{ needs.prepare.outputs.tag }}" ]; then
+            cp -f "assets/2RPM-Nuitka-${{ needs.prepare.outputs.tag }}/2RPM.exe" "release/2RPM-Nuitka-${{ needs.prepare.outputs.tag }}.exe"
           fi
+          
+          # 移动和重命名 PyInstaller 构建产物
+          if [ -d "assets/2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}" ]; then
+            cp -f "assets/2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}/2RPM.exe" "release/2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}.exe"
+          fi
+          
+          # 复制变更日志
+          if [ -f "assets/updated-code/CHANGELOG.md" ]; then
+            cp -f "assets/updated-code/CHANGELOG.md" "release/CHANGELOG.md"
+          fi
+          
+          # 清理临时目录
+          rm -rf assets
+        shell: bash
 
-      # 创建 GitHub Release（仅在 Release 不存在时）
-      - name: Create Release
-        if: steps.check_release.outputs.release_exists == 'false'
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 发布 Release
+      - name: Publish release to GitHub
+        uses: softprops/action-gh-release@v2.5.0
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
-          release_name: Release ${{ needs.prepare.outputs.tag }}
-          draft: false
-          prerelease: ${{ needs.prepare.outputs.prerelease || false }}
+          name: Release ${{ needs.prepare.outputs.tag }}
+          body_path: release/CHANGELOG.md
+          files: |
+            release/*.exe
+            release/CHANGELOG.md
+          prerelease: ${{ needs.prepare.outputs.prerelease != 'false' }}
+          # 为非预发布版本添加 latest 标签
+          tag_names: ${{ needs.prepare.outputs.prerelease == 'false' && 'latest' || '' }}
 
-      # 设置 upload_url（如果 Release 已存在，使用现有 URL）
-      - name: Set upload_url
-        id: set_upload_url
-        shell: bash  # 强制使用 Bash 解释器
-        run: |
-          if [ "${{ steps.check_release.outputs.release_exists }}" == "true" ]; then
-            echo "upload_url=${{ steps.check_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
-          else
-            echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
-          fi
-
-      # 上传 Nuitka 编译的可执行文件作为 Release 资产
-      - name: Upload Nuitka Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 失败时创建 issue
+      - name: Create issue on failure
+        if: failure()
+        uses: actions-cool/issues-helper@v3
         with:
-          upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
-          asset_path: build/2RPM.exe
-          asset_name: 2RPM-Nuitka-${{ needs.prepare.outputs.tag }}.exe
-          asset_content_type: application/octet-stream
-
-      # 上传 PyInstaller 打包的可执行文件作为 Release 资产
-      - name: Upload PyInstaller Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
-          asset_path: dist/2RPM.exe
-          asset_name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}.exe
-          asset_content_type: application/octet-stream
+          actions: "create-issue"
+          title: "Errors occurred during release ${{ needs.prepare.outputs.tag }}"
+          body: |
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
