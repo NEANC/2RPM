@@ -21,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def print_info():
-    """打印程序的版本和版权信息。"""
+    """打印程序的版本和版权信息，发版前手动修改。"""
     print("\n")
     print("+ " + " Running-Runtime Process Monitoring ".center(60, "="), "+")
     print("||" + "".center(60, " ") + "||")

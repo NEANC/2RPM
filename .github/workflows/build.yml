@@ -84,14 +84,40 @@ jobs:
           name: updated-code
           path: .
 
-      # 设置 Python 环境
+      # 检查当前 Python 版本
+      - name: Check Python
+        id: check_python
+        shell: bash
+        run: |
+          # 检查 Python 版本
+          PYTHON_VERSION=$(python --version 2>&1 || python3 --version 2>&1)
+          echo "Detected Python version: $PYTHON_VERSION"
+          
+          if echo "$PYTHON_VERSION" | grep -i "python 3\.12"; then
+            echo "python_version=3.12" >> $GITHUB_OUTPUT
+            echo "skip_setup=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_setup=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 设置 Python 环境（仅当当前版本不是 3.12 时）
       - name: Setup Python
+        if: steps.check_python.outputs.skip_setup != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: 'x64'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
+
+      # 缓存依赖
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-nuitka-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-nuitka-
 
       # 安装依赖
       - name: Install Dependencies
@@ -135,14 +161,40 @@ jobs:
           name: updated-code
           path: .
 
-      # 设置 Python 环境
+      # 检查当前 Python 版本
+      - name: Check Python
+        id: check_python
+        shell: bash
+        run: |
+          # 检查 Python 版本
+          PYTHON_VERSION=$(python --version 2>&1 || python3 --version 2>&1)
+          echo "Detected Python version: $PYTHON_VERSION"
+          
+          if echo "$PYTHON_VERSION" | grep -i "python 3\.12"; then
+            echo "python_version=3.12" >> $GITHUB_OUTPUT
+            echo "skip_setup=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_setup=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 设置 Python 环境（仅当当前版本不是 3.12 时）
       - name: Setup Python
+        if: steps.check_python.outputs.skip_setup != 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           architecture: 'x64'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
+
+      # 缓存依赖
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-pyinstaller-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-pyinstaller-
 
       # 安装依赖
       - name: Install Dependencies
@@ -251,11 +303,3 @@ jobs:
           asset_path: dist/2RPM.exe
           asset_name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}.exe
           asset_content_type: application/octet-stream
-
-  # 调用缓存清理工作流
-  cleanup:
-    needs: [prepare, build-nuitka, build-pyinstaller, release]
-    if: always()
-    uses: ./.github/workflows/deleting-cache.yml
-    with:
-      branch: ${{ github.ref }}
