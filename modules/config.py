@@ -606,7 +606,7 @@ def load_config(config_file):
     
     if is_old_version:
         # 旧版本配置，进行迁移
-        LOGGER.info("检测到旧版本配置，开始迁移...")
+        LOGGER.warning("检测到 v2 版本配置文件")
         # 迁移旧版本配置
         migrated_config = migrate_old_config(user_config)
         
@@ -629,12 +629,12 @@ def load_config(config_file):
             yaml.preserve_quotes = True
             with open(config_file, 'w', encoding='utf-8') as f:
                 yaml.dump(merged_config, f)
-            LOGGER.info(f"已将迁移后的配置写回: {os.path.abspath(config_file)}")
+            LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
             LOGGER.error(f"无法写回配置文件: {e}")
     else:
         # 新版本配置，检查参数缺失
-        LOGGER.info("检测到新版本配置，检查参数缺失...")
+        LOGGER.info("正在检查配置信息是否缺失")
         # 合并用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)
         
@@ -642,6 +642,7 @@ def load_config(config_file):
         updated = False
         
         def check_missing_keys(config, default, parent_key=''):
+            LOGGER.warning("检查到配置信息存在缺失")
             nonlocal updated
             for key, value in default.items():
                 full_key = f"{parent_key}.{key}" if parent_key else key
@@ -661,7 +662,7 @@ def load_config(config_file):
                 yaml.preserve_quotes = True
                 with open(config_file, 'w', encoding='utf-8') as f:
                     yaml.dump(merged_config, f)
-                LOGGER.info(f"已完成配置文件无缝迁移: {os.path.abspath(config_file)}")
+                LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
             except Exception as e:
                 LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
 

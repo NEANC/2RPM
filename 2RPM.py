@@ -1,33 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-# Running-Runtime Process Monitoring
-
-    - 本项目使用 GPT AI 生成，GPT 模型: o1-preview
-    - 本项目使用 Claude AI 生成，Claude 模型: claude-3-5-sonnet
-    - 该版本使用 TRAE IDE 迭代
-
-- 版本: v3.20.2
-
-## License
-
-            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-                    Version 2, December 2004
-
- Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
-
- Everyone is permitted to copy and distribute verbatim or modified
- copies of this license document, and changing it is allowed as long
- as the name is changed.
-
-            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
-   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
-
-  0. You just DO WHAT THE FUCK YOU WANT TO.
-
-"""
-
 import os
 import sys
 import argparse
@@ -48,7 +21,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def print_info():
-    """打印程序的版本和版权信息。"""
+    """打印程序的版本和版权信息，发版前手动修改。"""
     print("\n")
     print("+ " + " Running-Runtime Process Monitoring ".center(60, "="), "+")
     print("||" + "".center(60, " ") + "||")
@@ -56,7 +29,7 @@ def print_info():
     print("||" + "".center(60, " ") + "||")
     print("|| " + "".center(58, "-") + " ||")
     print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.20.2    License: WTFPL".center(60, " ") + "||")
+    print("||" + "Version: v3.20.3    License: WTFPL".center(60, " ") + "||")
     print("||" + "".center(60, " ") + "||")
     print("+ " + "".center(60, "=") + " +")
     print("\n")

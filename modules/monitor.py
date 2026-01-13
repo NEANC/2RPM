@@ -27,7 +27,6 @@ async def monitor_processes(config):
     Args:
         config (dict): 配置信息。
     """
-    LOGGER.debug("开始执行函数: monitor_processes")
     monitor_settings = config.get('monitor_settings', {})
     wait_settings = config.get('wait_process_settings', {})
     external_settings = config.get('external_program_settings', {})

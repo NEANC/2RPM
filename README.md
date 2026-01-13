@@ -24,9 +24,8 @@
 
 ---
 
-## 版本信息
+## V3 版本信息
 
-版本：v3.20.2  
 状态：Beta
 
 - [`OnePush 库`](https://github.com/y1ndan/onepush)调用未验证

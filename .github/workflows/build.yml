@@ -1,0 +1,305 @@
+name: 统一构建并发布
+
+on:
+  push:
+    branches: [ v3 ]
+    tags:
+      - 'v*'  # 版本号标记
+    paths:
+      - '2RPM.py'  # 只在更新 2RPM.py 时触发
+  pull_request:
+    branches: [ v3 ]
+    paths:
+      - '2RPM.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  # 准备步骤，用于代码检出、版本控制和版本号更新
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      ref_name: ${{ github.ref_name }}
+      tag: ${{ steps.set_tag.outputs.tag }}
+      prerelease: ${{ steps.set_pre.outputs.prerelease }}
+    steps:
+      # 检查代码库
+      - name: Check-out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 确保能获取所有标签
+
+      # 设置版本标签
+      - name: Set tag
+        id: set_tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # For tag pushes, use the tag name
+            tag="${{ github.ref_name }}"
+          else
+            # For PRs and branch pushes, use git describe or fallback
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null || echo "v0.0.1-$(git rev-parse --short HEAD)")
+          fi
+          echo "tag=${tag}" | tee -a $GITHUB_OUTPUT
+
+      # 检查是否为预发布版本
+      - name: Check if it is a pre-release
+        id: set_pre
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [[ '${{ steps.set_tag.outputs.tag }}' =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" | tee -a $GITHUB_OUTPUT
+          else
+            echo "prerelease=true" | tee -a $GITHUB_OUTPUT
+          fi
+
+      # 更新版本号
+      - name: Update version in 2RPM.py
+        run: |
+          tag="${{ steps.set_tag.outputs.tag }}"
+          sed -i "s/Version: v[0-9]\+\.[0-9]\+\.[0-9]\+/Version: $tag/g" 2RPM.py
+          echo "Updated version to $tag in 2RPM.py"
+          cat 2RPM.py | grep "Version:"
+
+      # 上传更新后的代码作为 artifact
+      - name: Upload updated code
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-code
+          path: .
+          retention-days: 7
+
+  # Nuitka 构建
+  build-nuitka:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      # 下载更新后的代码
+      - name: Download updated code
+        uses: actions/download-artifact@v4
+        with:
+          name: updated-code
+          path: .
+
+      # 检查当前 Python 版本
+      - name: Check Python
+        id: check_python
+        shell: bash
+        run: |
+          # 检查 Python 版本
+          PYTHON_VERSION=$(python --version 2>&1 || python3 --version 2>&1)
+          echo "Detected Python version: $PYTHON_VERSION"
+          
+          if echo "$PYTHON_VERSION" | grep -i "python 3\.12"; then
+            echo "python_version=3.12" >> $GITHUB_OUTPUT
+            echo "skip_setup=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_setup=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 设置 Python 环境（仅当当前版本不是 3.12 时）
+      - name: Setup Python
+        if: steps.check_python.outputs.skip_setup != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      # 缓存依赖
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-nuitka-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-nuitka-
+
+      # 安装依赖
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 使用 Nuitka 编译为可执行文件
+      - name: Build Executable with Nuitka
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: 2RPM.py
+          mode: onefile
+          windows-console-mode: force
+          assume-yes-for-downloads: true
+          follow-imports: true
+          include-plugin-directory: modules
+          output-dir: build
+          include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama
+          no-deployment-flag: self-execution
+          nofollow-import-to: '*.tests'
+
+      # 上传 Nuitka 编译的可执行文件作为 artifact
+      - name: Upload Nuitka artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2RPM-Nuitka-${{ needs.prepare.outputs.tag }}
+          path: build/2RPM.exe
+          retention-days: 7
+
+  # PyInstaller 构建
+  build-pyinstaller:
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      # 下载更新后的代码
+      - name: Download updated code
+        uses: actions/download-artifact@v4
+        with:
+          name: updated-code
+          path: .
+
+      # 检查当前 Python 版本
+      - name: Check Python
+        id: check_python
+        shell: bash
+        run: |
+          # 检查 Python 版本
+          PYTHON_VERSION=$(python --version 2>&1 || python3 --version 2>&1)
+          echo "Detected Python version: $PYTHON_VERSION"
+          
+          if echo "$PYTHON_VERSION" | grep -i "python 3\.12"; then
+            echo "python_version=3.12" >> $GITHUB_OUTPUT
+            echo "skip_setup=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip_setup=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 设置 Python 环境（仅当当前版本不是 3.12 时）
+      - name: Setup Python
+        if: steps.check_python.outputs.skip_setup != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: 'requirements.txt'
+
+      # 缓存依赖
+      - name: Cache dependencies
+        uses: actions/cache@v5
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: ${{ runner.os }}-pip-pyinstaller-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-pyinstaller-
+
+      # 安装依赖
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      # 打包可执行文件（PyInstaller）
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller 2RPM.spec --noconfirm
+
+      # 上传 PyInstaller 打包的可执行文件作为 artifact
+      - name: Upload PyInstaller artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}
+          path: dist/2RPM.exe
+          retention-days: 7
+
+  # 发布步骤
+  release:
+    needs: [prepare, build-nuitka, build-pyinstaller]
+    runs-on: windows-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    steps:
+      # 检查代码库
+      - name: Check-out repository
+        uses: actions/checkout@v4
+
+      # 下载 Nuitka 构建的 artifact
+      - name: Download Nuitka artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 2RPM-Nuitka-${{ needs.prepare.outputs.tag }}
+          path: build
+
+      # 下载 PyInstaller 构建的 artifact
+      - name: Download PyInstaller artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}
+          path: dist
+
+      # 检查是否已存在 Release
+      - name: Check for existing Release
+        id: check_release
+        shell: bash  # 强制使用 Bash 解释器
+        run: |
+          release_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.prepare.outputs.tag }}" | jq -r '.url')
+          
+          if [ "$release_url" != "null" ]; then
+            echo "Release exists, URL: $release_url"
+            upload_url=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ needs.prepare.outputs.tag }}" | jq -r '.upload_url')
+            echo "upload_url=$upload_url" >> $GITHUB_OUTPUT
+            echo "release_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "release_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # 创建 GitHub Release（仅在 Release 不存在时）
+      - name: Create Release
+        if: steps.check_release.outputs.release_exists == 'false'
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          release_name: Release ${{ needs.prepare.outputs.tag }}
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.prerelease || false }}
+
+      # 设置 upload_url（如果 Release 已存在，使用现有 URL）
+      - name: Set upload_url
+        id: set_upload_url
+        shell: bash  # 强制使用 Bash 解释器
+        run: |
+          if [ "${{ steps.check_release.outputs.release_exists }}" == "true" ]; then
+            echo "upload_url=${{ steps.check_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "upload_url=${{ steps.create_release.outputs.upload_url }}" >> $GITHUB_OUTPUT
+          fi
+
+      # 上传 Nuitka 编译的可执行文件作为 Release 资产
+      - name: Upload Nuitka Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
+          asset_path: build/2RPM.exe
+          asset_name: 2RPM-Nuitka-${{ needs.prepare.outputs.tag }}.exe
+          asset_content_type: application/octet-stream
+
+      # 上传 PyInstaller 打包的可执行文件作为 Release 资产
+      - name: Upload PyInstaller Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.set_upload_url.outputs.upload_url }}
+          asset_path: dist/2RPM.exe
+          asset_name: 2RPM-PyInstaller-${{ needs.prepare.outputs.tag }}.exe
+          asset_content_type: application/octet-stream
