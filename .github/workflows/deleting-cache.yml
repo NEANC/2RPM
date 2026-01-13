@@ -1,0 +1,41 @@
+name: 清理 caches
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        required: false
+        type: string
+        default: ${{ github.ref }}
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup caches
+        run: |
+          echo "Fetching list of cache keys"
+          
+          # 定义要清理的缓存模板
+          cacheTemplates=("nuitka-caching-Windows" "setup-python-Windows")
+          
+          for template in "${cacheTemplates[@]}"; do
+            echo "Processing template: $template"
+            # 获取匹配模板的缓存
+            cacheKeys=$(gh cache list --limit 100 --json id,key --jq "select(.key | startswith(\"$template\")) | .id")
+            
+            # 设置不使工作流在删除缓存键时失败
+            set +e
+            echo "Deleting caches for template: $template..."
+            for cacheKey in $cacheKeys; do
+              echo "Deleting cache: $cacheKey"
+              gh cache delete $cacheKey
+            done
+            echo "Done processing template: $template"
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
