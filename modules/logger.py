@@ -236,22 +236,22 @@ def setup_logging(config):
                     # 将默认日志内容写入新的日志文件开头
                     with open(log_file, 'w', encoding='utf-8') as f:
                         f.write(default_log_content)
-                    LOGGER.info("已将初始化日志合并到主日志文件")
+                    LOGGER.info("已将初始化日志合并")
                 # 尝试删除默认日志文件，最多尝试3次
                 max_attempts = 3
                 for attempt in range(max_attempts):
                     try:
                         os.remove(default_log_file)
-                        LOGGER.info("已删除临时默认日志文件")
+                        LOGGER.debug("已删除临时日志文件")
                         break
                     except Exception as e:
                         if attempt < max_attempts - 1:
-                            LOGGER.warning(f"删除默认日志文件失败，{max_attempts - attempt - 1} 次尝试后重试: {e}")
+                            LOGGER.warning(f"删除临时日志文件失败，{max_attempts - attempt - 1} 次尝试后重试: {e}")
                             time.sleep(0.5)
                         else:
-                            LOGGER.warning(f"处理默认日志文件时出错: {e}")
+                            LOGGER.warning(f"处理临时日志文件时出错: {e}")
             except Exception as e:
-                LOGGER.warning(f"处理默认日志文件时出错: {e}")
+                LOGGER.warning(f"处理临时日志文件时出错: {e}")
 
         # 创建文件处理器
         file_handler = RotatingFileHandler(
@@ -272,9 +272,9 @@ def setup_logging(config):
         if os.path.exists(default_log_file):
             try:
                 os.remove(default_log_file)
-                LOGGER.info("已删除临时默认日志文件")
+                LOGGER.info("已删除临时日志文件")
             except Exception as e:
-                LOGGER.warning(f"删除默认日志文件时出错: {e}")
+                LOGGER.warning(f"删除临时日志文件时出错: {e}")
         LOGGER.info("日志文件输出已禁用")
 
 
@@ -285,7 +285,6 @@ def clean_logs(log_dir, config):
         log_dir (str): 日志目录。
         config (dict): 配置信息。
     """
-    LOGGER.debug("开始执行函数: clean_logs")
     log_config = config.get('log_settings', {})
     max_days = log_config.get('log_retention_days', 3)
     max_files = log_config.get('max_log_files', 15)
@@ -296,8 +295,8 @@ def clean_logs(log_dir, config):
     for file_path in files:
         if now - file_path.stat().st_mtime > max_days * 86400:
             try:
+                LOGGER.info(f"正在清理过期的日志文件: {file_path}")
                 file_path.unlink()
-                LOGGER.info(f"删除过期的日志文件: {file_path}")
             except Exception as e:
                 LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
 
@@ -305,7 +304,7 @@ def clean_logs(log_dir, config):
     if len(files) > max_files:
         for file_path in files[:len(files) - max_files]:
             try:
+                LOGGER.info(f"正在清理大于 {max_files} 的日志文件: {file_path}")
                 file_path.unlink()
-                LOGGER.info(f"删除多余的日志文件: {file_path}")
             except Exception as e:
                 LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
