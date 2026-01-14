@@ -138,6 +138,7 @@ def parse_time_string(time_str):
     LOGGER.debug(f"解析时间字符串: {time_str}")
     time_str = time_str.strip()
     if not time_str:
+        LOGGER.error("时间字符串不能为空")
         raise ValueError("时间字符串不能为空")
     
     units = {
@@ -159,4 +160,5 @@ def parse_time_string(time_str):
             LOGGER.debug(f"直接解析为毫秒: {milliseconds}")
             return milliseconds
         except ValueError:
-            raise ValueError(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s' 格式")
+            LOGGER.error(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
+            raise ValueError(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
