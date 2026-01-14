@@ -67,20 +67,30 @@ jobs:
             previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
             if [[ -n "$previous_tag" ]]; then
               echo "Generating changelog from $previous_tag to ${{ steps.set_tag.outputs.tag }}"
-              git log --oneline "$previous_tag..HEAD" | grep -v "Merge pull request" | head -50 > CHANGELOG.md
+              # 获取完整的提交列表
+              git log --oneline "$previous_tag..HEAD" | grep -v "Merge pull request" > full_commits.txt
+              # 计算提交数量
+              total_commits=$(wc -l < full_commits.txt)
+              # 只取前15个提交
+              head -15 full_commits.txt > CHANGELOG.md
+              # 如果提交数量超过15个，添加Full Changelog链接
+              if [[ $total_commits -gt 15 ]]; then
+                echo "" >> CHANGELOG.md
+                echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previous_tag...${{ steps.set_tag.outputs.tag }}" >> CHANGELOG.md
+              fi
             else
               echo "First release, no previous tag found"
-              git log --oneline | grep -v "Merge pull request" | head -50 > CHANGELOG.md
+              # 首次发布，只取前15个提交
+              git log --oneline | grep -v "Merge pull request" | head -15 > CHANGELOG.md
             fi
           else
             echo "Generating changelog for development build"
-            git log --oneline --since="1 week ago" | grep -v "Merge pull request" | head -30 > CHANGELOG.md
+            # 开发构建，只取前15个提交
+            git log --oneline --since="1 week ago" | grep -v "Merge pull request" | head -15 > CHANGELOG.md
           fi
           
           # Add header to changelog
-          echo "# Changelog for ${{ steps.set_tag.outputs.tag }}" > temp_changelog.md
-          echo "" >> temp_changelog.md
-          echo "## Changes" >> temp_changelog.md
+          echo "## What's Changed" > temp_changelog.md
           echo "" >> temp_changelog.md
           cat CHANGELOG.md >> temp_changelog.md
           mv temp_changelog.md CHANGELOG.md
@@ -294,7 +304,7 @@ jobs:
         uses: softprops/action-gh-release@v2.5.0
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
-          name: Release ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
           body_path: release/CHANGELOG.md
           files: |
             release/*.exe
