@@ -636,23 +636,67 @@ def load_config(config_file):
     else:
         # 新版本配置，检查参数缺失
         LOGGER.info("正在检查配置信息是否缺失")
-        # 合并用户配置到默认配置中
-        merged_config = merge_configs(user_config, default_config)
         
-        # 检查用户配置是否缺少默认配置中的键
-        updated = False
-        
-        def check_missing_keys(config, default, parent_key=''):
-            nonlocal updated
-            for key, value in default.items():
-                full_key = f"{parent_key}.{key}" if parent_key else key
-                if key not in config:
+        # 检查用户配置是否缺少必要的参数
+        def check_missing_params(config, required_params, section_name):
+            """检查配置中是否缺少必要的参数，并报告缺失的参数。
+            
+            Args:
+                config (dict): 配置字典。
+                required_params (dict): 必要参数及其默认值。
+                section_name (str): 配置节名称。
+            """
+            updated = False
+            for param, default_value in required_params.items():
+                # 只在当前配置节中添加缺少的参数，避免跨节添加
+                if param not in config:
+                    config[param] = default_value
+                    LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
                     updated = True
-                    LOGGER.warning(f"参数缺失: {full_key}，使用默认值: {value}")
-                elif isinstance(value, CommentedMap) and isinstance(config.get(key), dict):
-                    check_missing_keys(config[key], value, full_key)
+                elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
+                    # 递归检查嵌套配置
+                    sub_updated = check_missing_params(config[param], default_value, f"{section_name}.{param}")
+                    updated = updated or sub_updated
+            return updated
         
-        check_missing_keys(user_config, default_config)
+        # 先确保所有必要的配置节都存在
+        updated = False
+        for section in default_config:
+            if section not in user_config:
+                user_config[section] = {}
+                LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
+                updated = True
+        
+        # 检查每个配置节中的参数
+        for section, section_config in default_config.items():
+            if isinstance(section_config, CommentedMap) and isinstance(user_config.get(section), dict):
+                section_updated = check_missing_params(user_config[section], section_config, section)
+                updated = updated or section_updated
+        
+        # 清理配置文件，移除不属于对应配置块的配置项
+        def clean_config(config, default_config, section_name='root'):
+            """清理配置文件，移除不属于对应配置块的配置项。
+            
+            Args:
+                config (dict): 配置字典。
+                default_config (CommentedMap): 默认配置字典。
+                section_name (str): 配置块名称。
+            """
+            keys_to_remove = []
+            for key in config:
+                if key not in default_config:
+                    keys_to_remove.append(key)
+                elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
+                    clean_config(config[key], default_config[key], key)
+            for key in keys_to_remove:
+                LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
+                del config[key]
+        
+        # 清理用户配置
+        clean_config(user_config, default_config, 'root')
+        
+        # 合并更新后的用户配置到默认配置中
+        merged_config = merge_configs(user_config, default_config)
         
         if updated:
             LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
