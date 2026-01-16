@@ -402,7 +402,7 @@ def migrate_old_config(old_config):
         for param, default_value in required_params.items():
             if param not in config:
                 config[param] = default_value
-                LOGGER.warning(f"配置节 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
+                LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
     
     # 处理 monitor_settings
     if 'monitor_settings' in migrated_config:
@@ -417,7 +417,7 @@ def migrate_old_config(old_config):
         elif 'process_name' not in monitor_settings:
             default_process_name = DEFAULT_VALUES['monitor_settings']['process_name']
             migrated_config['monitor_settings']['process_name'] = default_process_name
-            LOGGER.warning(f"配置节 'monitor_settings' 中缺少参数 'process_name'，使用默认值: {default_process_name}")
+            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'process_name'，使用默认值: {default_process_name}")
         
         # 处理时间参数
         if 'timeout_warning_interval_ms' in monitor_settings:
@@ -426,7 +426,7 @@ def migrate_old_config(old_config):
         elif 'timeout_warning_interval' not in monitor_settings:
             default_timeout = DEFAULT_VALUES['monitor_settings']['timeout_warning_interval']
             migrated_config['monitor_settings']['timeout_warning_interval'] = default_timeout
-            LOGGER.warning(f"配置节 'monitor_settings' 中缺少参数 'timeout_warning_interval'，使用默认值: {default_timeout}")
+            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'timeout_warning_interval'，使用默认值: {default_timeout}")
         
         if 'monitor_loop_interval_ms' in monitor_settings:
             migrated_config['monitor_settings']['monitor_loop_interval'] = ms_to_hms(monitor_settings['monitor_loop_interval_ms'])
@@ -434,7 +434,7 @@ def migrate_old_config(old_config):
         elif 'monitor_loop_interval' not in monitor_settings:
             default_interval = DEFAULT_VALUES['monitor_settings']['monitor_loop_interval']
             migrated_config['monitor_settings']['monitor_loop_interval'] = default_interval
-            LOGGER.warning(f"配置节 'monitor_settings' 中缺少参数 'monitor_loop_interval'，使用默认值: {default_interval}")
+            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'monitor_loop_interval'，使用默认值: {default_interval}")
         
         # 清理旧参数
         old_monitor_params = ['process_name_list', 'timeout_warning_interval_ms', 'monitor_loop_interval_ms']
@@ -445,7 +445,7 @@ def migrate_old_config(old_config):
     else:
         # 如果 monitor_settings 不存在，创建并添加默认值
         migrated_config['monitor_settings'] = DEFAULT_VALUES['monitor_settings'].copy()
-        LOGGER.warning(f"配置中缺少节 'monitor_settings'，创建并使用默认值")
+        LOGGER.warning(f"配置块顶层丢失 'monitor_settings' ，正在重新写入")
     
     # 处理 wait_process_settings
     if 'wait_process_settings' in migrated_config:
@@ -458,7 +458,7 @@ def migrate_old_config(old_config):
         elif 'max_wait_time' not in wait_settings:
             default_max_wait = DEFAULT_VALUES['wait_process_settings']['max_wait_time']
             migrated_config['wait_process_settings']['max_wait_time'] = default_max_wait
-            LOGGER.warning(f"配置节 'wait_process_settings' 中缺少参数 'max_wait_time'，使用默认值: {default_max_wait}")
+            LOGGER.warning(f"配置 'wait_process_settings' 中缺少参数 'max_wait_time'，使用默认值: {default_max_wait}")
         
         if 'wait_process_check_interval_ms' in wait_settings:
             migrated_config['wait_process_settings']['wait_process_check_interval'] = ms_to_hms(wait_settings['wait_process_check_interval_ms'])
@@ -466,7 +466,7 @@ def migrate_old_config(old_config):
         elif 'wait_process_check_interval' not in wait_settings:
             default_check_interval = DEFAULT_VALUES['wait_process_settings']['wait_process_check_interval']
             migrated_config['wait_process_settings']['wait_process_check_interval'] = default_check_interval
-            LOGGER.warning(f"配置节 'wait_process_settings' 中缺少参数 'wait_process_check_interval'，使用默认值: {default_check_interval}")
+            LOGGER.warning(f"配置 'wait_process_settings' 中缺少参数 'wait_process_check_interval'，使用默认值: {default_check_interval}")
         
         # 清理旧参数
         old_wait_params = ['max_wait_time_ms', 'wait_process_check_interval_ms']
@@ -477,7 +477,8 @@ def migrate_old_config(old_config):
     else:
         # 如果 wait_process_settings 不存在，创建并添加默认值
         migrated_config['wait_process_settings'] = DEFAULT_VALUES['wait_process_settings'].copy()
-        LOGGER.warning(f"配置中缺少节 'wait_process_settings'，创建并使用默认值")
+        LOGGER.warning(f"配置块顶层丢失 'wait_process_settings' ，正在重新写入")
+        
     
     # 处理 push_settings
     if 'push_settings' in migrated_config and 'push_error_retry' in migrated_config['push_settings']:
@@ -489,7 +490,7 @@ def migrate_old_config(old_config):
         elif 'retry_interval' not in push_error_retry:
             default_retry_interval = DEFAULT_VALUES['push_settings']['push_error_retry']['retry_interval']
             migrated_config['push_settings']['push_error_retry']['retry_interval'] = default_retry_interval
-            LOGGER.warning(f"配置节 'push_settings.push_error_retry' 中缺少参数 'retry_interval'，使用默认值: {default_retry_interval}")
+            LOGGER.warning(f"配置 'push_settings.push_error_retry' 中缺少参数 'retry_interval'，使用默认值: {default_retry_interval}")
         
         # 清理旧参数
         if 'retry_interval_ms' in migrated_config['push_settings']['push_error_retry']:
@@ -508,23 +509,23 @@ def migrate_old_config(old_config):
                 return defaults
         
         migrated_config['push_settings'] = deep_copy_defaults(DEFAULT_VALUES['push_settings'])
-        LOGGER.warning(f"配置中缺少节 'push_settings'，创建并使用默认值")
+        LOGGER.warning(f"配置块顶层丢失 'push_settings' ，正在重新写入")
     elif 'push_error_retry' not in migrated_config['push_settings']:
         # 如果 push_error_retry 不存在，创建并添加默认值
         migrated_config['push_settings']['push_error_retry'] = DEFAULT_VALUES['push_settings']['push_error_retry'].copy()
-        LOGGER.warning(f"配置节 'push_settings' 中缺少子节 'push_error_retry'，创建并使用默认值")
+        LOGGER.warning(f"配置 'push_settings' 中缺少子节 'push_error_retry'，创建并使用默认值")
     
     # 处理 external_program_settings
     if 'external_program_settings' not in migrated_config:
         # 如果 external_program_settings 不存在，创建并添加默认值
         migrated_config['external_program_settings'] = DEFAULT_VALUES['external_program_settings'].copy()
-        LOGGER.warning(f"配置中缺少节 'external_program_settings'，创建并使用默认值")
+        LOGGER.warning(f"配置块顶层丢失 'external_program_settings' ，正在重新写入")
     
     # 处理 log_settings
     if 'log_settings' not in migrated_config:
         # 如果 log_settings 不存在，创建并添加默认值
         migrated_config['log_settings'] = DEFAULT_VALUES['log_settings'].copy()
-        LOGGER.warning(f"配置中缺少节 'log_settings'，创建并使用默认值")
+        LOGGER.warning(f"配置块顶层丢失 'log_settings' ，正在重新写入")
     
     return migrated_config
 
@@ -642,7 +643,6 @@ def load_config(config_file):
         updated = False
         
         def check_missing_keys(config, default, parent_key=''):
-            LOGGER.warning("检查到配置信息存在缺失")
             nonlocal updated
             for key, value in default.items():
                 full_key = f"{parent_key}.{key}" if parent_key else key
