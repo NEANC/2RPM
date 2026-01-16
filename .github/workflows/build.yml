@@ -5,12 +5,8 @@ on:
     branches: [ v3 ]
     tags:
       - 'v*'  # 版本号标记
-    paths:
-      - '2RPM.py'  # 只在更新 2RPM.py 时触发
   pull_request:
     branches: [ v3 ]
-    paths:
-      - '2RPM.py'
   workflow_dispatch:
 
 permissions:
