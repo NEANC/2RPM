@@ -29,7 +29,7 @@ def print_info():
     print("||" + "".center(60, " ") + "||")
     print("|| " + "".center(58, "-") + " ||")
     print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.20.4    License: WTFPL".center(60, " ") + "||")
+    print("||" + "Version: v3.21.0    License: WTFPL".center(60, " ") + "||")
     print("||" + "".center(60, " ") + "||")
     print("+ " + "".center(60, "=") + " +")
     print("\n")
