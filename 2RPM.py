@@ -4,7 +4,6 @@
 import os
 import sys
 import argparse
-import asyncio
 import logging
 
 from modules.config import load_config
@@ -97,7 +96,7 @@ def main():
     try:
         # 运行主监视器
         LOGGER.info("初始化结束，正在运行主程序")
-        asyncio.run(monitor_processes(CONFIG))
+        monitor_processes(CONFIG)
         LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:
         LOGGER.critical("捕捉到 Ctrl+C，程序被手动终止")

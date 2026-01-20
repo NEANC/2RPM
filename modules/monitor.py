@@ -2,16 +2,15 @@
 # -*- coding: utf-8 -*-
 
 import time
-import asyncio
 import logging
 import sys
-import psutil
 
 from modules.utils import (
     format_time_ms,
     run_external_program,
     get_other_running_processes,
-    parse_time_string
+    parse_time_string,
+    find_processes_by_name
 )
 from modules.notification import send_notification
 from modules.config import DEFAULT_VALUES
@@ -19,7 +18,7 @@ from modules.config import DEFAULT_VALUES
 LOGGER = logging.getLogger(__name__)
 
 
-async def monitor_processes(config):
+def monitor_processes(config):
     """监视进程列表。
 
     等待指定的进程启动，监视其运行状态，并在进程结束或超时时发送通知。
@@ -69,18 +68,13 @@ async def monitor_processes(config):
         while True:
             LOGGER.debug("执行等待进程启动循环")
             waited_time_ms = time.perf_counter() * 1000 - start_time_ms
+            # 检查是否超时
             if waited_time_ms > max_wait_time_ms:
                 LOGGER.debug("已等待超时，正在尝试发送通知")
                 break
 
-            current_processes = {
-                p.pid: p.info for p in psutil.process_iter(
-                    ['pid', 'name', 'create_time'])
-            }
-            found_processes = {
-                pid: info for pid, info in current_processes.items()
-                if info['name'] == process_name
-            }
+            # 使用优化的进程查找函数
+            found_processes = find_processes_by_name(process_name)
 
             for pid, info in found_processes.items():
                 if pid not in processes:
@@ -104,9 +98,9 @@ async def monitor_processes(config):
                     f"正在等待目标进程运行，已等待时间: "
                     f"{format_time_ms(waited_time_ms)}"
                 )
-                await asyncio.sleep(wait_process_check_interval_ms / 1000)
-    except asyncio.CancelledError:
-        LOGGER.critical("任务被取消，退出等待进程启动循环")
+                time.sleep(wait_process_check_interval_ms / 1000)
+    except KeyboardInterrupt:
+        LOGGER.critical("捕捉到 Ctrl+C，程序被手动终止")
         return
 
     # 超过等待时间或进程已启动
@@ -115,7 +109,7 @@ async def monitor_processes(config):
         LOGGER.debug("执行等待进程启动超时报告与推送")
         waited_time_ms = time.perf_counter() * 1000 - start_time_ms
         formatted_waited_time = format_time_ms(waited_time_ms)
-        await send_notification(
+        send_notification(
             config,
             'process_wait_timeout_warning',
             process_name=process_name,
@@ -156,10 +150,9 @@ async def monitor_processes(config):
         while processes:
             LOGGER.debug("执行监视循环")
             current_time_ms = time.perf_counter() * 1000
-            current_processes = {
-                p.pid: p.info for p in psutil.process_iter(
-                    ['pid', 'name', 'create_time'])
-            }
+            
+            # 使用优化的进程查找函数
+            current_processes = find_processes_by_name(process_name)
             current_pids = set(current_processes.keys())
             monitored_pids = set(processes.keys())
 
@@ -167,14 +160,14 @@ async def monitor_processes(config):
             ended_pids = monitored_pids - current_pids
             for pid in ended_pids:
                 process_info = processes[pid]
-                process_name = process_info['name']
+                process_name_local = process_info['name']
                 run_time_ms = current_time_ms - process_info['start_time_ms']
                 formatted_run_time = format_time_ms(run_time_ms)
 
-                await send_notification(
+                send_notification(
                     config,
                     'process_end_notification',
-                    process_name=process_name,
+                    process_name=process_name_local,
                     process_pid=pid,
                     process_run_time=formatted_run_time,
                     other_running_processes=get_other_running_processes(
@@ -182,14 +175,14 @@ async def monitor_processes(config):
                     process_list=[]
                 )
                 LOGGER.info(
-                    f"进程结束: {process_name} (PID: {pid}) "
+                    f"进程结束: {process_name_local} (PID: {pid}) "
                     f"运行时间: {formatted_run_time}"
                 )
 
                 # 进程结束时调用外部程序
                 if external_program_path:
                     LOGGER.info(
-                        f"检测到进程 {process_name} 结束，正在调用外部程序..."
+                        f"检测到进程 {process_name_local} 结束，正在调用外部程序..."
                     )
                     try:
                         run_external_program(external_program_path)
@@ -215,7 +208,7 @@ async def monitor_processes(config):
 
                 if time_since_last_warning_ms >= timeout_warning_interval_ms:
                     formatted_run_time = format_time_ms(run_time_ms)
-                    await send_notification(
+                    send_notification(
                         config,
                         'process_timeout_warning',
                         process_name=process_info['name'],
@@ -270,8 +263,8 @@ async def monitor_processes(config):
             if sleep_time_ms < 0:
                 sleep_time_ms = 0
                 next_loop_time_ms = now_ms
-            await asyncio.sleep(sleep_time_ms / 1000)
+            time.sleep(sleep_time_ms / 1000)
             next_loop_time_ms += monitor_loop_interval_ms
-    except asyncio.CancelledError:
-        LOGGER.critical("任务被取消，正在结束监视循环")
+    except KeyboardInterrupt:
+        LOGGER.critical("捕捉到 Ctrl+C，正在结束监视循环")
         return

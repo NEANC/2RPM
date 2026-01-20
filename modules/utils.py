@@ -162,3 +162,41 @@ def parse_time_string(time_str):
         except ValueError:
             LOGGER.error(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
             raise ValueError(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
+
+
+def find_processes_by_name(process_name):
+    """按进程名称查找正在运行的进程(优化版本,避免全量扫描)。
+
+    Args:
+        process_name (str): 要查找的进程名称。
+
+    Returns:
+        dict: 进程字典,键为 PID,值为包含进程信息的字典。
+              格式: {pid: {'name': str, 'create_time': float}}
+    """
+    LOGGER.debug(f"查找进程: {process_name}")
+    found_processes = {}
+    
+    # 检查进程名称是否有效
+    if not process_name:
+        LOGGER.warning("进程名称为空，返回空字典")
+        return found_processes
+    
+    # 仅迭代进程并立即过滤，避免创建包含所有进程的大型字典
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+            try:
+                # 立即过滤:仅保留匹配的进程
+                if proc.info['name'] == process_name:
+                    found_processes[proc.info['pid']] = {
+                        'name': proc.info['name'],
+                        'create_time': proc.info['create_time']
+                    }
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                # 忽略已结束或无权限访问的进程
+                continue
+    except Exception as e:
+        LOGGER.error(f"查找进程时发生错误: {e}")
+    
+    LOGGER.debug(f"找到 {len(found_processes)} 个匹配的进程")
+    return found_processes

@@ -3,7 +3,7 @@
 
 import socket
 import datetime
-import asyncio
+import time
 import logging
 import sys
 
@@ -14,7 +14,7 @@ from modules.config import DEFAULT_VALUES
 LOGGER = logging.getLogger(__name__)
 
 
-async def send_notification(config, template_key, **kwargs):
+def send_notification(config, template_key, **kwargs):
     """发送通知。
 
     Args:
@@ -92,7 +92,7 @@ async def send_notification(config, template_key, **kwargs):
         except Exception as e:
             LOGGER.error(f"通知发送失败 (尝试 {attempt}/{max_retry_count}): {e}")
             if attempt < max_retry_count:
-                await asyncio.sleep(retry_interval_ms / 1000)
+                time.sleep(retry_interval_ms / 1000)
             else:
                 LOGGER.critical("通知发送失败，已达到最大重试次数。")
                 sys.exit(1)
