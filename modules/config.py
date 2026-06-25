@@ -17,10 +17,7 @@ DEFAULT_CONFIG_FILE = 'config.yaml'
 # 关键参数列表
 CRITICAL_KEYS = [
     'monitor_settings.process_name',
-    'push_settings.push_channel_settings.choose',
-    'push_settings.push_channel_settings.serverchan_key',
     'push_settings.push_channel_settings.push_channel',
-    'push_settings.push_channel_settings.push_channel_key',
     'external_program_settings.external_program_path',
 ]
 
@@ -82,10 +79,7 @@ DEFAULT_VALUES = {
             },
         },
         'push_channel_settings': {
-            'choose': 'ServerChan',
-            'serverchan_key': '',
-            'push_channel': '',
-            'push_channel_key': '',
+            'push_channel': {},
         },
         'push_error_retry': {
             'retry_interval': '3s',
@@ -188,15 +182,16 @@ COMMENTS = {
             '_comment': (
                 "推送通道设置\n"
             ),
-            'choose': (
-                "\n请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'"
-            ),
-            'serverchan_key': "\nServerChan密钥",
             'push_channel': (
-                "\nOnePush推送通道（请查看 https://pypi.org/project/onepush/ "
-                "来获得如何使用帮助）"
+                "\nOnePush 推送通道配置（请查看 https://pypi.org/project/onepush/ "
+                "来获得如何使用帮助）\n"
+                "- 填入一个字典，必须包含 provider 键指定通道名称\n"
+                "- 其余键为该通道所需的参数，例如：\n"
+                "  - {provider: serverchan, key: SCTxxxx}\n"
+                "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
+                "  - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
+                "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}"
             ),
-            'push_channel_key': "\nOnePush推送通道密钥",
         },
         'push_error_retry': {
             '_comment': "推送错误重试设置\n",
