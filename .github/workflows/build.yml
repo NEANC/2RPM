@@ -25,7 +25,7 @@ jobs:
     steps:
       # 检查代码库
       - name: Check-out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # 确保能获取所有标签
 
@@ -105,7 +105,7 @@ jobs:
 
       # 上传更新后的代码作为 artifact
       - name: Upload updated code
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: updated-code
           path: .
@@ -183,7 +183,7 @@ jobs:
 
       # 上传 Nuitka 编译的可执行文件作为 artifact
       - name: Upload Nuitka artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: 2RPM-Nuitka-${{ needs.meta.outputs.tag }}
           path: build/2RPM.exe
@@ -251,7 +251,7 @@ jobs:
 
       # 上传 PyInstaller 打包的可执行文件作为 artifact
       - name: Upload PyInstaller artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: 2RPM-PyInstaller-${{ needs.meta.outputs.tag }}
           path: dist/2RPM.exe
