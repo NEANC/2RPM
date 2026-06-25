@@ -308,13 +308,3 @@ jobs:
           prerelease: ${{ needs.meta.outputs.prerelease != 'false' }}
           # 为非预发布版本添加 latest 标签
           tag_names: ${{ needs.meta.outputs.prerelease == 'false' && 'latest' || '' }}
-
-      # 失败时创建 issue
-      - name: Create issue on failure
-        if: failure()
-        uses: actions-cool/issues-helper@v3
-        with:
-          actions: "create-issue"
-          title: "Errors occurred during release ${{ needs.meta.outputs.tag }}"
-          body: |
-            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
