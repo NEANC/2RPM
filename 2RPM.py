@@ -108,7 +108,7 @@ def main():
     finally:
         LOGGER.info("程序运行结束")
         print_info()
-        os._exit(0)
+        sys.exit(0)
 
 
 if __name__ == '__main__':
