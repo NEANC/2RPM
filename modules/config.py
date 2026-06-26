@@ -12,6 +12,7 @@ LOGGER = logging.getLogger(__name__)
 # 默认配置值集中管理
 DEFAULT_VALUES = {
     'monitor_settings': {
+        'monitor_mode': 'psutil',
         'process_name': 'notepad.exe',
         'timeout_warning_interval': '15m',
         'monitor_loop_interval': '1s',
@@ -19,6 +20,10 @@ DEFAULT_VALUES = {
     'wait_process_settings': {
         'max_wait_time': '30s',
         'wait_process_check_interval': '1s',
+    },
+    'task_monitor_settings': {
+        'task_name': '\\Custom\\MyTask',
+        'lookback_minutes': 10,
     },
     'push_settings': {
         'push_templates': {
@@ -97,6 +102,11 @@ COMMENTS = {
             "监视设置\n"
             "- 监视程序相关配置\n"
         ),
+        'monitor_mode': (
+            "\n监视模式，可选值: psutil / task_scheduler\n"
+            "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
+            "- task_scheduler: 通过事件日志获取计划任务PID后监视\n"
+        ),
         'process_name': (
             "\n要监视的进程名称"
         ),
@@ -118,6 +128,21 @@ COMMENTS = {
             'wait_process_check_interval': (
                 "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
             ),
+    },
+    'task_monitor_settings': {
+        '_comment': (
+            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
+            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
+        ),
+        'task_name': (
+            "\n要监视的计划任务名称\n"
+            "- 完整路径格式: \\\\Folder\\TaskName\n"
+            "- 部分匹配也可工作，如 MyTask\n"
+        ),
+        'lookback_minutes': (
+            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
+            "- 默认值: 10\n"
+        ),
     },
     'push_settings': {
         '_comment': (
@@ -495,6 +520,11 @@ def migrate_old_config(old_config):
         # 如果 log_settings 不存在，创建并添加默认值
         migrated_config['log_settings'] = DEFAULT_VALUES['log_settings'].copy()
         LOGGER.warning(f"配置块顶层丢失 'log_settings' ，正在重新写入")
+
+    # 处理 task_monitor_settings
+    if 'task_monitor_settings' not in migrated_config:
+        migrated_config['task_monitor_settings'] = DEFAULT_VALUES['task_monitor_settings'].copy()
+        LOGGER.warning(f"配置块顶层丢失 'task_monitor_settings' ，正在重新写入")
     
     return migrated_config
 
