@@ -10,7 +10,7 @@ on:
 jobs:
   test:
     name: Python Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Check-out repository
         uses: actions/checkout@v6
@@ -37,15 +37,8 @@ jobs:
         with:
           python-version: '3.12'
           architecture: 'x64'
-
-      - name: Restore pip cache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ runner.arch }}-py${{ steps.check_python.outputs.python_version || '3.12' }}-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
-          restore-keys: |
-            pip-${{ runner.os }}-${{ runner.arch }}-py${{ steps.check_python.outputs.python_version || '3.12' }}-
-            pip-${{ runner.os }}-${{ runner.arch }}-
+          cache: 'pip'
+          cache-dependency-path: 'requirements-dev.txt'
 
       - name: Install Dependencies
         run: |
