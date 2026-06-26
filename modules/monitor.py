@@ -30,7 +30,6 @@ async def monitor_processes(config):
     monitor_settings = config.get('monitor_settings', {})
     wait_settings = config.get('wait_process_settings', {})
     external_settings = config.get('external_program_settings', {})
-    push_settings = config.get('push_settings', {})
 
     process_name = monitor_settings.get('process_name', DEFAULT_VALUES['monitor_settings']['process_name'])
     timeout_warning_interval_ms = parse_time_string(monitor_settings.get(
