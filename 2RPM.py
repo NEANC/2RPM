@@ -11,6 +11,7 @@ from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
 from modules.utils import get_program_directory
+from modules.version import VERSION, print_info
 
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
@@ -18,21 +19,6 @@ DEFAULT_CONFIG_FILE = 'config.yaml'
 # 全局变量
 CONFIG = {}
 LOGGER = logging.getLogger(__name__)
-
-
-def print_info():
-    """打印程序的版本和版权信息，发版前手动修改。"""
-    print("\n")
-    print("+ " + " Running-Runtime Process Monitoring ".center(60, "="), "+")
-    print("||" + "".center(60, " ") + "||")
-    print("||" + "本项目使用 AI 进行生成".center(51, " ") + "||")
-    print("||" + "".center(60, " ") + "||")
-    print("|| " + "".center(58, "-") + " ||")
-    print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.21.0    License: WTFPL".center(60, " ") + "||")
-    print("||" + "".center(60, " ") + "||")
-    print("+ " + "".center(60, "=") + " +")
-    print("\n")
 
 
 def parse_args():
@@ -66,6 +52,7 @@ def main():
     setup_default_logging()
     LOGGER = logging.getLogger(__name__)
     LOGGER.info("程序正在初始化...")
+    LOGGER.debug(f"版本号: {VERSION}")
 
     # 解析命令行参数
     args = parse_args()
@@ -106,7 +93,6 @@ def main():
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        LOGGER.info("程序运行结束")
         print_info()
         sys.exit(0)
 
