@@ -1,8 +1,7 @@
-name: 统一构建并发布
+name: Build
 
 on:
   push:
-    branches: [ v3 ]
     tags:
       - 'v*'  # 版本号标记
   pull_request:
@@ -37,8 +36,7 @@ jobs:
             # For tag pushes, use the tag name
             tag="${{ github.ref_name }}"
           else
-            # For PRs and branch pushes, use git describe or fallback
-            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null || echo "v0.0.1-$(git rev-parse --short HEAD)")
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null | sed 's/-g/-build./' || echo "v0.0.1-build.$(git rev-parse --short HEAD)")
           fi
           echo "tag=${tag}" | tee -a $GITHUB_OUTPUT
 
@@ -58,58 +56,80 @@ jobs:
         id: generate_changelog
         run: |
           echo "=== Generating Changelog ==="
+          current_tag="${{ steps.set_tag.outputs.tag }}"
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            # Get previous tag
-            previous_tag=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-            if [[ -n "$previous_tag" ]]; then
-              echo "Generating changelog from $previous_tag to ${{ steps.set_tag.outputs.tag }}"
-              # 获取完整的提交列表
-              git log --oneline "$previous_tag..HEAD" | grep -v "Merge pull request" > full_commits.txt
-              # 计算提交数量
-              total_commits=$(wc -l < full_commits.txt)
-              # 只取前15个提交
-              head -15 full_commits.txt > CHANGELOG.md
-              # 如果提交数量超过15个，添加Full Changelog链接
-              if [[ $total_commits -gt 15 ]]; then
+            # 查找基准版本
+            if [[ "${{ steps.set_pre.outputs.prerelease }}" == "false" ]]; then
+              # 正式版：回追到上一个稳定版 (vX.Y.Z)，包含所有 pre-release 的变更
+              previous_base=$(git tag --sort=-creatordate | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${current_tag}$" | head -1 || echo "")
+            fi
+            if [[ -z "${previous_base:-}" ]]; then
+              # pre-release 或找不到稳定版：增量（距上一个任意 tag）
+              previous_base=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            fi
+            if [[ -n "$previous_base" ]]; then
+              echo "Generating changelog from $previous_base to $current_tag"
+              # 获取非合并提交列表
+              git log --oneline --no-merges "$previous_base..HEAD" > raw_commits.txt
+
+              # 收集被 revert 的原始提交 SHA，同时过滤 revert 提交本身
+              > filtered_commits.txt
+              while IFS= read -r line; do
+                sha=$(echo "$line" | cut -d' ' -f1)
+                # 检查是否为 revert 提交
+                if git log -1 --format="%s" "$sha" | grep -qi "^Revert "; then
+                  # 解析 revert 消息中的原始提交 SHA
+                  reverted=$(git log -1 --format="%B" "$sha" | grep -oP 'This reverts commit \K[a-f0-9]+' | head -1)
+                  if [[ -n "$reverted" ]]; then
+                    echo "$reverted" >> reverted_shas.txt
+                  fi
+                  # 跳过该 revert 提交
+                  continue
+                fi
+                # 检查是否为被 revert 的原始提交
+                if [[ -f reverted_shas.txt ]] && grep -q "^$sha$" reverted_shas.txt 2>/dev/null; then
+                  continue
+                fi
+                echo "$line" >> filtered_commits.txt
+              done < raw_commits.txt
+
+              total_commits=$(wc -l < filtered_commits.txt)
+              # 正式版取前15个，pre-release 取前8个
+              if [[ "${{ steps.set_pre.outputs.prerelease }}" == "false" ]]; then
+                head -15 filtered_commits.txt > CHANGELOG.md
+                # 正式版无论数量都放置 Full Changelog 链接
                 echo "" >> CHANGELOG.md
-                echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previous_tag...${{ steps.set_tag.outputs.tag }}" >> CHANGELOG.md
+                echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previous_base...$current_tag" >> CHANGELOG.md
+              else
+                head -8 filtered_commits.txt > CHANGELOG.md
+                if [[ $total_commits -gt 8 ]]; then
+                  echo "" >> CHANGELOG.md
+                  echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/$previous_base...$current_tag" >> CHANGELOG.md
+                fi
               fi
+              rm -f reverted_shas.txt raw_commits.txt filtered_commits.txt
             else
               echo "First release, no previous tag found"
-              # 首次发布，只取前15个提交
-              git log --oneline | grep -v "Merge pull request" | head -15 > CHANGELOG.md
+              # 首次发布，只取前8个非合并提交
+              git log --oneline --no-merges | head -8 > CHANGELOG.md
             fi
+            # Add header
+            echo "## What's Changed" > temp_changelog.md
+            echo "" >> temp_changelog.md
+            cat CHANGELOG.md >> temp_changelog.md
+            mv temp_changelog.md CHANGELOG.md
           else
-            echo "Generating changelog for development build"
-            # 开发构建，只取前15个提交
-            git log --oneline --since="1 week ago" | grep -v "Merge pull request" | head -15 > CHANGELOG.md
+            echo "Skipping changelog for development build"
           fi
-          
-          # Add header to changelog
-          echo "## What's Changed" > temp_changelog.md
-          echo "" >> temp_changelog.md
-          cat CHANGELOG.md >> temp_changelog.md
-          mv temp_changelog.md CHANGELOG.md
-          
-          echo "Changelog generated:"
-          cat CHANGELOG.md
-          echo "===================="
 
-      # 更新版本号
-      - name: Update version in 2RPM.py
-        run: |
-          tag="${{ steps.set_tag.outputs.tag }}"
-          sed -i "s/Version: v[0-9]\+\.[0-9]\+\.[0-9]\+/Version: $tag/g" 2RPM.py
-          echo "Updated version to $tag in 2RPM.py"
-          cat 2RPM.py | grep "Version:"
-
-      # 上传更新后的代码作为 artifact
-      - name: Upload updated code
+      # 上传变更日志
+      - name: Upload Changelog
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v7
         with:
-          name: updated-code
-          path: .
-          retention-days: 7
+          name: changelog
+          path: CHANGELOG.md
+          retention-days: 1
 
   # Nuitka 构建
   build-nuitka:
@@ -117,12 +137,16 @@ jobs:
     needs: meta
     runs-on: windows-latest
     steps:
-      # 下载更新后的代码
-      - name: Download updated code
-        uses: actions/download-artifact@v4
-        with:
-          name: updated-code
-          path: .
+      # 检出代码库
+      - name: Check-out repository
+        uses: actions/checkout@v6
+
+      # 写入版本号到源码
+      - name: Update version
+        shell: powershell
+        run: |
+          (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ needs.meta.outputs.tag }}"' | Set-Content modules/version.py
+          Select-String -Path modules/version.py -Pattern '^VERSION\b'
 
       # 检查当前 Python 版本
       - name: Check Python
@@ -140,30 +164,29 @@ jobs:
             echo "skip_setup=false" >> $GITHUB_OUTPUT
           fi
 
-      # 设置 Python 环境（仅当当前版本不是 3.12 时）
+      # 设置 Python 环境（仅当版本不是 3.12 时）
       - name: Setup Python
         if: steps.check_python.outputs.skip_setup != 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           architecture: 'x64'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
 
-      # 缓存依赖
-      - name: Cache dependencies
-        uses: actions/cache@v5
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-nuitka-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-nuitka-
-
       # 安装依赖
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # 安装 UPX 压缩工具
+      - name: Setup UPX
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip' -OutFile upx.zip
+          Expand-Archive -Path upx.zip -DestinationPath .
+          "$env:GITHUB_WORKSPACE\upx-4.2.4-win64" | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # 使用 Nuitka 编译为可执行文件
       - name: Build Executable with Nuitka
@@ -174,20 +197,25 @@ jobs:
           mode: onefile
           windows-console-mode: force
           assume-yes-for-downloads: true
-          follow-imports: true
           include-plugin-directory: modules
           output-dir: build
-          include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama
+          include-package: psutil,ruamel.yaml,onepush,colorama
           no-deployment-flag: self-execution
-          nofollow-import-to: '*.tests'
+          msvc: latest
+          lto: "yes"
+          enable-plugins: upx
+          upx-binary: upx
+          onefile-no-compression: true
+          module-parameter: --include-windows-runtime-dlls=no
+          nofollow-import-to: '*.tests *.pytest *.unittest *.distutils *.setuptools *.pip *.tkinter *.email.mime *.http.server *.xmlrpc *.pydoc *.idlelib *.multiprocessing *.ctypes.test *.lib2to3 *.wsgiref *.ensurepip *.venv *.turtle *.turtledemo'
 
-      # 上传 Nuitka 编译的可执行文件作为 artifact
+      # 上传 Nuitka 编译的可执行文件
       - name: Upload Nuitka artifact
         uses: actions/upload-artifact@v7
         with:
           name: 2RPM-Nuitka-${{ needs.meta.outputs.tag }}
           path: build/2RPM.exe
-          retention-days: 7
+          retention-days: 1
 
   # PyInstaller 构建
   build-pyinstaller:
@@ -195,22 +223,25 @@ jobs:
     needs: meta
     runs-on: windows-latest
     steps:
-      # 下载更新后的代码
-      - name: Download updated code
-        uses: actions/download-artifact@v4
-        with:
-          name: updated-code
-          path: .
+      # 检出代码库
+      - name: Check-out repository
+        uses: actions/checkout@v6
+
+      # 写入版本号到源码
+      - name: Update version
+        shell: powershell
+        run: |
+          (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ needs.meta.outputs.tag }}"' | Set-Content modules/version.py
+          Select-String -Path modules/version.py -Pattern '^VERSION\b'
 
       # 检查当前 Python 版本
       - name: Check Python
         id: check_python
         shell: bash
         run: |
-          # 检查 Python 版本
           PYTHON_VERSION=$(python --version 2>&1 || python3 --version 2>&1)
           echo "Detected Python version: $PYTHON_VERSION"
-          
+
           if echo "$PYTHON_VERSION" | grep -i "python 3\.12"; then
             echo "python_version=3.12" >> $GITHUB_OUTPUT
             echo "skip_setup=true" >> $GITHUB_OUTPUT
@@ -218,24 +249,15 @@ jobs:
             echo "skip_setup=false" >> $GITHUB_OUTPUT
           fi
 
-      # 设置 Python 环境（仅当当前版本不是 3.12 时）
+      # 设置 Python 环境（仅当版本不是 3.12 时）
       - name: Setup Python
         if: steps.check_python.outputs.skip_setup != 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           architecture: 'x64'
           cache: 'pip'
           cache-dependency-path: 'requirements.txt'
-
-      # 缓存依赖
-      - name: Cache dependencies
-        uses: actions/cache@v5
-        with:
-          path: ~\AppData\Local\pip\Cache
-          key: ${{ runner.os }}-pip-pyinstaller-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-pyinstaller-
 
       # 安装依赖
       - name: Install Dependencies
@@ -244,18 +266,26 @@ jobs:
           pip install pyinstaller
           pip install -r requirements.txt
 
+      # 安装 UPX 压缩工具
+      - name: Setup UPX
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip' -OutFile upx.zip
+          Expand-Archive -Path upx.zip -DestinationPath .
+          "$env:GITHUB_WORKSPACE\upx-4.2.4-win64" | Out-File -FilePath $env:GITHUB_PATH -Append
+
       # 打包可执行文件（PyInstaller）
       - name: Build with PyInstaller
         run: |
           pyinstaller 2RPM.spec --noconfirm
 
-      # 上传 PyInstaller 打包的可执行文件作为 artifact
+      # 上传 PyInstaller 打包的可执行文件
       - name: Upload PyInstaller artifact
         uses: actions/upload-artifact@v7
         with:
           name: 2RPM-PyInstaller-${{ needs.meta.outputs.tag }}
           path: dist/2RPM.exe
-          retention-days: 7
+          retention-days: 1
 
   # 发布步骤
   release:
@@ -266,7 +296,7 @@ jobs:
     steps:
       # 下载所有构建产物
       - name: Download artifacts from GitHub
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           path: assets
 
@@ -275,36 +305,33 @@ jobs:
         run: |
           # 检查并创建必要的目录
           mkdir -p release
-          
+
           # 移动和重命名 Nuitka 构建产物
           if [ -d "assets/2RPM-Nuitka-${{ needs.meta.outputs.tag }}" ]; then
             cp -f "assets/2RPM-Nuitka-${{ needs.meta.outputs.tag }}/2RPM.exe" "release/2RPM-Nuitka-${{ needs.meta.outputs.tag }}.exe"
           fi
-          
+
           # 移动和重命名 PyInstaller 构建产物
           if [ -d "assets/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}" ]; then
             cp -f "assets/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}/2RPM.exe" "release/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}.exe"
           fi
-          
+
           # 复制变更日志
-          if [ -f "assets/updated-code/CHANGELOG.md" ]; then
-            cp -f "assets/updated-code/CHANGELOG.md" "release/CHANGELOG.md"
+          if [ -f "assets/changelog/CHANGELOG.md" ]; then
+            cp -f "assets/changelog/CHANGELOG.md" "release/CHANGELOG.md"
           fi
-          
+
           # 清理临时目录
           rm -rf assets
         shell: bash
 
       # 发布 Release
       - name: Publish release to GitHub
-        uses: softprops/action-gh-release@v2.5.0
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.meta.outputs.tag }}
           name: ${{ needs.meta.outputs.tag }}
           body_path: release/CHANGELOG.md
           files: |
             release/*.exe
-            release/CHANGELOG.md
           prerelease: ${{ needs.meta.outputs.prerelease != 'false' }}
-          # 为非预发布版本添加 latest 标签
-          tag_names: ${{ needs.meta.outputs.prerelease == 'false' && 'latest' || '' }}
