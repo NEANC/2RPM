@@ -3,9 +3,7 @@
 
 import os
 import sys
-import time
 import logging
-import psutil
 import subprocess
 
 LOGGER = logging.getLogger(__name__)

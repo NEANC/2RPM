@@ -5,21 +5,9 @@ import os
 import sys
 import logging
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.comments import CommentedMap
 
-# 全局变量
-CONFIG = {}
 LOGGER = logging.getLogger(__name__)
-
-# 默认配置文件名
-DEFAULT_CONFIG_FILE = 'config.yaml'
-
-# 关键参数列表
-CRITICAL_KEYS = [
-    'monitor_settings.process_name',
-    'push_settings.push_channel_settings.push_channel',
-    'external_program_settings.external_program_path',
-]
 
 # 默认配置值集中管理
 DEFAULT_VALUES = {
@@ -384,21 +372,7 @@ def migrate_old_config(old_config):
             return config
     
     migrated_config = deep_copy_config(old_config)
-    
-    # 检查并报告缺少的参数
-    def check_missing_params(config, required_params, section_name):
-        """检查配置中是否缺少必要的参数，并报告缺失的参数。
-        
-        Args:
-            config (dict): 配置字典。
-            required_params (dict): 必要参数及其默认值。
-            section_name (str): 配置节名称。
-        """
-        for param, default_value in required_params.items():
-            if param not in config:
-                config[param] = default_value
-                LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
-    
+
     # 处理 monitor_settings
     if 'monitor_settings' in migrated_config:
         monitor_settings = migrated_config['monitor_settings']
