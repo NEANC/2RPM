@@ -151,8 +151,10 @@ COMMENTS = {
         'push_templates': {
             '_comment': (
                 "推送模板配置\n"
-                "- 可自定义通知的标题和内容\n\n"
-                "支持的变量如下：\n"
+                "- 可自定义通知的标题和内容\n"
+            ),
+            '_comment_extra': (
+                "\n支持的变量如下：\n"
                 "主机名: {host_name}\n"
                 "当前时间(YY-mm-dd HH-MM-SS): {current_time}\n"
                 "当前时间(HH-MM-SS): {short_current_time}\n"
@@ -250,7 +252,6 @@ COMMENTS = {
         'log_directory': (
             "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
             "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
-            "- 非法或为空时将自动回退为默认目录 'logs'\n"
             "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False"
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
@@ -259,8 +260,12 @@ COMMENTS = {
 }
 
 
-def get_default_config():
+def get_default_config(for_file_creation=False):
     """获取默认配置，并嵌入完整的注释。
+
+    Args:
+        for_file_creation (bool): 是否用于创建新配置文件。
+            为 True 时会在节前添加空行分隔。
 
     Returns:
         CommentedMap: 包含注释的默认配置字典。
@@ -284,49 +289,78 @@ def get_default_config():
     config = create_commented_map(DEFAULT_VALUES)
 
     LOGGER.debug("正在应用注释到默认配置")
-    apply_comments(config, COMMENTS)
+    apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
 
     LOGGER.debug("内置配置读取完成")
     return config
 
 
-def apply_comments(config_section, comments_section):
-    """递归地将注释应用到配置字典中。
+def _clear_comments(config_section):
+    """清除配置节中已有的注释，避免重复写入。
 
     Args:
         config_section (CommentedMap): 配置的一个部分。
-        comments_section (dict or str): 对应的注释部分。
-    """
-    # 彻底清除现有的注释，避免重复
-    if hasattr(config_section, 'ca'):
-        config_section.ca.comment = None
-        if hasattr(config_section.ca, 'items'):
-            # 清空所有键的注释
-            config_section.ca.items.clear()
 
-    if isinstance(comments_section, str):
-        # 如果注释是字符串，应用到整个节
-        config_section.yaml_set_start_comment(comments_section)
+    Returns:
+        None
+    """
+    if not hasattr(config_section, 'ca'):
         return
-    elif isinstance(comments_section, dict):
-        if '_comment' in comments_section:
-            # 应用节的注释
-            config_section.yaml_set_start_comment(comments_section['_comment'])
-        for key, value in config_section.items():
-            if key in comments_section:
-                comment = comments_section[key]
-                if isinstance(comment, dict):
-                    apply_comments(value, comment)
-                else:
-                    # 直接应用注释
-                    config_section.yaml_set_comment_before_after_key(
-                        key, before=comment
-                    )
-            elif isinstance(value, CommentedMap):
-                # 如果没有对应的注释，继续递归
-                apply_comments(value, {})
-            else:
-                continue
+    config_section.ca.comment = None
+    if hasattr(config_section.ca, 'items'):
+        config_section.ca.items.clear()
+
+
+def apply_comments(config_section, comments_section, depth=0,
+                   blank_before_section=False, is_top_level=True):
+    """递归地将注释应用到配置字典中。
+
+    将每个配置项/子节的注释统一放置在其键的上方，并使注释缩进与所在
+    层级的配置缩进保持一致（例外：节的变量列表说明保持无缩进）。
+
+    Args:
+        config_section (CommentedMap): 配置的一个部分。
+        comments_section (dict): 对应的注释字典。
+        depth (int): 当前嵌套层级，用于计算注释缩进（每层 2 空格）。
+        blank_before_section (bool): 是否在顶层节（首个节除外）前插入空行。
+        is_top_level (bool): 当前是否为顶层节容器。
+
+    Returns:
+        None
+    """
+    # 守卫：非字典注释无需处理
+    if not isinstance(comments_section, dict):
+        return
+
+    _clear_comments(config_section)
+
+    indent = depth * 2
+    first_section_done = False
+    for key, value in config_section.items():
+        comment = comments_section.get(key)
+
+        if isinstance(comment, dict):
+            section_text = comment.get('_comment', '')
+            # 顶层非首个节按需在节前插入空行进行分隔
+            if is_top_level and blank_before_section and first_section_done:
+                section_text = '\n' + section_text
+            if section_text:
+                config_section.yaml_set_comment_before_after_key(
+                    key, before=section_text, indent=indent)
+            # 变量列表说明等附加注释保持无缩进（例外）
+            extra_text = comment.get('_comment_extra')
+            if extra_text:
+                config_section.yaml_set_comment_before_after_key(
+                    key, before=extra_text, indent=0)
+            apply_comments(value, comment, depth=depth + 1,
+                           blank_before_section=blank_before_section,
+                           is_top_level=False)
+        elif isinstance(comment, str):
+            # 普通参数：将注释设置在参数键上方
+            config_section.yaml_set_comment_before_after_key(
+                key, before=comment, indent=indent)
+
+        first_section_done = True
 
 
 def create_default_config(config_file):
@@ -339,7 +373,7 @@ def create_default_config(config_file):
         Exception: 如果无法创建配置文件。
     """
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
-    default_config = get_default_config()
+    default_config = get_default_config(for_file_creation=True)
     try:
         yaml = YAML()
         yaml.indent(mapping=2, sequence=4, offset=2)
@@ -690,7 +724,11 @@ def load_config(config_file):
                 if key not in default_config:
                     keys_to_remove.append(key)
                 elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
-                    clean_config(config[key], default_config[key], key)
+                    # 默认值为空字典代表自由格式容器（如 push_channel），
+                    # 其内容由用户自定义，跳过清理以免误删推送通道参数
+                    if len(default_config[key]) == 0:
+                        continue
+                    sub_removed = clean_config(config[key], default_config[key], key)
                     removed = removed or sub_removed
             for key in keys_to_remove:
                 LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
