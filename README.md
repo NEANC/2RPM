@@ -12,7 +12,7 @@
 > [!TIP]
 > 本项目是基于在 [Gist](https://gist.github.com/) 上发布的 [MaaPiCli 运行监视脚本](https://gist.github.com/NEANC/ebd9fbec7d736dd16311047ba2cf5d9e) 的进一步扩写
 
-对指定进程进行监视，当进程在指定时间内未运行/进程运行超过指定时间/进程运行结束时使用 [`ServerChan-SDK 库`](https://github.com/easychen/serverchan-sdk "ServerChan 的 SDK") 或 [`OnePush 库`](https://github.com/y1ndan/onepush) 进行推送上报；使用 AI 生成。
+对指定进程进行监视，当进程在指定时间内未运行/进程运行超过指定时间/进程运行结束时使用 [`OnePush 库`](https://github.com/y1ndan/onepush) 进行推送上报；使用 AI 生成。
 
 - 支持配置文件运行，方便维护多配置。
 - 支持命令行参数调用，使用 '-c' 命令调用配置文件运行。
@@ -20,7 +20,7 @@
 - 在 `指定的等待时间内未检测到目标进程启动时`、`进程的运行时间超过了设定的警告间隔时`、`监视的进程结束时` 发送通知。
   - 支持通过配置文件来控制是否发送那种类型的通知。
 - 可在 `等待进程启动超时`、`特定进程结束时`、`特定进程超时运行时` 执行外部程序，同时在执行后发送通知。
-- 支持通过 [`ServerChan`](https://sct.ftqq.com/) 或 [`OnePush 库`](https://github.com/y1ndan/onepush) 进行消息推送。
+- 通过 [`OnePush 库`](https://github.com/y1ndan/onepush) 进行消息推送。
 
 ---
 
