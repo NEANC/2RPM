@@ -40,7 +40,7 @@ def test_old_config_cleanup():
             'external_program_path': 'F:\\Path\\ini\\bat\\KillProcesses-1999.bat'
         },
         'log_settings': {
-            'log_filename': 'M9A'
+            'log_directory': 'logs'
         }
     }
     

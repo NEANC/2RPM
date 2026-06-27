@@ -71,7 +71,7 @@ def main():
     LOGGER.debug("配置已加载")
 
     # 设置日志
-    setup_logging(CONFIG)
+    setup_logging(CONFIG, config_file)
     LOGGER.info("已完成日志配置")
 
     try:
