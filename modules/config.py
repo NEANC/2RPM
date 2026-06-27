@@ -285,6 +285,7 @@ def get_default_config():
 
     LOGGER.debug("正在应用注释到默认配置")
     apply_comments(config, COMMENTS)
+
     LOGGER.debug("内置配置读取完成")
     return config
 
@@ -674,29 +675,36 @@ def load_config(config_file):
         # 清理配置文件，移除不属于对应配置块的配置项
         def clean_config(config, default_config, section_name='root'):
             """清理配置文件，移除不属于对应配置块的配置项。
-            
+
             Args:
                 config (dict): 配置字典。
                 default_config (CommentedMap): 默认配置字典。
                 section_name (str): 配置块名称。
+
+            Returns:
+                bool: 是否发生了配置项移除操作。
             """
+            removed = False
             keys_to_remove = []
             for key in config:
                 if key not in default_config:
                     keys_to_remove.append(key)
                 elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
                     clean_config(config[key], default_config[key], key)
+                    removed = removed or sub_removed
             for key in keys_to_remove:
                 LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
                 del config[key]
-        
+                removed = True
+            return removed
+
         # 清理用户配置
-        clean_config(user_config, default_config, 'root')
-        
+        cleaned = clean_config(user_config, default_config, 'root')
+
         # 合并更新后的用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)
-        
-        if updated:
+
+        if updated or cleaned:
             LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
             try:
                 yaml = YAML()
