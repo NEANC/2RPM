@@ -582,7 +582,7 @@ def load_config(config_file):
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
-        raise
+        sys.exit(1)
 
     # 检查是否为旧版本配置
     is_old_version = False
