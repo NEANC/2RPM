@@ -66,16 +66,9 @@ def main():
     
     config_file = os.path.join(program_dir, config_name)
 
-    try:
-        # 加载配置
-        CONFIG = load_config(config_file)
-        LOGGER.debug("配置已加载")
-    except SystemExit:
-        LOGGER.critical("程序因缺少关键配置终止运行")
-        sys.exit(1)
-    except Exception as e:
-        LOGGER.critical(f"加载配置失败: {e}")
-        sys.exit(1)
+    # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
+    CONFIG = load_config(config_file)
+    LOGGER.debug("配置已加载")
 
     # 设置日志
     setup_logging(CONFIG)
