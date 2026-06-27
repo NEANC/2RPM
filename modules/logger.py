@@ -44,8 +44,34 @@ class ColoredConsoleFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         color = self.LEVEL_COLORS.get(record.levelname, colorama.Fore.WHITE)
-        result = super().format(record)
+        result = self._format_without_traceback(record)
         return f"{color}{result}{colorama.Style.RESET_ALL}"
+
+    def _format_without_traceback(self, record: logging.LogRecord) -> str:
+        """格式化日志且不输出异常堆栈，仅保留异常摘要。
+
+        控制台只展示异常类型与消息（由调用方写入 message），完整 traceback
+        交由文件处理器输出。临时屏蔽 record 的异常字段进行格式化，结束后还原，
+        避免影响其他处理器对同一条记录的格式化。
+
+        Args:
+            record (logging.LogRecord): 待格式化的日志记录。
+
+        Returns:
+            str: 不含 traceback 的日志文本。
+        """
+        saved_exc_info = record.exc_info
+        saved_exc_text = record.exc_text
+        saved_stack_info = record.stack_info
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
+        try:
+            return super().format(record)
+        finally:
+            record.exc_info = saved_exc_info
+            record.exc_text = saved_exc_text
+            record.stack_info = saved_stack_info
 
 
 def _cleanup_old_logs(log_dir: str, max_files: int, max_days: int) -> None:
