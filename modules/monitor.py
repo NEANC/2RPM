@@ -456,12 +456,18 @@ async def monitor_via_task_scheduler(config):
     monitor_loop_interval_ms = parse_time_string(monitor_loop_interval_str)
     timeout_warning_interval_ms = parse_time_string(
         timeout_warning_interval_str)
+    # 最长等待时间：与 psutil 模式一致，使其对 task_scheduler 模式同样生效
+    max_wait_time_ms = parse_time_string(wait_settings.get(
+        'max_wait_time',
+        DEFAULT_VALUES['wait_process_settings']['max_wait_time']))
 
     external_program_path = external_settings.get('external_program_path', '')
     another_external_program_path = external_settings.get(
         'another_external_program_path', '')
     timeout_count_threshold = external_settings.get(
         'timeout_count_threshold', 3)
+    external_program_on_wait_timeout_path = external_settings.get(
+        'external_program_on_wait_timeout_path', '')
 
     if not task_name:
         LOGGER.critical("未设置要监视的计划任务名称，请检查配置文件！")
@@ -473,10 +479,19 @@ async def monitor_via_task_scheduler(config):
     )
 
     pid_info = None
+    # 等待提示仅打印一次，避免无任务触发时刷屏
+    waiting_logged = False
+    wait_start_time_ms = time.perf_counter() * 1000
 
     # 阶段1: 等待计划任务启动（通过事件日志查询 Event 129）
     try:
         while True:
+            # 等待超时判断：超过最长等待时间则退出等待
+            waited_time_ms = time.perf_counter() * 1000 - wait_start_time_ms
+            if waited_time_ms > max_wait_time_ms:
+                LOGGER.debug("等待计划任务触发已超时")
+                break
+
             # 将同步的事件日志查询放入线程池，避免阻塞事件循环
             result = await asyncio.to_thread(
                 query_task_pid, task_name, lookback_minutes)
@@ -516,17 +531,49 @@ async def monitor_via_task_scheduler(config):
                 )
                 break
 
-            # state == 'not_found': 任务尚未触发，继续等待
-            LOGGER.info(
-                f"等待计划任务 '{task_name}' 触发中..."
-            )
+            # state == 'not_found': 任务尚未触发，继续等待（提示仅打印一次）
+            if not waiting_logged:
+                LOGGER.info(
+                    f"等待计划任务 '{task_name}' 触发中..."
+                )
+                waiting_logged = True
             await asyncio.sleep(wait_check_interval_ms / 1000)
     except asyncio.CancelledError:
         LOGGER.critical("任务被取消，退出等待计划任务循环")
         return
 
     if pid_info is None:
-        LOGGER.critical("未能获取有效的 PID 信息，无法进入监视阶段")
+        # 等待超时且未捕获到计划任务进程
+        waited_time_ms = time.perf_counter() * 1000 - wait_start_time_ms
+        formatted_waited_time = format_time_ms(waited_time_ms)
+        await send_notification(
+            config,
+            'process_wait_timeout_warning',
+            process_name=task_name,
+            process_wait_time=formatted_waited_time,
+            other_running_processes='无',
+            process_list=[task_name]
+        )
+        LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
+
+        # 执行等待超时外部程序
+        if external_program_on_wait_timeout_path:
+            LOGGER.info("等待计划任务触发超时，正在执行外部程序...")
+            try:
+                await asyncio.to_thread(
+                    run_external_program,
+                    external_program_on_wait_timeout_path)
+                LOGGER.info(
+                    f"外部程序 {external_program_on_wait_timeout_path} "
+                    f"执行成功")
+            except Exception as e:
+                LOGGER.error(
+                    f"执行外部程序 {external_program_on_wait_timeout_path} "
+                    f"时发生错误: {e}",
+                    exc_info=True
+                )
+
+        LOGGER.critical("未能获取有效的 PID 信息，程序终止运行。")
         sys.exit(1)
 
     # 阶段2: 监视 PID 存活状态
