@@ -170,6 +170,7 @@ def setup_default_logging() -> None:
 
     # 控制台彩色输出
     console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
     console_formatter = ColoredConsoleFormatter(
         _LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT)
     console_handler.setFormatter(console_formatter)
