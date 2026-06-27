@@ -189,12 +189,16 @@ def setup_default_logging() -> None:
         except Exception:
             LOGGER.debug("删除残留临时日志文件失败", exc_info=True)
 
-    file_handler = logging.FileHandler(
-        default_log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(_LOG_FILE_FORMAT)
-    file_handler.setFormatter(file_formatter)
-    root_logger.addHandler(file_handler)
+    # 文件记录失败时降级为仅控制台输出，不中断程序
+    try:
+        file_handler = logging.FileHandler(
+            default_log_file, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        file_formatter = logging.Formatter(_LOG_FILE_FORMAT)
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+    except OSError as e:
+        LOGGER.warning(f"无法创建临时日志文件，仅启用控制台输出: {e}")
 
 
 def setup_logging(config: dict) -> None:
@@ -253,26 +257,33 @@ def setup_logging(config: dict) -> None:
         return
 
     # 文件日志（始终 DEBUG，不受配置级别影响）
-    os.makedirs(log_dir, exist_ok=True)
+    # 文件 IO 失败时降级为仅控制台输出，不中断程序
+    try:
+        os.makedirs(log_dir, exist_ok=True)
 
-    # 合并 default.log 到正式日志文件
-    merged_file = _merge_default_log(log_dir, log_filename, default_log_file)
+        # 合并 default.log 到正式日志文件
+        merged_file = _merge_default_log(
+            log_dir, log_filename, default_log_file)
 
-    # 创建正式日志文件处理器
-    if merged_file is None:
-        merged_file = os.path.join(log_dir, _make_log_filename(log_filename))
+        # 创建正式日志文件处理器
+        if merged_file is None:
+            merged_file = os.path.join(
+                log_dir, _make_log_filename(log_filename))
 
-    file_handler = RotatingFileHandler(
-        merged_file,
-        maxBytes=_LOG_MAX_BYTES,
-        backupCount=max_files,
-        encoding='utf-8',
-    )
-    file_handler.setLevel(logging.DEBUG)  # 文件日志始终 DEBUG
-    file_formatter = logging.Formatter(
-        _LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT)
-    file_handler.setFormatter(file_formatter)
-    root_logger.addHandler(file_handler)
+        file_handler = RotatingFileHandler(
+            merged_file,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=max_files,
+            encoding='utf-8',
+        )
+        file_handler.setLevel(logging.DEBUG)  # 文件日志始终 DEBUG
+        file_formatter = logging.Formatter(
+            _LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT)
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+    except OSError as e:
+        LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
+        return
 
     # 日志自清洁
     _cleanup_old_logs(log_dir, max_files, max_days)
