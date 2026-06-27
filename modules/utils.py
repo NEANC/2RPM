@@ -48,6 +48,9 @@ def run_external_program(program_path):
 
     Args:
         program_path (str): 外部程序的路径。
+
+    Raises:
+        Exception: 当主方案与备选方案均调用失败时抛出，由调用方处理。
     """
     LOGGER.info(f"正在调用外部程序: {program_path}")
     
@@ -99,6 +102,8 @@ def run_external_program(program_path):
             LOGGER.info(f"使用备选方案成功调用外部程序: {program_path}")
         except Exception as e2:
             LOGGER.error(f"备选方案调用外部程序也失败: {e2}")
+            # 两种方案均失败，向上抛出由调用方据此判定执行结果
+            raise
 
 
 def get_other_running_processes(processes, exclude_pid=None):
