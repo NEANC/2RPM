@@ -198,6 +198,8 @@ COMMENTS = {
                 "\nOnePush 推送通道配置（请查看 https://pypi.org/project/onepush/ "
                 "来获得如何使用帮助）\n"
                 "- 填入一个字典，必须包含 provider 键指定通道名称\n"
+                "- provider 名称大小写不敏感（如 ServerChan、DingTalk）\n"
+                "- provider、key、token 等值可使用引号 '' 或 \"\" 包裹\n"
                 "- 其余键为该通道所需的参数，例如：\n"
                 "  - {provider: serverchan, key: SCTxxxx}\n"
                 "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
