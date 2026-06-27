@@ -11,7 +11,6 @@ import psutil
 from modules.utils import (
     format_time_ms,
     run_external_program,
-    get_other_running_processes,
     parse_time_string
 )
 from modules.notification import send_notification
@@ -35,7 +34,7 @@ def _get_program_name(program_path):
 
 
 async def _handle_process_end(config, process_name, pid, run_time_ms,
-                               external_program_path, other_processes_str='无'):
+                               external_program_path):
     """处理进程结束：发送通知并可选调用外部程序。
 
     Args:
@@ -44,7 +43,6 @@ async def _handle_process_end(config, process_name, pid, run_time_ms,
         pid (int): 进程 PID。
         run_time_ms (float): 进程运行时间（毫秒）。
         external_program_path (str): 进程结束时调用的外部程序路径。
-        other_processes_str (str): 其他运行进程描述字符串。
     """
     formatted_run_time = format_time_ms(run_time_ms)
 
@@ -57,9 +55,7 @@ async def _handle_process_end(config, process_name, pid, run_time_ms,
         'process_end_notification',
         process_name=process_name,
         process_pid=pid,
-        process_run_time=formatted_run_time,
-        other_running_processes=other_processes_str,
-        process_list=[]
+        process_run_time=formatted_run_time
     )
 
     # 进程结束时调用外部程序
@@ -89,8 +85,7 @@ async def _handle_process_end(config, process_name, pid, run_time_ms,
 async def _check_process_timeout(config, process_info, pid, current_time_ms,
                                   timeout_warning_interval_ms,
                                   another_external_program_path,
-                                  timeout_count_threshold,
-                                  other_running_processes='无'):
+                                  timeout_count_threshold):
     """检查进程超时，发送警告并在达到阈值时触发外部程序。
 
     Args:
@@ -101,7 +96,6 @@ async def _check_process_timeout(config, process_info, pid, current_time_ms,
         timeout_warning_interval_ms (int): 超时警告间隔（毫秒）。
         another_external_program_path (str): 超时后触发的外部程序路径。
         timeout_count_threshold (int): 触发外部程序所需的超时累计次数阈值。
-        other_running_processes (str): 其他运行进程描述字符串，默认 '无'。
     """
     run_time_ms = current_time_ms - process_info['start_time_ms']
     time_since_last_warning_ms = (
@@ -122,9 +116,7 @@ async def _check_process_timeout(config, process_info, pid, current_time_ms,
         'process_timeout_warning',
         process_name=process_name,
         process_pid=pid,
-        process_run_time=formatted_run_time,
-        other_running_processes=other_running_processes,
-        process_list=[]
+        process_run_time=formatted_run_time
     )
     process_info['last_warning_time_ms'] = current_time_ms
     process_info['timeout_count'] += 1
@@ -335,9 +327,7 @@ async def monitor_processes(config):
             config,
             'process_wait_timeout_warning',
             process_name=process_name,
-            process_wait_time=formatted_waited_time,
-            other_running_processes=get_other_running_processes(processes),
-            process_list=[process_name]
+            process_wait_time=formatted_waited_time
         )
 
         # 执行外部程序
@@ -389,8 +379,6 @@ async def monitor_processes(config):
                     pid,
                     run_time_ms,
                     external_program_path,
-                    other_processes_str=get_other_running_processes(
-                        processes, exclude_pid=pid),
                 )
                 # 从监视列表中移除
                 del processes[pid]
@@ -406,8 +394,6 @@ async def monitor_processes(config):
                     timeout_warning_interval_ms,
                     another_external_program_path,
                     timeout_count_threshold,
-                    other_running_processes=get_other_running_processes(
-                        processes, exclude_pid=pid),
                 )
 
             if not processes:
@@ -553,9 +539,7 @@ async def monitor_via_task_scheduler(config):
             config,
             'process_wait_timeout_warning',
             process_name=task_name,
-            process_wait_time=formatted_waited_time,
-            other_running_processes='无',
-            process_list=[task_name]
+            process_wait_time=formatted_waited_time
         )
 
         # 执行等待超时外部程序
@@ -627,7 +611,6 @@ async def monitor_via_task_scheduler(config):
                     pid,
                     run_time_ms,
                     external_program_path,
-                    other_processes_str='无',
                 )
                 LOGGER.info("被监视进程已结束运行。")
                 break

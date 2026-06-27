@@ -106,26 +106,6 @@ def run_external_program(program_path):
             raise
 
 
-def get_other_running_processes(processes, exclude_pid=None):
-    """获取其他正在运行的进程信息。
-
-    Args:
-        processes (dict): 当前监视的进程信息。
-        exclude_pid (int, optional): 要排除的进程 PID。默认为 None。
-
-    Returns:
-        str: 其他正在运行的进程信息字符串。
-    """
-    LOGGER.debug("获取其他正在运行的进程信息")
-    other_processes = [
-        f"{info['name']} (PID: {pid})"
-        for pid, info in processes.items() if pid != exclude_pid
-    ]
-    result = ', '.join(other_processes) if other_processes else '无'
-    LOGGER.info(f"其他正在运行的进程信息: {result}")
-    return result
-
-
 def parse_time_string(time_str):
     """解析时间字符串为毫秒。
 
