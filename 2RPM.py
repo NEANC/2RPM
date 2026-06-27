@@ -29,6 +29,8 @@ def parse_args():
     """
     LOGGER.debug("解析命令行参数")
     parser = argparse.ArgumentParser(description='2RPM V3')
+    # 位置参数：支持文件关联或拖拽方式打开配置文件
+    parser.add_argument('config_path',nargs='?',default=None,help=argparse.SUPPRESS )
     parser.add_argument(
         '-c', '-C', '-config', '-Config', '--config', '--Config',
         default=DEFAULT_CONFIG_FILE,
@@ -58,13 +60,19 @@ def main():
     args = parse_args()
     # 计算程序根目录（使用当前工作目录）
     program_dir = get_program_directory()
-    
+
+    # 配置文件路径优先级：位置参数（文件关联/拖拽） > -c 选项 > 默认值
+    config_name = args.config_path if args.config_path else args.config
+
     # 处理配置文件路径，自动添加 .yaml 扩展名（如果没有提供）
-    config_name = args.config
     if not config_name.endswith('.yaml') and not config_name.endswith('.yml'):
         config_name += '.yaml'
-    
-    config_file = os.path.join(program_dir, config_name)
+
+    # 绝对路径（拖拽/关联打开）原样使用，相对路径基于程序目录拼接
+    if os.path.isabs(config_name):
+        config_file = config_name
+    else:
+        config_file = os.path.join(program_dir, config_name)
 
     # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
     CONFIG = load_config(config_file)
