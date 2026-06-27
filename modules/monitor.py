@@ -317,10 +317,7 @@ async def monitor_processes(config):
             else:
                 # 等待提示仅打印一次，避免进程未启动时刷屏
                 if not waiting_logged:
-                    LOGGER.info(
-                        f"正在等待目标进程运行，已等待时间: "
-                        f"{format_time_ms(waited_time_ms)}"
-                    )
+                    LOGGER.info("正在等待目标进程运行")
                     waiting_logged = True
                 await asyncio.sleep(wait_process_check_interval_ms / 1000)
     except asyncio.CancelledError:
