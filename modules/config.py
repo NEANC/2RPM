@@ -162,8 +162,6 @@ COMMENTS = {
                 "进程PID: {process_pid}\n"
                 "进程运行时间: {process_run_time}\n"
                 "进程积累等待时间: {process_wait_time}\n"
-                "正在运行的进程状态列表: {other_running_processes}\n"
-                "进程列表: {process_list}\n"
                 "调用的程序名: {external_program_name}\n"
                 "调用的程序路径: {external_program_path}\n"
             ),
@@ -436,13 +434,8 @@ def migrate_old_config(old_config):
     if 'monitor_settings' in migrated_config:
         monitor_settings = migrated_config['monitor_settings']
         
-        # 处理 process_name_list -> process_name
-        if 'process_name_list' in monitor_settings:
-            process_list = monitor_settings['process_name_list']
-            if isinstance(process_list, list) and process_list:
-                migrated_config['monitor_settings']['process_name'] = process_list[0]
-                LOGGER.info(f"已迁移 process_name_list 到 process_name: {migrated_config['monitor_settings']['process_name']}")
-        elif 'process_name' not in monitor_settings:
+        # 处理缺失的 process_name
+        if 'process_name' not in monitor_settings:
             default_process_name = DEFAULT_VALUES['monitor_settings']['process_name']
             migrated_config['monitor_settings']['process_name'] = default_process_name
             LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'process_name'，使用默认值: {default_process_name}")
