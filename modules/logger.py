@@ -2,19 +2,17 @@
 # -_- coding: utf-8 -_-
 
 import os
+import sys
 import time
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
 
 import colorama
 
 from modules.utils import get_program_directory
 
 LOGGER = logging.getLogger(__name__)
-
-colorama.init(autoreset=True)
 
 # 日志格式常量
 _LOG_CONSOLE_FORMAT = "%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s"
@@ -24,6 +22,9 @@ _LOG_FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # 文件日志滚动大小（10MB）
 _LOG_MAX_BYTES = 10 * 1024 * 1024
+
+# 启动阶段建立的文件处理器，供 setup_logging 复用
+_FILE_HANDLER = None
 
 
 class ColoredConsoleFormatter(logging.Formatter):
@@ -36,6 +37,10 @@ class ColoredConsoleFormatter(logging.Formatter):
         'ERROR': colorama.Fore.RED,
         'CRITICAL': colorama.Back.RED + colorama.Fore.BLACK + colorama.Style.BRIGHT,
     }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        colorama.init(autoreset=True)
 
     def format(self, record: logging.LogRecord) -> str:
         color = self.LEVEL_COLORS.get(record.levelname, colorama.Fore.WHITE)
@@ -100,190 +105,246 @@ def _make_log_filename(log_filename: str) -> str:
     return f"{log_filename}_{timestamp}.{ms:03d}.log"
 
 
-def _merge_default_log(log_dir: str, log_filename: str,
-                        default_log_file: str) -> Optional[str]:
-    """将 default.log 内容合并到正式日志文件中。
+def _resolve_log_dir(log_directory: str) -> str:
+    """将日志目录配置解析为绝对路径。
 
-    在 setup_logging 首次创建日志文件时调用，确保程序启动阶段的
-    临时日志不丢失。
+    相对路径基于程序目录拼接，绝对路径原样保留。
 
     Args:
-        log_dir: 日志目录。
-        log_filename: 正式日志文件名（不含扩展名）。
-        default_log_file: 临时日志文件路径。
+        log_directory: 已清洗的目录配置。
 
     Returns:
-        str or None: 合并后的正式日志文件路径（None 表示无需合并）。
+        str: 日志目录的绝对路径。
     """
-    if not os.path.exists(default_log_file):
-        return None
+    if os.path.isabs(log_directory):
+        return log_directory
+    return os.path.join(get_program_directory(), log_directory)
 
+
+def _create_file_handler(log_dir: str, prefix: str):
+    """创建滚动文件日志处理器，IO 失败时返回 None。
+
+    在指定目录下生成带毫秒时间戳的日志文件，文件级别恒为 DEBUG。
+    任何文件 IO 异常都在内部降级处理，不向上层抛出。
+
+    Args:
+        log_dir: 日志目录的绝对路径。
+        prefix: 日志文件名前缀。
+
+    Returns:
+        RotatingFileHandler | None: 成功返回处理器，IO 失败返回 None。
+    """
     try:
-        with open(default_log_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-    except OSError:
-        LOGGER.debug("读取临时日志文件失败", exc_info=True)
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, _make_log_filename(prefix))
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=0,
+            encoding='utf-8',
+        )
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(
+            logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+        return handler
+    except OSError as e:
+        LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
         return None
-    except Exception:
-        LOGGER.debug("读取临时日志文件异常", exc_info=True)
-        return None
-
-    if not content.strip():
-        return None
-
-    log_file = os.path.join(log_dir, _make_log_filename(log_filename))
-
-    with open(log_file, 'w', encoding='utf-8') as f:
-        f.write(content)
-
-    # 删除临时日志文件，最多重试 3 次
-    for attempt in range(3):
-        try:
-            os.remove(default_log_file)
-            break
-        except OSError:
-            if attempt < 2:
-                time.sleep(0.5)
-        except Exception:
-            LOGGER.debug("删除临时日志文件异常", exc_info=True)
-            break
-
-    return log_file
 
 
 def setup_default_logging() -> None:
     """设置程序启动阶段的默认日志配置。
 
-    仅在配置文件加载前使用，提供控制台彩色输出和临时文件记录。
-    配置文件加载后由 setup_logging() 接管。
+    在配置文件加载前调用，建立控制台彩色输出与文件日志通道。文件
+    直接写入默认目录下的 logs/2RPM_时间戳.毫秒.log，处理器保存到
+    模块级变量供 setup_logging() 复用。文件 IO 失败时降级为仅控制台输出。
     """
+    global _FILE_HANDLER
+
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
 
-    # 检查是否已有 StreamHandler（避免重复初始化）
-    has_stream_handler = any(
-        isinstance(h, logging.StreamHandler) for h in root_logger.handlers
-    )
-
-    if has_stream_handler and root_logger.handlers:
+    # 守卫：已初始化过则不重复建立
+    if root_logger.handlers:
         return
 
     # 控制台彩色输出
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
-    console_formatter = ColoredConsoleFormatter(
-        _LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT)
-    console_handler.setFormatter(console_formatter)
+    console_handler.setFormatter(
+        ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
     root_logger.addHandler(console_handler)
 
-    # 临时文件记录（default.log），程序启动阶段的日志
-    program_dir = get_program_directory()
-    default_log_file = os.path.join(program_dir, 'default.log')
+    # 文件日志：启动阶段早于配置加载，前缀固定为 '2RPM'
+    default_dir = _resolve_log_dir('logs')
+    _FILE_HANDLER = _create_file_handler(default_dir, '2RPM')
+    if _FILE_HANDLER is not None:
+        root_logger.addHandler(_FILE_HANDLER)
 
-    # 处理上次未合并的 default.log
-    if os.path.exists(default_log_file):
-        try:
-            os.remove(default_log_file)
-        except OSError:
-            pass
-        except Exception:
-            LOGGER.debug("删除残留临时日志文件失败", exc_info=True)
 
-    # 文件记录失败时降级为仅控制台输出，不中断程序
+def _set_console_level(root_logger: logging.Logger, level: int) -> None:
+    """调整控制台处理器级别，不存在时新建一个。
+
+    Args:
+        root_logger: 根日志记录器。
+        level: 控制台输出级别。
+    """
+    # RotatingFileHandler 是 FileHandler 子类，需排除以定位控制台处理器
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and \
+                not isinstance(handler, logging.FileHandler):
+            handler.setLevel(level)
+            return
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(
+        ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
+    root_logger.addHandler(console_handler)
+
+
+def _reopen_file_handler(path: str, backup_count: int):
+    """在指定路径重新打开滚动文件处理器。
+
+    Args:
+        path: 日志文件完整路径。
+        backup_count: 滚动备份数量。
+
+    Returns:
+        RotatingFileHandler: 重新打开的文件处理器。
+    """
+    handler = RotatingFileHandler(
+        path, maxBytes=_LOG_MAX_BYTES, backupCount=backup_count, encoding='utf-8')
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+    return handler
+
+
+def _apply_log_path(handler, target_dir: str, target_prefix: str):
+    """将启动日志文件移动到配置目录并重命名为目标前缀。
+
+    根据旧文件名拼接新的目录和前缀。目标路径与当前路径相同时
+    不做处理。移动失败时沿用原文件，确保日志通道始终可用。
+
+    Args:
+        handler: 启动阶段创建的文件处理器。
+        target_dir: 配置解析出的目标目录绝对路径。
+        target_prefix: 目标文件名前缀（如 'myapp'）。
+
+    Returns:
+        RotatingFileHandler: 应用配置后的文件处理器（可能为新实例）。
+    """
+    old_path = handler.baseFilename
+    old_name = os.path.basename(old_path)
+
+    # 将旧前缀 '2RPM' 替换为目标前缀，仅替换首次出现
+    new_name = old_name.replace('2RPM', target_prefix, 1)
+    new_path = os.path.join(target_dir, new_name)
+
+    # 守卫：路径未变化
+    if os.path.normcase(os.path.normpath(old_path)) == \
+            os.path.normcase(os.path.normpath(new_path)):
+        return handler
+
+    backup_count = handler.backupCount
+
+    handler.close()
     try:
-        file_handler = logging.FileHandler(
-            default_log_file, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_formatter = logging.Formatter(_LOG_FILE_FORMAT)
-        file_handler.setFormatter(file_formatter)
-        root_logger.addHandler(file_handler)
-    except OSError as e:
-        LOGGER.warning(f"无法创建临时日志文件，仅启用控制台输出: {e}")
+        os.makedirs(target_dir, exist_ok=True)
+        os.replace(old_path, new_path)
+        return _reopen_file_handler(new_path, backup_count)
+    except OSError:
+        LOGGER.warning("应用日志配置失败，沿用默认启动文件")
+        return _reopen_file_handler(old_path, backup_count)
 
 
-def setup_logging(config: dict) -> None:
-    """根据配置设置正式日志系统。
+def _discard_file_handler(root_logger: logging.Logger) -> None:
+    """移除文件处理器并删除其日志文件（用于禁用文件日志）。
 
-    清除 setup_default_logging() 建立的临时处理器，按配置文件
-    重新建立控制台和文件日志通道。若启用文件日志，会将启动阶段的
-    default.log 内容合并到正式日志文件中。
+    Args:
+        root_logger: 根日志记录器。
+    """
+    global _FILE_HANDLER
 
-    文件日志始终输出 DEBUG 级别，不受配置影响。
-    配置中的 log_level 仅控制控制台输出级别。
+    if _FILE_HANDLER is None:
+        return
+
+    file_path = _FILE_HANDLER.baseFilename
+    root_logger.removeHandler(_FILE_HANDLER)
+    try:
+        _FILE_HANDLER.close()
+    except Exception:
+        LOGGER.debug("关闭日志处理器失败", exc_info=True)
+    _FILE_HANDLER = None
+
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError:
+        pass
+    except Exception:
+        LOGGER.debug("删除日志文件失败", exc_info=True)
+
+
+def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
+    """根据配置接管日志系统。
+
+    复用 setup_default_logging() 建立的处理器：调整控制台输出级别、
+    将日志文件移动到配置目录并按配置文件名重命名前缀、设置滚动备份
+    数量并清理过期日志。
+
+    文件日志始终输出 DEBUG 级别，不受配置影响；配置中的 log_level
+    仅控制控制台输出级别。
+    前缀推导规则：config.yaml → '2RPM'，其它 → 配置文件基底名。
 
     Args:
         config: 配置字典。
+        config_file: 配置文件路径，用于推导日志文件名前缀。
     """
+    global _FILE_HANDLER
+
     log_config = config.get('log_settings', {})
     enable_log_file = log_config.get('enable_log_file', True)
     log_level_str = log_config.get('log_level', 'INFO')
     log_level = getattr(logging, log_level_str.upper(), logging.INFO)
-    log_dir_name = log_config.get('log_directory', 'logs')
     max_files = log_config.get('max_log_files', 15)
     max_days = log_config.get('log_retention_days', 3)
-    log_filename = log_config.get('log_filename', '2RPM')
+    # 清洗日志目录配置：非法输入降级为默认目录
+    raw_dir = log_config.get('log_directory', 'logs')
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        raw_dir = 'logs'
+    log_dir = _resolve_log_dir(raw_dir.strip())
 
-    program_dir = get_program_directory()
-    log_dir = os.path.join(program_dir, log_dir_name)
-    default_log_file = os.path.join(program_dir, 'default.log')
+    # 从配置文件名推导日志前缀：config 或空一律用 '2RPM'，其它取配置文件基底名
+    config_basename = os.path.splitext(os.path.basename(config_file))[0].strip()
+    target_prefix = config_basename if config_basename and \
+        config_basename.lower() != 'config' else '2RPM'
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # 根 logger 始终 DEBUG，由各 handler 独立控制级别
 
-    # 清除 setup_default_logging 建立的处理器
-    for handler in root_logger.handlers[:]:
-        try:
-            handler.close()
-        except Exception:
-            LOGGER.debug("关闭旧日志处理器失败", exc_info=True)
-        root_logger.removeHandler(handler)
+    # 控制台输出级别由配置文件控制
+    _set_console_level(root_logger, log_level)
 
-    # 控制台处理器（级别由配置文件控制）
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-    console_formatter = ColoredConsoleFormatter(
-        _LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT)
-    console_handler.setFormatter(console_formatter)
-    root_logger.addHandler(console_handler)
-
+    # 不启用文件日志：移除并删除启动文件
     if not enable_log_file:
-        if os.path.exists(default_log_file):
-            try:
-                os.remove(default_log_file)
-            except OSError:
-                pass
-            except Exception:
-                LOGGER.debug("删除临时日志文件失败", exc_info=True)
+        _discard_file_handler(root_logger)
         return
 
-    # 文件日志（始终 DEBUG，不受配置级别影响）
-    # 文件 IO 失败时降级为仅控制台输出，不中断程序
-    try:
-        os.makedirs(log_dir, exist_ok=True)
+    # 启动阶段文件创建失败时尝试补建，否则复用并迁移到配置目录
+    if _FILE_HANDLER is None:
+        _FILE_HANDLER = _create_file_handler(log_dir, target_prefix)
+        if _FILE_HANDLER is not None:
+            root_logger.addHandler(_FILE_HANDLER)
+    else:
+        # 先摘除再调用 _apply_log_path，避免内部 close 时 handler 仍挂在 logger 上
+        root_logger.removeHandler(_FILE_HANDLER)
+        _FILE_HANDLER = _apply_log_path(_FILE_HANDLER, log_dir, target_prefix)
+        root_logger.addHandler(_FILE_HANDLER)
 
-        # 合并 default.log 到正式日志文件
-        merged_file = _merge_default_log(
-            log_dir, log_filename, default_log_file)
-
-        # 创建正式日志文件处理器
-        if merged_file is None:
-            merged_file = os.path.join(
-                log_dir, _make_log_filename(log_filename))
-
-        file_handler = RotatingFileHandler(
-            merged_file,
-            maxBytes=_LOG_MAX_BYTES,
-            backupCount=max_files,
-            encoding='utf-8',
-        )
-        file_handler.setLevel(logging.DEBUG)  # 文件日志始终 DEBUG
-        file_formatter = logging.Formatter(
-            _LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT)
-        file_handler.setFormatter(file_formatter)
-        root_logger.addHandler(file_handler)
-    except OSError as e:
-        LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
-        return
-
-    # 日志自清洁
-    _cleanup_old_logs(log_dir, max_files, max_days)
+    # 统一设置滚动备份数量与清理（使用文件真实所在目录）
+    if _FILE_HANDLER is not None:
+        _FILE_HANDLER.backupCount = max_files
+        actual_log_dir = os.path.dirname(_FILE_HANDLER.baseFilename)
+        _cleanup_old_logs(actual_log_dir, max_files, max_days)

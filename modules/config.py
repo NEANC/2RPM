@@ -91,7 +91,6 @@ DEFAULT_VALUES = {
         'log_directory': 'logs',
         'max_log_files': 15,
         'log_retention_days': 3,
-        'log_filename': '2RPM',
     },
 }
 
@@ -251,11 +250,11 @@ COMMENTS = {
         'log_directory': (
             "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
             "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
-            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False\n"
+            "- 非法或为空时将自动回退为默认目录 'logs'\n"
+            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False"
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
         'log_retention_days': "\n日志保存天数，单位为天，默认值: 3天",
-        'log_filename': "\n日志文件名，时间戳不可修改，默认值: 2RPM",
     },
 }
 
