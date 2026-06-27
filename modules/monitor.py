@@ -292,6 +292,8 @@ async def monitor_processes(config):
         f"等待监视进程启动，每 {wait_process_check_interval_ms} ms 检查一次"
     )
     start_time_ms = time.perf_counter() * 1000
+    # 等待提示仅打印一次，避免进程未启动时刷屏
+    waiting_logged = False
 
     try:
         # 等待进程启动
@@ -313,10 +315,13 @@ async def monitor_processes(config):
                 LOGGER.info("目标监视进程已启动")
                 break
             else:
-                LOGGER.info(
-                    f"正在等待目标进程运行，已等待时间: "
-                    f"{format_time_ms(waited_time_ms)}"
-                )
+                # 等待提示仅打印一次，避免进程未启动时刷屏
+                if not waiting_logged:
+                    LOGGER.info(
+                        f"正在等待目标进程运行，已等待时间: "
+                        f"{format_time_ms(waited_time_ms)}"
+                    )
+                    waiting_logged = True
                 await asyncio.sleep(wait_process_check_interval_ms / 1000)
     except asyncio.CancelledError:
         LOGGER.critical("任务被取消，退出等待进程启动循环")
