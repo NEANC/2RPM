@@ -48,6 +48,10 @@ async def _handle_process_end(config, process_name, pid, run_time_ms,
     """
     formatted_run_time = format_time_ms(run_time_ms)
 
+    LOGGER.info(
+        f"进程结束: {process_name} (PID: {pid}) "
+        f"运行时间: {formatted_run_time}"
+    )
     await send_notification(
         config,
         'process_end_notification',
@@ -56,10 +60,6 @@ async def _handle_process_end(config, process_name, pid, run_time_ms,
         process_run_time=formatted_run_time,
         other_running_processes=other_processes_str,
         process_list=[]
-    )
-    LOGGER.info(
-        f"进程结束: {process_name} (PID: {pid}) "
-        f"运行时间: {formatted_run_time}"
     )
 
     # 进程结束时调用外部程序
@@ -113,6 +113,10 @@ async def _check_process_timeout(config, process_info, pid, current_time_ms,
 
     formatted_run_time = format_time_ms(run_time_ms)
     process_name = process_info['name']
+    LOGGER.warning(
+        f"进程 {process_name} (PID: {pid}) "
+        f"已运行超时 {formatted_run_time}"
+    )
     await send_notification(
         config,
         'process_timeout_warning',
@@ -121,10 +125,6 @@ async def _check_process_timeout(config, process_info, pid, current_time_ms,
         process_run_time=formatted_run_time,
         other_running_processes=other_running_processes,
         process_list=[]
-    )
-    LOGGER.warning(
-        f"进程 {process_name} (PID: {pid}) "
-        f"已运行超时 {formatted_run_time}"
     )
     process_info['last_warning_time_ms'] = current_time_ms
     process_info['timeout_count'] += 1
@@ -330,6 +330,7 @@ async def monitor_processes(config):
         LOGGER.debug("执行等待进程启动超时报告与推送")
         waited_time_ms = time.perf_counter() * 1000 - start_time_ms
         formatted_waited_time = format_time_ms(waited_time_ms)
+        LOGGER.error(f"等待超时，进程未运行: {process_name}")
         await send_notification(
             config,
             'process_wait_timeout_warning',
@@ -338,7 +339,6 @@ async def monitor_processes(config):
             other_running_processes=get_other_running_processes(processes),
             process_list=[process_name]
         )
-        LOGGER.error(f"等待超时，进程未运行: {process_name}")
 
         # 执行外部程序
         if external_program_on_wait_timeout_path:
@@ -548,6 +548,7 @@ async def monitor_via_task_scheduler(config):
         # 等待超时且未捕获到计划任务进程
         waited_time_ms = time.perf_counter() * 1000 - wait_start_time_ms
         formatted_waited_time = format_time_ms(waited_time_ms)
+        LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
         await send_notification(
             config,
             'process_wait_timeout_warning',
@@ -556,7 +557,6 @@ async def monitor_via_task_scheduler(config):
             other_running_processes='无',
             process_list=[task_name]
         )
-        LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
 
         # 执行等待超时外部程序
         if external_program_on_wait_timeout_path:
