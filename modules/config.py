@@ -243,7 +243,7 @@ COMMENTS = {
             "- 配置日志输出的相关参数\n"
         ),
         'enable_log_file': (
-            "\n是否输出日志文件，默认为 False\n"
+            "\n是否输出日志文件，默认为 True\n"
             "- False 为 不输出，True 为 输出"
         ),
         'log_level': (
@@ -645,6 +645,15 @@ def load_config(config_file):
         yaml = YAML()
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
+        if user_config is None:
+            LOGGER.warning(f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，已按默认配置加载")
+            user_config = {}
+        elif not isinstance(user_config, dict):
+            LOGGER.error(
+                f"配置文件内容类型不合法 ({type(user_config).__name__})，"
+                f"应为字典结构，已按默认配置加载：{os.path.abspath(config_file)}"
+            )
+            user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
@@ -669,6 +678,9 @@ def load_config(config_file):
 
     # 加载默认配置
     default_config = get_default_config()
+
+    merged_config = default_config
+
     
     if is_old_version:
         # 旧版本配置，进行迁移
