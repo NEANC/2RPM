@@ -7,6 +7,8 @@ import logging
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
+from modules.utils import correct_channel_aliases, strip_wrapping_quotes
+
 LOGGER = logging.getLogger(__name__)
 
 # 默认配置值集中管理
@@ -201,7 +203,7 @@ COMMENTS = {
                 "- provider 名称大小写不敏感（如 ServerChan、DingTalk）\n"
                 "- provider、key、token 等值可使用引号 '' 或 \"\" 包裹\n"
                 "- 其余键为该通道所需的参数，例如：\n"
-                "  - {provider: serverchan, key: SCTxxxx}\n"
+                "  - {provider: serverchan, sckey: SCTxxxx}\n"
                 "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
                 "  - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
                 "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}"
@@ -558,6 +560,41 @@ def migrate_old_config(old_config):
     return migrated_config
 
 
+def correct_push_channel_config(user_config):
+    """纠正配置中推送通道的密钥别名，使其符合 OnePush 要求的参数名。
+
+    定位 push_settings.push_channel_settings.push_channel 节点，依据 provider
+    将通用键名（如 key）就地纠正为对应渠道要求的参数名（如 serverchan 的 sckey），
+    以便后续写回配置文件，避免推送时因参数名不匹配而失败。
+
+    Args:
+        user_config (dict): 用户配置字典。
+
+    Returns:
+        bool: 是否发生了键名纠正。
+    """
+    push_settings = user_config.get('push_settings')
+    if not isinstance(push_settings, dict):
+        return False
+
+    channel_settings = push_settings.get('push_channel_settings')
+    if not isinstance(channel_settings, dict):
+        return False
+
+    push_channel = channel_settings.get('push_channel')
+    if not isinstance(push_channel, dict) or not push_channel:
+        return False
+
+    provider = push_channel.get('provider', '')
+    corrections = correct_channel_aliases(provider, push_channel)
+    for old_key, new_key in corrections.items():
+        LOGGER.warning(
+            f"推送通道 '{strip_wrapping_quotes(provider)}' 的参数 '{old_key}' "
+            f"已自动纠正为 '{new_key}'"
+        )
+    return bool(corrections)
+
+
 def merge_configs(user_config, default_config):
     """将用户配置合并到默认配置中。
 
@@ -734,10 +771,13 @@ def load_config(config_file):
         # 清理用户配置
         cleaned = clean_config(user_config, default_config, 'root')
 
+        # 纠正推送通道密钥别名（如 serverchan 的 key -> sckey）
+        corrected = correct_push_channel_config(user_config)
+
         # 合并更新后的用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)
 
-        if updated or cleaned:
+        if updated or cleaned or corrected:
             LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
             try:
                 yaml = YAML()
