@@ -71,12 +71,19 @@ async def send_notification(config, template_key, **kwargs):
         'short_current_time': short_current_time,
     })
 
-    title = title.format(**kwargs)
-    content = content.format(**kwargs)
-    LOGGER.info(
-        f"通知标题: {title}\r\n"
-        f"通知内容: {content}"
-    )
+    try:
+        title = title.format(**kwargs)
+        content = content.format(**kwargs)
+        LOGGER.info(
+            f"通知标题: {title}\r\n"
+            f"通知内容: {content}"
+        )
+    except KeyError as e:
+        LOGGER.error(
+            f"通知模板缺少变量: {e}，已跳过该条通知。模板键: {template_key}"
+        )
+        return
+
 
     # 获取推送通道
     push_channel_settings = push_settings.get('push_channel_settings', {})

@@ -20,6 +20,38 @@ from modules.task_monitor import query_task_pid
 LOGGER = logging.getLogger(__name__)
 
 
+def _get_timeout_count_threshold(raw_threshold):
+    """规范化外部程序触发阈值，确保为正整数。
+
+    将配置值转换为 int 后，保证阈值 >= 1。
+    当阈值无效或小于 1 时使用默认值，避免 modulo 零除与异常行为。
+
+    Args:
+        raw_threshold: 配置读取到的原始阈值。
+
+    Returns:
+        int: 合法化后的阈值。
+    """
+    default_threshold = DEFAULT_VALUES['external_program_settings']['timeout_count_threshold']
+    try:
+        threshold = int(raw_threshold)
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            "external_program_settings.timeout_count_threshold 配置无效，"
+            f"将使用默认值 {default_threshold}"
+        )
+        return default_threshold
+
+    if threshold < 1:
+        LOGGER.warning(
+            "external_program_settings.timeout_count_threshold 配置必须为 >= 1，"
+            f"当前值 {threshold} 无效，已使用默认值 {default_threshold}"
+        )
+        return default_threshold
+
+    return threshold
+
+
 # 用于 asyncio.to_thread 中获取程序名（os.path.basename 在线程中安全）
 def _get_program_name(program_path):
     """获取程序的文件名部分。
@@ -267,8 +299,9 @@ async def monitor_processes(config):
     external_program_path = external_settings.get('external_program_path', '')
     another_external_program_path = external_settings.get(
         'another_external_program_path', '')
-    timeout_count_threshold = external_settings.get(
-        'timeout_count_threshold', 3)
+    timeout_count_threshold = _get_timeout_count_threshold(
+        external_settings.get('timeout_count_threshold', 3)
+    )
     external_program_on_wait_timeout_path = external_settings.get(
         'external_program_on_wait_timeout_path', '')
 
@@ -452,8 +485,9 @@ async def monitor_via_task_scheduler(config):
     external_program_path = external_settings.get('external_program_path', '')
     another_external_program_path = external_settings.get(
         'another_external_program_path', '')
-    timeout_count_threshold = external_settings.get(
-        'timeout_count_threshold', 3)
+    timeout_count_threshold = _get_timeout_count_threshold(
+        external_settings.get('timeout_count_threshold', 3)
+    )
     external_program_on_wait_timeout_path = external_settings.get(
         'external_program_on_wait_timeout_path', '')
 
