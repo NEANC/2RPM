@@ -1,310 +1,376 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -_- coding: utf-8 -_-
 
 import os
+import sys
 import time
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
 import colorama
 
-from ruamel.yaml import YAML
 from modules.utils import get_program_directory
 
 LOGGER = logging.getLogger(__name__)
 
+# 日志格式常量
+_LOG_CONSOLE_FORMAT = "%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s"
+_LOG_CONSOLE_DATEFMT = "%H:%M:%S"
+_LOG_FILE_FORMAT = "%(asctime)s.%(msecs)03d | %(levelname)s | %(message)s"
+_LOG_FILE_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
-def setup_default_logging():
-    """设置默认日志配置"""
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    
-    # 初始化 colorama
-    colorama.init()
+# 文件日志滚动大小（10MB）
+_LOG_MAX_BYTES = 10 * 1024 * 1024
 
-    class ColorLogFormatter(logging.Formatter):
-        """带颜色的日志格式化器"""
+# 启动阶段建立的文件处理器，供 setup_logging 复用
+_FILE_HANDLER = None
 
-        LEVEL_COLORS = {
-            'DEBUG': colorama.Fore.CYAN,
-            'INFO': colorama.Fore.WHITE,
-            'WARNING': colorama.Fore.YELLOW,
-            'ERROR': colorama.Fore.RED,
-            'CRITICAL': colorama.Back.RED + colorama.Fore.BLACK + colorama.Style.BRIGHT,
-        }
 
-        def format(self, record):
-            """格式化日志记录。
+class ColoredConsoleFormatter(logging.Formatter):
+    """带颜色的控制台日志格式化器"""
 
-            Args:
-                record (LogRecord): 日志记录对象。
+    LEVEL_COLORS = {
+        'DEBUG': colorama.Fore.CYAN,
+        'INFO': colorama.Fore.WHITE,
+        'WARNING': colorama.Fore.YELLOW,
+        'ERROR': colorama.Fore.RED,
+        'CRITICAL': colorama.Back.RED + colorama.Fore.BLACK + colorama.Style.BRIGHT,
+    }
 
-            Returns:
-                str: 格式化后的日志字符串。
-            """
-            level_color = self.LEVEL_COLORS.get(record.levelname, '')
-            reset = colorama.Style.RESET_ALL
-            message = super().format(record)
-            return f"{level_color}{message}{reset}"
-    
-    # 控制台处理器
-    color_formatter = ColorLogFormatter(
-        '%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    # 控制台处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(color_formatter)
-    logger.addHandler(console_handler)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        colorama.init(autoreset=True)
 
-    # 处理上次未合并的 default.log 文件
-    program_dir = get_program_directory()
-    default_log_file = os.path.join(program_dir, 'default.log')
-    
-    # 检查是否存在上次未合并的 default.log
-    if os.path.exists(default_log_file):
+    def format(self, record: logging.LogRecord) -> str:
+        color = self.LEVEL_COLORS.get(record.levelname, colorama.Fore.WHITE)
+        result = self._format_without_traceback(record)
+        return f"{color}{result}{colorama.Style.RESET_ALL}"
+
+    def _format_without_traceback(self, record: logging.LogRecord) -> str:
+        """格式化日志且不输出异常堆栈，仅保留异常摘要。
+
+        控制台只展示异常类型与消息（由调用方写入 message），完整 traceback
+        交由文件处理器输出。临时屏蔽 record 的异常字段进行格式化，结束后还原，
+        避免影响其他处理器对同一条记录的格式化。
+
+        Args:
+            record (logging.LogRecord): 待格式化的日志记录。
+
+        Returns:
+            str: 不含 traceback 的日志文本。
+        """
+        saved_exc_info = record.exc_info
+        saved_exc_text = record.exc_text
+        saved_stack_info = record.stack_info
+        record.exc_info = None
+        record.exc_text = None
+        record.stack_info = None
         try:
-            # 尝试读取配置文件以获取日志目录设置
-            config_file = os.path.join(program_dir, 'config.yaml')
-            if os.path.exists(config_file):
-                yaml = YAML()
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    config = yaml.load(f)
-                log_config = config.get('log_settings', {})
-                log_dir = log_config.get('log_directory', 'logs')
-                log_dir = os.path.join(program_dir, log_dir)
-                
-                # 创建日志目录
-                os.makedirs(log_dir, exist_ok=True)
-                
-                # 生成转储日志文件名
-                log_filename = log_config.get('log_filename', '2RPM')
-                timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
-                dump_log_file = os.path.join(log_dir, f"{log_filename}_dump_{timestamp}.log")
-                
-                # 转储 default.log 内容
-                with open(default_log_file, 'r', encoding='utf-8') as f:
-                    default_log_content = f.read()
-                if default_log_content:
-                    with open(dump_log_file, 'w', encoding='utf-8') as f:
-                        f.write(default_log_content)
-                    # 使用根 logger 记录转储信息
-                    root_logger = logging.getLogger()
-                    root_logger.info(f"已将上次未合并的日志转储到: {dump_log_file}")
-                
-                # 清理转储的日志文件，确保符合配置限制
-                max_days = log_config.get('log_retention_days', 3)
-                max_files = log_config.get('max_log_files', 15)
-                files = sorted(Path(log_dir).glob('*.log'), key=os.path.getmtime)
-                now = time.time()
-                
-                # 按天数清理
-                for file_path in files:
-                    if now - file_path.stat().st_mtime > max_days * 86400:
-                        try:
-                            file_path.unlink()
-                        except Exception:
-                            pass
-                
-                # 按数量清理
-                if len(files) > max_files:
-                    for file_path in files[:len(files) - max_files]:
-                        try:
-                            file_path.unlink()
-                        except Exception:
-                            pass
-            # 删除 default.log 文件
-            os.remove(default_log_file)
-        except Exception:
-            # 如果处理失败，继续执行，不影响程序启动
-            pass
-    
-    # 确保目录存在
-    os.makedirs(os.path.dirname(default_log_file) or '.', exist_ok=True)
-    
-    # 创建新的 default.log 文件处理器
-    file_formatter = logging.Formatter(
-        fmt='%(asctime)s | %(levelname)s | %(message)s'
-    )
-    file_handler = logging.FileHandler(
-        default_log_file, encoding='utf-8'
-    )
-    file_handler.setFormatter(file_formatter)
-    logger.addHandler(file_handler)
+            return super().format(record)
+        finally:
+            record.exc_info = saved_exc_info
+            record.exc_text = saved_exc_text
+            record.stack_info = saved_stack_info
 
 
-def setup_logging(config):
-    """设置日志配置。
+def _cleanup_old_logs(log_dir: str, max_files: int, max_days: int) -> None:
+    """清理过期和超量的日志文件。
 
-    根据配置文件中的设置，初始化日志系统，包括控制台输出和文件输出。
+    先按天数清理（超过 max_days 天的文件删除），再按数量清理
+    （保留最新的 max_files 个文件）。
 
     Args:
-        config (dict): 配置信息。
+        log_dir: 日志文件夹路径。
+        max_files: 保留的最大日志文件数量。
+        max_days: 日志文件最大保留天数。
     """
-    LOGGER.debug("开始执行函数: setup_logging")
-    log_config = config.get('log_settings', {})
-    enable_log_file = log_config.get('enable_log_file', False)
-    log_level_str = log_config.get('log_level', 'INFO')
-    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
-    log_dir = log_config.get('log_directory', 'logs')
+    if not os.path.exists(log_dir):
+        return
 
-    # 设置日志目录
-    program_dir = get_program_directory()
-    LOGGER.debug(f"程序所在目录: {program_dir}")
-    log_dir = os.path.join(program_dir, log_dir)
-    LOGGER.debug(f"日志目录设置: {log_dir}")
-
-    # 日志格式
-    file_formatter = logging.Formatter(
-        '%(asctime)s | %(levelname)s | %(message)s')
-
-    # 更新日志级别
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-    LOGGER.info(f"日志级别设置: {log_level_str.upper()}")
-
-    # 清除之前的处理器
-    default_log_file = os.path.join(program_dir, 'default.log')
-    
-    for handler in root_logger.handlers[:]:
-        # 检查是否是文件处理器且指向默认日志文件
-        if isinstance(handler, logging.FileHandler) and getattr(handler, 'baseFilename', '') == default_log_file:
-            try:
-                handler.close()
-                LOGGER.debug(f"已关闭默认日志文件处理器: {default_log_file}")
-            except Exception as e:
-                LOGGER.warning(f"关闭默认日志文件处理器时出错: {e}")
-        root_logger.removeHandler(handler)
-    LOGGER.debug("已清除之前的日志处理器")
-
-    # 控制台日志处理器
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
-
-    # 初始化 colorama
-    colorama.init()
-
-    class ColorLogFormatter(logging.Formatter):
-        """带颜色的日志格式化器"""
-
-        LEVEL_COLORS = {
-            'DEBUG': colorama.Fore.CYAN,
-            'INFO': colorama.Fore.WHITE,
-            'WARNING': colorama.Fore.YELLOW,
-            'ERROR': colorama.Fore.RED,
-            'CRITICAL': colorama.Back.RED + colorama.Fore.BLACK + colorama.Style.BRIGHT,
-        }
-
-        def format(self, record):
-            """格式化日志记录。
-
-            Args:
-                record (LogRecord): 日志记录对象。
-
-            Returns:
-                str: 格式化后的日志字符串。
-            """
-            level_color = self.LEVEL_COLORS.get(record.levelname, '')
-            reset = colorama.Style.RESET_ALL
-            message = super().format(record)
-            return f"{level_color}{message}{reset}"
-
-    color_formatter = ColorLogFormatter(
-        '%(levelname)s | %(asctime)s.%(msecs)03d | %(message)s',
-        datefmt='%H:%M:%S'
+    files = sorted(
+        Path(log_dir).glob("*.log"),
+        key=os.path.getmtime,
     )
-    console_handler.setFormatter(color_formatter)
-    root_logger.addHandler(console_handler)
-    LOGGER.info("控制台日志处理器已就绪")
-
-    # 日志文件处理器
-    if enable_log_file:
-        os.makedirs(log_dir, exist_ok=True)  # 仅在启用日志时创建日志目录
-
-        # 日志文件名
-        log_filename = log_config.get('log_filename', '2RPM')
-        timestamp = time.strftime('%Y-%m-%d_%H-%M-%S')
-        log_file = os.path.join(log_dir, f"{log_filename}_{timestamp}.log")
-        LOGGER.info(f"日志文件输出: {log_file}")
-
-        # 合并默认日志文件内容
-        if os.path.exists(default_log_file):
-            try:
-                with open(default_log_file, 'r', encoding='utf-8') as f:
-                    default_log_content = f.read()
-                if default_log_content:
-                    # 将默认日志内容写入新的日志文件开头
-                    with open(log_file, 'w', encoding='utf-8') as f:
-                        f.write(default_log_content)
-                    LOGGER.info("已将初始化日志合并")
-                # 尝试删除默认日志文件，最多尝试3次
-                max_attempts = 3
-                for attempt in range(max_attempts):
-                    try:
-                        os.remove(default_log_file)
-                        LOGGER.debug("已删除临时日志文件")
-                        break
-                    except Exception as e:
-                        if attempt < max_attempts - 1:
-                            LOGGER.warning(f"删除临时日志文件失败，{max_attempts - attempt - 1} 次尝试后重试: {e}")
-                            time.sleep(0.5)
-                        else:
-                            LOGGER.warning(f"处理临时日志文件时出错: {e}")
-            except Exception as e:
-                LOGGER.warning(f"处理临时日志文件时出错: {e}")
-
-        # 创建文件处理器
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=log_config.get('max_log_files', 15),
-            encoding='utf-8'
-        )
-        file_handler.setFormatter(file_formatter)
-        file_handler.setLevel(log_level)
-        root_logger.addHandler(file_handler)
-        LOGGER.info("日志文件处理器已就绪")
-
-        # 日志自清洁
-        clean_logs(log_dir, config)
-    else:
-        # 即使禁用日志文件，也清理默认日志文件
-        if os.path.exists(default_log_file):
-            try:
-                os.remove(default_log_file)
-                LOGGER.info("已删除临时日志文件")
-            except Exception as e:
-                LOGGER.warning(f"删除临时日志文件时出错: {e}")
-        LOGGER.info("日志文件输出已禁用")
-
-
-def clean_logs(log_dir, config):
-    """清理过期日志文件。
-
-    Args:
-        log_dir (str): 日志目录。
-        config (dict): 配置信息。
-    """
-    log_config = config.get('log_settings', {})
-    max_days = log_config.get('log_retention_days', 3)
-    max_files = log_config.get('max_log_files', 15)
-    files = sorted(Path(log_dir).glob('*.log'), key=os.path.getmtime)
     now = time.time()
 
     # 按天数清理
-    for file_path in files:
+    for file_path in list(files):
         if now - file_path.stat().st_mtime > max_days * 86400:
             try:
-                LOGGER.info(f"正在清理过期的日志文件: {file_path}")
                 file_path.unlink()
-            except Exception as e:
-                LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
+                files.remove(file_path)
+            except OSError:
+                pass
+            except Exception:
+                LOGGER.debug(f"清理过期日志文件失败: {file_path}", exc_info=True)
 
     # 按数量清理
     if len(files) > max_files:
         for file_path in files[:len(files) - max_files]:
             try:
-                LOGGER.info(f"正在清理大于 {max_files} 的日志文件: {file_path}")
                 file_path.unlink()
-            except Exception as e:
-                LOGGER.warning(f"删除日志文件 {file_path} 失败: {e}")
+            except OSError:
+                pass
+            except Exception:
+                LOGGER.debug(f"清理超量日志文件失败: {file_path}", exc_info=True)
+
+
+def _make_log_filename(log_filename: str) -> str:
+    """生成带毫秒时间戳的日志文件名，避免同秒碰撞。
+
+    Args:
+        log_filename: 日志文件名前缀（不含扩展名）。
+
+    Returns:
+        str: 完整的日志文件名。
+    """
+    now = time.time()
+    ms = int((now - int(now)) * 1000)
+    timestamp = time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(now))
+    return f"{log_filename}_{timestamp}.{ms:03d}.log"
+
+
+def _resolve_log_dir(log_directory: str) -> str:
+    """将日志目录配置解析为绝对路径。
+
+    相对路径基于程序目录拼接，绝对路径原样保留。
+
+    Args:
+        log_directory: 已清洗的目录配置。
+
+    Returns:
+        str: 日志目录的绝对路径。
+    """
+    if os.path.isabs(log_directory):
+        return log_directory
+    return os.path.join(get_program_directory(), log_directory)
+
+
+def _create_file_handler(log_dir: str, prefix: str):
+    """创建滚动文件日志处理器，IO 失败时返回 None。
+
+    在指定目录下生成带毫秒时间戳的日志文件，文件级别恒为 DEBUG。
+    任何文件 IO 异常都在内部降级处理，不向上层抛出。
+
+    Args:
+        log_dir: 日志目录的绝对路径。
+        prefix: 日志文件名前缀。
+
+    Returns:
+        RotatingFileHandler | None: 成功返回处理器，IO 失败返回 None。
+    """
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, _make_log_filename(prefix))
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=_LOG_MAX_BYTES,
+            backupCount=0,
+            encoding='utf-8',
+        )
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(
+            logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+        return handler
+    except OSError as e:
+        LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
+        return None
+
+
+def setup_default_logging() -> None:
+    """设置程序启动阶段的默认日志配置。
+
+    在配置文件加载前调用，建立控制台彩色输出与文件日志通道。文件
+    直接写入默认目录下的 logs/2RPM_时间戳.毫秒.log，处理器保存到
+    模块级变量供 setup_logging() 复用。文件 IO 失败时降级为仅控制台输出。
+    """
+    global _FILE_HANDLER
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # 守卫：已初始化过则不重复建立
+    if root_logger.handlers:
+        return
+
+    # 控制台彩色输出
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(
+        ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
+    root_logger.addHandler(console_handler)
+
+    # 文件日志：启动阶段早于配置加载，前缀固定为 '2RPM'
+    default_dir = _resolve_log_dir('logs')
+    _FILE_HANDLER = _create_file_handler(default_dir, '2RPM')
+    if _FILE_HANDLER is not None:
+        root_logger.addHandler(_FILE_HANDLER)
+
+
+def _set_console_level(root_logger: logging.Logger, level: int) -> None:
+    """调整控制台处理器级别，不存在时新建一个。
+
+    Args:
+        root_logger: 根日志记录器。
+        level: 控制台输出级别。
+    """
+    # RotatingFileHandler 是 FileHandler 子类，需排除以定位控制台处理器
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler) and \
+                not isinstance(handler, logging.FileHandler):
+            handler.setLevel(level)
+            return
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(
+        ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
+    root_logger.addHandler(console_handler)
+
+
+def _reopen_file_handler(path: str, backup_count: int):
+    """在指定路径重新打开滚动文件处理器。
+
+    Args:
+        path: 日志文件完整路径。
+        backup_count: 滚动备份数量。
+
+    Returns:
+        RotatingFileHandler: 重新打开的文件处理器。
+    """
+    handler = RotatingFileHandler(
+        path, maxBytes=_LOG_MAX_BYTES, backupCount=backup_count, encoding='utf-8')
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+    return handler
+
+
+def _apply_log_path(handler, target_dir: str, target_prefix: str):
+    """将启动日志文件移动到配置目录并重命名为目标前缀。
+
+    根据旧文件名拼接新的目录和前缀。目标路径与当前路径相同时
+    不做处理。移动失败时沿用原文件，确保日志通道始终可用。
+
+    Args:
+        handler: 启动阶段创建的文件处理器。
+        target_dir: 配置解析出的目标目录绝对路径。
+        target_prefix: 目标文件名前缀（如 'myapp'）。
+
+    Returns:
+        RotatingFileHandler: 应用配置后的文件处理器（可能为新实例）。
+    """
+    old_path = handler.baseFilename
+    old_name = os.path.basename(old_path)
+
+    # 将旧前缀 '2RPM' 替换为目标前缀，仅替换首次出现
+    new_name = old_name.replace('2RPM', target_prefix, 1)
+    new_path = os.path.join(target_dir, new_name)
+
+    # 守卫：路径未变化
+    if os.path.normcase(os.path.normpath(old_path)) == \
+            os.path.normcase(os.path.normpath(new_path)):
+        return handler
+
+    backup_count = handler.backupCount
+
+    handler.close()
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        os.replace(old_path, new_path)
+        return _reopen_file_handler(new_path, backup_count)
+    except OSError:
+        LOGGER.warning("应用日志配置失败，沿用默认启动文件")
+        return _reopen_file_handler(old_path, backup_count)
+
+
+def _discard_file_handler(root_logger: logging.Logger) -> None:
+    """移除文件处理器并删除其日志文件（用于禁用文件日志）。
+
+    Args:
+        root_logger: 根日志记录器。
+    """
+    global _FILE_HANDLER
+
+    if _FILE_HANDLER is None:
+        return
+
+    file_path = _FILE_HANDLER.baseFilename
+    root_logger.removeHandler(_FILE_HANDLER)
+    try:
+        _FILE_HANDLER.close()
+    except Exception:
+        LOGGER.debug("关闭日志处理器失败", exc_info=True)
+    _FILE_HANDLER = None
+
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except OSError:
+        pass
+    except Exception:
+        LOGGER.debug("删除日志文件失败", exc_info=True)
+
+
+def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
+    """根据配置接管日志系统。
+
+    复用 setup_default_logging() 建立的处理器：调整控制台输出级别、
+    将日志文件移动到配置目录并按配置文件名重命名前缀、设置滚动备份
+    数量并清理过期日志。
+
+    文件日志始终输出 DEBUG 级别，不受配置影响；配置中的 log_level
+    仅控制控制台输出级别。
+    前缀推导规则：config.yaml → '2RPM'，其它 → 配置文件基底名。
+
+    Args:
+        config: 配置字典。
+        config_file: 配置文件路径，用于推导日志文件名前缀。
+    """
+    global _FILE_HANDLER
+
+    log_config = config.get('log_settings', {})
+    enable_log_file = log_config.get('enable_log_file', True)
+    log_level_str = log_config.get('log_level', 'INFO')
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
+    max_files = log_config.get('max_log_files', 15)
+    max_days = log_config.get('log_retention_days', 3)
+    # 清洗日志目录配置：非法输入降级为默认目录
+    raw_dir = log_config.get('log_directory', 'logs')
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        raw_dir = 'logs'
+    log_dir = _resolve_log_dir(raw_dir.strip())
+
+    # 从配置文件名推导日志前缀：config 或空一律用 '2RPM'，其它取配置文件基底名
+    config_basename = os.path.splitext(os.path.basename(config_file))[0].strip()
+    target_prefix = config_basename if config_basename and \
+        config_basename.lower() != 'config' else '2RPM'
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # 根 logger 始终 DEBUG，由各 handler 独立控制级别
+
+    # 控制台输出级别由配置文件控制
+    _set_console_level(root_logger, log_level)
+
+    # 不启用文件日志：移除并删除启动文件
+    if not enable_log_file:
+        _discard_file_handler(root_logger)
+        return
+
+    # 启动阶段文件创建失败时尝试补建，否则复用并迁移到配置目录
+    if _FILE_HANDLER is None:
+        _FILE_HANDLER = _create_file_handler(log_dir, target_prefix)
+        if _FILE_HANDLER is not None:
+            root_logger.addHandler(_FILE_HANDLER)
+    else:
+        # 先摘除再调用 _apply_log_path，避免内部 close 时 handler 仍挂在 logger 上
+        root_logger.removeHandler(_FILE_HANDLER)
+        _FILE_HANDLER = _apply_log_path(_FILE_HANDLER, log_dir, target_prefix)
+        root_logger.addHandler(_FILE_HANDLER)
+
+    # 统一设置滚动备份数量与清理（使用文件真实所在目录）
+    if _FILE_HANDLER is not None:
+        _FILE_HANDLER.backupCount = max_files
+        actual_log_dir = os.path.dirname(_FILE_HANDLER.baseFilename)
+        _cleanup_old_logs(actual_log_dir, max_files, max_days)

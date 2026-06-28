@@ -5,28 +5,16 @@ import os
 import sys
 import logging
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.comments import CommentedMap
 
-# 全局变量
-CONFIG = {}
+from modules.utils import correct_channel_aliases, strip_wrapping_quotes
+
 LOGGER = logging.getLogger(__name__)
-
-# 默认配置文件名
-DEFAULT_CONFIG_FILE = 'config.yaml'
-
-# 关键参数列表
-CRITICAL_KEYS = [
-    'monitor_settings.process_name',
-    'push_settings.push_channel_settings.choose',
-    'push_settings.push_channel_settings.serverchan_key',
-    'push_settings.push_channel_settings.push_channel',
-    'push_settings.push_channel_settings.push_channel_key',
-    'external_program_settings.external_program_path',
-]
 
 # 默认配置值集中管理
 DEFAULT_VALUES = {
     'monitor_settings': {
+        'monitor_mode': 'psutil',
         'process_name': 'notepad.exe',
         'timeout_warning_interval': '15m',
         'monitor_loop_interval': '1s',
@@ -34,6 +22,10 @@ DEFAULT_VALUES = {
     'wait_process_settings': {
         'max_wait_time': '30s',
         'wait_process_check_interval': '1s',
+    },
+    'task_monitor_settings': {
+        'task_name': '\\Custom\\MyTask',
+        'lookback_minutes': 10,
     },
     'push_settings': {
         'push_templates': {
@@ -82,10 +74,7 @@ DEFAULT_VALUES = {
             },
         },
         'push_channel_settings': {
-            'choose': 'ServerChan',
-            'serverchan_key': '',
-            'push_channel': '',
-            'push_channel_key': '',
+            'push_channel': {},
         },
         'push_error_retry': {
             'retry_interval': '3s',
@@ -104,7 +93,6 @@ DEFAULT_VALUES = {
         'log_directory': 'logs',
         'max_log_files': 15,
         'log_retention_days': 3,
-        'log_filename': '2RPM',
     },
 }
 
@@ -114,6 +102,11 @@ COMMENTS = {
         '_comment': (
             "监视设置\n"
             "- 监视程序相关配置\n"
+        ),
+        'monitor_mode': (
+            "\n监视模式，可选值: psutil / task_scheduler\n"
+            "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
+            "- task_scheduler: 通过事件日志获取计划任务PID后监视\n"
         ),
         'process_name': (
             "\n要监视的进程名称"
@@ -137,6 +130,21 @@ COMMENTS = {
                 "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
             ),
     },
+    'task_monitor_settings': {
+        '_comment': (
+            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
+            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
+        ),
+        'task_name': (
+            "\n要监视的计划任务名称\n"
+            "- 完整路径格式: \\\\Folder\\TaskName\n"
+            "- 部分匹配也可工作，如 MyTask\n"
+        ),
+        'lookback_minutes': (
+            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
+            "- 默认值: 10\n"
+        ),
+    },
     'push_settings': {
         '_comment': (
             "推送设置\n"
@@ -145,8 +153,10 @@ COMMENTS = {
         'push_templates': {
             '_comment': (
                 "推送模板配置\n"
-                "- 可自定义通知的标题和内容\n\n"
-                "支持的变量如下：\n"
+                "- 可自定义通知的标题和内容\n"
+            ),
+            '_comment_extra': (
+                "\n支持的变量如下：\n"
                 "主机名: {host_name}\n"
                 "当前时间(YY-mm-dd HH-MM-SS): {current_time}\n"
                 "当前时间(HH-MM-SS): {short_current_time}\n"
@@ -154,8 +164,6 @@ COMMENTS = {
                 "进程PID: {process_pid}\n"
                 "进程运行时间: {process_run_time}\n"
                 "进程积累等待时间: {process_wait_time}\n"
-                "正在运行的进程状态列表: {other_running_processes}\n"
-                "进程列表: {process_list}\n"
                 "调用的程序名: {external_program_name}\n"
                 "调用的程序路径: {external_program_path}\n"
             ),
@@ -188,15 +196,18 @@ COMMENTS = {
             '_comment': (
                 "推送通道设置\n"
             ),
-            'choose': (
-                "\n请选择 'ServerChan' 或者 'OnePush' 进行推送，默认为 'ServerChan'"
-            ),
-            'serverchan_key': "\nServerChan密钥",
             'push_channel': (
-                "\nOnePush推送通道（请查看 https://pypi.org/project/onepush/ "
-                "来获得如何使用帮助）"
+                "\nOnePush 推送通道配置（请查看 https://pypi.org/project/onepush/ "
+                "来获得如何使用帮助）\n"
+                "- 填入一个字典，必须包含 provider 键指定通道名称\n"
+                "- provider 名称大小写不敏感（如 ServerChan、DingTalk）\n"
+                "- provider、key、token 等值可使用引号 '' 或 \"\" 包裹\n"
+                "- 其余键为该通道所需的参数，例如：\n"
+                "  - {provider: serverchan, sckey: SCTxxxx}\n"
+                "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
+                "  - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
+                "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}"
             ),
-            'push_channel_key': "\nOnePush推送通道密钥",
         },
         'push_error_retry': {
             '_comment': "推送错误重试设置\n",
@@ -232,7 +243,7 @@ COMMENTS = {
             "- 配置日志输出的相关参数\n"
         ),
         'enable_log_file': (
-            "\n是否输出日志文件，默认为 False\n"
+            "\n是否输出日志文件，默认为 True\n"
             "- False 为 不输出，True 为 输出"
         ),
         'log_level': (
@@ -243,17 +254,20 @@ COMMENTS = {
         'log_directory': (
             "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
             "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
-            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False\n"
+            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False"
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
         'log_retention_days': "\n日志保存天数，单位为天，默认值: 3天",
-        'log_filename': "\n日志文件名，时间戳不可修改，默认值: 2RPM",
     },
 }
 
 
-def get_default_config():
+def get_default_config(for_file_creation=False):
     """获取默认配置，并嵌入完整的注释。
+
+    Args:
+        for_file_creation (bool): 是否用于创建新配置文件。
+            为 True 时会在节前添加空行分隔。
 
     Returns:
         CommentedMap: 包含注释的默认配置字典。
@@ -277,48 +291,78 @@ def get_default_config():
     config = create_commented_map(DEFAULT_VALUES)
 
     LOGGER.debug("正在应用注释到默认配置")
-    apply_comments(config, COMMENTS)
+    apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
+
     LOGGER.debug("内置配置读取完成")
     return config
 
 
-def apply_comments(config_section, comments_section):
-    """递归地将注释应用到配置字典中。
+def _clear_comments(config_section):
+    """清除配置节中已有的注释，避免重复写入。
 
     Args:
         config_section (CommentedMap): 配置的一个部分。
-        comments_section (dict or str): 对应的注释部分。
-    """
-    # 彻底清除现有的注释，避免重复
-    if hasattr(config_section, 'ca'):
-        config_section.ca.comment = None
-        if hasattr(config_section.ca, 'items'):
-            # 清空所有键的注释
-            config_section.ca.items.clear()
 
-    if isinstance(comments_section, str):
-        # 如果注释是字符串，应用到整个节
-        config_section.yaml_set_start_comment(comments_section)
+    Returns:
+        None
+    """
+    if not hasattr(config_section, 'ca'):
         return
-    elif isinstance(comments_section, dict):
-        if '_comment' in comments_section:
-            # 应用节的注释
-            config_section.yaml_set_start_comment(comments_section['_comment'])
-        for key, value in config_section.items():
-            if key in comments_section:
-                comment = comments_section[key]
-                if isinstance(comment, dict):
-                    apply_comments(value, comment)
-                else:
-                    # 直接应用注释
-                    config_section.yaml_set_comment_before_after_key(
-                        key, before=comment
-                    )
-            elif isinstance(value, CommentedMap):
-                # 如果没有对应的注释，继续递归
-                apply_comments(value, {})
-            else:
-                continue
+    config_section.ca.comment = None
+    if hasattr(config_section.ca, 'items'):
+        config_section.ca.items.clear()
+
+
+def apply_comments(config_section, comments_section, depth=0,
+                   blank_before_section=False, is_top_level=True):
+    """递归地将注释应用到配置字典中。
+
+    将每个配置项/子节的注释统一放置在其键的上方，并使注释缩进与所在
+    层级的配置缩进保持一致（例外：节的变量列表说明保持无缩进）。
+
+    Args:
+        config_section (CommentedMap): 配置的一个部分。
+        comments_section (dict): 对应的注释字典。
+        depth (int): 当前嵌套层级，用于计算注释缩进（每层 2 空格）。
+        blank_before_section (bool): 是否在顶层节（首个节除外）前插入空行。
+        is_top_level (bool): 当前是否为顶层节容器。
+
+    Returns:
+        None
+    """
+    # 守卫：非字典注释无需处理
+    if not isinstance(comments_section, dict):
+        return
+
+    _clear_comments(config_section)
+
+    indent = depth * 2
+    first_section_done = False
+    for key, value in config_section.items():
+        comment = comments_section.get(key)
+
+        if isinstance(comment, dict):
+            section_text = comment.get('_comment', '')
+            # 顶层非首个节按需在节前插入空行进行分隔
+            if is_top_level and blank_before_section and first_section_done:
+                section_text = '\n' + section_text
+            if section_text:
+                config_section.yaml_set_comment_before_after_key(
+                    key, before=section_text, indent=indent)
+            # 变量列表说明等附加注释保持无缩进（例外）
+            extra_text = comment.get('_comment_extra')
+            if extra_text:
+                config_section.yaml_set_comment_before_after_key(
+                    key, before=extra_text, indent=0)
+            apply_comments(value, comment, depth=depth + 1,
+                           blank_before_section=blank_before_section,
+                           is_top_level=False)
+        elif isinstance(comment, str):
+            # 普通参数：将注释设置在参数键上方
+            config_section.yaml_set_comment_before_after_key(
+                key, before=comment, indent=indent)
+
+        first_section_done = True
 
 
 def create_default_config(config_file):
@@ -331,7 +375,7 @@ def create_default_config(config_file):
         Exception: 如果无法创建配置文件。
     """
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
-    default_config = get_default_config()
+    default_config = get_default_config(for_file_creation=True)
     try:
         yaml = YAML()
         yaml.indent(mapping=2, sequence=4, offset=2)
@@ -389,32 +433,13 @@ def migrate_old_config(old_config):
             return config
     
     migrated_config = deep_copy_config(old_config)
-    
-    # 检查并报告缺少的参数
-    def check_missing_params(config, required_params, section_name):
-        """检查配置中是否缺少必要的参数，并报告缺失的参数。
-        
-        Args:
-            config (dict): 配置字典。
-            required_params (dict): 必要参数及其默认值。
-            section_name (str): 配置节名称。
-        """
-        for param, default_value in required_params.items():
-            if param not in config:
-                config[param] = default_value
-                LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
-    
+
     # 处理 monitor_settings
     if 'monitor_settings' in migrated_config:
         monitor_settings = migrated_config['monitor_settings']
         
-        # 处理 process_name_list -> process_name
-        if 'process_name_list' in monitor_settings:
-            process_list = monitor_settings['process_name_list']
-            if isinstance(process_list, list) and process_list:
-                migrated_config['monitor_settings']['process_name'] = process_list[0]
-                LOGGER.info(f"已迁移 process_name_list 到 process_name: {migrated_config['monitor_settings']['process_name']}")
-        elif 'process_name' not in monitor_settings:
+        # 处理缺失的 process_name
+        if 'process_name' not in monitor_settings:
             default_process_name = DEFAULT_VALUES['monitor_settings']['process_name']
             migrated_config['monitor_settings']['process_name'] = default_process_name
             LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'process_name'，使用默认值: {default_process_name}")
@@ -526,8 +551,48 @@ def migrate_old_config(old_config):
         # 如果 log_settings 不存在，创建并添加默认值
         migrated_config['log_settings'] = DEFAULT_VALUES['log_settings'].copy()
         LOGGER.warning(f"配置块顶层丢失 'log_settings' ，正在重新写入")
+
+    # 处理 task_monitor_settings
+    if 'task_monitor_settings' not in migrated_config:
+        migrated_config['task_monitor_settings'] = DEFAULT_VALUES['task_monitor_settings'].copy()
+        LOGGER.warning(f"配置块顶层丢失 'task_monitor_settings' ，正在重新写入")
     
     return migrated_config
+
+
+def correct_push_channel_config(user_config):
+    """纠正配置中推送通道的密钥别名，使其符合 OnePush 要求的参数名。
+
+    定位 push_settings.push_channel_settings.push_channel 节点，依据 provider
+    将通用键名（如 key）就地纠正为对应渠道要求的参数名（如 serverchan 的 sckey），
+    以便后续写回配置文件，避免推送时因参数名不匹配而失败。
+
+    Args:
+        user_config (dict): 用户配置字典。
+
+    Returns:
+        bool: 是否发生了键名纠正。
+    """
+    push_settings = user_config.get('push_settings')
+    if not isinstance(push_settings, dict):
+        return False
+
+    channel_settings = push_settings.get('push_channel_settings')
+    if not isinstance(channel_settings, dict):
+        return False
+
+    push_channel = channel_settings.get('push_channel')
+    if not isinstance(push_channel, dict) or not push_channel:
+        return False
+
+    provider = push_channel.get('provider', '')
+    corrections = correct_channel_aliases(provider, push_channel)
+    for old_key, new_key in corrections.items():
+        LOGGER.warning(
+            f"推送通道 '{strip_wrapping_quotes(provider)}' 的参数 '{old_key}' "
+            f"已自动纠正为 '{new_key}'"
+        )
+    return bool(corrections)
 
 
 def merge_configs(user_config, default_config):
@@ -580,10 +645,19 @@ def load_config(config_file):
         yaml = YAML()
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
+        if user_config is None:
+            LOGGER.warning(f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，已按默认配置加载")
+            user_config = {}
+        elif not isinstance(user_config, dict):
+            LOGGER.error(
+                f"配置文件内容类型不合法 ({type(user_config).__name__})，"
+                f"应为字典结构，已按默认配置加载：{os.path.abspath(config_file)}"
+            )
+            user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
-        raise
+        sys.exit(1)
 
     # 检查是否为旧版本配置
     is_old_version = False
@@ -604,6 +678,9 @@ def load_config(config_file):
 
     # 加载默认配置
     default_config = get_default_config()
+
+    merged_config = default_config
+
     
     if is_old_version:
         # 旧版本配置，进行迁移
@@ -676,29 +753,43 @@ def load_config(config_file):
         # 清理配置文件，移除不属于对应配置块的配置项
         def clean_config(config, default_config, section_name='root'):
             """清理配置文件，移除不属于对应配置块的配置项。
-            
+
             Args:
                 config (dict): 配置字典。
                 default_config (CommentedMap): 默认配置字典。
                 section_name (str): 配置块名称。
+
+            Returns:
+                bool: 是否发生了配置项移除操作。
             """
+            removed = False
             keys_to_remove = []
             for key in config:
                 if key not in default_config:
                     keys_to_remove.append(key)
                 elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
-                    clean_config(config[key], default_config[key], key)
+                    # 默认值为空字典代表自由格式容器（如 push_channel），
+                    # 其内容由用户自定义，跳过清理以免误删推送通道参数
+                    if len(default_config[key]) == 0:
+                        continue
+                    sub_removed = clean_config(config[key], default_config[key], key)
+                    removed = removed or sub_removed
             for key in keys_to_remove:
                 LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
                 del config[key]
-        
+                removed = True
+            return removed
+
         # 清理用户配置
-        clean_config(user_config, default_config, 'root')
-        
+        cleaned = clean_config(user_config, default_config, 'root')
+
+        # 纠正推送通道密钥别名（如 serverchan 的 key -> sckey）
+        corrected = correct_push_channel_config(user_config)
+
         # 合并更新后的用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)
-        
-        if updated:
+
+        if updated or cleaned or corrected:
             LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
             try:
                 yaml = YAML()

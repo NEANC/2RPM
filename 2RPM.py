@@ -11,6 +11,7 @@ from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
 from modules.utils import get_program_directory
+from modules.version import VERSION, print_info
 
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
@@ -18,21 +19,6 @@ DEFAULT_CONFIG_FILE = 'config.yaml'
 # 全局变量
 CONFIG = {}
 LOGGER = logging.getLogger(__name__)
-
-
-def print_info():
-    """打印程序的版本和版权信息，发版前手动修改。"""
-    print("\n")
-    print("+ " + " Running-Runtime Process Monitoring ".center(60, "="), "+")
-    print("||" + "".center(60, " ") + "||")
-    print("||" + "本项目使用 AI 进行生成".center(51, " ") + "||")
-    print("||" + "".center(60, " ") + "||")
-    print("|| " + "".center(58, "-") + " ||")
-    print("||" + "".center(60, " ") + "||")
-    print("||" + "Version: v3.21.0    License: WTFPL".center(60, " ") + "||")
-    print("||" + "".center(60, " ") + "||")
-    print("+ " + "".center(60, "=") + " +")
-    print("\n")
 
 
 def parse_args():
@@ -43,6 +29,8 @@ def parse_args():
     """
     LOGGER.debug("解析命令行参数")
     parser = argparse.ArgumentParser(description='2RPM V3')
+    # 位置参数：支持文件关联或拖拽方式打开配置文件
+    parser.add_argument('config_path',nargs='?',default=None,help=argparse.SUPPRESS )
     parser.add_argument(
         '-c', '-C', '-config', '-Config', '--config', '--Config',
         default=DEFAULT_CONFIG_FILE,
@@ -66,32 +54,32 @@ def main():
     setup_default_logging()
     LOGGER = logging.getLogger(__name__)
     LOGGER.info("程序正在初始化...")
+    LOGGER.debug(f"版本号: {VERSION}")
 
     # 解析命令行参数
     args = parse_args()
     # 计算程序根目录（使用当前工作目录）
     program_dir = get_program_directory()
-    
+
+    # 配置文件路径优先级：位置参数（文件关联/拖拽） > -c 选项 > 默认值
+    config_name = args.config_path if args.config_path else args.config
+
     # 处理配置文件路径，自动添加 .yaml 扩展名（如果没有提供）
-    config_name = args.config
     if not config_name.endswith('.yaml') and not config_name.endswith('.yml'):
         config_name += '.yaml'
-    
-    config_file = os.path.join(program_dir, config_name)
 
-    try:
-        # 加载配置
-        CONFIG = load_config(config_file)
-        LOGGER.debug("配置已加载")
-    except SystemExit:
-        LOGGER.critical("程序因缺少关键配置终止运行")
-        sys.exit(1)
-    except Exception as e:
-        LOGGER.critical(f"加载配置失败: {e}")
-        sys.exit(1)
+    # 绝对路径（拖拽/关联打开）原样使用，相对路径基于程序目录拼接
+    if os.path.isabs(config_name):
+        config_file = config_name
+    else:
+        config_file = os.path.join(program_dir, config_name)
+
+    # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
+    CONFIG = load_config(config_file)
+    LOGGER.debug("配置已加载")
 
     # 设置日志
-    setup_logging(CONFIG)
+    setup_logging(CONFIG, config_file)
     LOGGER.info("已完成日志配置")
 
     try:
@@ -106,9 +94,8 @@ def main():
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
         sys.exit(1)
     finally:
-        LOGGER.info("程序运行结束")
         print_info()
-        os._exit(0)
+        sys.exit(0)
 
 
 if __name__ == '__main__':

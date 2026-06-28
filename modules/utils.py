@@ -3,12 +3,83 @@
 
 import os
 import sys
-import time
 import logging
-import psutil
 import subprocess
 
 LOGGER = logging.getLogger(__name__)
+
+# 支持剥离的成对包裹引号（直引号与中文弯引号）
+QUOTE_PAIRS = {
+    "'": "'",
+    '"': '"',
+    '\u2018': '\u2019',
+    '\u201c': '\u201d',
+}
+
+# OnePush 各推送渠道密钥参数的别名映射
+# 通用写法常用 key，而部分渠道要求特定参数名，此处将其纠正为 OnePush 要求的参数名
+CHANNEL_KEY_ALIASES = {
+    'serverchan': {'key': 'sckey'},
+    'serverchanturbo': {'key': 'sctkey'},
+    'pushdeer': {'key': 'pushkey'},
+}
+
+
+def strip_wrapping_quotes(value):
+    """剥离字符串值首尾成对的包裹引号。
+
+    支持英文直引号 ' 与 "，以及中文弯引号 '' 与 ""。
+    仅当首尾为同一组成对引号时才剥离，非字符串值原样返回。
+
+    Args:
+        value: 待处理的值，可能为任意类型。
+
+    Returns:
+        剥离包裹引号后的字符串；若入参非字符串则原样返回。
+    """
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if len(stripped) < 2:
+        return stripped
+
+    head, tail = stripped[0], stripped[-1]
+    if QUOTE_PAIRS.get(head) == tail:
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def correct_channel_aliases(provider, params):
+    """就地纠正推送渠道参数中的别名键名为 OnePush 要求的参数名。
+
+    根据 provider 名称查找别名映射表，将用户使用的通用键名（如 key）
+    纠正为对应渠道要求的参数名（如 serverchan 的 sckey）。直接在传入的
+    params 上修改，因此对 dict 与 ruamel 的 CommentedMap 均可保留原有结构。
+
+    Args:
+        provider (str): 推送通道名称，大小写不敏感，允许带包裹引号。
+        params (dict): 推送通道参数字典（不含 provider 键），将被就地修改。
+
+    Returns:
+        dict: 已纠正的键名映射，格式为 {旧键名: 新键名}；无纠正时为空字典。
+    """
+    provider = strip_wrapping_quotes(provider)
+    if not isinstance(provider, str):
+        return {}
+
+    aliases = CHANNEL_KEY_ALIASES.get(provider.strip().lower(), {})
+    if not aliases:
+        return {}
+
+    corrections = {}
+    for old_key, new_key in aliases.items():
+        # 守卫：别名键不存在，或目标键已存在时跳过，避免覆盖用户已正确填写的值
+        if old_key not in params or new_key in params:
+            continue
+        params[new_key] = params.pop(old_key)
+        corrections[old_key] = new_key
+    return corrections
 
 
 def get_program_directory():
@@ -50,6 +121,9 @@ def run_external_program(program_path):
 
     Args:
         program_path (str): 外部程序的路径。
+
+    Raises:
+        Exception: 当主方案与备选方案均调用失败时抛出，由调用方处理。
     """
     LOGGER.info(f"正在调用外部程序: {program_path}")
     
@@ -101,26 +175,8 @@ def run_external_program(program_path):
             LOGGER.info(f"使用备选方案成功调用外部程序: {program_path}")
         except Exception as e2:
             LOGGER.error(f"备选方案调用外部程序也失败: {e2}")
-
-
-def get_other_running_processes(processes, exclude_pid=None):
-    """获取其他正在运行的进程信息。
-
-    Args:
-        processes (dict): 当前监视的进程信息。
-        exclude_pid (int, optional): 要排除的进程 PID。默认为 None。
-
-    Returns:
-        str: 其他正在运行的进程信息字符串。
-    """
-    LOGGER.debug("获取其他正在运行的进程信息")
-    other_processes = [
-        f"{info['name']} (PID: {pid})"
-        for pid, info in processes.items() if pid != exclude_pid
-    ]
-    result = ', '.join(other_processes) if other_processes else '无'
-    LOGGER.info(f"其他正在运行的进程信息: {result}")
-    return result
+            # 两种方案均失败，向上抛出由调用方据此判定执行结果
+            raise
 
 
 def parse_time_string(time_str):
