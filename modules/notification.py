@@ -7,42 +7,13 @@ import asyncio
 import logging
 
 from onepush import get_notifier
-from modules.utils import parse_time_string
+from modules.utils import (
+    correct_channel_aliases,
+    parse_time_string,
+    strip_wrapping_quotes,
+)
 
 LOGGER = logging.getLogger(__name__)
-
-# 支持剥离的成对包裹引号（直引号与中文弯引号）
-QUOTE_PAIRS = {
-    "'": "'",
-    '"': '"',
-    '\u2018': '\u2019',
-    '\u201c': '\u201d',
-}
-
-
-def _strip_wrapping_quotes(value):
-    """剥离字符串值首尾成对的包裹引号。
-
-    支持英文直引号 ' 与 "，以及中文弯引号 '' 与 ""。
-    仅当首尾为同一组成对引号时才剥离，非字符串值原样返回。
-
-    Args:
-        value: 待处理的值，可能为任意类型。
-
-    Returns:
-        剥离包裹引号后的字符串；若入参非字符串则原样返回。
-    """
-    if not isinstance(value, str):
-        return value
-
-    stripped = value.strip()
-    if len(stripped) < 2:
-        return stripped
-
-    head, tail = stripped[0], stripped[-1]
-    if QUOTE_PAIRS.get(head) == tail:
-        return stripped[1:-1].strip()
-    return stripped
 
 
 def _normalize_push_channel(push_channel):
@@ -58,7 +29,7 @@ def _normalize_push_channel(push_channel):
         dict: 规范化后的推送通道配置字典。
     """
     normalized = {
-        key: _strip_wrapping_quotes(value)
+        key: strip_wrapping_quotes(value)
         for key, value in push_channel.items()
     }
     if 'provider' in normalized and isinstance(normalized['provider'], str):
@@ -126,6 +97,14 @@ async def send_notification(config, template_key, **kwargs):
     if not push_channel_name:
         LOGGER.error("推送通道缺少 provider 键，无法发送通知")
         return
+
+    # 纠正部分渠道的密钥别名（如 serverchan 的 key -> sckey）
+    corrections = correct_channel_aliases(push_channel_name, push_channel)
+    for old_key, new_key in corrections.items():
+        LOGGER.warning(
+            f"推送通道 '{push_channel_name}' 的参数 '{old_key}' "
+            f"已自动纠正为 '{new_key}'"
+        )
 
     retry_settings = push_settings.get('push_error_retry', {})
     retry_interval_str = retry_settings.get('retry_interval', '3s')
