@@ -27,7 +27,7 @@ from modules.config import (
     get_default_config,
     correct_push_channel_config
 )
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 
 class TestUtils(unittest.TestCase):
@@ -214,6 +214,19 @@ class TestParsePushChannels(unittest.TestCase):
         self.assertEqual(channels[1]['provider'], 'dingtalk')
         self.assertEqual(channels[1]['token'], 'tk')
 
+    def test_multi_channels_block_list(self):
+        """块序列形式（每元素为映射）应解析为多个通道"""
+        channels = parse_push_channels([
+            {'provider': 'serverchan', 'sckey': 'SCTxxxx'},
+            {'provider': 'dingtalk', 'token': 'tk', 'secret': 'sec'},
+        ])
+        self.assertEqual(len(channels), 2)
+        self.assertEqual(channels[0]['provider'], 'serverchan')
+        self.assertEqual(channels[0]['sckey'], 'SCTxxxx')
+        self.assertEqual(channels[1]['provider'], 'dingtalk')
+        self.assertEqual(channels[1]['token'], 'tk')
+        self.assertEqual(channels[1]['secret'], 'sec')
+
     def test_empty_value(self):
         """空值与空字符串应返回空列表"""
         self.assertEqual(parse_push_channels(None), [])
@@ -230,22 +243,27 @@ class TestBuildPushChannelNode(unittest.TestCase):
         self.assertIsInstance(node, CommentedMap)
         self.assertEqual(len(node), 0)
 
-    def test_single_channel_flow_map(self):
-        """单通道应构建为流式 CommentedMap，provider 在最前"""
+    def test_single_channel_block_seq(self):
+        """单通道也应构建为块序列 CommentedSeq，元素为流式 CommentedMap"""
         node = build_push_channel_node([{'provider': 'serverchan', 'sckey': 'SCTxxxx'}])
-        self.assertIsInstance(node, CommentedMap)
-        self.assertEqual(list(node.keys())[0], 'provider')
-        self.assertEqual(node['sckey'], 'SCTxxxx')
+        self.assertIsInstance(node, CommentedSeq)
+        self.assertEqual(len(node), 1)
+        self.assertIsInstance(node[0], CommentedMap)
+        self.assertEqual(list(node[0].keys())[0], 'provider')
+        self.assertEqual(node[0]['sckey'], 'SCTxxxx')
 
-    def test_multi_channels_string(self):
-        """多通道应构建为以 ; 分割的字符串"""
+    def test_multi_channels_block_seq(self):
+        """多通道应构建为块序列 CommentedSeq，每元素为流式 CommentedMap"""
         node = build_push_channel_node([
             {'provider': 'serverchan', 'sckey': 'SCTxxxx'},
             {'provider': 'dingtalk', 'token': 'tk'},
         ])
-        self.assertIsInstance(node, str)
-        self.assertIn(';', node)
-        self.assertTrue(node.strip().startswith('{provider: serverchan'))
+        self.assertIsInstance(node, CommentedSeq)
+        self.assertEqual(len(node), 2)
+        self.assertIsInstance(node[0], CommentedMap)
+        self.assertEqual(list(node[0].keys())[0], 'provider')
+        self.assertEqual(node[0]['sckey'], 'SCTxxxx')
+        self.assertEqual(node[1]['token'], 'tk')
 
 
 class TestPushChannelSignature(unittest.TestCase):
@@ -262,6 +280,19 @@ class TestPushChannelSignature(unittest.TestCase):
         sig1 = push_channel_signature('{provider: a}; {provider: b}')
         sig2 = push_channel_signature('{provider:a};{provider:b}')
         self.assertEqual(sig1, sig2)
+
+    def test_seq_signature_equal(self):
+        """块序列签名应可比较，且与等价的构建节点一致"""
+        channels = [
+            {'provider': 'serverchan', 'sckey': 'SCTxxxx'},
+            {'provider': 'dingtalk', 'token': 'tk'},
+        ]
+        raw_list = [dict(channel) for channel in channels]
+        node = build_push_channel_node(channels)
+        self.assertEqual(
+            push_channel_signature(raw_list),
+            push_channel_signature(node),
+        )
 
 
 class TestCorrectPushChannelConfig(unittest.TestCase):
@@ -290,8 +321,9 @@ class TestCorrectPushChannelConfig(unittest.TestCase):
         changed = correct_push_channel_config(config)
         self.assertTrue(changed)
         node = config['push_settings']['push_channel_settings']['push_channel']
-        self.assertEqual(list(node.keys())[0], 'provider')
-        self.assertEqual(node['sckey'], 'SCTxxxx')
+        self.assertIsInstance(node, CommentedSeq)
+        self.assertEqual(list(node[0].keys())[0], 'provider')
+        self.assertEqual(node[0]['sckey'], 'SCTxxxx')
 
     def test_already_normalized_no_change(self):
         """已是标准流式格式时不应重复替换"""

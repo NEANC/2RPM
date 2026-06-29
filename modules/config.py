@@ -201,17 +201,23 @@ COMMENTS = {
                 "推送通道设置\n"
             ),
             'push_channel': (
-                "\nOnePush 推送通道配置（请查看 https://pypi.org/project/onepush/ "
-                "来获得如何使用帮助）\n"
-                "- 推荐写法：填入字典，包含 provider 键指定通道名称，其余为该通道参数\n"
-                "  - {provider: serverchan, sckey: SCTxxxx}\n"
-                "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
-                "  - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
-                "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}\n"
-                "  - {provider: pushdeer, pushkey: xxx, type: serverchan}\n"
-                "  - {provider: wxpusher, app_token: xxx, uid: xxx, api_url: xxx}\n"
-                "- 多通道推送：用 ';' 分割多个配置，需用引号包裹整行，例：\n"
-                "  - '{provider: serverchan, sckey: SCTxxxx}; {provider: dingtalk, token: xxx, secret: xxx}'\n"
+                "\nOnePush 推送通道配置\n"
+                "- 按下列例，填入对应参数，已支持多通道\n"
+                "  例：\n"
+                "    push_channel:\n"
+                "      - {provider: bark, key: xxx}\n"
+                "      - {provider: discord, webhook: xxx}\n"
+                "      - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
+                "      - {provider: serverchan, sckey: SCTxxxx}\n"
+                "      - {provider: serverchanturbo, sctkey: sctpxxxx}\n"
+                "      - {provider: wechatworkapp, corpid: xxx, corpsecret: xxx, agentid: xxx}\n"
+                "      - {provider: wechatworkbot, key: xxx}\n"
+                "      - {provider: pushplus, token: xxx}\n"
+                "      - {provider: gocqhttp, endpoint: xxx, user_id: xxx}\n"
+                "      - {provider: qmsg, key: xxx, qq: xxx}\n"
+                "      - {provider: dingtalk, token: xxx, secret: xxx}\n"
+                "      - {provider: lark, webhook: xxx, sign: xxx}\n"
+                "      - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}\n"
             ),
         },
         'push_error_retry': {
@@ -569,10 +575,10 @@ def correct_push_channel_config(user_config):
     """规范化配置中的推送通道，统一回写为标准流式格式。
 
     定位 push_settings.push_channel_settings.push_channel 节点，将用户填写的
-    各种写法（标准字典、无参数头、乱序、以 ';' 分割的多通道）解析为标准通道，
-    并据此重建写回节点：单通道为单行花括号流式映射、多通道为以 ';' 分割的字符串。
-    密钥别名（如 serverchan 的 key -> sckey）在解析过程中一并纠正。仅当规范化
-    后的节点与原值存在实质差异时才替换，避免无谓的写回。
+    各种写法（标准字典、无参数头、乱序、块序列或以 ';' 分割的字符串）解析为标准
+    通道，并统一重建写回节点为元素均为流式映射的 YAML 块序列（单通道与多通道写法
+    一致，无需引号包裹整行）。密钥别名（如 serverchan 的 key -> sckey）在解析
+    过程中一并纠正。仅当规范化后的节点与原值存在实质差异时才替换，避免无谓的写回。
 
     Args:
         user_config (dict): 用户配置字典，将被就地修改。
