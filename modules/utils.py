@@ -8,8 +8,7 @@ import subprocess
 
 from onepush import all_providers, get_notifier
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
-from ruamel.yaml.scalarstring import SingleQuotedScalarString
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 LOGGER = logging.getLogger(__name__)
 
@@ -403,7 +402,8 @@ def parse_push_channels(raw_value):
     - 标准字典 {provider: serverchan, sckey: SCTxxxx}（允许键乱序）；
     - 无参数头写法 [serverchan, SCTxxxx] / [serverchan: SCTxxxx] /
       {serverchan, SCTxxxx} / {serverchan: SCTxxxx}；
-    - 以 ';' 分割的多通道字符串。
+    - 多通道 YAML 块序列（block list，每个元素均为映射，无需引号包裹）；
+    - 以 ';' 分割的多通道字符串（向后兼容）。
 
     Args:
         raw_value: 配置文件中 push_channel 的原始值（字符串 / dict / list）。
@@ -423,26 +423,35 @@ def parse_push_channels(raw_value):
                 channels.append(channel)
         return channels
 
-    # 已是结构化对象：原生 YAML 无法存储多通道，故视为单通道
+    # 列表且所有元素均为映射：视为多通道 block list（如 - {provider: a}）
+    if isinstance(raw_value, (list, tuple)) and _is_multi_channel_list(raw_value):
+        channels = []
+        for element in raw_value:
+            channel = _fragment_to_channel(element)
+            if channel:
+                channels.append(channel)
+        return channels
+
+    # 其余结构化对象：视为单通道（含 [serverchan, SCTxxxx] 等无参数头列表写法）
     channel = _fragment_to_channel(raw_value)
     return [channel] if channel else []
 
 
-def _channel_to_flow_text(channel):
-    """将单个标准通道字典渲染为单行花括号流式文本。
+def _is_multi_channel_list(raw_value):
+    """判断列表形式的 push_channel 是否为「多通道 block list」。
+
+    仅当列表非空且所有元素均为映射（dict）时，视为多通道列表；
+    含裸标量的列表（如 [serverchan, SCTxxxx]）属于单通道无参数头写法。
 
     Args:
-        channel (dict): 标准通道字典。
+        raw_value (list | tuple): 待判断的列表。
 
     Returns:
-        str: 形如 "{provider: serverchan, sckey: SCTxxxx}" 的文本。
+        bool: 为多通道 block list 时返回 True。
     """
-    parts = [f"provider: {channel.get('provider', '')}"]
-    for key, value in channel.items():
-        if key == 'provider':
-            continue
-        parts.append(f"{key}: {value}")
-    return '{' + ', '.join(parts) + '}'
+    if len(raw_value) == 0:
+        return False
+    return all(isinstance(element, dict) for element in raw_value)
 
 
 def _build_flow_map(channel):
@@ -467,29 +476,29 @@ def _build_flow_map(channel):
 def build_push_channel_node(channels):
     """根据标准通道字典列表构建用于写回配置文件的 push_channel 节点。
 
-    单通道使用单行花括号流式 CommentedMap；多通道因原生 YAML 无法存储，
-    改用以 ';' 分割的带引号字符串保存。
+    统一使用 YAML 原生块序列（CommentedSeq），其每个元素为单行花括号流式
+    CommentedMap，无论单通道还是多通道均无需用引号包裹整行。
 
     Args:
         channels (list[dict]): 标准通道字典列表。
 
     Returns:
-        构建好的节点：空配置为 CommentedMap，单通道为流式 CommentedMap，
-        多通道为 SingleQuotedScalarString。
+        构建好的节点：空配置为 CommentedMap，其余为元素均为流式 CommentedMap
+        的 CommentedSeq。
     """
     if not channels:
         return CommentedMap()
-    if len(channels) == 1:
-        return _build_flow_map(channels[0])
-    fragments = [_channel_to_flow_text(channel) for channel in channels]
-    return SingleQuotedScalarString('; '.join(fragments))
+    block_seq = CommentedSeq()
+    for channel in channels:
+        block_seq.append(_build_flow_map(channel))
+    return block_seq
 
 
 def push_channel_signature(node):
     """计算 push_channel 节点的规范化签名，用于判断配置是否需要回写。
 
     Args:
-        node: push_channel 的值（dict / 字符串 / 其他）。
+        node: push_channel 的值（dict / list / 字符串 / 其他）。
 
     Returns:
         tuple: 可用于相等比较的规范化签名。
@@ -498,6 +507,8 @@ def push_channel_signature(node):
         return ('map', tuple(
             (str(key), str(value)) for key, value in node.items()
         ))
+    if isinstance(node, (list, tuple)):
+        return ('seq', tuple(push_channel_signature(element) for element in node))
     if isinstance(node, str):
         return ('str', strip_wrapping_quotes(node).replace(' ', ''))
     return ('other', node)
