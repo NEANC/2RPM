@@ -58,10 +58,24 @@
 
 ### 推送通道配置示例
 
+#### 单通道配置示例
+
 ```yaml
 push_settings:
   push_channel_settings:
-    push_channel: {provider: serverchan, sckey: SCTxxxx}
+    push_channel:
+      - {provider: serverchan, sckey: SCTxxxx}
+```
+
+#### 多通道配置示例
+
+```yaml
+push_settings:
+  push_channel_settings:
+    push_channel:
+      - {provider: serverchan, sckey: SCTxxxx}
+      - {provider: bark, key: xxxxxxx}
+      - {provider: line, token: xxxxxxx}
 ```
 
 ### 通知模板示例
