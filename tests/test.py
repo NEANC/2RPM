@@ -145,6 +145,65 @@ class TestParsePushChannels(unittest.TestCase):
         self.assertEqual(channels[0]['token'], 'mytoken')
         self.assertEqual(channels[0]['secret'], 'mysecret')
 
+    def test_headless_provider_first_multi_params(self):
+        """无参数头：通道名在首位 + 多个命名参数"""
+        channels = parse_push_channels('{dingtalk, secret: x, token: y}')
+        self.assertEqual(
+            channels, [{'provider': 'dingtalk', 'secret': 'x', 'token': 'y'}]
+        )
+
+    def test_headless_provider_last(self):
+        """无参数头：通道名在末位，命名参数在前"""
+        channels = parse_push_channels('{secret: x, token: y, dingtalk}')
+        self.assertEqual(
+            channels, [{'provider': 'dingtalk', 'secret': 'x', 'token': 'y'}]
+        )
+
+    def test_headless_provider_middle(self):
+        """无参数头：通道名居中（telegram 多参数）"""
+        channels = parse_push_channels(
+            '{api_url: x, telegram, token: y, userid: z}'
+        )
+        self.assertEqual(channels[0]['provider'], 'telegram')
+        self.assertEqual(channels[0]['api_url'], 'x')
+        self.assertEqual(channels[0]['token'], 'y')
+        self.assertEqual(channels[0]['userid'], 'z')
+
+    def test_headless_provider_middle_smtp(self):
+        """无参数头：smtp 通道名居中，含类型化参数"""
+        channels = parse_push_channels(
+            '{user: x, password: y, smtp, host: z, port: 587, ssl: true}'
+        )
+        self.assertEqual(channels[0]['provider'], 'smtp')
+        self.assertEqual(channels[0]['host'], 'z')
+        self.assertEqual(channels[0]['port'], 587)
+        self.assertEqual(channels[0]['ssl'], True)
+
+    def test_reversed_dict_colon(self):
+        """颠倒写法：密钥在前、通道名在后 {SCTxxxx: serverchan}"""
+        channels = parse_push_channels('{SCTxxxx: serverchan}')
+        self.assertEqual(channels, [{'provider': 'serverchan', 'sckey': 'SCTxxxx'}])
+
+    def test_reversed_dict_comma(self):
+        """颠倒写法 {SCTxxxx, serverchan}"""
+        channels = parse_push_channels('{SCTxxxx, serverchan}')
+        self.assertEqual(channels, [{'provider': 'serverchan', 'sckey': 'SCTxxxx'}])
+
+    def test_reversed_list_colon(self):
+        """颠倒写法 [SCTxxxx: serverchan]"""
+        channels = parse_push_channels('[SCTxxxx: serverchan]')
+        self.assertEqual(channels, [{'provider': 'serverchan', 'sckey': 'SCTxxxx'}])
+
+    def test_reversed_list_comma(self):
+        """颠倒写法 [SCTxxxx, serverchan]"""
+        channels = parse_push_channels('[SCTxxxx, serverchan]')
+        self.assertEqual(channels, [{'provider': 'serverchan', 'sckey': 'SCTxxxx'}])
+
+    def test_unknown_provider_fallback(self):
+        """未知渠道（不在白名单）回退为首项即 provider"""
+        channels = parse_push_channels('{myprovider, mykey}')
+        self.assertEqual(channels[0]['provider'], 'myprovider')
+
     def test_multi_channels(self):
         """以 ; 分割的多通道应解析为多个通道"""
         channels = parse_push_channels(
