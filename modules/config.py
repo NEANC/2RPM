@@ -279,6 +279,77 @@ COMMENTS = {
 }
 
 
+def _deep_copy(obj):
+    """递归深拷贝配置对象（支持 dict 与 list）。
+
+    Args:
+        obj: 待拷贝的对象。
+
+    Returns:
+        拷贝后的对象。
+    """
+    if isinstance(obj, dict):
+        return {k: _deep_copy(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_deep_copy(item) for item in obj]
+    return obj
+
+
+def _check_missing_params(config, required_params, section_name):
+    """检查配置中是否缺少必要的参数，并补充缺失参数的默认值。
+
+    Args:
+        config (dict): 配置字典。
+        required_params (dict): 必要参数及其默认值。
+        section_name (str): 配置节名称。
+
+    Returns:
+        bool: 是否发生了参数补充操作。
+    """
+    updated = False
+    for param, default_value in required_params.items():
+        # 只在当前配置节中添加缺少的参数，避免跨节添加
+        if param not in config:
+            config[param] = default_value
+            LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
+            updated = True
+        elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
+            # 递归检查嵌套配置
+            sub_updated = _check_missing_params(config[param], default_value, f"{section_name}.{param}")
+            updated = updated or sub_updated
+    return updated
+
+
+def _clean_config(config, default_config, section_name='root'):
+    """清理配置文件，移除不属于对应配置块的配置项。
+
+    Args:
+        config (dict): 配置字典。
+        default_config (CommentedMap): 默认配置字典。
+        section_name (str): 配置块名称。
+
+    Returns:
+        bool: 是否发生了配置项移除操作。
+    """
+    removed = False
+    keys_to_remove = []
+    for key in config:
+        if key not in default_config:
+            keys_to_remove.append(key)
+        elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
+            # 默认值为空字典代表自由格式容器（如 push_channel），
+            # 其内容由用户自定义，跳过清理以免误删推送通道参数
+            if len(default_config[key]) == 0:
+                continue
+            sub_removed = _clean_config(config[key], default_config[key], key)
+            removed = removed or sub_removed
+    for key in keys_to_remove:
+        LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
+        del config[key]
+        removed = True
+    return removed
+
+
 def get_default_config(for_file_creation=False):
     """获取默认配置，并嵌入完整的注释。
 
@@ -441,18 +512,7 @@ def migrate_old_config(old_config):
     LOGGER.info("正在检查并迁移旧版本配置...")
     
     # 深拷贝所有原始配置，确保完整保留所有配置项
-    def deep_copy_config(config):
-        if isinstance(config, dict):
-            copied = {}
-            for key, value in config.items():
-                copied[key] = deep_copy_config(value)
-            return copied
-        elif isinstance(config, list):
-            return [deep_copy_config(item) for item in config]
-        else:
-            return config
-    
-    migrated_config = deep_copy_config(old_config)
+    migrated_config = _deep_copy(old_config)
 
     # 处理 monitor_settings
     if 'monitor_settings' in migrated_config:
@@ -543,17 +603,7 @@ def migrate_old_config(old_config):
             LOGGER.info(f"已删除旧参数: push_settings.push_error_retry.retry_interval_ms")
     elif 'push_settings' not in migrated_config:
         # 如果 push_settings 不存在，创建并添加默认值
-        # 递归深拷贝默认值，避免引用问题
-        def deep_copy_defaults(defaults):
-            if isinstance(defaults, dict):
-                copied = {}
-                for key, value in defaults.items():
-                    copied[key] = deep_copy_defaults(value)
-                return copied
-            else:
-                return defaults
-        
-        migrated_config['push_settings'] = deep_copy_defaults(DEFAULT_VALUES['push_settings'])
+        migrated_config['push_settings'] = _deep_copy(DEFAULT_VALUES['push_settings'])
         LOGGER.warning(f"配置块顶层丢失 'push_settings' ，正在重新写入")
     elif 'push_error_retry' not in migrated_config['push_settings']:
         # 如果 push_error_retry 不存在，创建并添加默认值
@@ -750,28 +800,6 @@ def load_config(config_file):
         # 新版本配置，检查参数缺失
         LOGGER.info("正在检查配置信息是否缺失")
         
-        # 检查用户配置是否缺少必要的参数
-        def check_missing_params(config, required_params, section_name):
-            """检查配置中是否缺少必要的参数，并报告缺失的参数。
-            
-            Args:
-                config (dict): 配置字典。
-                required_params (dict): 必要参数及其默认值。
-                section_name (str): 配置节名称。
-            """
-            updated = False
-            for param, default_value in required_params.items():
-                # 只在当前配置节中添加缺少的参数，避免跨节添加
-                if param not in config:
-                    config[param] = default_value
-                    LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
-                    updated = True
-                elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
-                    # 递归检查嵌套配置
-                    sub_updated = check_missing_params(config[param], default_value, f"{section_name}.{param}")
-                    updated = updated or sub_updated
-            return updated
-        
         # 先确保所有必要的配置节都存在
         updated = False
         for section in default_config:
@@ -783,41 +811,11 @@ def load_config(config_file):
         # 检查每个配置节中的参数
         for section, section_config in default_config.items():
             if isinstance(section_config, CommentedMap) and isinstance(user_config.get(section), dict):
-                section_updated = check_missing_params(user_config[section], section_config, section)
+                section_updated = _check_missing_params(user_config[section], section_config, section)
                 updated = updated or section_updated
         
-        # 清理配置文件，移除不属于对应配置块的配置项
-        def clean_config(config, default_config, section_name='root'):
-            """清理配置文件，移除不属于对应配置块的配置项。
-
-            Args:
-                config (dict): 配置字典。
-                default_config (CommentedMap): 默认配置字典。
-                section_name (str): 配置块名称。
-
-            Returns:
-                bool: 是否发生了配置项移除操作。
-            """
-            removed = False
-            keys_to_remove = []
-            for key in config:
-                if key not in default_config:
-                    keys_to_remove.append(key)
-                elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
-                    # 默认值为空字典代表自由格式容器（如 push_channel），
-                    # 其内容由用户自定义，跳过清理以免误删推送通道参数
-                    if len(default_config[key]) == 0:
-                        continue
-                    sub_removed = clean_config(config[key], default_config[key], key)
-                    removed = removed or sub_removed
-            for key in keys_to_remove:
-                LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
-                del config[key]
-                removed = True
-            return removed
-
         # 清理用户配置
-        cleaned = clean_config(user_config, default_config, 'root')
+        cleaned = _clean_config(user_config, default_config, 'root')
 
         # 合并更新后的用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)

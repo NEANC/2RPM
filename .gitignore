@@ -161,7 +161,8 @@ cython_debug/
 
 /.trae/
 
-config.yaml
+/*.yaml
+/*.yml
 
 # 文件过滤
 *.zip
