@@ -78,7 +78,14 @@ DEFAULT_VALUES = {
             },
         },
         'push_channel_settings': {
-            'push_channel': {},
+            'push_channel': [
+                {'provider': 'serverchan', 'sckey': 'SCTxxxx'},
+                {'provider': 'qmsg', 'key': 'xxx', 'qq': 'xxx'},
+                {'provider': 'dingtalk', 'token': 'xxx', 'secret': 'xxx'},
+                {'provider': 'lark', 'webhook': 'xxx', 'sign': 'xxx'},
+                {'provider': 'smtp', 'host': 'xxx', 'user': 'xxx',
+                 'password': 'xxx', 'port': 587, 'ssl': True},
+            ],
         },
         'push_error_retry': {
             'retry_interval': '3s',
@@ -198,12 +205,11 @@ COMMENTS = {
         },
         'push_channel_settings': {
             '_comment': (
-                "推送通道设置\n"
+                "\n推送通道设置\n"
             ),
             'push_channel': (
                 "\nOnePush 推送通道配置\n"
-                "- 按下列例，填入对应参数，已支持多通道\n"
-                "  例：\n"
+                "- 参考下列示例填入对应参数，已支持多通道，新增通道仅需添加一行参数配置：\n"
                 "    push_channel:\n"
                 "      - {provider: bark, key: xxx}\n"
                 "      - {provider: discord, webhook: xxx}\n"
@@ -221,7 +227,7 @@ COMMENTS = {
             ),
         },
         'push_error_retry': {
-            '_comment': "推送错误重试设置\n",
+            '_comment': "\n推送错误重试设置\n",
             'retry_interval': (
                 "\n重试间隔，默认值: 3000毫秒（3秒），支持 H/M/S 格式\n"
             ),
@@ -292,6 +298,9 @@ def get_default_config(for_file_creation=False):
             for key, value in config_dict.items():
                 if isinstance(value, dict):
                     commented_map[key] = create_commented_map(value)
+                elif key == 'push_channel' and isinstance(value, list):
+                    # push_channel 列表渲染为流式块序列（每元素为单行花括号映射）
+                    commented_map[key] = build_push_channel_node(value)
                 else:
                     commented_map[key] = value
             return commented_map
