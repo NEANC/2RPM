@@ -8,33 +8,52 @@ import logging
 
 from onepush import get_notifier
 from modules.utils import (
-    correct_channel_aliases,
+    parse_push_channels,
     parse_time_string,
-    strip_wrapping_quotes,
 )
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _normalize_push_channel(push_channel):
-    """规范化推送通道配置。
-
-    将各字段值首尾的包裹引号剥离，并把 provider 名称转为小写，
-    以兼容大小写混合书写与带引号包裹的写法。
+async def _notify_single_channel(channel, title, content, retry_interval_ms, max_retry_count):
+    """向单个推送通道发送通知，失败时按配置重试。
 
     Args:
-        push_channel (dict): 原始推送通道配置字典。
+        channel (dict): 标准通道字典，含 provider 及该渠道所需参数。
+        title (str): 通知标题。
+        content (str): 通知内容。
+        retry_interval_ms (int): 重试间隔（毫秒）。
+        max_retry_count (int): 最大重试次数。
 
     Returns:
-        dict: 规范化后的推送通道配置字典。
+        bool: 是否发送成功。
     """
-    normalized = {
-        key: strip_wrapping_quotes(value)
-        for key, value in push_channel.items()
-    }
-    if 'provider' in normalized and isinstance(normalized['provider'], str):
-        normalized['provider'] = normalized['provider'].lower()
-    return normalized
+    params = dict(channel)
+    provider = params.pop('provider', '')
+
+    # 守卫：缺少 provider 无法发送
+    if not provider:
+        LOGGER.error("推送通道缺少 provider 键，已跳过该通道")
+        return False
+
+    LOGGER.info(f"推送通道: {provider}")
+    for attempt in range(1, max_retry_count + 1):
+        try:
+            notifier = get_notifier(provider)
+            notifier.notify(title=title, content=content, **params)
+            LOGGER.info(f"通知发送成功 [{provider}]: {title}")
+            return True
+        except Exception as e:
+            LOGGER.error(
+                f"通知发送失败 [{provider}] (尝试 {attempt}/{max_retry_count}): {e}"
+            )
+            if attempt < max_retry_count:
+                await asyncio.sleep(retry_interval_ms / 1000)
+            else:
+                LOGGER.critical(
+                    f"通知发送失败 [{provider}]，已达到最大重试次数。"
+                )
+    return False
 
 
 async def send_notification(config, template_key, **kwargs):
@@ -87,56 +106,26 @@ async def send_notification(config, template_key, **kwargs):
 
     # 获取推送通道
     push_channel_settings = push_settings.get('push_channel_settings', {})
-    push_channel = dict(push_channel_settings.get('push_channel', {}))
+    raw_push_channel = push_channel_settings.get('push_channel')
 
-    if not push_channel:
-        LOGGER.error("推送通道未配置，无法发送通知")
+    # 解析为标准通道列表，兼容无参数头、乱序、以 ';' 分割的多通道写法
+    channels = parse_push_channels(raw_push_channel)
+    if not channels:
+        LOGGER.error("推送通道未配置或格式无效，无法发送通知")
         return
-
-    if not isinstance(push_channel, dict):
-        LOGGER.error("推送通道配置格式错误，应为字典")
-        return
-
-    # 规范化：剥离值的包裹引号并将 provider 名称转为小写
-    push_channel = _normalize_push_channel(push_channel)
-
-    push_channel_name = push_channel.pop('provider', '')
-    if not push_channel_name:
-        LOGGER.error("推送通道缺少 provider 键，无法发送通知")
-        return
-
-    # 纠正部分渠道的密钥别名（如 serverchan 的 key -> sckey）
-    corrections = correct_channel_aliases(push_channel_name, push_channel)
-    for old_key, new_key in corrections.items():
-        LOGGER.warning(
-            f"推送通道 '{push_channel_name}' 的参数 '{old_key}' "
-            f"已自动纠正为 '{new_key}'"
-        )
 
     retry_settings = push_settings.get('push_error_retry', {})
     retry_interval_str = retry_settings.get('retry_interval', '3s')
     retry_interval_ms = parse_time_string(retry_interval_str)
     max_retry_count = retry_settings.get('max_retry_count', 3)
 
-    # 推送通知
-    LOGGER.info(f"推送通道: {push_channel_name}")
-    for attempt in range(1, max_retry_count + 1):
-        try:
-            notifier = get_notifier(push_channel_name)
-            notifier.notify(
-                title=title,
-                content=content,
-                **push_channel
-            )
-            LOGGER.info(f"通知发送成功: {title}")
-            break
-        except Exception as e:
-            LOGGER.error(
-                f"通知发送失败 (尝试 {attempt}/{max_retry_count}): {e}"
-            )
-            if attempt < max_retry_count:
-                await asyncio.sleep(retry_interval_ms / 1000)
-            else:
-                LOGGER.critical(
-                    "通知发送失败，已达到最大重试次数。"
-                )
+    # 依次向各通道推送，单通道失败不影响其余通道
+    LOGGER.info(f"共解析到 {len(channels)} 个推送通道")
+    for channel in channels:
+        await _notify_single_channel(
+            channel,
+            title,
+            content,
+            retry_interval_ms,
+            max_retry_count,
+        )

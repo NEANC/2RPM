@@ -7,7 +7,11 @@ import logging
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from modules.utils import correct_channel_aliases, strip_wrapping_quotes
+from modules.utils import (
+    build_push_channel_node,
+    parse_push_channels,
+    push_channel_signature,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,14 +203,15 @@ COMMENTS = {
             'push_channel': (
                 "\nOnePush 推送通道配置（请查看 https://pypi.org/project/onepush/ "
                 "来获得如何使用帮助）\n"
-                "- 填入一个字典，必须包含 provider 键指定通道名称\n"
-                "- provider 名称大小写不敏感（如 ServerChan、DingTalk）\n"
-                "- provider、key、token 等值可使用引号 '' 或 \"\" 包裹\n"
-                "- 其余键为该通道所需的参数，例如：\n"
+                "- 推荐写法：填入字典，包含 provider 键指定通道名称，其余为该通道参数\n"
                 "  - {provider: serverchan, sckey: SCTxxxx}\n"
                 "  - {provider: dingtalk, token: xxx, secret: xxx}\n"
                 "  - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
-                "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}"
+                "  - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}\n"
+                "  - {provider: pushdeer, pushkey: xxx, type: serverchan}\n"
+                "  - {provider: wxpusher, app_token: xxx, uid: xxx, api_url: xxx}\n"
+                "- 多通道推送：用 ';' 分割多个配置，需用引号包裹整行，例：\n"
+                "  - '{provider: serverchan, sckey: SCTxxxx}; {provider: dingtalk, token: xxx, secret: xxx}'\n"
             ),
         },
         'push_error_retry': {
@@ -561,17 +566,19 @@ def migrate_old_config(old_config):
 
 
 def correct_push_channel_config(user_config):
-    """纠正配置中推送通道的密钥别名，使其符合 OnePush 要求的参数名。
+    """规范化配置中的推送通道，统一回写为标准流式格式。
 
-    定位 push_settings.push_channel_settings.push_channel 节点，依据 provider
-    将通用键名（如 key）就地纠正为对应渠道要求的参数名（如 serverchan 的 sckey），
-    以便后续写回配置文件，避免推送时因参数名不匹配而失败。
+    定位 push_settings.push_channel_settings.push_channel 节点，将用户填写的
+    各种写法（标准字典、无参数头、乱序、以 ';' 分割的多通道）解析为标准通道，
+    并据此重建写回节点：单通道为单行花括号流式映射、多通道为以 ';' 分割的字符串。
+    密钥别名（如 serverchan 的 key -> sckey）在解析过程中一并纠正。仅当规范化
+    后的节点与原值存在实质差异时才替换，避免无谓的写回。
 
     Args:
-        user_config (dict): 用户配置字典。
+        user_config (dict): 用户配置字典，将被就地修改。
 
     Returns:
-        bool: 是否发生了键名纠正。
+        bool: 是否发生了 push_channel 节点的规范化替换。
     """
     push_settings = user_config.get('push_settings')
     if not isinstance(push_settings, dict):
@@ -581,18 +588,32 @@ def correct_push_channel_config(user_config):
     if not isinstance(channel_settings, dict):
         return False
 
-    push_channel = channel_settings.get('push_channel')
-    if not isinstance(push_channel, dict) or not push_channel:
+    raw_value = channel_settings.get('push_channel')
+
+    # 守卫：空容器或缺失视为未配置，无需规范化
+    if raw_value is None:
+        return False
+    if isinstance(raw_value, dict) and not raw_value:
+        return False
+    if isinstance(raw_value, str) and not raw_value.strip():
         return False
 
-    provider = push_channel.get('provider', '')
-    corrections = correct_channel_aliases(provider, push_channel)
-    for old_key, new_key in corrections.items():
-        LOGGER.warning(
-            f"推送通道 '{strip_wrapping_quotes(provider)}' 的参数 '{old_key}' "
-            f"已自动纠正为 '{new_key}'"
-        )
-    return bool(corrections)
+    channels = parse_push_channels(raw_value)
+    if not channels:
+        return False
+
+    new_node = build_push_channel_node(channels)
+
+    # 守卫：规范化前后签名一致时无需替换，避免无谓写回
+    if push_channel_signature(raw_value) == push_channel_signature(new_node):
+        return False
+
+    channel_settings['push_channel'] = new_node
+    providers = ', '.join(channel.get('provider', '') for channel in channels)
+    LOGGER.warning(
+        f"推送通道配置已规范化为标准格式（通道: {providers}）"
+    )
+    return True
 
 
 def merge_configs(user_config, default_config):
@@ -783,11 +804,12 @@ def load_config(config_file):
         # 清理用户配置
         cleaned = clean_config(user_config, default_config, 'root')
 
-        # 纠正推送通道密钥别名（如 serverchan 的 key -> sckey）
-        corrected = correct_push_channel_config(user_config)
-
         # 合并更新后的用户配置到默认配置中
         merged_config = merge_configs(user_config, default_config)
+
+        # 规范化推送通道并统一回写为标准流式格式
+        # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
+        corrected = correct_push_channel_config(merged_config)
 
         if updated or cleaned or corrected:
             LOGGER.debug("配置文件已更新，正在执行无缝迁移。")

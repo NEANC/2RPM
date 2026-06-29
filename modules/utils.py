@@ -6,7 +6,18 @@ import sys
 import logging
 import subprocess
 
+from onepush import get_notifier
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.scalarstring import SingleQuotedScalarString
+
 LOGGER = logging.getLogger(__name__)
+
+# 由程序在发送时自动填充的参数，定位位置参数时需要跳过，避免占用用户参数槽位
+PROGRAM_FILLED_PARAMS = {'title', 'content'}
+
+# 解析推送通道片段时复用的 YAML 实例（仅用于解析单个 {..} / [..] 片段）
+_FRAGMENT_YAML = YAML()
 
 # 支持剥离的成对包裹引号（直引号与中文弯引号）
 QUOTE_PAIRS = {
@@ -80,6 +91,320 @@ def correct_channel_aliases(provider, params):
         params[new_key] = params.pop(old_key)
         corrections[old_key] = new_key
     return corrections
+
+
+def get_provider_param_order(provider):
+    """获取指定推送渠道用于位置参数推断的参数名顺序。
+
+    依据 OnePush 各渠道声明的 _params（required 在前、optional 在后），
+    并剔除由程序自动填充的参数（title、content），得到用户位置参数可占用的
+    参数名顺序，用于将无键名的位置值映射到正确的参数名。
+
+    Args:
+        provider (str): 推送通道名称，大小写不敏感。
+
+    Returns:
+        list[str]: 位置参数对应的参数名顺序；渠道不存在时返回空列表。
+    """
+    if not isinstance(provider, str):
+        return []
+
+    try:
+        notifier = get_notifier(provider.strip().lower())
+    except Exception:
+        # 未知渠道：无法推断参数名，返回空列表交由调用方处理
+        return []
+
+    params = getattr(notifier, '_params', None) or {}
+    ordered = list(params.get('required', [])) + list(params.get('optional', []))
+    return [name for name in ordered if name not in PROGRAM_FILLED_PARAMS]
+
+
+def _assemble_channel(provider, named, positional):
+    """将拆解出的 provider、命名参数与位置参数组装为标准通道字典。
+
+    位置参数按渠道声明的参数顺序映射到参数名，并跳过已被命名参数占用的槽位；
+    随后纠正密钥别名（如 serverchan 的 key -> sckey）。
+
+    Args:
+        provider (str): 推送通道名称。
+        named (dict): 已带键名的参数（键名可能仍是别名）。
+        positional (list): 无键名的位置参数值列表。
+
+    Returns:
+        dict: 标准通道字典，provider 键排在最前；解析失败时返回空字典。
+    """
+    if not provider or not isinstance(provider, str):
+        return {}
+
+    provider = provider.strip().lower()
+    params = {str(key): value for key, value in named.items()}
+
+    if positional:
+        order = get_provider_param_order(provider)
+        slot = 0
+        for value in positional:
+            # 跳过已被命名参数占用的参数名槽位
+            while slot < len(order) and order[slot] in params:
+                slot += 1
+            if slot >= len(order):
+                LOGGER.warning(
+                    f"推送通道 '{provider}' 的位置参数过多，已忽略多余值: {value}"
+                )
+                break
+            params[order[slot]] = value
+            slot += 1
+
+    correct_channel_aliases(provider, params)
+
+    channel = {'provider': provider}
+    channel.update(params)
+    return channel
+
+
+def _dict_fragment_to_channel(fragment):
+    """将字典形式的通道片段解析为标准通道字典。
+
+    兼容标准写法（含 provider 键，允许键乱序）与两种无参数头写法：
+    {serverchan: SCTxxxx} 与 {serverchan, SCTxxxx}。
+
+    Args:
+        fragment (dict): 字典形式的通道片段。
+
+    Returns:
+        dict: 标准通道字典；无法解析时返回空字典。
+    """
+    items = [
+        (strip_wrapping_quotes(key), strip_wrapping_quotes(value))
+        for key, value in fragment.items()
+    ]
+    if not items:
+        return {}
+
+    has_provider = any(str(key).lower() == 'provider' for key, _ in items)
+    provider = None
+    named = {}
+    positional = []
+
+    if has_provider:
+        for key, value in items:
+            if str(key).lower() == 'provider':
+                provider = value
+            elif value is None:
+                positional.append(key)
+            else:
+                named[key] = value
+        return _assemble_channel(provider, named, positional)
+
+    # 无参数头：首键即为 provider 名称
+    first_key, first_value = items[0]
+    provider = first_key
+    if first_value is not None:
+        positional.append(first_value)
+    for key, value in items[1:]:
+        if value is None:
+            positional.append(key)
+        else:
+            named[key] = value
+    return _assemble_channel(provider, named, positional)
+
+
+def _list_fragment_to_channel(fragment):
+    """将列表形式的通道片段解析为标准通道字典。
+
+    兼容两种无参数头写法：[serverchan, SCTxxxx] 与 [serverchan: SCTxxxx]，
+    其中后者会被 YAML 解析为单键字典元素的列表。
+
+    Args:
+        fragment (list): 列表形式的通道片段。
+
+    Returns:
+        dict: 标准通道字典；无法解析时返回空字典。
+    """
+    elements = list(fragment)
+    if not elements:
+        return {}
+
+    provider = None
+    named = {}
+    positional = []
+
+    for index, element in enumerate(elements):
+        if isinstance(element, dict):
+            for key, value in element.items():
+                key = strip_wrapping_quotes(key)
+                value = strip_wrapping_quotes(value)
+                if str(key).lower() == 'provider':
+                    provider = value
+                elif index == 0 and provider is None:
+                    # 首元素为 {provider_name: value} 的无参数头写法
+                    provider = key
+                    if value is not None:
+                        positional.append(value)
+                else:
+                    named[key] = value
+            continue
+
+        value = strip_wrapping_quotes(element)
+        if index == 0 and provider is None:
+            provider = value
+        else:
+            positional.append(value)
+    return _assemble_channel(provider, named, positional)
+
+
+def _fragment_to_channel(parsed):
+    """将单个已解析的通道片段（结构化对象）转换为标准通道字典。
+
+    Args:
+        parsed: 由 YAML 解析得到的对象，可能为 dict、list 或裸标量。
+
+    Returns:
+        dict: 标准通道字典；无法解析时返回空字典。
+    """
+    if isinstance(parsed, dict):
+        return _dict_fragment_to_channel(parsed)
+    if isinstance(parsed, (list, tuple)):
+        return _list_fragment_to_channel(parsed)
+    if isinstance(parsed, str):
+        provider = strip_wrapping_quotes(parsed).strip().lower()
+        return {'provider': provider} if provider else {}
+    return {}
+
+
+def _load_fragment(fragment):
+    """将单个通道片段字符串解析为结构化对象。
+
+    Args:
+        fragment (str): 单个通道片段文本，如 "{provider: serverchan, sckey: SCTxxxx}"。
+
+    Returns:
+        解析后的对象（dict / list / 标量）；解析失败时返回原始字符串。
+    """
+    try:
+        return _FRAGMENT_YAML.load(fragment)
+    except Exception:
+        return fragment
+
+
+def _split_channel_fragments(text):
+    """将多通道字符串按 ';' 拆分为单个通道片段。
+
+    Args:
+        text (str): 多通道配置字符串。
+
+    Returns:
+        list[str]: 去除首尾空白后的非空片段列表。
+    """
+    text = strip_wrapping_quotes(text)
+    return [fragment.strip() for fragment in text.split(';') if fragment.strip()]
+
+
+def parse_push_channels(raw_value):
+    """将用户填写的 push_channel 配置解析为标准通道字典列表。
+
+    兼容以下输入形式：
+    - 标准字典 {provider: serverchan, sckey: SCTxxxx}（允许键乱序）；
+    - 无参数头写法 [serverchan, SCTxxxx] / [serverchan: SCTxxxx] /
+      {serverchan, SCTxxxx} / {serverchan: SCTxxxx}；
+    - 以 ';' 分割的多通道字符串。
+
+    Args:
+        raw_value: 配置文件中 push_channel 的原始值（字符串 / dict / list）。
+
+    Returns:
+        list[dict]: 标准通道字典列表，每项 provider 键排在最前。
+    """
+    if raw_value is None:
+        return []
+
+    # 字符串形式：可能为多通道（以 ; 分割）或单个片段
+    if isinstance(raw_value, str):
+        channels = []
+        for fragment in _split_channel_fragments(raw_value):
+            channel = _fragment_to_channel(_load_fragment(fragment))
+            if channel:
+                channels.append(channel)
+        return channels
+
+    # 已是结构化对象：原生 YAML 无法存储多通道，故视为单通道
+    channel = _fragment_to_channel(raw_value)
+    return [channel] if channel else []
+
+
+def _channel_to_flow_text(channel):
+    """将单个标准通道字典渲染为单行花括号流式文本。
+
+    Args:
+        channel (dict): 标准通道字典。
+
+    Returns:
+        str: 形如 "{provider: serverchan, sckey: SCTxxxx}" 的文本。
+    """
+    parts = [f"provider: {channel.get('provider', '')}"]
+    for key, value in channel.items():
+        if key == 'provider':
+            continue
+        parts.append(f"{key}: {value}")
+    return '{' + ', '.join(parts) + '}'
+
+
+def _build_flow_map(channel):
+    """将单个标准通道字典构建为流式渲染的 CommentedMap。
+
+    Args:
+        channel (dict): 标准通道字典。
+
+    Returns:
+        CommentedMap: 设置了流式风格、provider 键在最前的映射节点。
+    """
+    flow_map = CommentedMap()
+    flow_map['provider'] = channel.get('provider', '')
+    for key, value in channel.items():
+        if key == 'provider':
+            continue
+        flow_map[key] = value
+    flow_map.fa.set_flow_style()
+    return flow_map
+
+
+def build_push_channel_node(channels):
+    """根据标准通道字典列表构建用于写回配置文件的 push_channel 节点。
+
+    单通道使用单行花括号流式 CommentedMap；多通道因原生 YAML 无法存储，
+    改用以 ';' 分割的带引号字符串保存。
+
+    Args:
+        channels (list[dict]): 标准通道字典列表。
+
+    Returns:
+        构建好的节点：空配置为 CommentedMap，单通道为流式 CommentedMap，
+        多通道为 SingleQuotedScalarString。
+    """
+    if not channels:
+        return CommentedMap()
+    if len(channels) == 1:
+        return _build_flow_map(channels[0])
+    fragments = [_channel_to_flow_text(channel) for channel in channels]
+    return SingleQuotedScalarString('; '.join(fragments))
+
+
+def push_channel_signature(node):
+    """计算 push_channel 节点的规范化签名，用于判断配置是否需要回写。
+
+    Args:
+        node: push_channel 的值（dict / 字符串 / 其他）。
+
+    Returns:
+        tuple: 可用于相等比较的规范化签名。
+    """
+    if isinstance(node, dict):
+        return ('map', tuple(
+            (str(key), str(value)) for key, value in node.items()
+        ))
+    if isinstance(node, str):
+        return ('str', strip_wrapping_quotes(node).replace(' ', ''))
+    return ('other', node)
 
 
 def get_program_directory():
