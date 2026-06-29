@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -_- coding: utf-8 -_-
+# -*- coding: utf-8 -*-
 
 # 版本号：发版前手动修改
 VERSION = "v3.23.0"

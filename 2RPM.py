@@ -82,6 +82,8 @@ def main():
     setup_logging(CONFIG, config_file)
     LOGGER.info("已完成日志配置")
 
+    # 退出码：正常结束为 0，异常或手动终止为 1
+    exit_code = 0
     try:
         # 运行主监视器
         LOGGER.info("初始化结束，正在运行主程序")
@@ -89,13 +91,13 @@ def main():
         LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:
         LOGGER.critical("捕捉到 Ctrl+C，程序被手动终止")
-        sys.exit(1)
+        exit_code = 1
     except Exception as e:
         LOGGER.critical(f"程序出现异常: {e}", exc_info=True)
-        sys.exit(1)
+        exit_code = 1
     finally:
         print_info()
-        sys.exit(0)
+        sys.exit(exit_code)
 
 
 if __name__ == '__main__':
