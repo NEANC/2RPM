@@ -6,7 +6,7 @@ import sys
 import logging
 import subprocess
 
-from onepush import get_notifier
+from onepush import all_providers, get_notifier
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 from ruamel.yaml.scalarstring import SingleQuotedScalarString
@@ -15,6 +15,9 @@ LOGGER = logging.getLogger(__name__)
 
 # 由程序在发送时自动填充的参数，定位位置参数时需要跳过，避免占用用户参数槽位
 PROGRAM_FILLED_PARAMS = {'title', 'content'}
+
+# OnePush 已知推送渠道名单（小写），用于在无参数头写法中定位 provider 名称
+KNOWN_PROVIDERS = {str(name).strip().lower() for name in all_providers()}
 
 # 解析推送通道片段时复用的 YAML 实例（仅用于解析单个 {..} / [..] 片段）
 _FRAGMENT_YAML = YAML()
@@ -162,11 +165,111 @@ def _assemble_channel(provider, named, positional):
     return channel
 
 
+def _is_known_provider(name):
+    """判断给定名称是否为 OnePush 已知推送渠道。
+
+    剥离包裹引号并转为小写后，与已知渠道名单比对。
+
+    Args:
+        name: 待判断的名称，可能为任意类型。
+
+    Returns:
+        bool: 命中已知渠道名单时为 True，否则为 False。
+    """
+    if not isinstance(name, str):
+        return False
+    return strip_wrapping_quotes(name).strip().lower() in KNOWN_PROVIDERS
+
+
+def _locate_provider(items):
+    """在无参数头的键值项列表中定位 provider，并归类其余参数。
+
+    依次按以下优先级定位 provider：
+    1. 某项的键命中已知渠道名单（如 {dingtalk, secret: x} 或 {secret: x, dingtalk}）；
+    2. 某项的值命中已知渠道名单（如 {SCTxxxx: serverchan}），该项键转为位置参数；
+    3. 均未命中时回退为「首项即 provider」，以兼容自定义/未知渠道。
+
+    Args:
+        items (list): (key, value) 二元组列表，已完成引号剥离。
+
+    Returns:
+        tuple: (provider, named, positional)，分别为通道名、命名参数字典、
+            位置参数列表；items 为空时 provider 为 None。
+    """
+    if not items:
+        return None, {}, []
+
+    provider_index = None
+    provider = None
+    provider_from_value = False
+
+    # 优先级 1：键命中已知渠道名单
+    for index, (key, _) in enumerate(items):
+        if _is_known_provider(key):
+            provider_index = index
+            provider = key
+            break
+
+    # 优先级 2：值命中已知渠道名单，对应键降级为位置参数
+    if provider_index is None:
+        for index, (_, value) in enumerate(items):
+            if _is_known_provider(value):
+                provider_index = index
+                provider = value
+                provider_from_value = True
+                break
+
+    # 优先级 3：回退为首项即 provider
+    if provider_index is None:
+        return _locate_provider_fallback(items)
+
+    named = {}
+    positional = []
+    for index, (key, value) in enumerate(items):
+        if index == provider_index:
+            # provider 由值命中时，其键作为位置参数（如 {SCTxxxx: serverchan} 的 SCTxxxx）
+            if provider_from_value and key is not None:
+                positional.append(key)
+            # provider 由键命中且带值时，其值作为位置参数（如 {serverchan: SCTxxxx} 的 SCTxxxx）
+            elif not provider_from_value and value is not None:
+                positional.append(value)
+            continue
+        if value is None:
+            positional.append(key)
+        else:
+            named[key] = value
+    return provider, named, positional
+
+
+def _locate_provider_fallback(items):
+    """无任何项命中已知渠道名单时，按「首项即 provider」归类参数。
+
+    Args:
+        items (list): (key, value) 二元组列表，已完成引号剥离。
+
+    Returns:
+        tuple: (provider, named, positional)。
+    """
+    first_key, first_value = items[0]
+    provider = first_key
+    named = {}
+    positional = []
+    if first_value is not None:
+        positional.append(first_value)
+    for key, value in items[1:]:
+        if value is None:
+            positional.append(key)
+        else:
+            named[key] = value
+    return provider, named, positional
+
+
 def _dict_fragment_to_channel(fragment):
     """将字典形式的通道片段解析为标准通道字典。
 
-    兼容标准写法（含 provider 键，允许键乱序）与两种无参数头写法：
-    {serverchan: SCTxxxx} 与 {serverchan, SCTxxxx}。
+    兼容标准写法（含 provider 键，允许键乱序）与各类无参数头写法：
+    通道名可位于任意位置（首/中/末），亦可与密钥参数颠倒书写，
+    程序通过 OnePush 已知渠道名单自动定位 provider。
 
     Args:
         fragment (dict): 字典形式的通道片段。
@@ -182,11 +285,11 @@ def _dict_fragment_to_channel(fragment):
         return {}
 
     has_provider = any(str(key).lower() == 'provider' for key, _ in items)
-    provider = None
-    named = {}
-    positional = []
 
     if has_provider:
+        provider = None
+        named = {}
+        positional = []
         for key, value in items:
             if str(key).lower() == 'provider':
                 provider = value
@@ -196,24 +299,17 @@ def _dict_fragment_to_channel(fragment):
                 named[key] = value
         return _assemble_channel(provider, named, positional)
 
-    # 无参数头：首键即为 provider 名称
-    first_key, first_value = items[0]
-    provider = first_key
-    if first_value is not None:
-        positional.append(first_value)
-    for key, value in items[1:]:
-        if value is None:
-            positional.append(key)
-        else:
-            named[key] = value
+    # 无参数头：通过已知渠道名单定位 provider，兼容乱序、颠倒、通道名居中等写法
+    provider, named, positional = _locate_provider(items)
     return _assemble_channel(provider, named, positional)
 
 
 def _list_fragment_to_channel(fragment):
     """将列表形式的通道片段解析为标准通道字典。
 
-    兼容两种无参数头写法：[serverchan, SCTxxxx] 与 [serverchan: SCTxxxx]，
-    其中后者会被 YAML 解析为单键字典元素的列表。
+    先将各元素归一为 (key, value) 项（裸标量 -> (值, None)，单键字典 ->
+    (键, 值)），再通过 OnePush 已知渠道名单定位 provider，从而兼容
+    [serverchan, SCTxxxx]、[SCTxxxx, serverchan]、[SCTxxxx: serverchan] 等写法。
 
     Args:
         fragment (list): 列表形式的通道片段。
@@ -225,31 +321,31 @@ def _list_fragment_to_channel(fragment):
     if not elements:
         return {}
 
-    provider = None
-    named = {}
-    positional = []
-
-    for index, element in enumerate(elements):
+    items = []
+    for element in elements:
         if isinstance(element, dict):
             for key, value in element.items():
-                key = strip_wrapping_quotes(key)
-                value = strip_wrapping_quotes(value)
-                if str(key).lower() == 'provider':
-                    provider = value
-                elif index == 0 and provider is None:
-                    # 首元素为 {provider_name: value} 的无参数头写法
-                    provider = key
-                    if value is not None:
-                        positional.append(value)
-                else:
-                    named[key] = value
+                items.append(
+                    (strip_wrapping_quotes(key), strip_wrapping_quotes(value))
+                )
             continue
+        items.append((strip_wrapping_quotes(element), None))
 
-        value = strip_wrapping_quotes(element)
-        if index == 0 and provider is None:
-            provider = value
-        else:
-            positional.append(value)
+    # 显式 provider 键：保持其作为通道名，其余按键值归类
+    if any(str(key).lower() == 'provider' for key, _ in items):
+        provider = None
+        named = {}
+        positional = []
+        for key, value in items:
+            if str(key).lower() == 'provider':
+                provider = value
+            elif value is None:
+                positional.append(key)
+            else:
+                named[key] = value
+        return _assemble_channel(provider, named, positional)
+
+    provider, named, positional = _locate_provider(items)
     return _assemble_channel(provider, named, positional)
 
 
