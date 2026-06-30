@@ -240,6 +240,6 @@ def send_notification(config, template_key, **kwargs):
             )
             for channel in channels
         ]
-        # with 块退出隐式 shutdown(wait=True)，future.result() 此时不再阻塞
+        # future.result() 会阻塞至各通道完成，从而保证整体同步等待
         results = [(provider, future.result()) for provider, future in futures]
     return results
