@@ -7,7 +7,7 @@ import logging
 from ruamel.yaml import YAML
 
 # 添加项目根目录到 Python 路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 配置日志
 logging.basicConfig(
@@ -28,24 +28,24 @@ def test_config_cleaning():
     default_config = get_default_config()
     LOGGER.info("默认配置加载成功")
     
-    # 创建一个包含错误配置的测试配置
+    # 创建一个包含错误配置的测试配置（V4 节名）
     test_config = {
-        'monitor_settings': {
+        'monitor': {
             'process_name': 'MaaPiCli.exe',
-            'timeout_warning_interval': '45m',
-            'monitor_loop_interval': '1s',
+            'timeout_interval': '45m',
+            'loop_interval': '1s',
             # 这些是错误的配置项，应该被清理
-            'max_wait_time': '30s',
-            'wait_process_check_interval': '1s'
+            'max_wait': '30s',
+            'check_interval': '1s'
         },
-        'wait_process_settings': {
-            'max_wait_time': '30s',
-            'wait_process_check_interval': '1s'
+        'wait': {
+            'max_wait': '30s',
+            'check_interval': '1s'
         }
     }
     
     LOGGER.info("原始测试配置:")
-    LOGGER.info(f"monitor_settings: {test_config['monitor_settings']}")
+    LOGGER.info(f"monitor: {test_config['monitor']}")
     
     # 实现与 config.py 中相同的清理逻辑
     def clean_config(config, default_config):
@@ -64,16 +64,16 @@ def test_config_cleaning():
     clean_config(test_config, default_config)
     
     LOGGER.info("清理后的测试配置:")
-    LOGGER.info(f"monitor_settings: {test_config['monitor_settings']}")
+    LOGGER.info(f"monitor: {test_config['monitor']}")
     
     # 验证清理是否成功
-    monitor_settings = test_config['monitor_settings']
-    if 'max_wait_time' not in monitor_settings and 'wait_process_check_interval' not in monitor_settings:
+    monitor_section = test_config['monitor']
+    if 'max_wait' not in monitor_section and 'check_interval' not in monitor_section:
         LOGGER.info("配置清理成功!")
     else:
         LOGGER.error("配置清理失败!")
     
-    return monitor_settings
+    return monitor_section
 
 if __name__ == '__main__':
     test_config_cleaning()

@@ -15,25 +15,25 @@ from modules.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
-# 默认配置值集中管理
+# 默认配置值集中管理（V4 精简键名）
 DEFAULT_VALUES = {
-    'monitor_settings': {
+    'monitor': {
         'monitor_mode': 'psutil',
         'process_name': 'notepad.exe',
-        'timeout_warning_interval': '15m',
-        'monitor_loop_interval': '1s',
+        'timeout_interval': '15m',
+        'loop_interval': '1s',
     },
-    'wait_process_settings': {
-        'max_wait_time': '30s',
-        'wait_process_check_interval': '1s',
+    'wait': {
+        'max_wait': '30s',
+        'check_interval': '1s',
     },
-    'task_monitor_settings': {
+    'task': {
         'task_name': '\\Custom\\MyTask',
         'lookback_minutes': 10,
     },
-    'push_settings': {
-        'push_templates': {
-            'process_end_notification': {
+    'push': {
+        'templates': {
+            'on_end': {
                 'enable': True,
                 'title': '进程结束通报',
                 'content': (
@@ -44,7 +44,7 @@ DEFAULT_VALUES = {
                     '运行时间: {process_run_time}\n\n'
                 ),
             },
-            'process_timeout_warning': {
+            'on_timeout': {
                 'enable': True,
                 'title': '进程超时运行警告',
                 'content': (
@@ -55,7 +55,7 @@ DEFAULT_VALUES = {
                     '{process_run_time}\n\n'
                 ),
             },
-            'process_wait_timeout_warning': {
+            'on_wait_timeout': {
                 'enable': True,
                 'title': '等待超时未运行报告',
                 'content': (
@@ -65,7 +65,7 @@ DEFAULT_VALUES = {
                     '已等待时间: {process_wait_time}\n\n'
                 ),
             },
-            'external_program_execution_notification': {
+            'on_external': {
                 'enable': False,
                 'title': '外部程序执行通知',
                 'content': (
@@ -78,7 +78,7 @@ DEFAULT_VALUES = {
             },
         },
         'push_channel_settings': {
-            'push_channel': [
+            'channels': [
                 {'provider': 'serverchan', 'sckey': 'SCTxxxx'},
                 {'provider': 'qmsg', 'key': 'xxx', 'qq': 'xxx'},
                 {'provider': 'dingtalk', 'token': 'xxx', 'secret': 'xxx'},
@@ -87,29 +87,29 @@ DEFAULT_VALUES = {
                  'password': 'xxx', 'port': 587, 'ssl': True},
             ],
         },
-        'push_error_retry': {
-            'retry_interval': '3s',
-            'max_retry_count': 3,
+        'retry': {
+            'interval': '3s',
+            'max_count': 3,
         },
     },
-    'external_program_settings': {
-        'external_program_path': 'C:\\path\\to\\your\\script.bat',
-        'another_external_program_path': 'C:\\path\\to\\another_script.bat',
-        'timeout_count_threshold': 3,
-        'external_program_on_wait_timeout_path': 'C:\\path\\to\\wait_timeout_script.bat',
+    'external': {
+        'on_end': 'C:\\path\\to\\your\\script.bat',
+        'on_timeout': 'C:\\path\\to\\another_script.bat',
+        'timeout_threshold': 3,
+        'on_wait_timeout': 'C:\\path\\to\\wait_timeout_script.bat',
     },
-    'log_settings': {
+    'log': {
         'enable_log_file': True,
         'log_level': 'INFO',
         'log_directory': 'logs',
         'max_log_files': 15,
-        'log_retention_days': 3,
+        'retention_days': 3,
     },
 }
 
-# 注释集中管理
+# 注释集中管理（V4 精简键名与节名）
 COMMENTS = {
-    'monitor_settings': {
+    'monitor': {
         '_comment': (
             "监视设置\n"
             "- 监视程序相关配置\n"
@@ -122,26 +122,26 @@ COMMENTS = {
         'process_name': (
             "\n要监视的进程名称"
         ),
-        'timeout_warning_interval': (
-                    "\n超时警告间隔，默认值15分钟，支持 H/M/S 格式\n"
-                ),
-                'monitor_loop_interval': (
-                    "\n监视循环间隔，默认值1秒，支持 H/M/S 格式\n"
-                ),
+        'timeout_interval': (
+            "\n超时警告间隔，默认值15分钟，支持 H/M/S 格式\n"
+        ),
+        'loop_interval': (
+            "\n监视循环间隔，默认值1秒，支持 H/M/S 格式\n"
+        ),
     },
-    'wait_process_settings': {
+    'wait': {
         '_comment': (
             "等待进程设置\n"
             "- 配置等待进程启动的相关参数\n"
         ),
-        'max_wait_time': (
-                "\n最长等待时间，默认值: 30秒，支持 H/M/S 格式\n"
-            ),
-            'wait_process_check_interval': (
-                "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
-            ),
+        'max_wait': (
+            "\n最长等待时间，默认值: 30秒，支持 H/M/S 格式\n"
+        ),
+        'check_interval': (
+            "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
+        ),
     },
-    'task_monitor_settings': {
+    'task': {
         '_comment': (
             "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
             "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
@@ -156,12 +156,12 @@ COMMENTS = {
             "- 默认值: 10\n"
         ),
     },
-    'push_settings': {
+    'push': {
         '_comment': (
             "推送设置\n"
             "- 包含推送通知的相关配置\n"
         ),
-        'push_templates': {
+        'templates': {
             '_comment': (
                 "推送模板配置\n"
                 "- 可自定义通知的标题和内容\n"
@@ -178,25 +178,25 @@ COMMENTS = {
                 "调用的程序名: {external_program_name}\n"
                 "调用的程序路径: {external_program_path}\n"
             ),
-            'process_end_notification': (
+            'on_end': (
                 "\n进程结束通知模板\n"
                 "- enable: 是否启用该通知\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
-            'process_timeout_warning': (
+            'on_timeout': (
                 "\n进程超时运行警告模板\n"
                 "- enable: 是否启用该通知\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
-            'process_wait_timeout_warning': (
+            'on_wait_timeout': (
                 "\n等待超时未运行报告模板\n"
                 "- enable: 是否启用该通知\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
-            'external_program_execution_notification': (
+            'on_external': (
                 "\n外部程序执行通知模板\n"
                 "- enable: 是否启用该通知\n"
                 "- title: 通知标题\n"
@@ -207,10 +207,10 @@ COMMENTS = {
             '_comment': (
                 "\n推送通道设置\n"
             ),
-            'push_channel': (
+            'channels': (
                 "\nOnePush 推送通道配置\n"
                 "- 参考下列示例填入对应参数，已支持多通道，新增通道仅需添加一行参数配置：\n"
-                "    push_channel:\n"
+                "    channels:\n"
                 "      - {provider: bark, key: xxx}\n"
                 "      - {provider: discord, webhook: xxx}\n"
                 "      - {provider: telegram, token: xxx, userid: xxx, api_url: xxx}\n"
@@ -226,35 +226,35 @@ COMMENTS = {
                 "      - {provider: smtp, host: xxx, user: xxx, password: xxx, port: 587, ssl: true}\n"
             ),
         },
-        'push_error_retry': {
+        'retry': {
             '_comment': "\n推送错误重试设置\n",
-            'retry_interval': (
-                "\n重试间隔，默认值: 3000毫秒（3秒），支持 H/M/S 格式\n"
+            'interval': (
+                "\n重试间隔，默认值: 3秒，支持 H/M/S 格式\n"
             ),
-            'max_retry_count': "\n最大重试次数，默认值: 3次",
+            'max_count': "\n最大重试次数，默认值: 3次",
         },
     },
-    'external_program_settings': {
-            '_comment': (
-                "外部程序调用设置\n"
-            ),
-            'external_program_path': (
-                "\n进程结束时触发的外部程序/BAT脚本的详细路径，例如: "
-                "C:\\path\\end\\script.bat"
-            ),
-            'another_external_program_path': (
-                "\n进程运行超时后触发的外部程序/BAT脚本的详细路径，例如: "
-                "C:\\path\\timeout\\timeout_script.bat"
-            ),
-            'timeout_count_threshold': (
-                "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
-            ),
-            'external_program_on_wait_timeout_path': (
-                "\n等待进程启动超时后触发的外部程序/BAT脚本的详细路径，例如: "
-                "- 例如: C:\\path\\wait_timeout\\wait_timeout_script.bat"
-            ),
-        },
-    'log_settings': {
+    'external': {
+        '_comment': (
+            "外部程序调用设置\n"
+        ),
+        'on_end': (
+            "\n进程结束时触发的外部程序/BAT脚本的详细路径，例如: "
+            "C:\\path\\end\\script.bat"
+        ),
+        'on_timeout': (
+            "\n进程运行超时后触发的外部程序/BAT脚本的详细路径，例如: "
+            "C:\\path\\timeout\\timeout_script.bat"
+        ),
+        'timeout_threshold': (
+            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
+        ),
+        'on_wait_timeout': (
+            "\n等待进程启动超时后触发的外部程序/BAT脚本的详细路径\n"
+            "- 例如: C:\\path\\wait_timeout\\wait_timeout_script.bat"
+        ),
+    },
+    'log': {
         '_comment': (
             "日志设置\n"
             "- 配置日志输出的相关参数\n"
@@ -274,7 +274,7 @@ COMMENTS = {
             "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False"
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
-        'log_retention_days': "\n日志保存天数，单位为天，默认值: 3天",
+        'retention_days': "\n日志保存天数，单位为天，默认值: 3天",
     },
 }
 
@@ -311,11 +311,16 @@ def _check_missing_params(config, required_params, section_name):
         # 只在当前配置节中添加缺少的参数，避免跨节添加
         if param not in config:
             config[param] = default_value
-            LOGGER.warning(f"配置 '{section_name}' 中缺少参数 '{param}'，使用默认值: {default_value}")
+            LOGGER.warning(
+                f"配置 '{section_name}' 中缺少参数 '{param}'，"
+                f"使用默认值: {default_value}"
+            )
             updated = True
         elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
             # 递归检查嵌套配置
-            sub_updated = _check_missing_params(config[param], default_value, f"{section_name}.{param}")
+            sub_updated = _check_missing_params(
+                config[param], default_value, f"{section_name}.{param}"
+            )
             updated = updated or sub_updated
     return updated
 
@@ -337,17 +342,60 @@ def _clean_config(config, default_config, section_name='root'):
         if key not in default_config:
             keys_to_remove.append(key)
         elif isinstance(config[key], dict) and isinstance(default_config.get(key), CommentedMap):
-            # 默认值为空字典代表自由格式容器（如 push_channel），
+            # 默认值为空字典代表自由格式容器（如 push_channel_settings），
             # 其内容由用户自定义，跳过清理以免误删推送通道参数
             if len(default_config[key]) == 0:
                 continue
-            sub_removed = _clean_config(config[key], default_config[key], key)
+            sub_removed = _clean_config(
+                config[key], default_config[key], f"{section_name}.{key}"
+            )
             removed = removed or sub_removed
     for key in keys_to_remove:
-        LOGGER.warning(f"移除不属于配置块 '{section_name}' 的配置项: {key}")
+        LOGGER.warning(
+            f"移除不属于配置块 '{section_name}' 的配置项: {key}"
+        )
         del config[key]
         removed = True
     return removed
+
+
+def _create_commented_map(config_dict):
+    """递归创建 CommentedMap 结构，嵌入默认值。
+
+    将普通 dict 转换为 ruamel 的 CommentedMap，以支持注释嵌入。
+    push_channel 列表渲染为流式块序列。
+
+    Args:
+        config_dict (dict): 默认配置字典。
+
+    Returns:
+        CommentedMap: 递归构造的 CommentedMap 结构。
+    """
+    if not isinstance(config_dict, dict):
+        return config_dict
+
+    commented_map = CommentedMap()
+    for key, value in config_dict.items():
+        if isinstance(value, dict):
+            commented_map[key] = _create_commented_map(value)
+        elif key == 'channels' and isinstance(value, list):
+            # channels 列表渲染为流式块序列（每元素为单行花括号映射）
+            commented_map[key] = build_push_channel_node(value)
+        else:
+            commented_map[key] = value
+    return commented_map
+
+
+def _make_write_yaml():
+    """创建用于写回配置文件的 YAML 实例。
+
+    Returns:
+        YAML: 已配置缩进与引号保留的 YAML 实例。
+    """
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    yaml.preserve_quotes = True
+    return yaml
 
 
 def get_default_config(for_file_creation=False):
@@ -361,25 +409,8 @@ def get_default_config(for_file_creation=False):
         CommentedMap: 包含注释的默认配置字典。
     """
     LOGGER.debug("正在读取默认配置")
-    
-    # 递归创建 CommentedMap 结构
-    def create_commented_map(config_dict):
-        if isinstance(config_dict, dict):
-            commented_map = CommentedMap()
-            for key, value in config_dict.items():
-                if isinstance(value, dict):
-                    commented_map[key] = create_commented_map(value)
-                elif key == 'push_channel' and isinstance(value, list):
-                    # push_channel 列表渲染为流式块序列（每元素为单行花括号映射）
-                    commented_map[key] = build_push_channel_node(value)
-                else:
-                    commented_map[key] = value
-            return commented_map
-        else:
-            return config_dict
-    
-    # 使用集中管理的默认值创建配置
-    config = create_commented_map(DEFAULT_VALUES)
+
+    config = _create_commented_map(DEFAULT_VALUES)
 
     LOGGER.debug("正在应用注释到默认配置")
     apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
@@ -468,9 +499,7 @@ def create_default_config(config_file):
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
     default_config = get_default_config(for_file_creation=True)
     try:
-        yaml = YAML()
-        yaml.indent(mapping=2, sequence=4, offset=2)
-        yaml.preserve_quotes = True
+        yaml = _make_write_yaml()
         with open(config_file, 'w', encoding='utf-8') as f:
             yaml.dump(default_config, f)
         LOGGER.info(f"配置文件创建成功: {os.path.abspath(config_file)}")
@@ -479,161 +508,10 @@ def create_default_config(config_file):
         raise
 
 
-def ms_to_hms(milliseconds):
-    """将毫秒转换为H/M/S格式。
-
-    Args:
-        milliseconds (int): 毫秒数。
-
-    Returns:
-        str: 转换后的H/M/S格式字符串。
-    """
-    total_seconds = milliseconds // 1000
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    
-    if hours > 0:
-        return f"{hours}h"
-    elif minutes > 0:
-        return f"{minutes}m"
-    else:
-        return f"{seconds}s"
-
-
-def migrate_old_config(old_config):
-    """将旧版本配置迁移到新版本配置。
-
-    Args:
-        old_config (dict): 旧版本配置字典。
-
-    Returns:
-        dict: 迁移后的配置字典。
-    """
-    LOGGER.info("正在检查并迁移旧版本配置...")
-    
-    # 深拷贝所有原始配置，确保完整保留所有配置项
-    migrated_config = _deep_copy(old_config)
-
-    # 处理 monitor_settings
-    if 'monitor_settings' in migrated_config:
-        monitor_settings = migrated_config['monitor_settings']
-        
-        # 处理缺失的 process_name
-        if 'process_name' not in monitor_settings:
-            default_process_name = DEFAULT_VALUES['monitor_settings']['process_name']
-            migrated_config['monitor_settings']['process_name'] = default_process_name
-            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'process_name'，使用默认值: {default_process_name}")
-        
-        # 处理时间参数
-        if 'timeout_warning_interval_ms' in monitor_settings:
-            migrated_config['monitor_settings']['timeout_warning_interval'] = ms_to_hms(monitor_settings['timeout_warning_interval_ms'])
-            LOGGER.info(f"已迁移 timeout_warning_interval_ms 到 timeout_warning_interval: {migrated_config['monitor_settings']['timeout_warning_interval']}")
-        elif 'timeout_warning_interval' not in monitor_settings:
-            default_timeout = DEFAULT_VALUES['monitor_settings']['timeout_warning_interval']
-            migrated_config['monitor_settings']['timeout_warning_interval'] = default_timeout
-            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'timeout_warning_interval'，使用默认值: {default_timeout}")
-        
-        if 'monitor_loop_interval_ms' in monitor_settings:
-            migrated_config['monitor_settings']['monitor_loop_interval'] = ms_to_hms(monitor_settings['monitor_loop_interval_ms'])
-            LOGGER.info(f"已迁移 monitor_loop_interval_ms 到 monitor_loop_interval: {migrated_config['monitor_settings']['monitor_loop_interval']}")
-        elif 'monitor_loop_interval' not in monitor_settings:
-            default_interval = DEFAULT_VALUES['monitor_settings']['monitor_loop_interval']
-            migrated_config['monitor_settings']['monitor_loop_interval'] = default_interval
-            LOGGER.warning(f"配置 'monitor_settings' 中缺少参数 'monitor_loop_interval'，使用默认值: {default_interval}")
-        
-        # 清理旧参数
-        old_monitor_params = ['process_name_list', 'timeout_warning_interval_ms', 'monitor_loop_interval_ms']
-        for old_param in old_monitor_params:
-            if old_param in migrated_config['monitor_settings']:
-                del migrated_config['monitor_settings'][old_param]
-                LOGGER.info(f"已删除旧参数: monitor_settings.{old_param}")
-    else:
-        # 如果 monitor_settings 不存在，创建并添加默认值
-        migrated_config['monitor_settings'] = DEFAULT_VALUES['monitor_settings'].copy()
-        LOGGER.warning(f"配置块顶层丢失 'monitor_settings' ，正在重新写入")
-    
-    # 处理 wait_process_settings
-    if 'wait_process_settings' in migrated_config:
-        wait_settings = migrated_config['wait_process_settings']
-        
-        # 处理时间参数
-        if 'max_wait_time_ms' in wait_settings:
-            migrated_config['wait_process_settings']['max_wait_time'] = ms_to_hms(wait_settings['max_wait_time_ms'])
-            LOGGER.info(f"已迁移 max_wait_time_ms 到 max_wait_time: {migrated_config['wait_process_settings']['max_wait_time']}")
-        elif 'max_wait_time' not in wait_settings:
-            default_max_wait = DEFAULT_VALUES['wait_process_settings']['max_wait_time']
-            migrated_config['wait_process_settings']['max_wait_time'] = default_max_wait
-            LOGGER.warning(f"配置 'wait_process_settings' 中缺少参数 'max_wait_time'，使用默认值: {default_max_wait}")
-        
-        if 'wait_process_check_interval_ms' in wait_settings:
-            migrated_config['wait_process_settings']['wait_process_check_interval'] = ms_to_hms(wait_settings['wait_process_check_interval_ms'])
-            LOGGER.info(f"已迁移 wait_process_check_interval_ms 到 wait_process_check_interval: {migrated_config['wait_process_settings']['wait_process_check_interval']}")
-        elif 'wait_process_check_interval' not in wait_settings:
-            default_check_interval = DEFAULT_VALUES['wait_process_settings']['wait_process_check_interval']
-            migrated_config['wait_process_settings']['wait_process_check_interval'] = default_check_interval
-            LOGGER.warning(f"配置 'wait_process_settings' 中缺少参数 'wait_process_check_interval'，使用默认值: {default_check_interval}")
-        
-        # 清理旧参数
-        old_wait_params = ['max_wait_time_ms', 'wait_process_check_interval_ms']
-        for old_param in old_wait_params:
-            if old_param in migrated_config['wait_process_settings']:
-                del migrated_config['wait_process_settings'][old_param]
-                LOGGER.info(f"已删除旧参数: wait_process_settings.{old_param}")
-    else:
-        # 如果 wait_process_settings 不存在，创建并添加默认值
-        migrated_config['wait_process_settings'] = DEFAULT_VALUES['wait_process_settings'].copy()
-        LOGGER.warning(f"配置块顶层丢失 'wait_process_settings' ，正在重新写入")
-        
-    
-    # 处理 push_settings
-    if 'push_settings' in migrated_config and 'push_error_retry' in migrated_config['push_settings']:
-        push_error_retry = migrated_config['push_settings']['push_error_retry']
-        
-        if 'retry_interval_ms' in push_error_retry:
-            migrated_config['push_settings']['push_error_retry']['retry_interval'] = ms_to_hms(push_error_retry['retry_interval_ms'])
-            LOGGER.info(f"已迁移 retry_interval_ms 到 retry_interval: {migrated_config['push_settings']['push_error_retry']['retry_interval']}")
-        elif 'retry_interval' not in push_error_retry:
-            default_retry_interval = DEFAULT_VALUES['push_settings']['push_error_retry']['retry_interval']
-            migrated_config['push_settings']['push_error_retry']['retry_interval'] = default_retry_interval
-            LOGGER.warning(f"配置 'push_settings.push_error_retry' 中缺少参数 'retry_interval'，使用默认值: {default_retry_interval}")
-        
-        # 清理旧参数
-        if 'retry_interval_ms' in migrated_config['push_settings']['push_error_retry']:
-            del migrated_config['push_settings']['push_error_retry']['retry_interval_ms']
-            LOGGER.info(f"已删除旧参数: push_settings.push_error_retry.retry_interval_ms")
-    elif 'push_settings' not in migrated_config:
-        # 如果 push_settings 不存在，创建并添加默认值
-        migrated_config['push_settings'] = _deep_copy(DEFAULT_VALUES['push_settings'])
-        LOGGER.warning(f"配置块顶层丢失 'push_settings' ，正在重新写入")
-    elif 'push_error_retry' not in migrated_config['push_settings']:
-        # 如果 push_error_retry 不存在，创建并添加默认值
-        migrated_config['push_settings']['push_error_retry'] = DEFAULT_VALUES['push_settings']['push_error_retry'].copy()
-        LOGGER.warning(f"配置 'push_settings' 中缺少子节 'push_error_retry'，创建并使用默认值")
-    
-    # 处理 external_program_settings
-    if 'external_program_settings' not in migrated_config:
-        # 如果 external_program_settings 不存在，创建并添加默认值
-        migrated_config['external_program_settings'] = DEFAULT_VALUES['external_program_settings'].copy()
-        LOGGER.warning(f"配置块顶层丢失 'external_program_settings' ，正在重新写入")
-    
-    # 处理 log_settings
-    if 'log_settings' not in migrated_config:
-        # 如果 log_settings 不存在，创建并添加默认值
-        migrated_config['log_settings'] = DEFAULT_VALUES['log_settings'].copy()
-        LOGGER.warning(f"配置块顶层丢失 'log_settings' ，正在重新写入")
-
-    # 处理 task_monitor_settings
-    if 'task_monitor_settings' not in migrated_config:
-        migrated_config['task_monitor_settings'] = DEFAULT_VALUES['task_monitor_settings'].copy()
-        LOGGER.warning(f"配置块顶层丢失 'task_monitor_settings' ，正在重新写入")
-    
-    return migrated_config
-
-
 def correct_push_channel_config(user_config):
     """规范化配置中的推送通道，统一回写为标准流式格式。
 
-    定位 push_settings.push_channel_settings.push_channel 节点，将用户填写的
+    定位 push.push_channel_settings.channels 节点，将用户填写的
     各种写法（标准字典、无参数头、乱序、块序列或以 ';' 分割的字符串）解析为标准
     通道，并统一重建写回节点为元素均为流式映射的 YAML 块序列（单通道与多通道写法
     一致，无需引号包裹整行）。密钥别名（如 serverchan 的 key -> sckey）在解析
@@ -643,17 +521,17 @@ def correct_push_channel_config(user_config):
         user_config (dict): 用户配置字典，将被就地修改。
 
     Returns:
-        bool: 是否发生了 push_channel 节点的规范化替换。
+        bool: 是否发生了 channels 节点的规范化替换。
     """
-    push_settings = user_config.get('push_settings')
-    if not isinstance(push_settings, dict):
+    push_section = user_config.get('push')
+    if not isinstance(push_section, dict):
         return False
 
-    channel_settings = push_settings.get('push_channel_settings')
+    channel_settings = push_section.get('push_channel_settings')
     if not isinstance(channel_settings, dict):
         return False
 
-    raw_value = channel_settings.get('push_channel')
+    raw_value = channel_settings.get('channels')
 
     # 守卫：空容器或缺失视为未配置，无需规范化
     if raw_value is None:
@@ -673,7 +551,7 @@ def correct_push_channel_config(user_config):
     if push_channel_signature(raw_value) == push_channel_signature(new_node):
         return False
 
-    channel_settings['push_channel'] = new_node
+    channel_settings['channels'] = new_node
     providers = ', '.join(channel.get('provider', '') for channel in channels)
     LOGGER.warning(
         f"推送通道配置已规范化为标准格式（通道: {providers}）"
@@ -693,7 +571,7 @@ def merge_configs(user_config, default_config):
     """
     if not isinstance(user_config, dict):
         return default_config
-    
+
     for key, value in user_config.items():
         if key in default_config:
             if isinstance(value, dict) and isinstance(default_config[key], CommentedMap):
@@ -703,8 +581,9 @@ def merge_configs(user_config, default_config):
         else:
             # 保留用户配置中存在但默认配置中不存在的键
             default_config[key] = value
-    
+
     return default_config
+
 
 def load_config(config_file):
     """加载配置文件。
@@ -726,13 +605,16 @@ def load_config(config_file):
         input("请按任意键退出...")
         sys.exit(0)
 
-    # 保存原有配置到内存
+    # 加载用户配置
     try:
         yaml = YAML()
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
         if user_config is None:
-            LOGGER.warning(f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，已按默认配置加载")
+            LOGGER.warning(
+                f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，"
+                f"已按默认配置加载"
+            )
             user_config = {}
         elif not isinstance(user_config, dict):
             LOGGER.error(
@@ -745,98 +627,45 @@ def load_config(config_file):
         LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
         sys.exit(1)
 
-    # 检查是否为旧版本配置
-    is_old_version = False
-    if 'monitor_settings' in user_config:
-        ms = user_config['monitor_settings']
-        if 'process_name_list' in ms or 'timeout_warning_interval_ms' in ms or 'monitor_loop_interval_ms' in ms:
-            is_old_version = True
-    
-    if 'wait_process_settings' in user_config:
-        ws = user_config['wait_process_settings']
-        if 'max_wait_time_ms' in ws or 'wait_process_check_interval_ms' in ws:
-            is_old_version = True
-    
-    if 'push_settings' in user_config and 'push_error_retry' in user_config['push_settings']:
-        pr = user_config['push_settings']['push_error_retry']
-        if 'retry_interval_ms' in pr:
-            is_old_version = True
-
     # 加载默认配置
     default_config = get_default_config()
 
-    merged_config = default_config
+    updated = False
 
-    
-    if is_old_version:
-        # 旧版本配置，进行迁移
-        LOGGER.warning("检测到 v2 版本配置文件")
-        # 迁移旧版本配置
-        migrated_config = migrate_old_config(user_config)
-        
-        # 合并迁移后的配置到默认配置中
-        merged_config = merge_configs(migrated_config, default_config)
-        
-        # 存档旧配置并写回新配置
-        old_config_file = f"{os.path.splitext(config_file)[0]}.old.v2{os.path.splitext(config_file)[1]}"
+    # 确保所有必要的配置节都存在
+    for section in default_config:
+        if section not in user_config:
+            user_config[section] = {}
+            LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
+            updated = True
+
+    # 检查每个配置节中的参数
+    for section, section_config in default_config.items():
+        if isinstance(section_config, CommentedMap) and isinstance(user_config.get(section), dict):
+            section_updated = _check_missing_params(
+                user_config[section], section_config, section
+            )
+            updated = updated or section_updated
+
+    # 清理用户配置
+    cleaned = _clean_config(user_config, default_config, 'root')
+
+    # 合并更新后的用户配置到默认配置中
+    merged_config = merge_configs(user_config, default_config)
+
+    # 规范化推送通道并统一回写为标准流式格式
+    # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
+    corrected = correct_push_channel_config(merged_config)
+
+    if updated or cleaned or corrected:
+        LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
         try:
-            with open(old_config_file, 'w', encoding='utf-8') as f:
-                yaml.dump(user_config, f)
-            LOGGER.info(f"已将旧版本配置存档为: {os.path.abspath(old_config_file)}")
-        except Exception as e:
-            LOGGER.error(f"无法存档旧配置文件: {e}")
-        
-        # 写回迁移后的配置
-        try:
-            yaml = YAML()
-            yaml.indent(mapping=2, sequence=4, offset=2)
-            yaml.preserve_quotes = True
+            yaml = _make_write_yaml()
             with open(config_file, 'w', encoding='utf-8') as f:
                 yaml.dump(merged_config, f)
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
-            LOGGER.error(f"无法写回配置文件: {e}")
-    else:
-        # 新版本配置，检查参数缺失
-        LOGGER.info("正在检查配置信息是否缺失")
-        
-        # 先确保所有必要的配置节都存在
-        updated = False
-        for section in default_config:
-            if section not in user_config:
-                user_config[section] = {}
-                LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
-                updated = True
-        
-        # 检查每个配置节中的参数
-        for section, section_config in default_config.items():
-            if isinstance(section_config, CommentedMap) and isinstance(user_config.get(section), dict):
-                section_updated = _check_missing_params(user_config[section], section_config, section)
-                updated = updated or section_updated
-        
-        # 清理用户配置
-        cleaned = _clean_config(user_config, default_config, 'root')
-
-        # 合并更新后的用户配置到默认配置中
-        merged_config = merge_configs(user_config, default_config)
-
-        # 规范化推送通道并统一回写为标准流式格式
-        # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
-        corrected = correct_push_channel_config(merged_config)
-
-        if updated or cleaned or corrected:
-            LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
-            try:
-                yaml = YAML()
-                yaml.indent(mapping=2, sequence=4, offset=2)
-                yaml.preserve_quotes = True
-                with open(config_file, 'w', encoding='utf-8') as f:
-                    yaml.dump(merged_config, f)
-                LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
-            except Exception as e:
-                LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
+            LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
 
     LOGGER.debug("配置参数版本差异检查完成")
     return merged_config
-
-

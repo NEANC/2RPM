@@ -330,13 +330,12 @@ def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
     """
     global _FILE_HANDLER
 
-    log_config = config.get('log_settings', {})
+    log_config = config.get('log', {})
     enable_log_file = log_config.get('enable_log_file', True)
     log_level_str = log_config.get('log_level', 'INFO')
     log_level = getattr(logging, log_level_str.upper(), logging.INFO)
     max_files = log_config.get('max_log_files', 15)
-    max_days = log_config.get('log_retention_days', 3)
-    # 清洗日志目录配置：非法输入降级为默认目录
+    max_days = log_config.get('retention_days', 3)
     raw_dir = log_config.get('log_directory', 'logs')
     if not isinstance(raw_dir, str) or not raw_dir.strip():
         raw_dir = 'logs'
