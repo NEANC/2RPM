@@ -16,6 +16,99 @@ from modules.utils import (
 LOGGER = logging.getLogger(__name__)
 
 
+def _parse_response_body(response):
+    """尝试将响应体解析为 JSON 字典。
+
+    Args:
+        response: requests.Response 对象。
+
+    Returns:
+        dict | None: 解析成功返回字典；无法解析或非字典返回 None。
+    """
+    try:
+        body = response.json()
+    except Exception:
+        return None
+    # 守卫：仅字典型响应体可参与业务字段判定
+    if not isinstance(body, dict):
+        return None
+    return body
+
+
+def _is_push_successful(response):
+    """判定 onepush 返回的响应是否代表推送成功。
+
+    onepush 的 notify() 即便服务端返回业务错误（如 HTTP 400、错误码、限流），
+    通常也不会抛出异常，而是返回 requests.Response（请求异常时返回 None）。
+    因此需检查 HTTP 状态码与响应体业务字段，才能判定真实成败。
+
+    Args:
+        response: onepush notify() 的返回值，通常为 requests.Response，
+            请求异常时为 None。
+
+    Returns:
+        tuple[bool, str]: (是否成功, 失败原因描述)；成功时原因为空字符串。
+    """
+    # 守卫：请求异常时 onepush 内部吞掉异常并返回 None
+    if response is None:
+        return False, "未收到响应，请求可能已失败"
+
+    # HTTP 状态码非 2xx 直接判失败
+    status_code = getattr(response, 'status_code', None)
+    if status_code is not None and not 200 <= status_code < 300:
+        text = (getattr(response, 'text', '') or '').strip()
+        return False, f"HTTP {status_code}: {text}"
+
+    # 无法解析响应体时，仅凭 2xx 状态码判为成功
+    body = _parse_response_body(response)
+    if body is None:
+        return True, ""
+
+    # errcode 字段（钉钉、企业微信等）：非 0 即失败
+    errcode = body.get('errcode')
+    if errcode is not None and errcode != 0:
+        return False, f"errcode={errcode}: {body.get('errmsg', '')}"
+
+    # code 字段（Server酱、Qmsg 等）：非 0 / 200 即失败
+    code = body.get('code')
+    if code is not None and code not in (0, 200):
+        reason = body.get('message') or body.get('reason') or body.get('info') or ''
+        return False, f"code={code}: {reason}"
+
+    # success 字段（Qmsg 等）：显式 False 即失败
+    if body.get('success') is False:
+        reason = body.get('reason') or body.get('message') or ''
+        return False, f"success=false: {reason}"
+
+    return True, ""
+
+
+def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval):
+    """记录单次发送失败并决定是否继续重试。
+
+    Args:
+        provider (str): 推送渠道名称。
+        attempt (int): 当前尝试序号（从 1 开始）。
+        max_count (int): 最大重试次数。
+        reason (str): 失败原因描述。
+        retry_interval (int): 重试间隔（秒）。
+
+    Returns:
+        bool: True 表示应继续重试；False 表示已达最大重试次数。
+    """
+    LOGGER.error(
+        f"通知发送失败 [{provider}] (尝试 {attempt}/{max_count}): {reason}"
+    )
+    # 守卫：仍有重试机会则等待后继续
+    if attempt < max_count:
+        time.sleep(retry_interval)
+        return True
+    LOGGER.critical(
+        f"通知发送失败 [{provider}]，已达到最大重试次数。"
+    )
+    return False
+
+
 def _notify_single_channel(channel, title, content, retry_interval, max_count):
     """向单个推送通道发送通知，失败时按配置重试。
 
@@ -41,19 +134,23 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
     for attempt in range(1, max_count + 1):
         try:
             notifier = get_notifier(provider)
-            notifier.notify(title=title, content=content, **params)
+            response = notifier.notify(title=title, content=content, **params)
+        except Exception as e:
+            # 客户端层面异常（参数缺失、网络错误等）
+            if not _handle_attempt_failure(
+                    provider, attempt, max_count, str(e), retry_interval):
+                return False
+            continue
+
+        # 请求未抛异常，仍需依据响应判定真实成败
+        success, reason = _is_push_successful(response)
+        if success:
             LOGGER.info(f"通知发送成功 [{provider}]: {title}")
             return True
-        except Exception as e:
-            LOGGER.error(
-                f"通知发送失败 [{provider}] (尝试 {attempt}/{max_count}): {e}"
-            )
-            if attempt < max_count:
-                time.sleep(retry_interval)
-            else:
-                LOGGER.critical(
-                    f"通知发送失败 [{provider}]，已达到最大重试次数。"
-                )
+
+        if not _handle_attempt_failure(
+                provider, attempt, max_count, reason, retry_interval):
+            return False
     return False
 
 

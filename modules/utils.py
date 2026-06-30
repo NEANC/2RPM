@@ -539,7 +539,14 @@ def run_external_program(program_path):
         Exception: 当主方案与备选方案均调用失败时抛出，由调用方处理。
     """
     LOGGER.info(f"正在调用外部程序: {program_path}")
-    
+
+    # 守卫：路径为空或文件不存在时提前失败，避免 subprocess 抛出晦涩的
+    # WinError 与备选方案的重复报错
+    if not program_path:
+        raise FileNotFoundError("外部程序路径为空")
+    if not os.path.isfile(program_path):
+        raise FileNotFoundError(f"外部程序不存在: {program_path}")
+
     # 获取程序所在目录
     try:
         # 检查路径是否存在
@@ -565,7 +572,7 @@ def run_external_program(program_path):
         LOGGER.error(f"路径处理错误: {str(e)}")
         program_dir = os.getcwd()
     
-    LOGGER.debug(f"使用工作目录: {program_dir}")
+    LOGGER.info(f"使用工作目录: {program_dir}")
     
     try:
         # 检查文件扩展名
@@ -603,7 +610,7 @@ def parse_time_string(time_str):
     Raises:
         ValueError: 如果时间字符串格式无效。
     """
-    LOGGER.debug(f"解析时间字符串: {time_str}")
+    LOGGER.info(f"解析时间字符串: {time_str}")
     time_str = time_str.strip()
     if not time_str:
         LOGGER.error("时间字符串不能为空")
@@ -619,13 +626,13 @@ def parse_time_string(time_str):
         value = int(time_str[:-1])
         unit = time_str[-1]
         seconds = value * units[unit]
-        LOGGER.debug(f"解析结果: {seconds} 秒")
+        LOGGER.info(f"解析结果: {seconds} 秒")
         return seconds
     else:
         # 尝试直接解析为整数（秒）
         try:
             seconds = int(time_str)
-            LOGGER.debug(f"直接解析为秒: {seconds}")
+            LOGGER.info(f"直接解析为秒: {seconds}")
             return seconds
         except ValueError:
             LOGGER.error(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")

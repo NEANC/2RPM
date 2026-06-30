@@ -113,7 +113,7 @@ def _get_latest_matching_event(task_name, event_id, lookback_minutes):
                 event_task = parsed.get('task_name') or ''
                 if task_name.lower() not in event_task.lower():
                     continue
-                LOGGER.debug(
+                LOGGER.info(
                     f"匹配 Event {event_id}: "
                     f"PID={parsed['pid']}, Time={parsed['time']}"
                 )

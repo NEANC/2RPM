@@ -103,7 +103,7 @@ def _cleanup_old_logs(log_dir: str, max_files: int, max_days: int) -> None:
             except OSError:
                 pass
             except Exception:
-                LOGGER.debug(f"清理过期日志文件失败: {file_path}", exc_info=True)
+                LOGGER.error(f"清理过期日志文件失败: {file_path}", exc_info=True)
 
     # 按数量清理
     if len(files) > max_files:
@@ -113,7 +113,7 @@ def _cleanup_old_logs(log_dir: str, max_files: int, max_days: int) -> None:
             except OSError:
                 pass
             except Exception:
-                LOGGER.debug(f"清理超量日志文件失败: {file_path}", exc_info=True)
+                LOGGER.error(f"清理超量日志文件失败: {file_path}", exc_info=True)
 
 
 def _make_log_filename(log_filename: str) -> str:
