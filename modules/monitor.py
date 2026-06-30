@@ -198,6 +198,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
         f"进程 {process_name} (PID: {pid}) "
         f"已运行超时 {formatted_run_time}"
     )
+    # TODO: 本函数不持有 spinner 句柄且每轮循环重复触发，故丢弃返回值不做内联渲染，避免刷屏
     send_notification(
         config,
         'on_timeout',
@@ -223,6 +224,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
                 f"执行成功"
             )
             # 发送外部程序执行通知
+            # TODO: 同上，本函数不持 spinner 句柄，丢弃返回值不做内联渲染
             send_notification(
                 config,
                 'on_external',
@@ -438,7 +440,7 @@ def monitor_processes(config):
                         f"外部程序 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.fail("外部程序执行失败")
+                    sp.write_fail("外部程序执行失败")
                     LOGGER.error(
                         f"执行外部程序 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",
@@ -673,7 +675,7 @@ def monitor_via_task_scheduler(config):
                         f"外部程序 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.fail("外部程序执行失败")
+                    sp.write_fail("外部程序执行失败")
                     LOGGER.error(
                         f"执行外部程序 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",

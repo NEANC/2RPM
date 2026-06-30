@@ -395,7 +395,10 @@ class TestSendNotification(unittest.TestCase):
     @patch('modules.notification._notify_single_channel')
     def test_returns_per_channel_results(self, mock_notify):
         """返回值应为各通道 (provider, 是否成功) 的列表。"""
-        mock_notify.side_effect = [True, False]
+        # 并发执行下各通道调用顺序不确定，按 provider 绑定返回值避免 flaky
+        mock_notify.side_effect = (
+            lambda channel, *args, **kwargs: channel['provider'] == 'serverchan'
+        )
         config = self._build_config(
             '{provider: serverchan, sckey: SCTxxxx}; '
             '{provider: dingtalk, token: tk}'
