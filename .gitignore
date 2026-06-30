@@ -175,3 +175,5 @@ ds*.md
 # 日志文件夹
 logs/
 log/
+
+docs/superpowers/
