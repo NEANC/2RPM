@@ -184,6 +184,11 @@ def setup_default_logging() -> None:
     在配置文件加载前调用，建立控制台彩色输出与文件日志通道。文件
     直接写入默认目录下的 logs/2RPM_时间戳.毫秒.log，处理器保存到
     模块级变量供 setup_logging() 复用。文件 IO 失败时降级为仅控制台输出。
+
+    双轨制 UI：控制台 handler 自启动起即静音（提级到 CRITICAL+1），
+    控台仅由 banner、spinner 与 notify_fail 的 ❌ 行直接呈现。如此
+    spinner_phase 进入时捕获的 saved_level 本就是静音态，其 finally
+    还原后控台仍保持静音，不会回落到可泄漏的级别。
     """
     global _FILE_HANDLER
 
@@ -194,9 +199,10 @@ def setup_default_logging() -> None:
     if root_logger.handlers:
         return
 
-    # 控制台彩色输出
+    # 控制台 handler：双轨制下持久静音（提级到 CRITICAL+1），
+    # 保留 ColoredConsoleFormatter 仅为兼容潜在的级别临时调整场景
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(logging.CRITICAL + 1)
     console_handler.setFormatter(
         ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
     root_logger.addHandler(console_handler)
@@ -285,43 +291,15 @@ def _apply_log_path(handler, target_dir: str, target_prefix: str):
         return _reopen_file_handler(old_path, backup_count)
 
 
-def _discard_file_handler(root_logger: logging.Logger) -> None:
-    """移除文件处理器并删除其日志文件（用于禁用文件日志）。
-
-    Args:
-        root_logger: 根日志记录器。
-    """
-    global _FILE_HANDLER
-
-    if _FILE_HANDLER is None:
-        return
-
-    file_path = _FILE_HANDLER.baseFilename
-    root_logger.removeHandler(_FILE_HANDLER)
-    try:
-        _FILE_HANDLER.close()
-    except Exception:
-        LOGGER.debug("关闭日志处理器失败", exc_info=True)
-    _FILE_HANDLER = None
-
-    try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    except OSError:
-        pass
-    except Exception:
-        LOGGER.debug("删除日志文件失败", exc_info=True)
-
-
 def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
     """根据配置接管日志系统。
 
-    复用 setup_default_logging() 建立的处理器：调整控制台输出级别、
-    将日志文件移动到配置目录并按配置文件名重命名前缀、设置滚动备份
-    数量并清理过期日志。
+    复用 setup_default_logging() 建立的处理器：将日志文件移动到配置
+    目录并按配置文件名重命名前缀、设置滚动备份数量并清理过期日志。
 
-    文件日志始终输出 DEBUG 级别，不受配置影响；配置中的 log_level
-    仅控制控制台输出级别。
+    双轨制 UI：文件日志始终强制开启并输出 DEBUG 全量级别；控制台
+    日志处理器被静音（提级到 CRITICAL+1），控台仅由 banner、spinner
+    与 notify_fail 的 ❌ 行直接呈现，不经日志处理器穿透。
     前缀推导规则：config.yaml → '2RPM'，其它 → 配置文件基底名。
 
     Args:
@@ -331,9 +309,6 @@ def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
     global _FILE_HANDLER
 
     log_config = config.get('log', {})
-    enable_log_file = log_config.get('enable_log_file', True)
-    log_level_str = log_config.get('log_level', 'INFO')
-    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
     max_files = log_config.get('max_log_files', 15)
     max_days = log_config.get('retention_days', 3)
     raw_dir = log_config.get('log_directory', 'logs')
@@ -349,15 +324,11 @@ def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # 根 logger 始终 DEBUG，由各 handler 独立控制级别
 
-    # 控制台输出级别由配置文件控制
-    _set_console_level(root_logger, log_level)
+    # 双轨制 UI：控制台日志处理器静音（提级到 CRITICAL+1），
+    # 控台仅由 banner、spinner 与 notify_fail 的 ❌ 行直接呈现
+    _set_console_level(root_logger, logging.CRITICAL + 1)
 
-    # 不启用文件日志：移除并删除启动文件
-    if not enable_log_file:
-        _discard_file_handler(root_logger)
-        return
-
-    # 启动阶段文件创建失败时尝试补建，否则复用并迁移到配置目录
+    # 强制启用文件日志：启动阶段文件创建失败时尝试补建，否则复用并迁移到配置目录
     if _FILE_HANDLER is None:
         _FILE_HANDLER = _create_file_handler(log_dir, target_prefix)
         if _FILE_HANDLER is not None:

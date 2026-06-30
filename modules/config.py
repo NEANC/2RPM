@@ -99,8 +99,6 @@ DEFAULT_VALUES = {
         'on_wait_timeout': 'C:\\path\\to\\wait_timeout_script.bat',
     },
     'log': {
-        'enable_log_file': True,
-        'log_level': 'INFO',
         'log_directory': 'logs',
         'max_log_files': 15,
         'retention_days': 3,
@@ -259,19 +257,9 @@ COMMENTS = {
             "日志设置\n"
             "- 配置日志输出的相关参数\n"
         ),
-        'enable_log_file': (
-            "\n是否输出日志文件，默认为 True\n"
-            "- False 为 不输出，True 为 输出"
-        ),
-        'log_level': (
-            "\n日志输出等级，默认为 INFO\n"
-            "- 请根据需要进行设置，否则不建议改动\n"
-            "- DEBUG > INFO > WARNING > ERROR > CRITICAL"
-        ),
         'log_directory': (
             "\n日志输出的目录，默认为程序目录下的 'logs' 文件夹\n"
-            "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs\n"
-            "- 若不需要日志文件输出，请将 'enable_log_file' 设置为 False"
+            "- 请根据需要进行设置，例如: C:\\Path\\2RPM\\v2\\logs"
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
         'retention_days': "\n日志保存天数，单位为天，默认值: 3天",

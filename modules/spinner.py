@@ -42,13 +42,40 @@ def _make_yaspin(text):
 def _wrap_running(message):
     """将旋转期间的文案包裹为黄色。
 
+    前导空格使 yaspin 渲染的「帧字符 + 单空格 + 文案」变为双空格，
+    与 done/fail（图标后双空格）的对齐风格保持一致。
+
     Args:
         message (str): 原始文案。
 
     Returns:
-        str: 包裹 Fore.YELLOW 的文案。
+        str: 前缀一个空格并包裹 Fore.YELLOW 的文案。
     """
-    return colorama.Fore.YELLOW + message + colorama.Style.RESET_ALL
+    return " " + colorama.Fore.YELLOW + message + colorama.Style.RESET_ALL
+
+
+def _format_done(message):
+    """构造绿色 ✔️ 前缀的收尾文案（图标后两空格，与 ❌ 行对齐）。
+
+    Args:
+        message (str): 收尾文案。
+
+    Returns:
+        str: 包裹 Fore.GREEN、含 ✔️ 前缀的完整文案。
+    """
+    return colorama.Fore.GREEN + f"{_ICON_DONE}  {message}" + colorama.Style.RESET_ALL
+
+
+def _format_fail(message):
+    """构造红色 ❌ 前缀的收尾文案（图标后两空格，与 ✔️ 行对齐）。
+
+    Args:
+        message (str): 收尾文案。
+
+    Returns:
+        str: 包裹 Fore.RED、含 ❌ 前缀的完整文案。
+    """
+    return colorama.Fore.RED + f"{_ICON_FAIL}  {message}" + colorama.Style.RESET_ALL
 
 
 class _SpinnerWriteHandler(logging.Handler):
@@ -75,8 +102,7 @@ class _SpinnerWriteHandler(logging.Handler):
             record (logging.LogRecord): 日志记录。
         """
         message = record.getMessage()
-        text = colorama.Fore.RED + f"{_ICON_FAIL} {message}" + colorama.Style.RESET_ALL
-        self._spinner.write(text)
+        self._spinner.write(_format_fail(message))
 
 
 def _find_console_handler():
@@ -131,14 +157,14 @@ class _TtySpinner:
         if self._closed:
             return
         self._spinner.text = ""
-        self._spinner.ok(
-            colorama.Fore.GREEN + f"{_ICON_DONE} {message}"
-            + colorama.Style.RESET_ALL
-        )
+        self._spinner.ok(_format_done(message))
         self._closed = True
 
     def fail(self, message):
         """以红色失败图标 ❌ 定格当前行。
+
+        与 done() 同理，yaspin 3.4.0 的 _compose_out 取 self._text
+        而非 fail() 参数作为定格文案，需先清空避免残留。
 
         Args:
             message (str): 收尾文案。
@@ -146,10 +172,7 @@ class _TtySpinner:
         if self._closed:
             return
         self._spinner.text = ""
-        self._spinner.fail(
-            colorama.Fore.RED + f"{_ICON_FAIL} {message}"
-            + colorama.Style.RESET_ALL
-        )
+        self._spinner.fail(_format_fail(message))
         self._closed = True
 
     def write(self, message):
@@ -161,6 +184,18 @@ class _TtySpinner:
         if self._closed:
             return
         self._spinner.write(message)
+
+    def write_done(self, message):
+        """以绿色 ✔️ 前缀内联打印一条收尾信息，spinner 继续旋转。
+
+        与 done() 不同，本方法不定格 spinner，仅插入一条已完成行。
+
+        Args:
+            message (str): 收尾文案。
+        """
+        if self._closed:
+            return
+        self._spinner.write(_format_done(message))
 
 
 class _LogSpinner:
@@ -180,7 +215,7 @@ class _LogSpinner:
         Args:
             message (str): 收尾文案。
         """
-        LOGGER.info(f"{_ICON_DONE} {message}")
+        LOGGER.info(f"{_ICON_DONE}  {message}")
 
     def fail(self, message):
         """记录失败收尾文案。
@@ -188,7 +223,7 @@ class _LogSpinner:
         Args:
             message (str): 收尾文案。
         """
-        LOGGER.info(f"{_ICON_FAIL} {message}")
+        LOGGER.info(f"{_ICON_FAIL}  {message}")
 
     def write(self, message):
         """以 INFO 级别记录文本。
@@ -197,6 +232,14 @@ class _LogSpinner:
             message (str): 要记录的文本。
         """
         LOGGER.info(message)
+
+    def write_done(self, message):
+        """以 INFO 级别记录带 ✔️ 前缀的收尾信息。
+
+        Args:
+            message (str): 收尾文案。
+        """
+        LOGGER.info(f"{_ICON_DONE}  {message}")
 
 
 @contextmanager
@@ -239,3 +282,34 @@ def spinner_phase(text):
         spinner.stop()
         if console_handler is not None:
             console_handler.setLevel(saved_level)
+
+
+def notify_fail(message, exc_info=False):
+    """在 spinner 块外输出一条干净的红色 ❌ 失败行。
+
+    用于致命终止、Ctrl+C 取消、程序异常等不在 spinner 上下文内的失败场景。
+    全量信息（含 exc_info traceback）以 CRITICAL 级别写入日志文件，
+    控台仅呈现一条干净的 ❌ 双空格行（无 levelname/时间前缀），
+    与 spinner 的定格风格保持一致。非 TTY 环境降级为 LOGGER 输出。
+
+    Args:
+        message (str): 失败文案。
+        exc_info (bool): 是否在日志文件中附带异常 traceback，默认 False。
+    """
+    # 非 TTY：交由日志系统（文件全量，含 traceback）
+    if not sys.stdout.isatty():
+        LOGGER.critical(f"{_ICON_FAIL}  {message}", exc_info=exc_info)
+        return
+
+    # TTY：先把完整记录（含 traceback）写入文件，控台静音以免重复
+    console_handler = _find_console_handler()
+    saved_level = console_handler.level if console_handler else None
+    if console_handler is not None:
+        console_handler.setLevel(logging.CRITICAL + 1)
+    try:
+        LOGGER.critical(message, exc_info=exc_info)
+    finally:
+        if console_handler is not None:
+            console_handler.setLevel(saved_level)
+    colorama.init(autoreset=True)
+    print(_format_fail(message))

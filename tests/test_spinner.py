@@ -33,28 +33,37 @@ class TestSpinnerTTY(unittest.TestCase):
     def test_tty_uses_yaspin_and_done(self):
         """TTY 为真：进入退出不抛错，done 调用 ok 前清空旋转期文案。"""
         fake_spinner = MagicMock()
+        captured = {}
+        # 在 ok() 被调用的瞬间捕获当时 text，锁死清空必须早于 ok()
+        fake_spinner.ok.side_effect = (
+            lambda *a, **k: captured.update(text=fake_spinner.text))
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
                 patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 sp.text("运行中...")
                 sp.done("完成")
         fake_spinner.start.assert_called_once()
-        self.assertEqual(fake_spinner.text, "")
+        self.assertEqual(captured["text"], "")
         fake_spinner.ok.assert_called_once_with(
-            colorama.Fore.GREEN + spinner_mod._ICON_DONE + " 完成"
+            colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  完成"
             + colorama.Style.RESET_ALL)
         fake_spinner.stop.assert_called()
 
     def test_tty_fail_uses_fail_icon(self):
         """TTY 为真：fail 调用 yaspin.fail 前清空旋转期文案。"""
         fake_spinner = MagicMock()
+        captured = {}
+        # 在 fail() 被调用的瞬间捕获当时 text，锁死清空必须早于 fail()
+        fake_spinner.fail.side_effect = (
+            lambda *a, **k: captured.update(text=fake_spinner.text))
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
                 patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
+                sp.text("运行中...")
                 sp.fail("失败")
-        self.assertEqual(fake_spinner.text, "")
+        self.assertEqual(captured["text"], "")
         fake_spinner.fail.assert_called_once_with(
-            colorama.Fore.RED + spinner_mod._ICON_FAIL + " 失败"
+            colorama.Fore.RED + spinner_mod._ICON_FAIL + "  失败"
             + colorama.Style.RESET_ALL)
 
     def test_tty_write_delegates_to_spinner_write(self):
@@ -65,6 +74,18 @@ class TestSpinnerTTY(unittest.TestCase):
             with spinner_phase("等待中...") as sp:
                 sp.write("进程已退出运行")
         fake_spinner.write.assert_called_with("进程已退出运行")
+
+    def test_tty_write_done_uses_green_icon(self):
+        """TTY write_done() 以绿色 ✔️ 前缀内联打印且不定格 spinner。"""
+        fake_spinner = MagicMock()
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+            with spinner_phase("等待中...") as sp:
+                sp.write_done("进程已退出运行")
+        fake_spinner.write.assert_called_once_with(
+            colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  进程已退出运行"
+            + colorama.Style.RESET_ALL)
+        fake_spinner.ok.assert_not_called()
 
 
 class TestSpinnerNonTTY(unittest.TestCase):
@@ -104,6 +125,15 @@ class TestSpinnerNonTTY(unittest.TestCase):
             with spinner_phase("等待中...") as sp:
                 sp.write("进程已退出运行")
             log_info.assert_any_call("进程已退出运行")
+
+    def test_non_tty_write_done_logs_info_with_icon(self):
+        """非 TTY write_done() 以 INFO 级别记录带 ✔️ 前缀的日志。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
+                patch.object(spinner_mod.LOGGER, 'info') as log_info:
+            with spinner_phase("等待中...") as sp:
+                sp.write_done("进程已退出运行")
+            log_info.assert_any_call(
+                spinner_mod._ICON_DONE + "  进程已退出运行")
 
 
 class TestSpinnerConsoleMute(unittest.TestCase):
@@ -217,6 +247,57 @@ class TestSpinnerWriteHandler(unittest.TestCase):
         self.assertIn(spinner_mod._ICON_FAIL, written)
         self.assertIn("致命错误", written)
         self.assertIn(colorama.Fore.RED, written)
+
+
+class TestNotifyFail(unittest.TestCase):
+    """测试 spinner 块外的干净 ❌ 失败行输出。"""
+
+    def setUp(self):
+        """搭建仅含一个 INFO 控制台处理器的根 logger 现场。"""
+        self.root = logging.getLogger()
+        self.saved = self.root.handlers[:]
+        self.root.handlers = []
+        self.console = _make_console_handler(logging.INFO)
+        self.root.addHandler(self.console)
+
+    def tearDown(self):
+        """还原根 logger 的处理器。"""
+        self.root.handlers = self.saved
+
+    def test_tty_prints_clean_fail_line(self):
+        """TTY：print 一条红色 ❌ 双空格行，全量记录写入文件。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, 'print', create=True) as fake_print, \
+                patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
+            spinner_mod.notify_fail("程序终止运行")
+        fake_print.assert_called_once_with(
+            colorama.Fore.RED + spinner_mod._ICON_FAIL + "  程序终止运行"
+            + colorama.Style.RESET_ALL)
+        log_crit.assert_called_once_with("程序终止运行", exc_info=False)
+
+    def test_tty_mutes_then_restores_console(self):
+        """TTY：写文件期间控台提级到 CRITICAL+1，结束后还原。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, 'print', create=True):
+            self.console.setLevel(logging.INFO)
+            spinner_mod.notify_fail("程序终止运行")
+        self.assertEqual(self.console.level, logging.INFO)
+
+    def test_tty_passes_exc_info_to_file(self):
+        """TTY：exc_info=True 透传给 LOGGER.critical 以保留 traceback。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, 'print', create=True), \
+                patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
+            spinner_mod.notify_fail("程序出现异常", exc_info=True)
+        log_crit.assert_called_once_with("程序出现异常", exc_info=True)
+
+    def test_non_tty_logs_critical_with_icon(self):
+        """非 TTY：降级为 LOGGER.critical，文案含 ❌ 双空格前缀。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
+                patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
+            spinner_mod.notify_fail("程序终止运行", exc_info=True)
+        log_crit.assert_called_once_with(
+            spinner_mod._ICON_FAIL + "  程序终止运行", exc_info=True)
 
 
 if __name__ == '__main__':

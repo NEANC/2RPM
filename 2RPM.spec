@@ -46,6 +46,8 @@ a = Analysis(
         'onepush',
         'serverchan_sdk',
         'colorama',
+        'yaspin',
+        'termcolor',
         'pywin32',
         'win32evtlog',
     ],

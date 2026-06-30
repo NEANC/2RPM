@@ -46,4 +46,4 @@ def print_exit_info(exit_code: int) -> None:
     if exit_code == 0:
         return
     colorama.init(autoreset=True)
-    print(colorama.Fore.RED + f"\u274c 监控异常退出 (exit {exit_code})" + colorama.Style.RESET_ALL)
+    print(colorama.Fore.RED + f"\u274c  监控异常退出 (exit {exit_code})" + colorama.Style.RESET_ALL)
