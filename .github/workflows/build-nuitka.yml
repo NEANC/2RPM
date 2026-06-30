@@ -59,7 +59,7 @@ jobs:
           follow-imports: true
           include-plugin-directory: modules
           output-dir: build
-          include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama
+          include-package: psutil,ruamel.yaml,onepush,serverchan_sdk,colorama,yaspin,termcolor
           no-deployment-flag: self-execution
           nofollow-import-to: '*.tests'
 
