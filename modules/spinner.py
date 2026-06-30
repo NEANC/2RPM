@@ -122,11 +122,15 @@ class _TtySpinner:
     def done(self, message):
         """以绿色成功图标 ✔️ 定格当前行。
 
+        yaspin 3.4.0 的 _compose_out 取 self._text（旋转期旧文案）
+        而非 ok() 参数作为定格文案，需先清空避免残留。
+
         Args:
             message (str): 收尾文案。
         """
         if self._closed:
             return
+        self._spinner.text = ""
         self._spinner.ok(
             colorama.Fore.GREEN + f"{_ICON_DONE} {message}"
             + colorama.Style.RESET_ALL
@@ -141,6 +145,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
+        self._spinner.text = ""
         self._spinner.fail(
             colorama.Fore.RED + f"{_ICON_FAIL} {message}"
             + colorama.Style.RESET_ALL
