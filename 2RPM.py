@@ -4,7 +4,6 @@
 import os
 import sys
 import argparse
-import asyncio
 import logging
 
 from modules.config import load_config
@@ -28,9 +27,9 @@ def parse_args():
         argparse.Namespace: 命令行参数命名空间。
     """
     LOGGER.debug("解析命令行参数")
-    parser = argparse.ArgumentParser(description='2RPM V3')
+    parser = argparse.ArgumentParser(description='2RPM V4')
     # 位置参数：支持文件关联或拖拽方式打开配置文件
-    parser.add_argument('config_path',nargs='?',default=None,help=argparse.SUPPRESS )
+    parser.add_argument('config_path', nargs='?', default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         '-c', '-C', '-config', '-Config', '--config', '--Config',
         default=DEFAULT_CONFIG_FILE,
@@ -87,7 +86,7 @@ def main():
     try:
         # 运行主监视器
         LOGGER.info("初始化结束，正在运行主程序")
-        asyncio.run(monitor_processes(CONFIG))
+        monitor_processes(CONFIG)
         LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:
         LOGGER.critical("捕捉到 Ctrl+C，程序被手动终止")

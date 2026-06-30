@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # 版本号：发版前手动修改
-VERSION = "v3.23.0"
+VERSION = "v4.0.0"
 
 
 def print_info() -> None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-2RPM V3 单元测试
+2RPM V4 单元测试
 """
 
 import os
@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from modules.utils import (
     get_program_directory,
-    format_time_ms,
     run_external_program,
     parse_time_string,
     parse_push_channels,
@@ -27,6 +26,8 @@ from modules.config import (
     get_default_config,
     correct_push_channel_config
 )
+from modules.notification import send_notification
+from modules.monitor import monitor_processes
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 
@@ -40,26 +41,16 @@ class TestUtils(unittest.TestCase):
                 directory = get_program_directory()
                 self.assertEqual(directory, '/path/to')
 
-    def test_format_time_ms(self):
-        """测试时间格式化"""
-        # 测试 1 小时 30 分钟 45 秒
-        result = format_time_ms(5445000)  # 1*3600000 + 30*60000 + 45*1000
-        self.assertEqual(result, '01:30:45')
-        
-        # 测试 0 毫秒
-        result = format_time_ms(0)
-        self.assertEqual(result, '00:00:00')
-
     def test_parse_time_string(self):
-        """测试时间字符串解析"""
+        """测试时间字符串解析（V4：返回秒）"""
         # 测试小时
-        self.assertEqual(parse_time_string('1h'), 3600000)
+        self.assertEqual(parse_time_string('1h'), 3600)
         
         # 测试分钟
-        self.assertEqual(parse_time_string('15m'), 900000)
+        self.assertEqual(parse_time_string('15m'), 900)
         
         # 测试秒
-        self.assertEqual(parse_time_string('30s'), 30000)
+        self.assertEqual(parse_time_string('30s'), 30)
         
         # 测试直接数字
         self.assertEqual(parse_time_string('5000'), 5000)
@@ -80,9 +71,9 @@ class TestConfig(unittest.TestCase):
     """测试 config.py 模块"""
 
     def test_merge_configs(self):
-        """测试配置合并"""
+        """测试配置合并（V4 键名）"""
         user_config = {
-            'monitor_settings': {
+            'monitor': {
                 'process_name': 'custom.exe'
             }
         }
@@ -90,7 +81,7 @@ class TestConfig(unittest.TestCase):
         default_config = get_default_config()
         
         merged_config = merge_configs(user_config, default_config)
-        self.assertEqual(merged_config['monitor_settings']['process_name'], 'custom.exe')
+        self.assertEqual(merged_config['monitor']['process_name'], 'custom.exe')
 
 
 class TestParsePushChannels(unittest.TestCase):
@@ -299,18 +290,18 @@ class TestCorrectPushChannelConfig(unittest.TestCase):
     """测试 push_channel 配置规范化的整体流程"""
 
     def _build_config(self, push_channel_value):
-        """构造包含 push_channel 的最小配置字典
+        """构造包含 channels 的最小配置字典（V4 键名）
 
         Args:
-            push_channel_value: push_channel 的原始值。
+            push_channel_value: channels 的原始值。
 
         Returns:
-            dict: 含 push_settings.push_channel_settings.push_channel 的配置。
+            dict: 含 push.push_channel_settings.channels 的配置。
         """
         return {
-            'push_settings': {
+            'push': {
                 'push_channel_settings': {
-                    'push_channel': push_channel_value
+                    'channels': push_channel_value
                 }
             }
         }
@@ -320,7 +311,7 @@ class TestCorrectPushChannelConfig(unittest.TestCase):
         config = self._build_config('{key: SCTxxxx, provider: serverchan}')
         changed = correct_push_channel_config(config)
         self.assertTrue(changed)
-        node = config['push_settings']['push_channel_settings']['push_channel']
+        node = config['push']['push_channel_settings']['channels']
         self.assertIsInstance(node, CommentedSeq)
         self.assertEqual(list(node[0].keys())[0], 'provider')
         self.assertEqual(node[0]['sckey'], 'SCTxxxx')
@@ -337,6 +328,143 @@ class TestCorrectPushChannelConfig(unittest.TestCase):
         self.assertFalse(correct_push_channel_config(self._build_config(None)))
         self.assertFalse(correct_push_channel_config(self._build_config({})))
         self.assertFalse(correct_push_channel_config(self._build_config('')))
+
+
+class TestSendNotification(unittest.TestCase):
+    """测试推送通知的多通道并发提交逻辑"""
+
+    def _build_config(self, channels_value):
+        """构造含模板与多通道的最小推送配置（V4 键名）。
+
+        Args:
+            channels_value: push.push_channel_settings.channels 的原始值。
+
+        Returns:
+            dict: 含 push.templates / push_channel_settings / retry 的配置。
+        """
+        return {
+            'push': {
+                'templates': {
+                    'on_end': {
+                        'enable': True,
+                        'title': '进程结束',
+                        'content': '{process_name} 已结束',
+                    }
+                },
+                'push_channel_settings': {
+                    'channels': channels_value
+                },
+                'retry': {
+                    'interval': '1s',
+                    'max_count': 1,
+                }
+            }
+        }
+
+    @patch('modules.notification._notify_single_channel')
+    def test_all_channels_submitted(self, mock_notify):
+        """多通道应全部被提交执行（每个通道调用一次）"""
+        config = self._build_config(
+            '{provider: serverchan, sckey: SCTxxxx}; '
+            '{provider: dingtalk, token: tk}'
+        )
+        send_notification(config, 'on_end', process_name='test.exe')
+
+        # 两个通道均应被提交执行
+        self.assertEqual(mock_notify.call_count, 2)
+        providers = {
+            call.args[0]['provider'] for call in mock_notify.call_args_list
+        }
+        self.assertEqual(providers, {'serverchan', 'dingtalk'})
+
+    @patch('modules.notification._notify_single_channel')
+    def test_disabled_template_skips_push(self, mock_notify):
+        """模板 enable=False 时不应提交任何通道"""
+        config = self._build_config('{provider: serverchan, sckey: SCTxxxx}')
+        config['push']['templates']['on_end']['enable'] = False
+        send_notification(config, 'on_end', process_name='test.exe')
+        mock_notify.assert_not_called()
+
+    @patch('modules.notification._notify_single_channel')
+    def test_no_channels_skips_push(self, mock_notify):
+        """未配置通道时不应提交任何通道"""
+        config = self._build_config(None)
+        send_notification(config, 'on_end', process_name='test.exe')
+        mock_notify.assert_not_called()
+
+
+class TestMonitorLoopSmoke(unittest.TestCase):
+    """同步主循环冒烟测试：mock psutil 验证结束/超时分支触发通知"""
+
+    def _build_config(self):
+        """构造 psutil 模式的最小监视配置（V4 键名）。
+
+        Returns:
+            dict: 含 monitor / wait / external 节的配置。
+        """
+        return {
+            'monitor': {
+                'monitor_mode': 'psutil',
+                'process_name': 'target.exe',
+                'timeout_interval': '15m',
+                'loop_interval': '1s',
+            },
+            'wait': {
+                'max_wait': '15m',
+                'check_interval': '1s',
+            },
+            'external': {
+                'on_end': '',
+                'on_timeout': '',
+                'on_wait_timeout': '',
+                'timeout_threshold': 3,
+            },
+        }
+
+    @patch('modules.monitor.send_notification')
+    @patch('modules.monitor.time.sleep', return_value=None)
+    @patch('modules.monitor._collect_matching_processes')
+    def test_process_end_triggers_notification(
+            self, mock_collect, mock_sleep, mock_notify):
+        """进程先启动后结束，应触发 on_end 通知并退出循环"""
+        # 第一次：进程已启动；第二次：进程消失（结束）
+        mock_collect.side_effect = [
+            {1234: {'name': 'target.exe', 'create_time': 100.0}},
+            {},
+        ]
+        monitor_processes(self._build_config())
+
+        # 应调用 on_end 通知
+        end_calls = [
+            call for call in mock_notify.call_args_list
+            if call.args[1] == 'on_end'
+        ]
+        self.assertEqual(len(end_calls), 1)
+        self.assertEqual(end_calls[0].kwargs['process_pid'], 1234)
+
+    @patch('modules.monitor.send_notification')
+    @patch('modules.monitor.time.sleep', return_value=None)
+    @patch('modules.monitor._collect_matching_processes')
+    def test_process_timeout_triggers_notification(
+            self, mock_collect, mock_sleep, mock_notify):
+        """进程持续运行超过超时间隔，应触发 on_timeout 通知"""
+        # 第一轮进程仍在（触发超时），第二轮进程消失以结束循环
+        mock_collect.side_effect = [
+            {1234: {'name': 'target.exe', 'create_time': 100.0}},
+            {1234: {'name': 'target.exe', 'create_time': 100.0}},
+            {},
+        ]
+        config = self._build_config()
+        # timeout_interval 设为 0s，任意流逝时间均触发超时，无需 mock time.time
+        config['monitor']['timeout_interval'] = '0s'
+        monitor_processes(config)
+
+        timeout_calls = [
+            call for call in mock_notify.call_args_list
+            if call.args[1] == 'on_timeout'
+        ]
+        self.assertGreaterEqual(len(timeout_calls), 1)
+        self.assertEqual(timeout_calls[0].kwargs['process_pid'], 1234)
 
 
 if __name__ == '__main__':

@@ -529,25 +529,6 @@ def get_program_directory():
     return program_dir
 
 
-def format_time_ms(milliseconds):
-    """将毫秒转换为 HH:MM:SS 格式的字符串（移除毫秒精度）。
-
-    Args:
-        milliseconds (float): 毫秒数。
-
-    Returns:
-        str: 格式化后的时间字符串。
-    """
-    LOGGER.debug(f"格式化时间: {milliseconds} 毫秒")
-    total_seconds = int(milliseconds // 1000)
-    seconds = total_seconds % 60
-    minutes = (total_seconds // 60) % 60
-    hours = total_seconds // 3600
-    formatted_time = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    LOGGER.debug(f"格式化后的时间: {formatted_time}")
-    return formatted_time
-
-
 def run_external_program(program_path):
     """运行外部程序。
 
@@ -561,7 +542,6 @@ def run_external_program(program_path):
     
     # 获取程序所在目录
     try:
-        # program_dir = os.path.dirname(program_path) if os.path.dirname(program_path) else os.getcwd()
         # 检查路径是否存在
         if os.path.exists(program_path):
             # 如果是文件，获取其所在目录
@@ -612,13 +592,13 @@ def run_external_program(program_path):
 
 
 def parse_time_string(time_str):
-    """解析时间字符串为毫秒。
+    """解析时间字符串为秒。
 
     Args:
         time_str (str): 时间字符串，格式如 "1h", "15m", "30s"。
 
     Returns:
-        int: 转换后的毫秒数。
+        int: 转换后的秒数。
 
     Raises:
         ValueError: 如果时间字符串格式无效。
@@ -630,23 +610,23 @@ def parse_time_string(time_str):
         raise ValueError("时间字符串不能为空")
     
     units = {
-        'h': 3600000,  # 1小时 = 3600000毫秒
-        'm': 60000,    # 1分钟 = 60000毫秒
-        's': 1000      # 1秒 = 1000毫秒
+        'h': 3600,   # 1小时 = 3600秒
+        'm': 60,     # 1分钟 = 60秒
+        's': 1       # 1秒 = 1秒
     }
     
     if time_str[-1] in units:
         value = int(time_str[:-1])
         unit = time_str[-1]
-        milliseconds = value * units[unit]
-        LOGGER.debug(f"解析结果: {milliseconds} 毫秒")
-        return milliseconds
+        seconds = value * units[unit]
+        LOGGER.debug(f"解析结果: {seconds} 秒")
+        return seconds
     else:
-        # 尝试直接解析为整数（毫秒）
+        # 尝试直接解析为整数（秒）
         try:
-            milliseconds = int(time_str)
-            LOGGER.debug(f"直接解析为毫秒: {milliseconds}")
-            return milliseconds
+            seconds = int(time_str)
+            LOGGER.debug(f"直接解析为秒: {seconds}")
+            return seconds
         except ValueError:
             LOGGER.error(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
             raise ValueError(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
