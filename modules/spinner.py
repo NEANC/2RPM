@@ -13,8 +13,7 @@ LOGGER = logging.getLogger(__name__)
 _ICON_DONE = "\u2714\ufe0f"  # ✔️
 _ICON_FAIL = "\u274c"        # ❌
 
-# spinner 帧间隔（毫秒）。yaspin 默认约 80ms 会闪屏，
-# 放慢到 200ms 对齐 pixi_alas_install.sh 的 sleep 0.20。
+# spinner 帧间隔（毫秒）。yaspin 默认约 80ms 会闪屏，放慢到 200ms
 _SPINNER_INTERVAL_MS = 200
 
 
@@ -67,7 +66,7 @@ def _format_done(message):
 
 
 def _format_fail(message):
-    """构造红色 ❌ 前缀的收尾文案（图标后两空格，与 ✔️ 行对齐）。
+    """构造红色 ❌ 前缀的收尾文案（图标后空格，与 ✔️ 行对齐）。
 
     Args:
         message (str): 收尾文案。
@@ -75,7 +74,7 @@ def _format_fail(message):
     Returns:
         str: 包裹 Fore.RED、含 ❌ 前缀的完整文案。
     """
-    return colorama.Fore.RED + f"{_ICON_FAIL}  {message}" + colorama.Style.RESET_ALL
+    return colorama.Fore.RED + f"{_ICON_FAIL} {message}" + colorama.Style.RESET_ALL
 
 
 class _SpinnerWriteHandler(logging.Handler):

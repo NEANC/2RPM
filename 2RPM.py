@@ -27,7 +27,7 @@ def parse_args():
     Returns:
         argparse.Namespace: 命令行参数命名空间。
     """
-    LOGGER.debug("解析命令行参数")
+    LOGGER.info("解析命令行参数")
     parser = argparse.ArgumentParser(description='2RPM V4')
     # 位置参数：支持文件关联或拖拽方式打开配置文件
     parser.add_argument('config_path', nargs='?', default=None, help=argparse.SUPPRESS)
@@ -53,7 +53,7 @@ def main():
     # 初始化基本日志配置
     setup_default_logging()
     LOGGER = logging.getLogger(__name__)
-    LOGGER.debug(f"版本号: {VERSION}")
+    LOGGER.info(f"版本号: {VERSION}")
 
     # 初始化阶段（参数解析→路径处理→配置加载→日志配置）以 spinner 包裹
     with spinner_phase("程序正在初始化...") as sp:
@@ -77,7 +77,7 @@ def main():
 
         # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
         CONFIG = load_config(config_file)
-        LOGGER.debug("配置已加载")
+        LOGGER.info("配置已加载")
 
         # 设置日志
         setup_logging(CONFIG, config_file)
@@ -86,10 +86,10 @@ def main():
     # 退出码：正常结束为 0，异常或手动终止为 1
     exit_code = 0
     try:
-        # 运行主监视器（过渡叙述降级为 DEBUG，避免泄漏到 spinner 控台）
-        LOGGER.debug("初始化结束，正在运行主程序")
+        # 运行主监视器
+        LOGGER.info("初始化结束，正在运行主程序")
         monitor_processes(CONFIG)
-        LOGGER.debug("主程序已结束运行")
+        LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:
         notify_fail("捕捉到 Ctrl+C，程序被手动终止")
         exit_code = 1

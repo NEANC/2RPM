@@ -396,14 +396,14 @@ def get_default_config(for_file_creation=False):
     Returns:
         CommentedMap: 包含注释的默认配置字典。
     """
-    LOGGER.debug("正在读取默认配置")
+    LOGGER.info("正在读取默认配置")
 
     config = _create_commented_map(DEFAULT_VALUES)
 
-    LOGGER.debug("正在应用注释到默认配置")
+    LOGGER.info("正在应用注释到默认配置")
     apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
 
-    LOGGER.debug("内置配置读取完成")
+    LOGGER.info("内置配置读取完成")
     return config
 
 
@@ -646,7 +646,7 @@ def load_config(config_file):
     corrected = correct_push_channel_config(merged_config)
 
     if updated or cleaned or corrected:
-        LOGGER.debug("配置文件已更新，正在执行无缝迁移。")
+        LOGGER.info("配置文件已更新，正在执行无缝迁移。")
         try:
             yaml = _make_write_yaml()
             with open(config_file, 'w', encoding='utf-8') as f:
@@ -655,5 +655,5 @@ def load_config(config_file):
         except Exception as e:
             LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
 
-    LOGGER.debug("配置参数版本差异检查完成")
+    LOGGER.info("配置参数版本差异检查完成")
     return merged_config
