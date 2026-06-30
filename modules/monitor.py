@@ -15,7 +15,7 @@ from modules.utils import (
 from modules.notification import send_notification
 from modules.config import DEFAULT_VALUES
 from modules.task_monitor import query_task_pid
-from modules.spinner import spinner_phase
+from modules.spinner import spinner_phase, notify_fail
 
 LOGGER = logging.getLogger(__name__)
 
@@ -333,7 +333,7 @@ def monitor_processes(config):
 
     # 检查 process_name 是否有效
     if not process_name:
-        LOGGER.critical("未设置要监视的进程，请检查配置文件！")
+        notify_fail("未设置要监视的进程，请检查配置文件！")
         sys.exit(1)
 
     LOGGER.debug(
@@ -373,43 +373,48 @@ def monitor_processes(config):
                     sp.text("等待目标进程启动...")
                     time.sleep(check_interval)
     except KeyboardInterrupt:
-        LOGGER.critical("任务被取消，退出等待进程启动循环")
+        notify_fail("任务被取消，退出等待进程启动循环")
         return
 
     # 超过等待时间或进程已启动
     if not processes:
-        # 超过等待时间且进程未启动
-        LOGGER.debug("执行等待进程启动超时报告与推送")
-        waited_time = time.time() - start_time
-        formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
-        LOGGER.error(f"等待超时，进程未运行: {process_name}")
-        send_notification(
-            config,
-            'on_wait_timeout',
-            process_name=process_name,
-            process_wait_time=formatted_waited_time
-        )
+        # 超过等待时间且进程未启动，包裹 spinner 避免报告/推送泄漏控台
+        with spinner_phase("正在执行通知推送...") as sp:
+            LOGGER.debug("执行等待进程启动超时报告与推送")
+            waited_time = time.time() - start_time
+            formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
+            LOGGER.error(f"等待超时，进程未运行: {process_name}")
+            send_notification(
+                config,
+                'on_wait_timeout',
+                process_name=process_name,
+                process_wait_time=formatted_waited_time
+            )
 
-        # 执行外部程序
-        if external_program_on_wait_timeout_path:
-            LOGGER.info("等待进程启动超时，正在执行外部程序...")
-            try:
-                run_external_program(external_program_on_wait_timeout_path)
-                LOGGER.info(
-                    f"外部程序 {external_program_on_wait_timeout_path} "
-                    f"执行成功")
-            except Exception as e:
-                LOGGER.error(
-                    f"执行外部程序 {external_program_on_wait_timeout_path} "
-                    f"时发生错误: {e}",
-                    exc_info=True
-                )
+            # 执行外部程序
+            if external_program_on_wait_timeout_path:
+                sp.text("正在执行外部程序...")
+                LOGGER.debug("等待进程启动超时，正在执行外部程序...")
+                try:
+                    run_external_program(external_program_on_wait_timeout_path)
+                    sp.write_done("外部程序执行完成")
+                    LOGGER.debug(
+                        f"外部程序 {external_program_on_wait_timeout_path} "
+                        f"执行成功")
+                except Exception as e:
+                    sp.fail("外部程序执行失败")
+                    LOGGER.error(
+                        f"执行外部程序 {external_program_on_wait_timeout_path} "
+                        f"时发生错误: {e}",
+                        exc_info=True
+                    )
+            sp.done("通知推送完成")
     else:
         LOGGER.debug("所有监视进程均已启动")
 
     # 如果没有任何进程需要监视，退出程序
     if not processes:
-        LOGGER.critical("未检测到任意目标进程，程序终止运行。")
+        notify_fail("未检测到任意目标进程，程序终止运行。")
         sys.exit(1)
 
     # 监视已启动的进程
@@ -430,7 +435,7 @@ def monitor_processes(config):
 
                 # 进程退出后进入通知推送阶段，先输出定格行再切换文案
                 if ended_pids:
-                    sp.write("\u2714\ufe0f 进程已退出运行")
+                    sp.write_done("进程已退出运行")
                     sp.text("正在执行通知推送...")
 
                 for pid in ended_pids:
@@ -471,7 +476,7 @@ def monitor_processes(config):
                 # 朴素 sleep，无节拍补偿
                 time.sleep(loop_interval)
     except KeyboardInterrupt:
-        LOGGER.critical("任务被取消，正在结束监视循环")
+        notify_fail("任务被取消，正在结束监视循环")
         return
 
 
@@ -525,7 +530,7 @@ def monitor_via_task_scheduler(config):
         'on_wait_timeout', '')
 
     if not task_name:
-        LOGGER.critical("未设置要监视的计划任务名称，请检查配置文件！")
+        notify_fail("未设置要监视的计划任务名称，请检查配置文件！")
         sys.exit(1)
 
     LOGGER.debug(
@@ -593,37 +598,42 @@ def monitor_via_task_scheduler(config):
                 sp.text("等待计划任务触发...")
                 time.sleep(check_interval)
     except KeyboardInterrupt:
-        LOGGER.critical("任务被取消，退出等待计划任务循环")
+        notify_fail("任务被取消，退出等待计划任务循环")
         return
 
     if pid_info is None:
-        # 等待超时且未捕获到计划任务进程
-        waited_time = time.time() - wait_start_time
-        formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
-        LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
-        send_notification(
-            config,
-            'on_wait_timeout',
-            process_name=task_name,
-            process_wait_time=formatted_waited_time
-        )
+        # 等待超时且未捕获到计划任务进程，包裹 spinner 避免报告/推送泄漏控台
+        with spinner_phase("正在执行通知推送...") as sp:
+            waited_time = time.time() - wait_start_time
+            formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
+            LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
+            send_notification(
+                config,
+                'on_wait_timeout',
+                process_name=task_name,
+                process_wait_time=formatted_waited_time
+            )
 
-        # 执行等待超时外部程序
-        if external_program_on_wait_timeout_path:
-            LOGGER.info("等待计划任务触发超时，正在执行外部程序...")
-            try:
-                run_external_program(external_program_on_wait_timeout_path)
-                LOGGER.info(
-                    f"外部程序 {external_program_on_wait_timeout_path} "
-                    f"执行成功")
-            except Exception as e:
-                LOGGER.error(
-                    f"执行外部程序 {external_program_on_wait_timeout_path} "
-                    f"时发生错误: {e}",
-                    exc_info=True
-                )
+            # 执行等待超时外部程序
+            if external_program_on_wait_timeout_path:
+                sp.text("正在执行外部程序...")
+                LOGGER.debug("等待计划任务触发超时，正在执行外部程序...")
+                try:
+                    run_external_program(external_program_on_wait_timeout_path)
+                    sp.write_done("外部程序执行完成")
+                    LOGGER.debug(
+                        f"外部程序 {external_program_on_wait_timeout_path} "
+                        f"执行成功")
+                except Exception as e:
+                    sp.fail("外部程序执行失败")
+                    LOGGER.error(
+                        f"执行外部程序 {external_program_on_wait_timeout_path} "
+                        f"时发生错误: {e}",
+                        exc_info=True
+                    )
+            sp.done("通知推送完成")
 
-        LOGGER.critical("未能获取有效的 PID 信息，程序终止运行。")
+        notify_fail("未能获取有效的 PID 信息，程序终止运行。")
         sys.exit(1)
 
     # 阶段2: 监视 PID 存活状态
@@ -661,7 +671,7 @@ def monitor_via_task_scheduler(config):
                     )
                 else:
                     # PID 已不存在，进程已结束，进入通知推送阶段
-                    sp.write("\u2714\ufe0f 进程已退出运行")
+                    sp.write_done("进程已退出运行")
                     sp.text("正在执行通知推送...")
                     run_time = current_time - pid_info['start_time']
                     _handle_process_end(
@@ -676,5 +686,5 @@ def monitor_via_task_scheduler(config):
                     break
 
     except KeyboardInterrupt:
-        LOGGER.critical("任务被取消，正在结束监视循环")
+        notify_fail("任务被取消，正在结束监视循环")
         return
