@@ -147,6 +147,16 @@ class _TtySpinner:
         )
         self._closed = True
 
+    def write(self, message):
+        """停转→清行→换行打印文本→重启旋转，用于内联输出定格信息。
+
+        Args:
+            message (str): 要打印的文本。
+        """
+        if self._closed:
+            return
+        self._spinner.write(message)
+
 
 class _LogSpinner:
     """非 TTY 环境下的降级句柄，所有反馈写入日志。"""
@@ -174,6 +184,14 @@ class _LogSpinner:
             message (str): 收尾文案。
         """
         LOGGER.info(f"{_ICON_FAIL} {message}")
+
+    def write(self, message):
+        """以 INFO 级别记录文本。
+
+        Args:
+            message (str): 要记录的文本。
+        """
+        LOGGER.info(message)
 
 
 @contextmanager
