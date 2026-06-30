@@ -55,6 +55,15 @@ class TestSpinnerTTY(unittest.TestCase):
             colorama.Fore.RED + spinner_mod._ICON_FAIL + " 失败"
             + colorama.Style.RESET_ALL)
 
+    def test_tty_write_delegates_to_spinner_write(self):
+        """TTY write() 将文本以停止→写入→重启方式内联打印。"""
+        fake_spinner = MagicMock()
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+            with spinner_phase("等待中...") as sp:
+                sp.write("进程已退出运行")
+        fake_spinner.write.assert_called_with("进程已退出运行")
+
 
 class TestSpinnerNonTTY(unittest.TestCase):
     """测试非 TTY 时降级为逐行日志路径。"""
@@ -85,6 +94,14 @@ class TestSpinnerNonTTY(unittest.TestCase):
             self.assertEqual(console.level, logging.WARNING)
         finally:
             root.handlers = saved
+
+    def test_non_tty_write_logs_info(self):
+        """非 TTY write() 以 INFO 级别记录日志。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
+                patch.object(spinner_mod.LOGGER, 'info') as log_info:
+            with spinner_phase("等待中...") as sp:
+                sp.write("进程已退出运行")
+            log_info.assert_any_call("进程已退出运行")
 
 
 class TestSpinnerConsoleMute(unittest.TestCase):
