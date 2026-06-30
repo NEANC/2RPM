@@ -547,31 +547,9 @@ def run_external_program(program_path):
     if not os.path.isfile(program_path):
         raise FileNotFoundError(f"外部程序不存在: {program_path}")
 
-    # 获取程序所在目录
-    try:
-        # 检查路径是否存在
-        if os.path.exists(program_path):
-            # 如果是文件，获取其所在目录
-            if os.path.isfile(program_path):
-                dir_name = os.path.dirname(program_path)
-            # 如果是目录，直接使用该目录
-            else:
-                dir_name = program_path
-        else:
-            # 路径不存在，尝试从路径字符串中提取目录
-            dir_name = os.path.dirname(program_path)
-        
-        # 如果目录为空，使用当前工作目录
-        if not dir_name:
-            dir_name = os.getcwd()
-        
-        # 返回绝对路径
-        program_dir = os.path.abspath(dir_name)
-    except Exception as e:
-        # 处理异常情况，返回当前工作目录
-        LOGGER.error(f"路径处理错误: {str(e)}")
-        program_dir = os.getcwd()
-    
+    # 守卫已确保 program_path 为存在的文件，直接取其所在目录；
+    # 路径不含目录分量时回退到当前工作目录
+    program_dir = os.path.dirname(os.path.abspath(program_path)) or os.getcwd()
     LOGGER.info(f"使用工作目录: {program_dir}")
     
     try:

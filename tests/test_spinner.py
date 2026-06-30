@@ -63,7 +63,7 @@ class TestSpinnerTTY(unittest.TestCase):
                 sp.fail("失败")
         self.assertEqual(captured["text"], "")
         fake_spinner.fail.assert_called_once_with(
-            colorama.Fore.RED + spinner_mod._ICON_FAIL + "  失败"
+            colorama.Fore.RED + spinner_mod._ICON_FAIL + " 失败"
             + colorama.Style.RESET_ALL)
 
     def test_tty_write_delegates_to_spinner_write(self):
@@ -83,7 +83,7 @@ class TestSpinnerTTY(unittest.TestCase):
             with spinner_phase("等待中...") as sp:
                 sp.write_done("进程已退出运行")
         fake_spinner.write.assert_called_once_with(
-            colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  进程已退出运行"
+            colorama.Fore.GREEN + spinner_mod._ICON_DONE + " 进程已退出运行"
             + colorama.Style.RESET_ALL)
         fake_spinner.ok.assert_not_called()
 

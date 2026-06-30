@@ -23,7 +23,7 @@ class TestBanner(unittest.TestCase):
             print_info()
         out = buf.getvalue()
         self.assertIn(VERSION, out)
-        self.assertIn("Running-Runtime Process Monitoring", out)
+        self.assertIn("Running Runtime Process Monitoring", out)
         self.assertIn("WTFPL", out)
 
 

@@ -87,8 +87,32 @@ def _get_program_name(program_path):
     return os.path.basename(program_path)
 
 
+def _render_push_results(results, sp):
+    """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败。
+
+    每个通道独立输出一条 ✔️/❌（不定格 spinner）；空结果（禁用、
+    缺变量、无有效通道）不输出任何内容。
+
+    Args:
+        results (list[tuple[str, bool]]): send_notification 返回的各通道结果，
+            元素为 (provider, 是否成功)。
+        sp: spinner 句柄，用于内联反馈各通道成败（不定格）。
+
+    Returns:
+        bool: 结果非空且所有通道均失败时为 True，否则为 False。
+    """
+    if not results:
+        return False
+    for provider, ok in results:
+        if ok:
+            sp.write_done(f"{provider} 推送成功")
+        else:
+            sp.write_fail(f"{provider} 推送失败")
+    return all(not ok for _, ok in results)
+
+
 def _handle_process_end(config, process_name, pid, run_time,
-                         external_program_path):
+                         external_program_path, sp):
     """处理进程结束：发送通知并可选调用外部程序。
 
     Args:
@@ -97,6 +121,11 @@ def _handle_process_end(config, process_name, pid, run_time,
         pid (int): 进程 PID。
         run_time (float): 进程运行时间（秒）。
         external_program_path (str): 进程结束时调用的外部程序路径。
+        sp: spinner 句柄，用于内联反馈各通道及外部程序成败（不定格）。
+
+    Returns:
+        bool: 结束通知（on_end）所有通道均失败时为 True，否则为 False。
+            供监视循环决定最终定格使用 sp.done 还是 sp.fail。
     """
     formatted_run_time = str(datetime.timedelta(seconds=int(run_time)))
 
@@ -104,13 +133,14 @@ def _handle_process_end(config, process_name, pid, run_time,
         f"进程结束: {process_name} (PID: {pid}) "
         f"运行时间: {formatted_run_time}"
     )
-    send_notification(
+    end_results = send_notification(
         config,
         'on_end',
         process_name=process_name,
         process_pid=pid,
         process_run_time=formatted_run_time
     )
+    all_failed = _render_push_results(end_results, sp)
 
     # 进程结束时调用外部程序
     if external_program_path:
@@ -119,9 +149,10 @@ def _handle_process_end(config, process_name, pid, run_time,
         )
         try:
             run_external_program(external_program_path)
+            sp.write_done("外部程序执行完成")
             LOGGER.info(f"成功调用外部程序 {external_program_path}")
             # 发送外部程序执行通知
-            send_notification(
+            ext_results = send_notification(
                 config,
                 'on_external',
                 external_program_name=_get_program_name(external_program_path),
@@ -129,11 +160,15 @@ def _handle_process_end(config, process_name, pid, run_time,
                 process_name=process_name,
                 process_pid=pid,
             )
+            _render_push_results(ext_results, sp)
         except Exception as e:
+            sp.write_fail("外部程序执行失败")
             LOGGER.error(
                 f"调用外部程序 {external_program_path} 时发生错误: {e}",
                 exc_info=True
             )
+
+    return all_failed
 
 
 def _check_process_timeout(config, process_info, pid, current_time,
@@ -197,7 +232,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
                 process_name=process_name,
                 process_pid=pid,
             )
-            LOGGER.critical("外部程序执行完成，正在结束运行")
+            LOGGER.info("外部程序执行完成，正在结束运行")
             sys.exit(0)
         except Exception as e:
             LOGGER.error(
@@ -384,12 +419,13 @@ def monitor_processes(config):
             waited_time = time.time() - start_time
             formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
             LOGGER.error(f"等待超时，进程未运行: {process_name}")
-            send_notification(
+            wait_results = send_notification(
                 config,
                 'on_wait_timeout',
                 process_name=process_name,
                 process_wait_time=formatted_waited_time
             )
+            wait_all_failed = _render_push_results(wait_results, sp)
 
             # 执行外部程序
             if external_program_on_wait_timeout_path:
@@ -408,7 +444,11 @@ def monitor_processes(config):
                         f"时发生错误: {e}",
                         exc_info=True
                     )
-            sp.done("通知推送完成")
+            # 推送全失败时最终定格降级为 fail
+            if wait_all_failed:
+                sp.fail("通知推送失败")
+            else:
+                sp.done("通知推送完成")
     else:
         LOGGER.info("所有监视进程均已启动")
 
@@ -438,16 +478,19 @@ def monitor_processes(config):
                     sp.write_done("进程已退出运行")
                     sp.text("正在执行通知推送...")
 
+                # 收集本轮各进程结束推送的全失败标志，供最终定格兜底
+                batch_all_failed = []
                 for pid in ended_pids:
                     process_info = processes[pid]
                     run_time = current_time - process_info['start_time']
-                    _handle_process_end(
+                    batch_all_failed.append(_handle_process_end(
                         config,
                         process_info['name'],
                         pid,
                         run_time,
                         external_program_path,
-                    )
+                        sp,
+                    ))
                     # 从监视列表中移除
                     del processes[pid]
                     LOGGER.info(f"已删除进程记录: {pid}")
@@ -470,7 +513,11 @@ def monitor_processes(config):
 
                 if not processes:
                     LOGGER.info("所有被监视进程已结束运行。")
-                    sp.done("进程已全部退出")
+                    # 本轮所有结束推送均全失败时，最终定格降级为 fail
+                    if batch_all_failed and all(batch_all_failed):
+                        sp.fail("进程已全部退出，但推送全部失败")
+                    else:
+                        sp.done("进程已全部退出")
                     break
 
                 # 朴素 sleep，无节拍补偿
@@ -607,12 +654,13 @@ def monitor_via_task_scheduler(config):
             waited_time = time.time() - wait_start_time
             formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
             LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
-            send_notification(
+            wait_results = send_notification(
                 config,
                 'on_wait_timeout',
                 process_name=task_name,
                 process_wait_time=formatted_waited_time
             )
+            wait_all_failed = _render_push_results(wait_results, sp)
 
             # 执行等待超时外部程序
             if external_program_on_wait_timeout_path:
@@ -631,7 +679,11 @@ def monitor_via_task_scheduler(config):
                         f"时发生错误: {e}",
                         exc_info=True
                     )
-            sp.done("通知推送完成")
+            # 推送全失败时最终定格降级为 fail
+            if wait_all_failed:
+                sp.fail("通知推送失败")
+            else:
+                sp.done("通知推送完成")
 
         notify_fail("未能获取有效的 PID 信息，程序终止运行。")
         sys.exit(1)
@@ -674,15 +726,20 @@ def monitor_via_task_scheduler(config):
                     sp.write_done("进程已退出运行")
                     sp.text("正在执行通知推送...")
                     run_time = current_time - pid_info['start_time']
-                    _handle_process_end(
+                    all_failed = _handle_process_end(
                         config,
                         pid_info['name'],
                         pid,
                         run_time,
                         external_program_path,
+                        sp,
                     )
                     LOGGER.info("被监视进程已结束运行。")
-                    sp.done("任务进程已退出")
+                    # 结束推送全失败时，最终定格降级为 fail
+                    if all_failed:
+                        sp.fail("任务进程已退出，但推送全部失败")
+                    else:
+                        sp.done("任务进程已退出")
                     break
 
     except KeyboardInterrupt:
