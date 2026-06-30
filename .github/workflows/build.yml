@@ -199,7 +199,7 @@ jobs:
           assume-yes-for-downloads: true
           include-plugin-directory: modules
           output-dir: build
-          include-package: psutil,ruamel.yaml,onepush,colorama
+          include-package: psutil,ruamel.yaml,onepush,colorama,yaspin,termcolor
           no-deployment-flag: self-execution
           msvc: latest
           lto: "yes"
