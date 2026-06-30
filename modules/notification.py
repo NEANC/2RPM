@@ -130,7 +130,6 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
         LOGGER.error("推送通道缺少 provider 键，已跳过该通道")
         return False
 
-    LOGGER.info(f"推送通道: {provider}")
     for attempt in range(1, max_count + 1):
         try:
             notifier = get_notifier(provider)
@@ -165,6 +164,10 @@ def send_notification(config, template_key, **kwargs):
         config (dict): 配置信息。
         template_key (str): 模板键。
         **kwargs: 模板参数。
+
+    Returns:
+        list[tuple[str, bool]]: 各通道推送结果，元素为 (provider, 是否成功)。
+            禁用、模板缺变量、无有效通道等提前返回路径均返回空列表。
     """
     LOGGER.info(f"使用模板: {template_key} 推送报告")
     push_section = config.get('push', {})
@@ -174,7 +177,7 @@ def send_notification(config, template_key, **kwargs):
     # 检查是否启用了该通知
     if not template.get('enable', True):
         LOGGER.warning(f"通知推送已被禁用: {template_key}")
-        return
+        return []
 
     title = template.get('title', '')
     content = template.get('content', '')
@@ -202,7 +205,7 @@ def send_notification(config, template_key, **kwargs):
         LOGGER.error(
             f"通知模板缺少变量: {e}，已跳过该条通知。模板键: {template_key}"
         )
-        return
+        return []
 
     # 获取推送通道
     channel_settings = push_section.get('push_channel_settings', {})
@@ -212,22 +215,31 @@ def send_notification(config, template_key, **kwargs):
     channels = parse_push_channels(raw_channels)
     if not channels:
         LOGGER.error("推送通道未配置或格式无效，无法发送通知")
-        return
+        return []
 
     retry_settings = push_section.get('retry', {})
     retry_interval_str = retry_settings.get('interval', '3s')
     retry_interval = parse_time_string(retry_interval_str)
     max_count = retry_settings.get('max_count', 3)
 
-    # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后返回
-    LOGGER.info(f"共解析到 {len(channels)} 个推送通道")
+    # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后回收结果
+    channel_names = ', '.join(c.get('provider', '?') for c in channels)
+    LOGGER.info(f"共解析到 {len(channels)} 个推送通道: {channel_names}")
     with ThreadPoolExecutor() as executor:
-        for channel in channels:
-            executor.submit(
-                _notify_single_channel,
-                channel,
-                title,
-                content,
-                retry_interval,
-                max_count,
+        futures = [
+            (
+                channel.get('provider', '?'),
+                executor.submit(
+                    _notify_single_channel,
+                    channel,
+                    title,
+                    content,
+                    retry_interval,
+                    max_count,
+                ),
             )
+            for channel in channels
+        ]
+        # with 块退出隐式 shutdown(wait=True)，future.result() 此时不再阻塞
+        results = [(provider, future.result()) for provider, future in futures]
+    return results

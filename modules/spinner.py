@@ -196,6 +196,19 @@ class _TtySpinner:
             return
         self._spinner.write(_format_done(message))
 
+    def write_fail(self, message):
+        """以红色 ❌ 前缀内联打印一条失败信息，spinner 继续旋转。
+
+        与 fail() 不同，本方法不定格 spinner，用于循环路径中
+        某一项失败但仍需继续旋转监视其它项的场景。
+
+        Args:
+            message (str): 失败文案。
+        """
+        if self._closed:
+            return
+        self._spinner.write(_format_fail(message))
+
 
 class _LogSpinner:
     """非 TTY 环境下的降级句柄，所有反馈写入日志。"""
@@ -222,7 +235,7 @@ class _LogSpinner:
         Args:
             message (str): 收尾文案。
         """
-        LOGGER.info(f"{_ICON_FAIL}  {message}")
+        LOGGER.error(f"{_ICON_FAIL}  {message}")
 
     def write(self, message):
         """以 INFO 级别记录文本。
@@ -233,12 +246,20 @@ class _LogSpinner:
         LOGGER.info(message)
 
     def write_done(self, message):
-        """以 INFO 级别记录带 ✔️ 前缀的收尾信息。
+        """记录一条成功收尾信息（不定格）。
 
         Args:
             message (str): 收尾文案。
         """
         LOGGER.info(f"{_ICON_DONE}  {message}")
+
+    def write_fail(self, message):
+        """记录一条失败信息（不定格）。
+
+        Args:
+            message (str): 失败文案。
+        """
+        LOGGER.error(f"{_ICON_FAIL}  {message}")
 
 
 @contextmanager

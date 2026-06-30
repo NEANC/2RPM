@@ -392,6 +392,34 @@ class TestSendNotification(unittest.TestCase):
         send_notification(config, 'on_end', process_name='test.exe')
         mock_notify.assert_not_called()
 
+    @patch('modules.notification._notify_single_channel')
+    def test_returns_per_channel_results(self, mock_notify):
+        """返回值应为各通道 (provider, 是否成功) 的列表。"""
+        mock_notify.side_effect = [True, False]
+        config = self._build_config(
+            '{provider: serverchan, sckey: SCTxxxx}; '
+            '{provider: dingtalk, token: tk}'
+        )
+        results = send_notification(config, 'on_end', process_name='test.exe')
+        self.assertEqual(
+            dict(results), {'serverchan': True, 'dingtalk': False}
+        )
+
+    @patch('modules.notification._notify_single_channel')
+    def test_disabled_template_returns_empty(self, mock_notify):
+        """模板禁用时返回空列表。"""
+        config = self._build_config('{provider: serverchan, sckey: SCTxxxx}')
+        config['push']['templates']['on_end']['enable'] = False
+        results = send_notification(config, 'on_end', process_name='test.exe')
+        self.assertEqual(results, [])
+
+    @patch('modules.notification._notify_single_channel')
+    def test_no_channels_returns_empty(self, mock_notify):
+        """无有效通道时返回空列表。"""
+        config = self._build_config(None)
+        results = send_notification(config, 'on_end', process_name='test.exe')
+        self.assertEqual(results, [])
+
 
 class TestMonitorLoopSmoke(unittest.TestCase):
     """同步主循环冒烟测试：mock psutil 验证结束/超时分支触发通知"""
