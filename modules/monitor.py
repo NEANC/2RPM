@@ -15,6 +15,7 @@ from modules.utils import (
 from modules.notification import send_notification
 from modules.config import DEFAULT_VALUES
 from modules.task_monitor import query_task_pid
+from modules.spinner import spinner_phase
 
 LOGGER = logging.getLogger(__name__)
 
@@ -288,7 +289,7 @@ def monitor_processes(config):
     monitor_mode = monitor_section.get('monitor_mode', 'psutil')
 
     if monitor_mode == 'task_scheduler':
-        LOGGER.info("读取计划任务来获取 PID 进行监视")
+        LOGGER.debug("读取计划任务来获取 PID 进行监视")
         monitor_via_task_scheduler(config)
         return
 
@@ -335,7 +336,7 @@ def monitor_processes(config):
         LOGGER.critical("未设置要监视的进程，请检查配置文件！")
         sys.exit(1)
 
-    LOGGER.info(
+    LOGGER.debug(
         f"等待监视进程启动，每 {check_interval} 秒检查一次"
     )
     start_time = time.time()
@@ -343,30 +344,34 @@ def monitor_processes(config):
     waiting_logged = False
 
     try:
-        # 等待进程启动
-        while True:
-            LOGGER.debug("执行等待进程启动循环")
-            waited_time = time.time() - start_time
-            if waited_time > max_wait:
-                LOGGER.debug("已等待超时，正在尝试发送通知")
-                break
+        with spinner_phase("等待目标进程启动...") as sp:
+            # 等待进程启动
+            while True:
+                LOGGER.debug("执行等待进程启动循环")
+                waited_time = time.time() - start_time
+                if waited_time > max_wait:
+                    LOGGER.debug("已等待超时，正在尝试发送通知")
+                    sp.fail("等待超时，进程未启动")
+                    break
 
-            current_processes = _collect_matching_processes(process_name)
+                current_processes = _collect_matching_processes(process_name)
 
-            for pid, info in current_processes.items():
-                _add_new_process(
-                    processes, pid, info['name'], info['create_time'])
+                for pid, info in current_processes.items():
+                    _add_new_process(
+                        processes, pid, info['name'], info['create_time'])
 
-            # 检查是否进程已启动
-            if processes:
-                LOGGER.info("目标监视进程已启动")
-                break
-            else:
-                # 等待提示仅打印一次，避免进程未启动时刷屏
-                if not waiting_logged:
-                    LOGGER.info("正在等待目标进程运行")
-                    waiting_logged = True
-                time.sleep(check_interval)
+                # 检查是否进程已启动
+                if processes:
+                    LOGGER.info("目标监视进程已启动")
+                    sp.done("进程已启动")
+                    break
+                else:
+                    # 等待提示仅打印一次，避免进程未启动时刷屏
+                    if not waiting_logged:
+                        LOGGER.info("正在等待目标进程运行")
+                        waiting_logged = True
+                    sp.text("等待目标进程启动...")
+                    time.sleep(check_interval)
     except KeyboardInterrupt:
         LOGGER.critical("任务被取消，退出等待进程启动循环")
         return
@@ -400,7 +405,7 @@ def monitor_processes(config):
                     exc_info=True
                 )
     else:
-        LOGGER.info("所有监视进程均已启动")
+        LOGGER.debug("所有监视进程均已启动")
 
     # 如果没有任何进程需要监视，退出程序
     if not processes:
@@ -408,52 +413,63 @@ def monitor_processes(config):
         sys.exit(1)
 
     # 监视已启动的进程
-    LOGGER.info(
+    LOGGER.debug(
         f"已进入监视循环，每 {loop_interval} 秒循环一次"
     )
     try:
-        while processes:
-            LOGGER.debug("执行监视循环")
-            current_time = time.time()
-            current_processes = _collect_matching_processes(process_name)
-            monitored_pids = set(processes.keys())
+        with spinner_phase("监视进程运行中...") as sp:
+            while processes:
+                LOGGER.debug("执行监视循环")
+                current_time = time.time()
+                current_processes = _collect_matching_processes(process_name)
+                monitored_pids = set(processes.keys())
 
-            # 检查进程结束（含 PID 复用检测）
-            ended_pids = _detect_ended_pids(
-                monitored_pids, current_processes, processes)
+                # 检查进程结束（含 PID 复用检测）
+                ended_pids = _detect_ended_pids(
+                    monitored_pids, current_processes, processes)
 
-            for pid in ended_pids:
-                process_info = processes[pid]
-                run_time = current_time - process_info['start_time']
-                _handle_process_end(
-                    config,
-                    process_info['name'],
-                    pid,
-                    run_time,
-                    external_program_path,
-                )
-                # 从监视列表中移除
-                del processes[pid]
-                LOGGER.info(f"已删除进程记录: {pid}")
+                # 进程退出后进入通知推送阶段，先输出定格行再切换文案
+                if ended_pids:
+                    sp.write("\u2714\ufe0f 进程已退出运行")
+                    sp.text("正在执行通知推送...")
 
-            # 检查超时警告
-            for pid, process_info in list(processes.items()):
-                _check_process_timeout(
-                    config,
-                    process_info,
-                    pid,
-                    current_time,
-                    timeout_interval,
-                    another_external_program_path,
-                    timeout_threshold,
-                )
+                for pid in ended_pids:
+                    process_info = processes[pid]
+                    run_time = current_time - process_info['start_time']
+                    _handle_process_end(
+                        config,
+                        process_info['name'],
+                        pid,
+                        run_time,
+                        external_program_path,
+                    )
+                    # 从监视列表中移除
+                    del processes[pid]
+                    LOGGER.info(f"已删除进程记录: {pid}")
 
-            if not processes:
-                LOGGER.info("所有被监视进程已结束运行。")
-                break
+                # 存活进程数变化时刷新 spinner 文案
+                if ended_pids:
+                    sp.text(f"监视进程运行中（存活 {len(processes)}）...")
 
-            # 朴素 sleep，无节拍补偿
-            time.sleep(loop_interval)
+                # 检查超时警告
+                for pid, process_info in list(processes.items()):
+                    _check_process_timeout(
+                        config,
+                        process_info,
+                        pid,
+                        current_time,
+                        timeout_interval,
+                        another_external_program_path,
+                        timeout_threshold,
+                    )
+
+                if not processes:
+                    LOGGER.info("所有被监视进程已结束运行。")
+                    sp.done("进程已全部退出")
+                    break
+
+                # 朴素 sleep，无节拍补偿
+                time.sleep(loop_interval)
     except KeyboardInterrupt:
         LOGGER.critical("任务被取消，正在结束监视循环")
         return
@@ -512,7 +528,7 @@ def monitor_via_task_scheduler(config):
         LOGGER.critical("未设置要监视的计划任务名称，请检查配置文件！")
         sys.exit(1)
 
-    LOGGER.info(
+    LOGGER.debug(
         f"等待计划任务 '{task_name}' 触发，"
         f"每 {check_interval} 秒检查一次"
     )
@@ -524,54 +540,58 @@ def monitor_via_task_scheduler(config):
 
     # 阶段1: 等待计划任务启动（通过事件日志查询 Event 129）
     try:
-        while True:
-            # 等待超时判断：超过最长等待时间则退出等待
-            waited_time = time.time() - wait_start_time
-            if waited_time > max_wait:
-                LOGGER.debug("等待计划任务触发已超时")
-                break
+        with spinner_phase("等待计划任务触发...") as sp:
+            while True:
+                # 等待超时判断：超过最长等待时间则退出等待
+                waited_time = time.time() - wait_start_time
+                if waited_time > max_wait:
+                    LOGGER.debug("等待计划任务触发已超时")
+                    sp.fail("等待超时，任务未触发")
+                    break
 
-            # 直接同步调用事件日志查询
-            result = query_task_pid(task_name, lookback_minutes)
+                # 直接同步调用事件日志查询
+                result = query_task_pid(task_name, lookback_minutes)
 
-            if result['state'] == 'error':
-                LOGGER.warning("查询事件日志出错，将在下次循环重试")
-                time.sleep(check_interval)
-                continue
-
-            if result['state'] == 'running':
-                pid = result['pid']
-                process_name = result['process_name'] or task_name
-                # 用 psutil.Process 记录 create_time，防止 PID 复用误判
-                try:
-                    proc = psutil.Process(pid)
-                    create_time = proc.create_time()
-                except psutil.NoSuchProcess:
-                    # 进程在检测到和获取 create_time 之间已退出，重试
-                    LOGGER.warning(f"PID {pid} 在获取进程信息前已退出，重试")
+                if result['state'] == 'error':
+                    LOGGER.warning("查询事件日志出错，将在下次循环重试")
                     time.sleep(check_interval)
                     continue
-                current_time = time.time()
-                pid_info = {
-                    'pid': pid,
-                    'name': process_name,
-                    'create_time': create_time,
-                    'start_time': current_time,
-                    'last_warning_time': current_time,
-                    'timeout_count': 0,
-                }
-                LOGGER.info(
-                    f"检测到计划任务进程: {process_name} (PID: {pid})"
-                )
-                break
 
-            # state == 'not_found': 任务尚未触发，继续等待（提示仅打印一次）
-            if not waiting_logged:
-                LOGGER.info(
-                    f"等待计划任务 '{task_name}' 触发中..."
-                )
-                waiting_logged = True
-            time.sleep(check_interval)
+                if result['state'] == 'running':
+                    pid = result['pid']
+                    process_name = result['process_name'] or task_name
+                    # 用 psutil.Process 记录 create_time，防止 PID 复用误判
+                    try:
+                        proc = psutil.Process(pid)
+                        create_time = proc.create_time()
+                    except psutil.NoSuchProcess:
+                        # 进程在检测到和获取 create_time 之间已退出，重试
+                        LOGGER.warning(f"PID {pid} 在获取进程信息前已退出，重试")
+                        time.sleep(check_interval)
+                        continue
+                    current_time = time.time()
+                    pid_info = {
+                        'pid': pid,
+                        'name': process_name,
+                        'create_time': create_time,
+                        'start_time': current_time,
+                        'last_warning_time': current_time,
+                        'timeout_count': 0,
+                    }
+                    LOGGER.info(
+                        f"检测到计划任务进程: {process_name} (PID: {pid})"
+                    )
+                    sp.done("任务已触发")
+                    break
+
+                # state == 'not_found': 任务尚未触发，继续等待（提示仅打印一次）
+                if not waiting_logged:
+                    LOGGER.info(
+                        f"等待计划任务 '{task_name}' 触发中..."
+                    )
+                    waiting_logged = True
+                sp.text("等待计划任务触发...")
+                time.sleep(check_interval)
     except KeyboardInterrupt:
         LOGGER.critical("任务被取消，退出等待计划任务循环")
         return
@@ -607,49 +627,53 @@ def monitor_via_task_scheduler(config):
         sys.exit(1)
 
     # 阶段2: 监视 PID 存活状态
-    LOGGER.info(
+    LOGGER.debug(
         f"已进入监视循环，每 {loop_interval} 秒检查一次 PID"
     )
 
     try:
-        while True:
-            time.sleep(loop_interval)
+        with spinner_phase("监视任务进程中...") as sp:
+            while True:
+                time.sleep(loop_interval)
 
-            pid = pid_info['pid']
-            current_time = time.time()
+                pid = pid_info['pid']
+                current_time = time.time()
 
-            # 检查 PID 是否存活，并校验 create_time 防止 PID 复用
-            alive = False
-            try:
-                proc = psutil.Process(pid)
-                if proc.create_time() == pid_info['create_time']:
-                    alive = True
-            except psutil.NoSuchProcess:
+                # 检查 PID 是否存活，并校验 create_time 防止 PID 复用
                 alive = False
+                try:
+                    proc = psutil.Process(pid)
+                    if proc.create_time() == pid_info['create_time']:
+                        alive = True
+                except psutil.NoSuchProcess:
+                    alive = False
 
-            if alive:
-                # PID 仍在运行，检查超时
-                _check_process_timeout(
-                    config,
-                    pid_info,
-                    pid,
-                    current_time,
-                    timeout_interval,
-                    another_external_program_path,
-                    timeout_threshold,
-                )
-            else:
-                # PID 已不存在，进程已结束
-                run_time = current_time - pid_info['start_time']
-                _handle_process_end(
-                    config,
-                    pid_info['name'],
-                    pid,
-                    run_time,
-                    external_program_path,
-                )
-                LOGGER.info("被监视进程已结束运行。")
-                break
+                if alive:
+                    # PID 仍在运行，检查超时
+                    _check_process_timeout(
+                        config,
+                        pid_info,
+                        pid,
+                        current_time,
+                        timeout_interval,
+                        another_external_program_path,
+                        timeout_threshold,
+                    )
+                else:
+                    # PID 已不存在，进程已结束，进入通知推送阶段
+                    sp.write("\u2714\ufe0f 进程已退出运行")
+                    sp.text("正在执行通知推送...")
+                    run_time = current_time - pid_info['start_time']
+                    _handle_process_end(
+                        config,
+                        pid_info['name'],
+                        pid,
+                        run_time,
+                        external_program_path,
+                    )
+                    LOGGER.info("被监视进程已结束运行。")
+                    sp.done("任务进程已退出")
+                    break
 
     except KeyboardInterrupt:
         LOGGER.critical("任务被取消，正在结束监视循环")
