@@ -38,12 +38,12 @@ def print_info() -> None:
 def print_exit_info(exit_code: int) -> None:
     """打印程序结束时的简短状态提示（状态 + 退出码）。
 
-    退出码为 0 显示绿色成功提示，非 0 显示红色异常提示。
+    退出码为 0 时无输出（spinner 已提供完成反馈），非 0 显示红色异常提示。
 
     Args:
         exit_code (int): 程序退出码。
     """
-    colorama.init(autoreset=True)
     if exit_code == 0:
         return
+    colorama.init(autoreset=True)
     print(colorama.Fore.RED + f"\u274c 监控异常退出 (exit {exit_code})" + colorama.Style.RESET_ALL)
