@@ -28,8 +28,42 @@ def _make_console_handler(level=logging.INFO):
     return handler
 
 
+class _FakeTTYOutput:
+    """记录 TTY spinner 写入内容的假输出流。"""
+
+    def __init__(self):
+        """初始化写入记录和刷新次数。"""
+        self.writes = []
+        self.flush_count = 0
+
+    def write(self, text):
+        """记录写入的文本。"""
+        self.writes.append(text)
+
+    def flush(self):
+        """记录刷新次数。"""
+        self.flush_count += 1
+
+    def isatty(self):
+        """返回 True 表示该输出流为 TTY。"""
+        return True
+
+
 class TestSpinnerTTY(unittest.TestCase):
     """测试 TTY 为真时启用 yaspin 动画路径。"""
+
+    def test_simple_spinner_tick_only_writes_frame(self):
+        """轻量 spinner 的帧刷新只写帧字符，不重复写文案。"""
+        output = _FakeTTYOutput()
+        spinner = spinner_mod._SimpleTTYSpinner(
+            "程序正在初始化...", output=output)
+        spinner.start()
+        output.writes.clear()
+        spinner._render_next_frame()
+        spinner.stop(clear_line=False)
+        joined = "".join(output.writes)
+        self.assertIn("\r", joined)
+        self.assertNotIn("程序正在初始化", joined)
 
     def test_tty_uses_yaspin_and_done(self):
         """TTY 为真：进入退出不抛错，done 调用 ok 前清空旋转期文案。"""
