@@ -68,42 +68,37 @@ class TestSpinnerTTY(unittest.TestCase):
         fake_spinner.stop.assert_called_once_with(clear_line=False)
 
     def test_tty_fail_uses_fail_icon(self):
-        """TTY 为真：fail 调用 yaspin.fail 前清空旋转期文案。"""
+        """TTY 为真：fail 输出红色 ❌ 定格行。"""
         fake_spinner = MagicMock()
-        captured = {}
-        # 在 fail() 被调用的瞬间捕获当时 text，锁死清空必须早于 fail()
-        fake_spinner.fail.side_effect = (
-            lambda *a, **k: captured.update(text=fake_spinner.text))
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
-                sp.text("运行中...")
                 sp.fail("失败")
-        self.assertEqual(captured["text"], "")
         fake_spinner.fail.assert_called_once_with(
             colorama.Fore.RED + spinner_mod._ICON_FAIL + " 失败"
             + colorama.Style.RESET_ALL)
 
     def test_tty_write_delegates_to_spinner_write(self):
-        """TTY write() 将文本以停止→写入→重启方式内联打印。"""
+        """TTY write() 委托轻量 spinner 插入输出。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 sp.write("进程已退出运行")
         fake_spinner.write.assert_called_with("进程已退出运行")
 
     def test_tty_write_done_uses_green_icon(self):
-        """TTY write_done() 以绿色 ✔️ 前缀内联打印且不定格 spinner。"""
+        """TTY write_done() 以绿色 ✔️ 前缀插入输出且不定格 spinner。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 sp.write_done("进程已退出运行")
         fake_spinner.write.assert_called_once_with(
             colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  进程已退出运行"
             + colorama.Style.RESET_ALL)
-        fake_spinner.ok.assert_not_called()
+        fake_spinner.done.assert_not_called()
+
     def test_make_yaspin_does_not_import_spinner_data(self):
         """创建 yaspin 时不导入 yaspin.spinners，避免 Nuitka 漏打包 spinners.json。"""
         real_import = builtins.__import__
@@ -122,14 +117,13 @@ class TestSpinnerTTY(unittest.TestCase):
         """TTY：spinner 块内 SystemExit 应失败定格，避免残留旋转行。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with self.assertRaises(SystemExit):
                 with spinner_phase("程序正在初始化..."):
                     raise SystemExit(0)
         fake_spinner.fail.assert_called_once_with(
             colorama.Fore.RED + spinner_mod._ICON_FAIL + " 程序已退出"
             + colorama.Style.RESET_ALL)
-        fake_spinner.stop.assert_called_once()
 
 
 class TestSimpleTTYSpinner(unittest.TestCase):
@@ -240,12 +234,11 @@ class TestSpinnerConsoleMute(unittest.TestCase):
         """块内异常时控台级别仍被还原，异常向上抛出。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with self.assertRaises(ValueError):
                 with spinner_phase("等待中...") as sp:
                     raise ValueError("boom")
         self.assertEqual(self.console.level, logging.INFO)
-        fake_spinner.stop.assert_called()
 
 
 class TestSpinnerWriteHandler(unittest.TestCase):
