@@ -21,8 +21,8 @@ def _make_yaspin(text):
     """创建一个 yaspin spinner 实例。
 
     单独抽出便于测试替身注入；仅在 TTY 路径下被调用，
-    因此 yaspin 仅在交互式环境真正导入。使用自定义 200ms
-    帧间隔降低刷新频率，旋转帧着黄色，文案另由调用方包裹颜色。
+    因此 yaspin 仅在交互式环境真正导入。使用内联 dots 帧，避免
+    打包产物依赖 yaspin/data/spinners.json。
 
     Args:
         text (str): spinner 初始文案（已包裹黄色）。
@@ -31,11 +31,10 @@ def _make_yaspin(text):
         yaspin.Yaspin: 已配置 dots 动画的 spinner 实例。
     """
     from yaspin import yaspin
-    from yaspin.spinners import Spinners
     from yaspin.core import Spinner
-    base = Spinners.dots
-    slow = Spinner(base.frames, _SPINNER_INTERVAL_MS)
-    return yaspin(slow, text=text, color="yellow")
+    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    spinner = Spinner(frames, _SPINNER_INTERVAL_MS)
+    return yaspin(spinner, text=text, color="yellow")
 
 
 def _wrap_running(message):
