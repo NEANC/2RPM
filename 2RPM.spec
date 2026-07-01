@@ -7,7 +7,6 @@
 
 import os
 import fnmatch
-from PyInstaller.utils.hooks import collect_data_files
 
 
 def _filter_binaries(toc, patterns):
@@ -40,14 +39,13 @@ a = Analysis(
     ['2RPM.py'],
     pathex=[current_dir],
     binaries=[],
-    datas=[('modules', 'modules')] + collect_data_files('yaspin'),
+    datas=[('modules', 'modules')],
     hiddenimports=[
         'psutil',
         'ruamel.yaml',
         'onepush',
         'serverchan_sdk',
         'colorama',
-        'yaspin',
         'termcolor',
         'pywin32',
         'win32evtlog',
