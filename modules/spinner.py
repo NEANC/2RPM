@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
+import threading
 import logging
 from contextlib import contextmanager
 
@@ -15,6 +16,11 @@ _ICON_FAIL = "\u274c"        # ❌
 
 # spinner 帧间隔（毫秒）。yaspin 默认约 80ms 会闪屏，放慢到 200ms
 _SPINNER_INTERVAL_MS = 200
+
+# spinner 帧列表
+_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+# 清行 ANSI 序列
+_CLEAR_LINE = "\r\033[2K"
 
 
 def _make_yaspin(text):
@@ -35,6 +41,72 @@ def _make_yaspin(text):
     frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     spinner = Spinner(frames, _SPINNER_INTERVAL_MS)
     return yaspin(spinner, text=text, color="yellow")
+
+
+class _SimpleTTYSpinner:
+    """仅刷新行首帧字符的轻量 TTY spinner。"""
+
+    def __init__(self, message, output=None):
+        """初始化轻量 spinner。
+
+        Args:
+            message (str): 初始状态文案。
+            output: 输出流，默认使用 sys.stdout。
+        """
+        self._message = message
+        self._output = output or sys.stdout
+        self._frames = _SPINNER_FRAMES
+        self._frame_index = 0
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = None
+        self._closed = False
+
+    def start(self):
+        """启动 spinner 并输出首行。"""
+        with self._lock:
+            self._write_full_line()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        """后台刷新 spinner 帧。"""
+        while not self._stop_event.wait(_SPINNER_INTERVAL_MS / 1000):
+            self._render_next_frame()
+
+    def _render_next_frame(self):
+        """只刷新当前行首的 spinner 帧字符。"""
+        with self._lock:
+            if self._closed:
+                return
+            self._frame_index = (self._frame_index + 1) % len(self._frames)
+            self._output.write("\r" + self._frames[self._frame_index])
+            self._output.flush()
+
+    def _write_full_line(self):
+        """写入完整 spinner 行。"""
+        self._output.write(
+            "\r" + self._frames[self._frame_index] + "  "
+            + colorama.Fore.YELLOW + self._message + colorama.Style.RESET_ALL
+        )
+        self._output.flush()
+
+    def stop(self, clear_line=True):
+        """停止后台线程。
+
+        Args:
+            clear_line (bool): 是否清理当前行。
+        """
+        if self._closed:
+            return
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+        with self._lock:
+            self._closed = True
+            if clear_line:
+                self._output.write(_CLEAR_LINE)
+                self._output.flush()
 
 
 def _wrap_running(message):
