@@ -296,6 +296,12 @@ def spinner_phase(text):
     root_logger.addHandler(write_handler)
     try:
         yield handle
+    except BaseException:
+        if not handle._closed:
+            spinner.text = ""
+            spinner.fail(_format_fail("程序已退出"))
+            handle._closed = True
+        raise
     finally:
         root_logger.removeHandler(write_handler)
         spinner.stop()
