@@ -75,6 +75,26 @@ class TestUtils(unittest.TestCase):
         run_external_program('test.exe')
         mock_popen.assert_called()
 
+    def test_split_args(self):
+        """测试命令行参数拆分"""
+        from modules.monitor import _split_args
+        self.assertEqual(_split_args(''), [])
+        self.assertEqual(_split_args('   '), [])
+        self.assertEqual(_split_args('--flag'), ['--flag'])
+        self.assertEqual(_split_args('--flag foo --verbose'), ['--flag', 'foo', '--verbose'])
+
+    def test_resolve_cwd(self):
+        """测试工作目录解析与降级"""
+        from modules.monitor import _resolve_cwd
+        # 用户显式指定
+        self.assertEqual(_resolve_cwd('C:\\custom', 'C:\\app\\test.exe'), 'C:\\custom')
+        # 用户指定但为空/空白 → 从 path 推导
+        self.assertEqual(_resolve_cwd('', 'C:\\app\\test.exe'), 'C:\\app')
+        self.assertEqual(_resolve_cwd('   ', 'C:\\foo\\bar.exe'), 'C:\\foo')
+        self.assertEqual(_resolve_cwd(None, 'C:\\app\\test.exe'), 'C:\\app')
+        # path 无目录分量 → 回退 os.getcwd()
+        self.assertEqual(_resolve_cwd(None, 'test.exe'), os.getcwd())
+
 
 class TestConfig(unittest.TestCase):
     """测试 config.py 模块"""
