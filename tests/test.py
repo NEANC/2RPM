@@ -80,14 +80,22 @@ class TestUtils(unittest.TestCase):
         from modules.monitor import _split_args
         self.assertEqual(_split_args(''), [])
         self.assertEqual(_split_args('   '), [])
+        self.assertEqual(_split_args(None), [])
         self.assertEqual(_split_args('--flag'), ['--flag'])
         self.assertEqual(_split_args('--flag foo --verbose'), ['--flag', 'foo', '--verbose'])
+        # 引号参数测试
+        self.assertEqual(
+            _split_args('--path "C:\\Program Files\\tool.exe"'),
+            ['--path', 'C:\\Program Files\\tool.exe']
+        )
 
     def test_resolve_cwd(self):
         """测试工作目录解析与降级"""
         from modules.monitor import _resolve_cwd
         # 用户显式指定
         self.assertEqual(_resolve_cwd('C:\\custom', 'C:\\app\\test.exe'), 'C:\\custom')
+        # 用户指定带首尾空格 → 应 strip 后生效
+        self.assertEqual(_resolve_cwd(' C:\\custom ', 'C:\\app\\test.exe'), 'C:\\custom')
         # 用户指定但为空/空白 → 从 path 推导
         self.assertEqual(_resolve_cwd('', 'C:\\app\\test.exe'), 'C:\\app')
         self.assertEqual(_resolve_cwd('   ', 'C:\\foo\\bar.exe'), 'C:\\foo')

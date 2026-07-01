@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import shlex
 import time
 import datetime
 import logging
@@ -326,7 +327,8 @@ def _add_new_process(processes, pid, name, create_time):
 def _split_args(args_str):
     """将参数字符串拆分为列表，适配 subprocess.Popen。
 
-    示例: "--flag foo --verbose" → ["--flag", "foo", "--verbose"]
+    使用 shlex.split 正确处理引号包裹的参数。
+    示例: '--path "C:\\Program Files\\tool.exe"' → ['--path', 'C:\\Program Files\\tool.exe']
 
     Args:
         args_str: 命令行参数字符串，可为 None 或空。
@@ -336,7 +338,7 @@ def _split_args(args_str):
     """
     if not args_str or not args_str.strip():
         return []
-    return args_str.strip().split()
+    return shlex.split(args_str.strip())
 
 
 def _resolve_cwd(config_cwd, program_path):
@@ -349,8 +351,9 @@ def _resolve_cwd(config_cwd, program_path):
     Returns:
         str: 解析后的工作目录绝对路径。
     """
-    if config_cwd and str(config_cwd).strip():
-        return str(config_cwd).strip()
+    cwd = str(config_cwd).strip() if config_cwd else ''
+    if cwd:
+        return cwd
     return os.path.dirname(os.path.abspath(program_path)) or os.getcwd()
 
 
