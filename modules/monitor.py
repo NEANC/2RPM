@@ -357,6 +357,97 @@ def _resolve_cwd(config_cwd, program_path):
     return os.path.dirname(os.path.abspath(program_path)) or os.getcwd()
 
 
+def _monitor_single_pid(pid_info, config, sp):
+    """监视单个 PID 的存活状态，处理超时和结束。
+
+    从 monitor_via_task_scheduler 阶段2 提取，供 launch 和
+    task_scheduler 两种模式复用。
+
+    Args:
+        pid_info (dict): 包含 pid/name/create_time/start_time/
+            last_warning_time/timeout_count 的字典。
+        config (dict): 配置信息。
+        sp: spinner 句柄。
+    """
+    monitor_section = config.get('monitor', {})
+    external_section = config.get('external', {})
+
+    loop_interval = _parse_time_or_default(
+        monitor_section.get(
+            'loop_interval',
+            DEFAULT_VALUES['monitor']['loop_interval']),
+        DEFAULT_VALUES['monitor']['loop_interval'])
+    timeout_interval = _parse_time_or_default(
+        monitor_section.get(
+            'timeout_interval',
+            DEFAULT_VALUES['monitor']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['timeout_interval'])
+    another_external_program_path = external_section.get('on_timeout', '')
+    external_program_path = external_section.get('on_end', '')
+    timeout_threshold = _get_timeout_count_threshold(
+        external_section.get('timeout_threshold', 3)
+    )
+
+    LOGGER.info(
+        f"已进入监视循环，每 {loop_interval} 秒检查一次 PID"
+    )
+
+    while True:
+        time.sleep(loop_interval)
+
+        pid = pid_info['pid']
+        current_time = time.time()
+
+        # 检查 PID 是否存活，并校验 create_time 防止 PID 复用
+        alive = False
+        try:
+            proc = psutil.Process(pid)
+            if proc.create_time() == pid_info['create_time']:
+                alive = True
+        except psutil.NoSuchProcess:
+            alive = False
+
+        if alive:
+            # PID 仍在运行，检查超时
+            try:
+                _check_process_timeout(
+                    config,
+                    pid_info,
+                    pid,
+                    current_time,
+                    timeout_interval,
+                    another_external_program_path,
+                    timeout_threshold,
+                )
+            except ProcessTimeoutExitRequested as e:
+                LOGGER.info(
+                    "on_timeout 外部程序已执行，停止监视 PID %d: %s",
+                    pid, e
+                )
+                sp.write_done("已停止监视该进程")
+                sp.done("超时外部程序已执行")
+                break
+        else:
+            # PID 已不存在，进程已结束，进入通知推送阶段
+            sp.write_done("进程已退出运行")
+            sp.text("正在执行通知推送...")
+            run_time = current_time - pid_info['start_time']
+            all_failed = _handle_process_end(
+                config,
+                pid_info['name'],
+                pid,
+                run_time,
+                external_program_path,
+                sp,
+            )
+            LOGGER.info("被监视进程已结束运行。")
+            if all_failed:
+                sp.fail("任务进程已退出，但推送全部失败")
+            else:
+                sp.done("任务进程已退出")
+            break
+
+
 def monitor_processes(config):
     """监视进程列表。
 
@@ -744,70 +835,10 @@ def monitor_via_task_scheduler(config):
         notify_fail("未能获取有效的 PID 信息。")
         sys.exit(1)
 
-    # 阶段2: 监视 PID 存活状态
-    LOGGER.info(
-        f"已进入监视循环，每 {loop_interval} 秒检查一次 PID"
-    )
-
+    # 阶段2: 监视 PID 存活状态（复用 _monitor_single_pid）
     try:
         with spinner_phase("监视任务进程中...") as sp:
-            while True:
-                time.sleep(loop_interval)
-
-                pid = pid_info['pid']
-                current_time = time.time()
-
-                # 检查 PID 是否存活，并校验 create_time 防止 PID 复用
-                alive = False
-                try:
-                    proc = psutil.Process(pid)
-                    if proc.create_time() == pid_info['create_time']:
-                        alive = True
-                except psutil.NoSuchProcess:
-                    alive = False
-
-                if alive:
-                    # PID 仍在运行，检查超时
-                    try:
-                        _check_process_timeout(
-                            config,
-                            pid_info,
-                            pid,
-                            current_time,
-                            timeout_interval,
-                            another_external_program_path,
-                            timeout_threshold,
-                        )
-                    except ProcessTimeoutExitRequested as e:
-                        LOGGER.info(
-                            "on_timeout 外部程序已执行，停止监视 PID %d: %s",
-                            pid, e
-                        )
-                        sp.write_done("已停止监视该进程")
-                        sp.done("超时外部程序已执行")
-                        # on_timeout 外部程序执行后，停止该进程监视
-                        break
-                else:
-                    # PID 已不存在，进程已结束，进入通知推送阶段
-                    sp.write_done("进程已退出运行")
-                    sp.text("正在执行通知推送...")
-                    run_time = current_time - pid_info['start_time']
-                    all_failed = _handle_process_end(
-                        config,
-                        pid_info['name'],
-                        pid,
-                        run_time,
-                        external_program_path,
-                        sp,
-                    )
-                    LOGGER.info("被监视进程已结束运行。")
-                    # 结束推送全失败时，最终定格降级为 fail
-                    if all_failed:
-                        sp.fail("任务进程已退出，但推送全部失败")
-                    else:
-                        sp.done("任务进程已退出")
-                    break
-
+            _monitor_single_pid(pid_info, config, sp)
     except KeyboardInterrupt:
         notify_fail("任务被取消，正在结束监视循环")
         raise
