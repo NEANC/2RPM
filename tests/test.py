@@ -42,16 +42,25 @@ class TestUtils(unittest.TestCase):
                 self.assertEqual(directory, '/path/to')
 
     def test_parse_time_string(self):
-        """测试时间字符串解析（V4：返回秒）"""
-        # 测试小时
+        """测试时间字符串解析（V4：返回秒，兼容大小写）"""
+        # 测试小时（小写）
         self.assertEqual(parse_time_string('1h'), 3600)
-        
-        # 测试分钟
+
+        # 测试分钟（小写）
         self.assertEqual(parse_time_string('15m'), 900)
-        
-        # 测试秒
+
+        # 测试秒（小写）
         self.assertEqual(parse_time_string('30s'), 30)
-        
+
+        # 测试小时（大写）
+        self.assertEqual(parse_time_string('1H'), 3600)
+
+        # 测试分钟（大写）
+        self.assertEqual(parse_time_string('15M'), 900)
+
+        # 测试秒（大写）
+        self.assertEqual(parse_time_string('30S'), 30)
+
         # 测试直接数字
         self.assertEqual(parse_time_string('5000'), 5000)
 

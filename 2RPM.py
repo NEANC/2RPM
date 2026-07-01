@@ -81,7 +81,7 @@ def main():
 
         # 设置日志
         setup_logging(CONFIG, config_file)
-        sp.done("初始化完成")
+        sp.done("程序初始化完成。")
 
     # 退出码：正常结束为 0，异常或手动终止为 1
     exit_code = 0

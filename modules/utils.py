@@ -589,7 +589,7 @@ def parse_time_string(time_str):
         ValueError: 如果时间字符串格式无效。
     """
     LOGGER.info(f"解析时间字符串: {time_str}")
-    time_str = time_str.strip()
+    time_str = time_str.strip().lower()
     if not time_str:
         LOGGER.error("时间字符串不能为空")
         raise ValueError("时间字符串不能为空")
