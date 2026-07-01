@@ -7,7 +7,9 @@
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+
+import psutil
+from unittest.mock import patch, MagicMock, call
 
 # 添加项目根目录到模块路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -27,7 +29,7 @@ from modules.config import (
     correct_push_channel_config
 )
 from modules.notification import send_notification
-from modules.monitor import monitor_processes
+from modules.monitor import monitor_processes, monitor_via_launch
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 
@@ -526,6 +528,95 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         # timeout_interval 设为 0s，任意流逝时间均触发超时，无需 mock time.time
         config['monitor']['timeout_interval'] = '0s'
         monitor_processes(config)
+
+        timeout_calls = [
+            call for call in mock_notify.call_args_list
+            if call.args[1] == 'on_timeout'
+        ]
+        self.assertGreaterEqual(len(timeout_calls), 1)
+        self.assertEqual(timeout_calls[0].kwargs['process_pid'], 1234)
+
+
+class TestLaunchSmoke(unittest.TestCase):
+    """launch 模式冒烟测试"""
+
+    def _build_config(self, launch_type='program'):
+        """构造 launch 模式的最小配置。
+
+        Returns:
+            dict: 含 monitor / launch / wait / external 节的配置。
+        """
+        return {
+            'monitor': {
+                'monitor_mode': 'launch',
+                'timeout_interval': '15m',
+                'loop_interval': '1s',
+            },
+            'launch': {
+                'type': launch_type,
+                'path': 'C:\\app\\target.exe',
+                'task_name': '\\Custom\\MyTask',
+            },
+            'wait': {
+                'max_wait': '30s',
+                'check_interval': '1s',
+            },
+            'external': {
+                'on_end': '',
+                'on_timeout': '',
+                'on_wait_timeout': '',
+                'timeout_threshold': 3,
+            },
+        }
+
+    @patch('modules.monitor.subprocess.Popen')
+    @patch('modules.monitor.send_notification')
+    @patch('modules.monitor.time.sleep', return_value=None)
+    @patch('modules.monitor.psutil.Process')
+    @patch('modules.monitor.os.path.isfile', return_value=True)
+    def test_launch_program_end_triggers_notification(
+            self, mock_isfile, mock_process, mock_sleep, mock_notify, mock_popen):
+        """launch type=program: 进程结束后应触发 on_end 通知"""
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        mock_proc.create_time.side_effect = [100.0, 100.0, 100.0]
+        mock_popen.return_value = mock_proc
+        # 第一次 alive，第二次进程消失
+        mock_process.return_value = mock_proc
+        mock_process.side_effect = [
+            mock_proc, mock_proc, psutil.NoSuchProcess(1234)
+        ]
+
+        monitor_via_launch(self._build_config())
+
+        end_calls = [
+            call for call in mock_notify.call_args_list
+            if call.args[1] == 'on_end'
+        ]
+        self.assertEqual(len(end_calls), 1)
+        self.assertEqual(end_calls[0].kwargs['process_pid'], 1234)
+
+    @patch('modules.monitor.subprocess.Popen')
+    @patch('modules.monitor.send_notification')
+    @patch('modules.monitor.time.sleep', return_value=None)
+    @patch('modules.monitor.psutil.Process')
+    @patch('modules.monitor.os.path.isfile', return_value=True)
+    def test_launch_program_timeout_triggers_notification(
+            self, mock_isfile, mock_process, mock_sleep, mock_notify, mock_popen):
+        """launch type=program: 持续运行超时应触发 on_timeout 通知"""
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        mock_proc.create_time.side_effect = [100.0, 100.0, 100.0, 100.0]
+        mock_popen.return_value = mock_proc
+        # 前三轮 alive（触发一次超时），第四轮进程消失以结束
+        mock_process.return_value = mock_proc
+        mock_process.side_effect = [
+            mock_proc, mock_proc, mock_proc, psutil.NoSuchProcess(1234)
+        ]
+
+        config = self._build_config()
+        config['monitor']['timeout_interval'] = '0s'
+        monitor_via_launch(config)
 
         timeout_calls = [
             call for call in mock_notify.call_args_list
