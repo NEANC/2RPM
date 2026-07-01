@@ -469,7 +469,7 @@ def _launch_program(launch_section):
         notify_fail(f"目标程序不存在: {path}")
         sys.exit(1)
 
-    args_str = launch_section.get('args', '') or ''
+    args_str = launch_section.get('args', '')
     cwd = _resolve_cwd(launch_section.get('cwd'), path)
     cmd = [path] + _split_args(args_str)
 
@@ -483,6 +483,9 @@ def _launch_program(launch_section):
     pid = proc.pid
     try:
         create_time = proc.create_time()
+    except psutil.AccessDenied:
+        notify_fail(f"无法访问进程信息（权限不足），PID: {pid}")
+        sys.exit(1)
     except psutil.NoSuchProcess:
         notify_fail(f"程序 {path} 启动后立即退出，PID: {pid}")
         sys.exit(1)
@@ -562,6 +565,9 @@ def _launch_task(launch_section, config):
                         proc = psutil.Process(pid)
                         create_time = proc.create_time()
                     except psutil.NoSuchProcess:
+                        LOGGER.warning(
+                            f"检测到 PID {pid} 但进程已退出，将重试"
+                        )
                         time.sleep(check_interval)
                         continue
                     current_time = time.time()
