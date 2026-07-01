@@ -84,7 +84,7 @@ class TestSpinnerTTY(unittest.TestCase):
             with spinner_phase("等待中...") as sp:
                 sp.write_done("进程已退出运行")
         fake_spinner.write.assert_called_once_with(
-            colorama.Fore.GREEN + spinner_mod._ICON_DONE + " 进程已退出运行"
+            colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  进程已退出运行"
             + colorama.Style.RESET_ALL)
         fake_spinner.ok.assert_not_called()
     def test_make_yaspin_does_not_import_spinner_data(self):
@@ -101,6 +101,18 @@ class TestSpinnerTTY(unittest.TestCase):
             spinner = spinner_mod._make_yaspin("等待中...")
         self.assertEqual(spinner, 'fake-spinner')
         fake_yaspin.assert_called_once()
+    def test_system_exit_marks_spinner_as_failed(self):
+        """TTY：spinner 块内 SystemExit 应失败定格，避免残留旋转行。"""
+        fake_spinner = MagicMock()
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+            with self.assertRaises(SystemExit):
+                with spinner_phase("程序正在初始化..."):
+                    raise SystemExit(0)
+        fake_spinner.fail.assert_called_once_with(
+            colorama.Fore.RED + spinner_mod._ICON_FAIL + " 程序已退出"
+            + colorama.Style.RESET_ALL)
+        fake_spinner.stop.assert_called_once()
 
 
 class TestSpinnerNonTTY(unittest.TestCase):
@@ -286,7 +298,7 @@ class TestNotifyFail(unittest.TestCase):
                 patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
             spinner_mod.notify_fail("程序终止运行")
         fake_print.assert_called_once_with(
-            colorama.Fore.RED + spinner_mod._ICON_FAIL + "  程序终止运行"
+            colorama.Fore.RED + spinner_mod._ICON_FAIL + " 程序终止运行"
             + colorama.Style.RESET_ALL)
         log_crit.assert_called_once_with("程序终止运行", exc_info=False)
 
@@ -307,7 +319,7 @@ class TestNotifyFail(unittest.TestCase):
         log_crit.assert_called_once_with("程序出现异常", exc_info=True)
 
     def test_non_tty_logs_critical_with_icon(self):
-        """非 TTY：降级为 LOGGER.critical，文案含 ❌ 双空格前缀。"""
+        """非 TTY：降级为 LOGGER.critical，文案含 ❌ 前缀。"""
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
                 patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
             spinner_mod.notify_fail("程序终止运行", exc_info=True)
