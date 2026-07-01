@@ -323,6 +323,37 @@ def _add_new_process(processes, pid, name, create_time):
     LOGGER.info(f"检测到进程启动: {name} (PID: {pid})")
 
 
+def _split_args(args_str):
+    """将参数字符串拆分为列表，适配 subprocess.Popen。
+
+    示例: "--flag foo --verbose" → ["--flag", "foo", "--verbose"]
+
+    Args:
+        args_str: 命令行参数字符串，可为 None 或空。
+
+    Returns:
+        list[str]: 拆分后的参数列表。
+    """
+    if not args_str or not args_str.strip():
+        return []
+    return args_str.strip().split()
+
+
+def _resolve_cwd(config_cwd, program_path):
+    """解析工作目录，用户未配置时从程序路径推导。
+
+    Args:
+        config_cwd: 用户配置的工作目录，可为 None 或空字符串。
+        program_path (str): 程序完整路径。
+
+    Returns:
+        str: 解析后的工作目录绝对路径。
+    """
+    if config_cwd and str(config_cwd).strip():
+        return str(config_cwd).strip()
+    return os.path.dirname(os.path.abspath(program_path)) or os.getcwd()
+
+
 def monitor_processes(config):
     """监视进程列表。
 
