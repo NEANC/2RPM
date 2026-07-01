@@ -91,6 +91,51 @@ class _SimpleTTYSpinner:
         )
         self._output.flush()
 
+    def set_text(self, message):
+        """更新文案并重绘完整 spinner 行。
+
+        Args:
+            message (str): 新文案。
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._message = message
+            self._output.write(_CLEAR_LINE)
+            self._write_full_line()
+
+    def write(self, message):
+        """清理 spinner 行，输出插入文本，再恢复 spinner 行。
+
+        Args:
+            message (str): 插入输出内容。
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._output.write(_CLEAR_LINE + message + "\n")
+            self._write_full_line()
+
+    def done(self, message):
+        """停止 spinner 并输出定格成功行。
+
+        Args:
+            message (str): 已格式化的成功文案。
+        """
+        self.stop(clear_line=True)
+        self._output.write(message + "\n")
+        self._output.flush()
+
+    def fail(self, message):
+        """停止 spinner 并输出定格失败行。
+
+        Args:
+            message (str): 已格式化的失败文案。
+        """
+        self.stop(clear_line=True)
+        self._output.write(message + "\n")
+        self._output.flush()
+
     def stop(self, clear_line=True):
         """停止后台线程。
 
@@ -192,13 +237,13 @@ def _find_console_handler():
 
 
 class _TtySpinner:
-    """TTY 环境下的 spinner 句柄，包装 yaspin 实例。"""
+    """TTY 环境下的 spinner 句柄，包装轻量 spinner 实例。"""
 
     def __init__(self, spinner):
-        """记录底层 yaspin 实例。
+        """记录底层轻量 spinner 实例。
 
         Args:
-            spinner: yaspin spinner 实例。
+            spinner: _SimpleTTYSpinner 实例。
         """
         self._spinner = spinner
         self._closed = False
@@ -206,47 +251,37 @@ class _TtySpinner:
     def text(self, message):
         """更新 spinner 行内文案（黄色）。
 
-        定格（done/fail）后再调用将被忽略，避免写入已停止的 spinner。
-
         Args:
             message (str): 新文案。
         """
         if self._closed:
             return
-        self._spinner.text = _wrap_running(message)
+        self._spinner.set_text(message)
 
     def done(self, message):
         """以绿色成功图标 ✔️ 定格当前行。
-
-        yaspin 3.4.0 的 _compose_out 取 self._text（旋转期旧文案）
-        而非 ok() 参数作为定格文案，需先清空避免残留。
 
         Args:
             message (str): 收尾文案。
         """
         if self._closed:
             return
-        self._spinner.text = ""
-        self._spinner.ok(_format_done(message))
+        self._spinner.done(_format_done(message))
         self._closed = True
 
     def fail(self, message):
         """以红色失败图标 ❌ 定格当前行。
 
-        与 done() 同理，yaspin 3.4.0 的 _compose_out 取 self._text
-        而非 fail() 参数作为定格文案，需先清空避免残留。
-
         Args:
             message (str): 收尾文案。
         """
         if self._closed:
             return
-        self._spinner.text = ""
         self._spinner.fail(_format_fail(message))
         self._closed = True
 
     def write(self, message):
-        """停转→清行→换行打印文本→重启旋转，用于内联输出定格信息。
+        """插入打印文本后恢复 spinner 行。
 
         Args:
             message (str): 要打印的文本。
@@ -256,9 +291,7 @@ class _TtySpinner:
         self._spinner.write(message)
 
     def write_done(self, message):
-        """以绿色 ✔️ 前缀内联打印一条收尾信息，spinner 继续旋转。
-
-        与 done() 不同，本方法不定格 spinner，仅插入一条已完成行。
+        """插入打印成功文本后恢复 spinner 行。
 
         Args:
             message (str): 收尾文案。
@@ -268,10 +301,7 @@ class _TtySpinner:
         self._spinner.write(_format_done(message))
 
     def write_fail(self, message):
-        """以红色 ❌ 前缀内联打印一条失败信息，spinner 继续旋转。
-
-        与 fail() 不同，本方法不定格 spinner，用于循环路径中
-        某一项失败但仍需继续旋转监视其它项的场景。
+        """插入打印失败文本后恢复 spinner 行。
 
         Args:
             message (str): 失败文案。
@@ -359,7 +389,7 @@ def spinner_phase(text):
     if console_handler is not None:
         console_handler.setLevel(logging.CRITICAL + 1)
 
-    spinner = _make_yaspin(_wrap_running(text))
+    spinner = _SimpleTTYSpinner(text)
     spinner.start()
     handle = _TtySpinner(spinner)
     # 临时挂载 CRITICAL 改道处理器，借 spinner.write() 干净打印
@@ -370,13 +400,11 @@ def spinner_phase(text):
         yield handle
     except BaseException:
         if not handle._closed:
-            spinner.text = ""
-            spinner.fail(_format_fail("程序已退出"))
-            handle._closed = True
+            handle.fail("程序已退出")
         raise
     finally:
         root_logger.removeHandler(write_handler)
-        spinner.stop()
+        spinner.stop(clear_line=False)
         if console_handler is not None:
             console_handler.setLevel(saved_level)
 

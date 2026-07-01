@@ -52,24 +52,20 @@ class _FakeTTYOutput:
 class TestSpinnerTTY(unittest.TestCase):
     """测试 TTY 为真时启用 yaspin 动画路径。"""
 
-    def test_tty_uses_yaspin_and_done(self):
-        """TTY 为真：进入退出不抛错，done 调用 ok 前清空旋转期文案。"""
+    def test_tty_uses_simple_spinner_and_done(self):
+        """TTY 为真：进入后启动轻量 spinner，done 输出成功定格行。"""
         fake_spinner = MagicMock()
-        captured = {}
-        # 在 ok() 被调用的瞬间捕获当时 text，锁死清空必须早于 ok()
-        fake_spinner.ok.side_effect = (
-            lambda *a, **k: captured.update(text=fake_spinner.text))
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 sp.text("运行中...")
                 sp.done("完成")
         fake_spinner.start.assert_called_once()
-        self.assertEqual(captured["text"], "")
-        fake_spinner.ok.assert_called_once_with(
+        fake_spinner.set_text.assert_called_once_with("运行中...")
+        fake_spinner.done.assert_called_once_with(
             colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  完成"
             + colorama.Style.RESET_ALL)
-        fake_spinner.stop.assert_called()
+        fake_spinner.stop.assert_called_once_with(clear_line=False)
 
     def test_tty_fail_uses_fail_icon(self):
         """TTY 为真：fail 调用 yaspin.fail 前清空旋转期文案。"""
