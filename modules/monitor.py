@@ -3,6 +3,7 @@
 
 import os
 import shlex
+import subprocess
 import time
 import datetime
 import logging
@@ -448,6 +449,208 @@ def _monitor_single_pid(pid_info, config, sp):
             break
 
 
+def _launch_program(launch_section):
+    """拉起可执行程序并返回 PID 信息。
+
+    Args:
+        launch_section (dict): launch 配置节。
+
+    Returns:
+        dict: pid_info 字典。
+
+    Raises:
+        SystemExit: 如果拉起失败。
+    """
+    path = launch_section.get('path', '')
+    if not path:
+        notify_fail("launch.path 不能为空，请检查配置文件！")
+        sys.exit(1)
+    if not os.path.isfile(path):
+        notify_fail(f"目标程序不存在: {path}")
+        sys.exit(1)
+
+    args_str = launch_section.get('args', '') or ''
+    cwd = _resolve_cwd(launch_section.get('cwd'), path)
+    cmd = [path] + _split_args(args_str)
+
+    LOGGER.info(f"正在拉起程序: {cmd}, cwd={cwd}")
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd)
+    except Exception as e:
+        notify_fail(f"拉起程序失败: {path}: {e}")
+        sys.exit(1)
+
+    pid = proc.pid
+    try:
+        create_time = proc.create_time()
+    except psutil.NoSuchProcess:
+        notify_fail(f"程序 {path} 启动后立即退出，PID: {pid}")
+        sys.exit(1)
+
+    current_time = time.time()
+    process_name = os.path.basename(path)
+    LOGGER.info(f"程序已拉起: {process_name} (PID: {pid})")
+    return {
+        'pid': pid,
+        'name': process_name,
+        'create_time': create_time,
+        'start_time': current_time,
+        'last_warning_time': current_time,
+        'timeout_count': 0,
+    }
+
+
+def _launch_task(launch_section, config):
+    """触发计划任务并等待 PID 出现。
+
+    Args:
+        launch_section (dict): launch 配置节。
+        config (dict): 配置信息。
+
+    Returns:
+        dict: pid_info 字典。
+
+    Raises:
+        SystemExit: 如果触发失败或等待超时。
+    """
+    task_name = launch_section.get('task_name', '')
+    if not task_name:
+        notify_fail("type=task 时 launch.task_name 不能为空，请检查配置文件！")
+        sys.exit(1)
+
+    # 触发计划任务
+    LOGGER.info(f"正在触发计划任务: {task_name}")
+    try:
+        subprocess.run(
+            ['schtasks', '/run', '/tn', task_name],
+            capture_output=True, text=True, check=True
+        )
+    except subprocess.CalledProcessError as e:
+        LOGGER.error(f"触发计划任务失败: {e.stderr}")
+        notify_fail(f"触发计划任务失败: {task_name}")
+        sys.exit(1)
+
+    # 等待 PID 出现
+    wait_section = config.get('wait', {})
+    max_wait = _parse_time_or_default(
+        wait_section.get('max_wait', DEFAULT_VALUES['wait']['max_wait']),
+        DEFAULT_VALUES['wait']['max_wait'])
+    check_interval = _parse_time_or_default(
+        wait_section.get('check_interval', DEFAULT_VALUES['wait']['check_interval']),
+        DEFAULT_VALUES['wait']['check_interval'])
+
+    LOGGER.info(
+        f"等待计划任务进程启动，每 {check_interval} 秒检查一次"
+    )
+    wait_start_time = time.time()
+    waiting_logged = False
+
+    try:
+        with spinner_phase("等待目标进程启动...") as sp:
+            while True:
+                waited_time = time.time() - wait_start_time
+                if waited_time > max_wait:
+                    LOGGER.info("等待计划任务进程超时")
+                    sp.fail("等待超时，任务进程未启动")
+                    break
+
+                result = query_task_pid(task_name, lookback_minutes=1)
+
+                if result['state'] == 'running':
+                    pid = result['pid']
+                    try:
+                        proc = psutil.Process(pid)
+                        create_time = proc.create_time()
+                    except psutil.NoSuchProcess:
+                        time.sleep(check_interval)
+                        continue
+                    current_time = time.time()
+                    pid_info = {
+                        'pid': pid,
+                        'name': result['process_name'] or task_name,
+                        'create_time': create_time,
+                        'start_time': current_time,
+                        'last_warning_time': current_time,
+                        'timeout_count': 0,
+                    }
+                    LOGGER.info(f"检测到任务进程: {result['process_name']} (PID: {pid})")
+                    sp.done("任务进程已启动")
+                    return pid_info
+
+                if not waiting_logged:
+                    LOGGER.info(f"等待计划任务 '{task_name}' 进程启动...")
+                    waiting_logged = True
+                sp.text("等待目标进程启动...")
+                time.sleep(check_interval)
+    except KeyboardInterrupt:
+        notify_fail("任务被取消，退出等待循环")
+        raise
+
+    # 等待超时
+    with spinner_phase("正在执行通知推送...") as sp:
+        waited_time = time.time() - wait_start_time
+        formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
+        LOGGER.error(f"等待超时，计划任务进程未启动: {task_name}")
+        wait_results = send_notification(
+            config,
+            'on_wait_timeout',
+            process_name=task_name,
+            process_wait_time=formatted_waited_time
+        )
+        wait_all_failed = _render_push_results(wait_results, sp)
+
+        external_section = config.get('external', {})
+        external_program_on_wait_timeout_path = external_section.get('on_wait_timeout', '')
+        if external_program_on_wait_timeout_path:
+            sp.text("正在执行外部程序...")
+            LOGGER.info("等待进程启动超时，正在执行外部程序...")
+            try:
+                run_external_program(external_program_on_wait_timeout_path)
+                sp.write_done("外部程序执行成功")
+            except Exception as e:
+                sp.write_fail("外部程序执行失败")
+                LOGGER.error(f"执行外部程序失败: {e}", exc_info=True)
+
+        if wait_all_failed:
+            sp.fail("通知推送失败")
+        else:
+            sp.done("通知推送完成")
+
+    notify_fail("未能获取有效的 PID 信息。")
+    sys.exit(1)
+
+
+def monitor_via_launch(config):
+    """主动拉起目标程序或计划任务并监视其进程。
+
+    根据 launch.type 决定拉起方式：
+    - program: 用 subprocess.Popen 启动可执行文件
+    - task: 触发 Windows 计划任务后轮询事件日志获取 PID
+
+    Args:
+        config (dict): 配置信息。
+    """
+    launch_section = config.get('launch', {})
+    launch_type = launch_section.get('type', 'program')
+
+    if launch_type not in ('program', 'task'):
+        notify_fail(f"launch.type 无效: {launch_type}，仅支持 program/task")
+        sys.exit(1)
+
+    if launch_type == 'program':
+        pid_info = _launch_program(launch_section)
+    else:
+        pid_info = _launch_task(launch_section, config)
+
+    # 进入单 PID 监视循环
+    try:
+        with spinner_phase("监视进程运行中...") as sp:
+            _monitor_single_pid(pid_info, config, sp)
+    except KeyboardInterrupt:
+        notify_fail("任务被取消，正在结束监视循环")
+        raise
+
+
 def monitor_processes(config):
     """监视进程列表。
 
@@ -466,6 +669,11 @@ def monitor_processes(config):
     if monitor_mode == 'task_scheduler':
         LOGGER.info("读取计划任务来获取 PID 进行监视")
         monitor_via_task_scheduler(config)
+        return
+
+    if monitor_mode == 'launch':
+        LOGGER.info("主动拉起目标程序或任务进行监视")
+        monitor_via_launch(config)
         return
 
     process_name = monitor_section.get(
