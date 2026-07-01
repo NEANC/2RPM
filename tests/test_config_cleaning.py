@@ -68,12 +68,9 @@ def test_config_cleaning():
     
     # 验证清理是否成功
     monitor_section = test_config['monitor']
-    if 'max_wait' not in monitor_section and 'check_interval' not in monitor_section:
-        LOGGER.info("配置清理成功!")
-    else:
-        LOGGER.error("配置清理失败!")
-    
-    return monitor_section
+    assert 'max_wait' not in monitor_section
+    assert 'check_interval' not in monitor_section
+    LOGGER.info("配置清理成功!")
 
 if __name__ == '__main__':
     test_config_cleaning()
