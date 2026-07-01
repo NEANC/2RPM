@@ -5,6 +5,7 @@
 import os
 import sys
 import logging
+import builtins
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -86,6 +87,20 @@ class TestSpinnerTTY(unittest.TestCase):
             colorama.Fore.GREEN + spinner_mod._ICON_DONE + " 进程已退出运行"
             + colorama.Style.RESET_ALL)
         fake_spinner.ok.assert_not_called()
+    def test_make_yaspin_does_not_import_spinner_data(self):
+        """创建 yaspin 时不导入 yaspin.spinners，避免 Nuitka 漏打包 spinners.json。"""
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            """阻止测试路径导入 yaspin.spinners。"""
+            self.assertNotEqual(name, 'yaspin.spinners')
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, '__import__', side_effect=guarded_import), \
+                patch('yaspin.yaspin', return_value='fake-spinner') as fake_yaspin:
+            spinner = spinner_mod._make_yaspin("等待中...")
+        self.assertEqual(spinner, 'fake-spinner')
+        fake_yaspin.assert_called_once()
 
 
 class TestSpinnerNonTTY(unittest.TestCase):
