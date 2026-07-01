@@ -103,6 +103,11 @@ DEFAULT_VALUES = {
         'max_log_files': 15,
         'retention_days': 3,
     },
+    'launch': {
+        'type': 'program',
+        'path': 'C:\\path\\to\\target.exe',
+        'task_name': '\\Custom\\MyTask',
+    },
 }
 
 # 注释集中管理（V4 精简键名与节名）
@@ -263,6 +268,28 @@ COMMENTS = {
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
         'retention_days': "\n日志保存天数，单位为天，默认值: 3天",
+    },
+    'launch': {
+        '_comment': (
+            "主动拉起目标设置\n"
+            "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
+            "- 仅在 monitor.monitor_mode 为 launch 时生效\n"
+        ),
+        'type': (
+            "\n拉起类型，可选值: program / task\n"
+            "- program: 直接启动可执行程序\n"
+            "- task: 触发 Windows 计划任务后监视其进程\n"
+        ),
+        'path': (
+            "\n要拉起的可执行文件路径\n"
+            "- 仅 type=program 时使用\n"
+            "- 例如: C:\\app\\target.exe"
+        ),
+        'task_name': (
+            "\n要触发的计划任务名称\n"
+            "- 仅 type=task 时使用\n"
+            "- 完整路径格式: \\\\Folder\\TaskName\n"
+        ),
     },
 }
 

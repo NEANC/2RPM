@@ -97,14 +97,14 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
         bool: True 表示应继续重试；False 表示已达最大重试次数。
     """
     LOGGER.error(
-        f"通知发送失败 [{provider}] (尝试 {attempt}/{max_count}): {reason}"
+        f"通道 [{provider}] 通知发送失败 (尝试 {attempt}/{max_count}): {reason}"
     )
     # 守卫：仍有重试机会则等待后继续
     if attempt < max_count:
         time.sleep(retry_interval)
         return True
     LOGGER.critical(
-        f"通知发送失败 [{provider}]，已达到最大重试次数。"
+        f"通道 [{provider}] 通知发送失败，已超过最大重试次数。"
     )
     return False
 
@@ -219,8 +219,26 @@ def send_notification(config, template_key, **kwargs):
 
     retry_settings = push_section.get('retry', {})
     retry_interval_str = retry_settings.get('interval', '3s')
-    retry_interval = parse_time_string(retry_interval_str)
-    max_count = retry_settings.get('max_count', 3)
+    try:
+        retry_interval = parse_time_string(retry_interval_str)
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            "推送重试间隔配置无效，已回退默认值: %s", retry_interval_str
+        )
+        retry_interval = 3
+
+    try:
+        max_count = int(retry_settings.get('max_count', 3))
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            "推送重试次数配置无效，已回退默认值: %s", retry_settings.get('max_count', 3)
+        )
+        max_count = 3
+    if max_count < 1:
+        LOGGER.warning(
+            "推送重试次数必须 >= 1，已回退为 1: %s", max_count
+        )
+        max_count = 1
 
     # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后回收结果
     channel_names = ', '.join(c.get('provider', '?') for c in channels)
