@@ -11,7 +11,7 @@ from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
 from modules.spinner import spinner_phase, notify_fail
 from modules.utils import get_program_directory
-from modules.version import VERSION, print_info, print_exit_info
+from modules.version import VERSION, print_info
 
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
@@ -97,7 +97,6 @@ def main():
         notify_fail(f"程序出现异常: {e}", exc_info=True)
         exit_code = 1
     finally:
-        print_exit_info(exit_code)
         sys.exit(exit_code)
 
 
