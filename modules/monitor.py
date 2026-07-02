@@ -115,9 +115,9 @@ def _render_push_results(results, sp):
         return False
     for provider, ok in results:
         if ok:
-            sp.write_done(f"{provider} 推送成功")
+            sp.write_done(f"通道 [{provider}] 推送成功")
         else:
-            sp.write_fail(f"{provider} 推送失败")
+            sp.write_fail(f"通道 [{provider}] 推送失败")
     return all(not ok for _, ok in results)
 
 

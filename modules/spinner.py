@@ -21,6 +21,9 @@ _SPINNER_INTERVAL_MS = 200
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 # 清行 ANSI 序列
 _CLEAR_LINE = "\r\033[2K"
+# 隐藏/显示光标 ANSI 序列
+_HIDE_CURSOR = "\033[?25l"
+_SHOW_CURSOR = "\033[?25h"
 
 
 def _make_yaspin(text):
@@ -63,7 +66,8 @@ class _SimpleTTYSpinner:
         self._closed = False
 
     def start(self):
-        """启动 spinner 并输出首行。"""
+        """启动 spinner，隐藏光标并输出首行。"""
+        self._output.write(_HIDE_CURSOR)
         with self._lock:
             self._write_full_line()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -80,14 +84,20 @@ class _SimpleTTYSpinner:
             if self._closed:
                 return
             self._frame_index = (self._frame_index + 1) % len(self._frames)
-            self._output.write("\r" + self._frames[self._frame_index])
+            self._output.write(
+                "\r" + colorama.Fore.YELLOW + self._frames[self._frame_index]
+                + colorama.Style.RESET_ALL
+            )
             self._output.flush()
 
     def _write_full_line(self):
         """写入完整 spinner 行。"""
         self._output.write(
-            "\r" + self._frames[self._frame_index] + "  "
-            + colorama.Fore.YELLOW + self._message + colorama.Style.RESET_ALL
+            "\r"
+            + colorama.Fore.YELLOW + self._frames[self._frame_index]
+            + colorama.Style.RESET_ALL + "  "
+            + colorama.Fore.YELLOW + self._message
+            + colorama.Style.RESET_ALL
         )
         self._output.flush()
 
@@ -151,7 +161,8 @@ class _SimpleTTYSpinner:
             self._closed = True
             if clear_line:
                 self._output.write(_CLEAR_LINE)
-                self._output.flush()
+            self._output.write(_SHOW_CURSOR)
+            self._output.flush()
 
 
 def _wrap_running(message):
@@ -166,7 +177,9 @@ def _wrap_running(message):
     Returns:
         str: 前缀一个空格并包裹 Fore.YELLOW 的文案。
     """
-    return " " + colorama.Fore.YELLOW + message + colorama.Style.RESET_ALL
+    return (" "
+            + colorama.Fore.YELLOW
+            + message + colorama.Style.RESET_ALL)
 
 
 def _format_done(message):
