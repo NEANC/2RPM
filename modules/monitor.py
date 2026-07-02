@@ -271,12 +271,22 @@ def _collect_matching_processes(process_name):
     """
     current_processes = {}
     for p in psutil.process_iter(['pid', 'name', 'create_time']):
-        info = p.info
-        if info['name'] == process_name:
-            current_processes[p.pid] = {
-                'name': info['name'],
-                'create_time': info['create_time'],
-            }
+        try:
+            info = p.info
+        except psutil.AccessDenied:
+            LOGGER.warning(f"读取进程信息被拒绝 (PID={p.pid})，已跳过")
+            continue
+        except psutil.NoSuchProcess:
+            continue
+
+        try:
+            if info['name'] == process_name:
+                current_processes[p.pid] = {
+                    'name': info['name'],
+                    'create_time': info['create_time'],
+                }
+        except (KeyError, TypeError):
+            continue
     return current_processes
 
 
@@ -406,6 +416,9 @@ def _monitor_single_pid(pid_info, config, sp):
             if proc.create_time() == pid_info['create_time']:
                 alive = True
         except psutil.NoSuchProcess:
+            alive = False
+        except psutil.AccessDenied:
+            LOGGER.warning(f"读取 PID {pid} 进程信息被拒绝，暂将其视为已结束")
             alive = False
 
         if alive:
@@ -907,7 +920,8 @@ def monitor_via_task_scheduler(config):
     wait_section = config.get('wait', {})
 
     task_name = task_section.get('task_name', '')
-    lookback_minutes = task_section.get('lookback_minutes', 10)
+    # 关键参数：对齐 task.lookback_minutes 的边界行为，确保非法值回退默认 10 并回写已归一化后的值
+    lookback_minutes = task_section.get('lookback_minutes', DEFAULT_VALUES['task']['lookback_minutes'])
     check_interval = _parse_time_or_default(
         wait_section.get(
             'check_interval',
@@ -980,6 +994,14 @@ def monitor_via_task_scheduler(config):
                     except psutil.NoSuchProcess:
                         # 进程在检测到和获取 create_time 之间已退出，重试
                         LOGGER.warning(f"PID {pid} 在获取进程信息前已退出，重试")
+                        time.sleep(check_interval)
+                        continue
+                    except psutil.AccessDenied:
+                        LOGGER.warning(f"读取 PID {pid} 进程信息被拒绝，暂跳过本次匹配")
+                        time.sleep(check_interval)
+                        continue
+                    except psutil.ZombieProcess:
+                        LOGGER.warning(f"读取 PID {pid} 进程为僵尸进程，暂跳过本次匹配")
                         time.sleep(check_interval)
                         continue
                     current_time = time.time()
