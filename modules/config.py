@@ -10,6 +10,7 @@ from ruamel.yaml.comments import CommentedMap
 from modules.utils import (
     build_push_channel_node,
     parse_push_channels,
+    parse_time_string,
     push_channel_signature,
 )
 
@@ -566,6 +567,10 @@ def _normalize_task_lookback_minutes(task_section):
     - 字符串与数值均可接受，保留字符串语义（如 '10'）
     - 负值自动去符号为正
     - 无法解析或非法类型回退默认值
+    - 归一化成功后回写配置原文，确保配置持久化一致
+
+    说明：
+    - 保留字符串输出（例如 '10'）可以兼容历史与手工编辑行为
     """
     if not isinstance(task_section, dict):
         return False
@@ -616,6 +621,235 @@ def _normalize_task_lookback_minutes(task_section):
 
     task_section['lookback_minutes'] = normalized_for_store
     return True
+
+
+def _normalize_time_like_config(section, field_key, default_value, field_label):
+    """归一化时间类配置值。
+
+    规则：
+    - 字符串与数字均可接受
+    - 负值去除前导 '-' 并回写为正值字符串
+    - 无效值回退默认值
+    - 回写时仅当实际发生变更才落盘
+    """
+    if not isinstance(section, dict):
+        return False
+
+    raw_value = section.get(field_key)
+    if raw_value is None:
+        return False
+
+    # 空字符串直接回退默认值
+    if isinstance(raw_value, str):
+        raw_str = raw_value.strip()
+        if not raw_str:
+            LOGGER.warning(f"{field_label} 不能为空，已回退默认值")
+            section[field_key] = default_value
+            return True
+
+        # 允许时间格式字符串并做统一清理（去空白、去负号）
+        normalized = raw_str
+        if raw_str.startswith('-'):
+            normalized = raw_str.lstrip('-').strip()
+            LOGGER.warning(f"检测到 {field_label} 负值，已去除负号: {raw_value!r}")
+
+        if not normalized:
+            LOGGER.warning(f"{field_label} 去符号后为空，已回退默认值")
+            section[field_key] = default_value
+            return True
+
+        # parse_time_string 负责校验 h/m/s 等合法时间串
+        try:
+            parse_time_string(normalized)
+        except (ValueError, TypeError, AttributeError):
+            LOGGER.warning(
+                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
+            )
+            section[field_key] = default_value
+            return True
+    elif isinstance(raw_value, (int, float)):
+        # 数值会在边界处理时转成字符串，保证时间格式仍是可读文本
+        try:
+            normalized = str(abs(int(raw_value)))
+        except (ValueError, TypeError):
+            LOGGER.warning(
+                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
+            )
+            section[field_key] = default_value
+            return True
+        if raw_value < 0:
+            LOGGER.warning(f"检测到 {field_label} 负值，已去除负号: {raw_value!r}")
+        try:
+            parse_time_string(normalized)
+        except (ValueError, TypeError, AttributeError):
+            LOGGER.warning(
+                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
+            )
+            section[field_key] = default_value
+            return True
+    else:
+        # 其它类型不在支持范围内，直接回退默认值
+        LOGGER.warning(
+            f"{field_label} 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+        )
+        section[field_key] = default_value
+        return True
+
+    # 仅当解析后的值与原值不一致时才更新，避免无意义的脏写
+    if section.get(field_key) == normalized:
+        return False
+
+    section[field_key] = normalized
+    return True
+
+
+
+def _normalize_positive_int_config(section, field_key, default_value, field_label):
+    """归一化整数类配置值。
+
+    规则：
+    - 字符串、整数、浮点数可接受
+    - 负值去绝对值后回写
+    - 非法值回退默认值
+    """
+    if not isinstance(section, dict):
+        return False
+
+    raw_value = section.get(field_key)
+    if raw_value is None:
+        return False
+
+    # 字符串输入：先清理空白，再处理前缀负号，最后尝试转 int
+    if isinstance(raw_value, str):
+        raw_stripped = raw_value.strip()
+        if not raw_stripped:
+            LOGGER.warning(f"{field_label} 不能为空，已回退默认值")
+            section[field_key] = default_value
+            return True
+
+        if raw_stripped.startswith('-'):
+            raw_stripped = raw_stripped.lstrip('-').strip()
+            LOGGER.warning(
+                f"检测到 {field_label} 负值，已去除负号: {raw_value!r}"
+            )
+
+        if not raw_stripped:
+            LOGGER.warning(f"{field_label} 去符号后为空，已回退默认值")
+            section[field_key] = default_value
+            return True
+
+        try:
+            normalized = int(raw_stripped)
+        except ValueError:
+            LOGGER.warning(
+                f"{field_label} 无法解析为整数，已回退默认值: {raw_value!r}"
+            )
+            section[field_key] = default_value
+            return True
+    # 数值输入：仅允许 int/float，统一转为正整数，兼容 3.0 这类浮点数
+    elif isinstance(raw_value, (int, float)):
+        normalized = int(abs(raw_value))
+        if raw_value != normalized:
+            LOGGER.warning(
+                f"检测到 {field_label} 负值，已去除负号: {raw_value!r}"
+            )
+    # 其它类型直接回退默认值
+    else:
+        LOGGER.warning(
+            f"{field_label} 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+        )
+        section[field_key] = default_value
+        return True
+
+    # 仅当值确实发生变化时才回写，避免无效改动触发脏写
+    if section.get(field_key) == normalized:
+        return False
+
+    section[field_key] = normalized
+    return True
+
+
+def _normalize_config_writable_values(user_config):
+    """统一归一化配置中的可写负值参数。
+
+    返回：是否发生任一字段变更
+    """
+    updated = False
+
+    monitor_section = user_config.get('monitor', {})
+    wait_section = user_config.get('wait', {})
+    push_section = user_config.get('push', {})
+    retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
+    external_section = user_config.get('external', {})
+    log_section = user_config.get('log', {})
+
+    # monitor.*：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
+    updated = _normalize_time_like_config(
+        monitor_section,
+        'timeout_interval',
+        DEFAULT_VALUES['monitor']['timeout_interval'],
+        'monitor.timeout_interval'
+    ) or updated
+    updated = _normalize_time_like_config(
+        monitor_section,
+        'loop_interval',
+        DEFAULT_VALUES['monitor']['loop_interval'],
+        'monitor.loop_interval'
+    ) or updated
+
+    # wait.*：等待行为配置，保持 H/M/S 字符串语义
+    updated = _normalize_time_like_config(
+        wait_section,
+        'max_wait',
+        DEFAULT_VALUES['wait']['max_wait'],
+        'wait.max_wait'
+    ) or updated
+    updated = _normalize_time_like_config(
+        wait_section,
+        'check_interval',
+        DEFAULT_VALUES['wait']['check_interval'],
+        'wait.check_interval'
+    ) or updated
+
+    # push.retry.interval：重试间隔也按时间串处理
+    updated = _normalize_time_like_config(
+        retry_section,
+        'interval',
+        DEFAULT_VALUES['push']['retry']['interval'],
+        'push.retry.interval'
+    ) or updated
+
+    # push.retry.max_count / external.timeout_threshold / log.*：整数类配置
+    updated = _normalize_positive_int_config(
+        retry_section,
+        'max_count',
+        DEFAULT_VALUES['push']['retry']['max_count'],
+        'push.retry.max_count'
+    ) or updated
+
+    # external.timeout_threshold：超时阈值，必须为正整数
+    updated = _normalize_positive_int_config(
+        external_section,
+        'timeout_threshold',
+        DEFAULT_VALUES['external']['timeout_threshold'],
+        'external.timeout_threshold'
+    ) or updated
+
+    # log.max_log_files、log.retention_days：日志归档参数，统一转为非负整数字符语义
+    updated = _normalize_positive_int_config(
+        log_section,
+        'max_log_files',
+        DEFAULT_VALUES['log']['max_log_files'],
+        'log.max_log_files'
+    ) or updated
+    updated = _normalize_positive_int_config(
+        log_section,
+        'retention_days',
+        DEFAULT_VALUES['log']['retention_days'],
+        'log.retention_days'
+    ) or updated
+
+    return updated
 
 
 def merge_configs(user_config, default_config):
@@ -699,10 +933,11 @@ def load_config(config_file):
             updated = True
 
     task_section = user_config.get('task', {})
+    if isinstance(task_section, dict):
+        updated = _normalize_task_lookback_minutes(task_section) or updated
 
-    # 规整 task.lookback_minutes：支持负值去符号、非法值回退并回写
-    normalized = _normalize_task_lookback_minutes(task_section)
-    updated = updated or normalized
+    # 统一处理可写配置中的负值/非法值参数（负值去除负号并回写，非法值回退默认值）
+    updated = _normalize_config_writable_values(user_config) or updated
 
     # 检查每个配置节中的参数
     for section, section_config in default_config.items():
