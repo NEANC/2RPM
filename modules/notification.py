@@ -103,7 +103,7 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
     if attempt < max_count:
         time.sleep(retry_interval)
         return True
-    LOGGER.critical(
+    LOGGER.warning(
         f"通道 [{provider}] 通知发送失败，已超过最大重试次数。"
     )
     return False
