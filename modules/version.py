@@ -19,11 +19,10 @@ _BANNER_DIVIDER = " " + "\u2500" * 49
 
 
 def print_info() -> None:
-    """打印 ASCII art 启动横幅。
+    """打印 ASCII art 启动横幅
 
-    青色 art + 灰白色副标题 + 灰色分隔线 + 蓝色版本与许可证行，配色对齐
-    pixi_alas_install.sh。colorama 已在控制台日志格式化器中初始化，
-    此处直接使用颜色常量。
+    青色 art + 灰白色副标题 + 灰色分隔线 + 蓝色版本与许可证行，
+    colorama 已在控制台日志格式化器中初始化，此处直接使用颜色常量
     """
     colorama.init(autoreset=True)
     print()
@@ -36,12 +35,12 @@ def print_info() -> None:
 
 
 def print_exit_info(exit_code: int) -> None:
-    """打印程序结束时的简短状态提示（状态 + 退出码）。
+    """打印程序结束时的简短状态提示（状态 + 退出码）
 
-    退出码为 0 时无输出（spinner 已提供完成反馈），非 0 显示红色异常提示。
+    退出码为 0 时无输出（spinner 已提供完成反馈），非 0 显示红色异常提示
 
     Args:
-        exit_code (int): 程序退出码。
+        exit_code (int): 程序退出码
     """
     if exit_code == 0:
         return

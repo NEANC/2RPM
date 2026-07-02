@@ -295,13 +295,13 @@ COMMENTS = {
 
 
 def _deep_copy(obj):
-    """递归深拷贝配置对象（支持 dict 与 list）。
+    """递归深拷贝配置对象（支持 dict 与 list）
 
     Args:
-        obj: 待拷贝的对象。
+        obj: 待拷贝的对象
 
     Returns:
-        拷贝后的对象。
+        拷贝后的对象
     """
     if isinstance(obj, dict):
         return {k: _deep_copy(v) for k, v in obj.items()}
@@ -311,15 +311,15 @@ def _deep_copy(obj):
 
 
 def _check_missing_params(config, required_params, section_name):
-    """检查配置中是否缺少必要的参数，并补充缺失参数的默认值。
+    """检查配置中是否缺少必要的参数，并补充缺失参数的默认值
 
     Args:
-        config (dict): 配置字典。
-        required_params (dict): 必要参数及其默认值。
-        section_name (str): 配置节名称。
+        config (dict): 配置字典
+        required_params (dict): 必要参数及其默认值
+        section_name (str): 配置节名称
 
     Returns:
-        bool: 是否发生了参数补充操作。
+        bool: 是否发生了参数补充操作
     """
     updated = False
     for param, default_value in required_params.items():
@@ -341,15 +341,15 @@ def _check_missing_params(config, required_params, section_name):
 
 
 def _clean_config(config, default_config, section_name='root'):
-    """清理配置文件，移除不属于对应配置块的配置项。
+    """清理配置文件，移除不属于对应配置块的配置项
 
     Args:
-        config (dict): 配置字典。
-        default_config (CommentedMap): 默认配置字典。
-        section_name (str): 配置块名称。
+        config (dict): 配置字典
+        default_config (CommentedMap): 默认配置字典
+        section_name (str): 配置块名称
 
     Returns:
-        bool: 是否发生了配置项移除操作。
+        bool: 是否发生了配置项移除操作
     """
     removed = False
     keys_to_remove = []
@@ -375,16 +375,16 @@ def _clean_config(config, default_config, section_name='root'):
 
 
 def _create_commented_map(config_dict):
-    """递归创建 CommentedMap 结构，嵌入默认值。
+    """递归创建 CommentedMap 结构，嵌入默认值
 
-    将普通 dict 转换为 ruamel 的 CommentedMap，以支持注释嵌入。
-    push_channel 列表渲染为流式块序列。
+    将普通 dict 转换为 ruamel 的 CommentedMap，以支持注释嵌入
+    push_channel 列表渲染为流式块序列
 
     Args:
-        config_dict (dict): 默认配置字典。
+        config_dict (dict): 默认配置字典
 
     Returns:
-        CommentedMap: 递归构造的 CommentedMap 结构。
+        CommentedMap: 递归构造的 CommentedMap 结构
     """
     if not isinstance(config_dict, dict):
         return config_dict
@@ -402,10 +402,10 @@ def _create_commented_map(config_dict):
 
 
 def _make_write_yaml():
-    """创建用于写回配置文件的 YAML 实例。
+    """创建用于写回配置文件的 YAML 实例
 
     Returns:
-        YAML: 已配置缩进与引号保留的 YAML 实例。
+        YAML: 已配置缩进与引号保留的 YAML 实例
     """
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
@@ -414,14 +414,14 @@ def _make_write_yaml():
 
 
 def get_default_config(for_file_creation=False):
-    """获取默认配置，并嵌入完整的注释。
+    """获取默认配置，并嵌入完整的注释
 
     Args:
-        for_file_creation (bool): 是否用于创建新配置文件。
-            为 True 时会在节前添加空行分隔。
+        for_file_creation (bool): 是否用于创建新配置文件
+            为 True 时会在节前添加空行分隔
 
     Returns:
-        CommentedMap: 包含注释的默认配置字典。
+        CommentedMap: 包含注释的默认配置字典
     """
     LOGGER.info("正在读取默认配置")
 
@@ -435,10 +435,10 @@ def get_default_config(for_file_creation=False):
 
 
 def _clear_comments(config_section):
-    """清除配置节中已有的注释，避免重复写入。
+    """清除配置节中已有的注释，避免重复写入
 
     Args:
-        config_section (CommentedMap): 配置的一个部分。
+        config_section (CommentedMap): 配置的一个部分
 
     Returns:
         None
@@ -452,17 +452,17 @@ def _clear_comments(config_section):
 
 def apply_comments(config_section, comments_section, depth=0,
                    blank_before_section=False, is_top_level=True):
-    """递归地将注释应用到配置字典中。
+    """递归地将注释应用到配置字典中
 
     将每个配置项/子节的注释统一放置在其键的上方，并使注释缩进与所在
-    层级的配置缩进保持一致（例外：节的变量列表说明保持无缩进）。
+    层级的配置缩进保持一致（例外：节的变量列表说明保持无缩进）
 
     Args:
-        config_section (CommentedMap): 配置的一个部分。
-        comments_section (dict): 对应的注释字典。
-        depth (int): 当前嵌套层级，用于计算注释缩进（每层 2 空格）。
-        blank_before_section (bool): 是否在顶层节（首个节除外）前插入空行。
-        is_top_level (bool): 当前是否为顶层节容器。
+        config_section (CommentedMap): 配置的一个部分
+        comments_section (dict): 对应的注释字典
+        depth (int): 当前嵌套层级，用于计算注释缩进（每层 2 空格）
+        blank_before_section (bool): 是否在顶层节（首个节除外）前插入空行
+        is_top_level (bool): 当前是否为顶层节容器
 
     Returns:
         None
@@ -503,13 +503,13 @@ def apply_comments(config_section, comments_section, depth=0,
 
 
 def create_default_config(config_file):
-    """创建默认配置文件。
+    """创建默认配置文件
 
     Args:
-        config_file (str): 配置文件路径。
+        config_file (str): 配置文件路径
 
     Raises:
-        Exception: 如果无法创建配置文件。
+        Exception: 如果无法创建配置文件
     """
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
     default_config = get_default_config(for_file_creation=True)
@@ -524,19 +524,20 @@ def create_default_config(config_file):
 
 
 def correct_push_channel_config(user_config):
-    """规范化配置中的推送通道，统一回写为标准流式格式。
+    """规范化配置中的推送通道，统一回写为标准流式格式
 
     定位 push.push_channel_settings.channels 节点，将用户填写的
     各种写法（标准字典、无参数头、乱序、块序列或以 ';' 分割的字符串）解析为标准
     通道，并统一重建写回节点为元素均为流式映射的 YAML 块序列（单通道与多通道写法
-    一致，无需引号包裹整行）。密钥别名（如 serverchan 的 key -> sckey）在解析
-    过程中一并纠正。仅当规范化后的节点与原值存在实质差异时才替换，避免无谓的写回。
+    一致，无需引号包裹整行）
+    密钥别名（如 serverchan 的 key -> sckey）在解析过程中一并纠正
+    仅当规范化后的节点与原值存在实质差异时才替换，避免无谓的写回
 
     Args:
-        user_config (dict): 用户配置字典，将被就地修改。
+        user_config (dict): 用户配置字典，将被就地修改
 
     Returns:
-        bool: 是否发生了 channels 节点的规范化替换。
+        bool: 是否发生了 channels 节点的规范化替换
     """
     push_section = user_config.get('push')
     if not isinstance(push_section, dict):
@@ -575,14 +576,14 @@ def correct_push_channel_config(user_config):
 
 
 def merge_configs(user_config, default_config):
-    """将用户配置合并到默认配置中。
+    """将用户配置合并到默认配置中
 
     Args:
-        user_config (dict): 用户配置字典。
-        default_config (CommentedMap): 默认配置字典。
+        user_config (dict): 用户配置字典
+        default_config (CommentedMap): 默认配置字典
 
     Returns:
-        CommentedMap: 合并后的配置字典。
+        CommentedMap: 合并后的配置字典
     """
     if not isinstance(user_config, dict):
         return default_config
@@ -601,22 +602,22 @@ def merge_configs(user_config, default_config):
 
 
 def load_config(config_file):
-    """加载配置文件。
+    """加载配置文件
 
     Args:
-        config_file (str): 配置文件路径。
+        config_file (str): 配置文件路径
 
     Returns:
-        dict: 配置字典。
+        dict: 配置字典
 
     Raises:
-        Exception: 如果配置文件无效。
+        Exception: 如果配置文件无效
     """
     LOGGER.info(f"正在加载配置文件: {os.path.abspath(config_file)}")
     if not os.path.exists(config_file):
         LOGGER.critical(f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
-        LOGGER.info("配置文件已生成，请根据需要修改配置文件后再次运行程序。")
+        LOGGER.info("配置文件已生成，请根据需要修改配置文件后再次运行程序")
         input("请按任意键退出...")
         sys.exit(0)
 
@@ -673,7 +674,7 @@ def load_config(config_file):
     corrected = correct_push_channel_config(merged_config)
 
     if updated or cleaned or corrected:
-        LOGGER.info("配置文件已更新，正在执行无缝迁移。")
+        LOGGER.info("配置文件已更新，正在执行无缝迁移")
         try:
             yaml = _make_write_yaml()
             with open(config_file, 'w', encoding='utf-8') as f:
