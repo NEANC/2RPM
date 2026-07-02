@@ -24,13 +24,18 @@ DEFAULT_VALUES = {
         'timeout_interval': '15m',
         'loop_interval': '1s',
     },
-    'wait': {
-        'max_wait': '30s',
-        'check_interval': '1s',
-    },
     'task': {
         'task_name': '\\Custom\\MyTask',
         'lookback_minutes': 10,
+    },
+    'launch': {
+        'type': 'program',
+        'path': 'C:\\path\\to\\target.exe',
+        'task_name': '\\Custom\\MyTask',
+    },
+    'wait': {
+        'max_wait': '30s',
+        'check_interval': '1s',
     },
     'push': {
         'templates': {
@@ -104,11 +109,6 @@ DEFAULT_VALUES = {
         'max_log_files': 15,
         'retention_days': 3,
     },
-    'launch': {
-        'type': 'program',
-        'path': 'C:\\path\\to\\target.exe',
-        'task_name': '\\Custom\\MyTask',
-    },
 }
 
 # 注释集中管理（V4 精简键名与节名）
@@ -133,6 +133,43 @@ COMMENTS = {
             "\n监视循环间隔，默认值1秒，支持 H/M/S 格式\n"
         ),
     },
+    'task': {
+        '_comment': (
+            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
+            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
+        ),
+        'task_name': (
+            "\n要监视的计划任务名称\n"
+            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
+            "- 部分匹配也可工作，如 MyTask\n"
+        ),
+        'lookback_minutes': (
+            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
+            "- 默认值: 10\n"
+        ),
+    },
+    'launch': {
+        '_comment': (
+            "主动拉起目标设置\n"
+            "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
+            "- 仅在 monitor.monitor_mode 为 launch 时生效\n"
+        ),
+        'type': (
+            "\n拉起类型，可选值: program / task\n"
+            "- program: 直接启动可执行程序\n"
+            "- task: 触发 Windows 计划任务后监视其进程\n"
+        ),
+        'path': (
+            "\n要拉起的可执行文件路径\n"
+            "- 仅 type=program 时使用\n"
+            "- 例如: C:\\app\\target.exe"
+        ),
+        'task_name': (
+            "\n要触发的计划任务名称\n"
+            "- 仅 type=task 时使用\n"
+            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
+        ),
+    },
     'wait': {
         '_comment': (
             "等待进程设置\n"
@@ -143,21 +180,6 @@ COMMENTS = {
         ),
         'check_interval': (
             "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
-        ),
-    },
-    'task': {
-        '_comment': (
-            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
-            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
-        ),
-        'task_name': (
-            "\n要监视的计划任务名称\n"
-            "- 完整路径格式: \\\\Folder\\TaskName\n"
-            "- 部分匹配也可工作，如 MyTask\n"
-        ),
-        'lookback_minutes': (
-            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
-            "- 默认值: 10\n"
         ),
     },
     'push': {
@@ -269,28 +291,6 @@ COMMENTS = {
         ),
         'max_log_files': "\n日志最大保存数量，默认值: 15个",
         'retention_days': "\n日志保存天数，单位为天，默认值: 3天",
-    },
-    'launch': {
-        '_comment': (
-            "主动拉起目标设置\n"
-            "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
-            "- 仅在 monitor.monitor_mode 为 launch 时生效\n"
-        ),
-        'type': (
-            "\n拉起类型，可选值: program / task\n"
-            "- program: 直接启动可执行程序\n"
-            "- task: 触发 Windows 计划任务后监视其进程\n"
-        ),
-        'path': (
-            "\n要拉起的可执行文件路径\n"
-            "- 仅 type=program 时使用\n"
-            "- 例如: C:\\app\\target.exe"
-        ),
-        'task_name': (
-            "\n要触发的计划任务名称\n"
-            "- 仅 type=task 时使用\n"
-            "- 完整路径格式: \\\\Folder\\TaskName\n"
-        ),
     },
 }
 
