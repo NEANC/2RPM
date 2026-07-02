@@ -122,16 +122,16 @@ def _render_push_results(results, sp):
 
 
 def _handle_process_end(config, process_name, pid, run_time,
-                         external_program_path, sp):
-    """处理进程结束：发送通知并可选调用外部程序。
+                         external_on_end_path, sp):
+    """处理进程结束：发送通知并可选调用外部程序
 
     Args:
-        config (dict): 配置信息。
-        process_name (str): 进程名。
-        pid (int): 进程 PID。
-        run_time (float): 进程运行时间（秒）。
-        external_program_path (str): 进程结束时调用的外部程序路径。
-        sp: spinner 句柄，用于内联反馈各通道及外部程序成败（不定格）。
+        config (dict): 配置信息
+        process_name (str): 进程名
+        pid (int): 进程 PID
+        run_time (float): 进程运行时间（秒）
+        external_on_end_path (str): 进程结束时调用的外部程序路径
+        sp: spinner 句柄，用于内联反馈各通道及外部程序成败（不定格）
 
     Returns:
         bool: 结束通知（on_end）所有通道均失败时为 True，否则为 False。
@@ -153,20 +153,20 @@ def _handle_process_end(config, process_name, pid, run_time,
     all_failed = _render_push_results(end_results, sp)
 
     # 进程结束时调用外部程序
-    if external_program_path:
+    if external_on_end_path:
         LOGGER.info(
             f"检测到进程 {process_name} 结束，正在调用外部程序..."
         )
         try:
-            run_external_program(external_program_path)
+            run_external_program(external_on_end_path)
             sp.write_done("外部程序执行完成")
-            LOGGER.info(f"成功调用外部程序 {external_program_path}")
+            LOGGER.info(f"成功调用外部程序 {external_on_end_path}")
             # 发送外部程序执行通知
             ext_results = send_notification(
                 config,
                 'on_external',
-                external_program_name=_get_program_name(external_program_path),
-                external_program_path=external_program_path,
+                external_program_name=_get_program_name(external_on_end_path),
+                external_program_path=external_on_end_path,
                 process_name=process_name,
                 process_pid=pid,
             )
@@ -174,7 +174,7 @@ def _handle_process_end(config, process_name, pid, run_time,
         except Exception as e:
             sp.write_fail("外部程序执行失败。")
             LOGGER.error(
-                f"调用外部程序 {external_program_path} 时发生错误: {e}",
+                f"调用外部程序 {external_on_end_path} 时发生错误: {e}",
                 exc_info=True
             )
 
@@ -183,18 +183,18 @@ def _handle_process_end(config, process_name, pid, run_time,
 
 def _check_process_timeout(config, process_info, pid, current_time,
                             timeout_interval,
-                            another_external_program_path,
+                            external_on_timeout_path,
                             timeout_threshold):
     """检查进程超时，发送警告并在达到阈值时触发外部程序。
 
     Args:
-        config (dict): 配置信息。
-        process_info (dict): 进程监视信息，需包含 start_time / last_warning_time / timeout_count。
-        pid (int): 进程 PID。
-        current_time (float): 当前时间（秒，time.time()）。
-        timeout_interval (int): 超时警告间隔（秒）。
-        another_external_program_path (str): 超时后触发的外部程序路径。
-        timeout_threshold (int): 触发外部程序所需的超时累计次数阈值。
+        config (dict): 配置信息
+        process_info (dict): 进程监视信息，需包含 start_time / last_warning_time / timeout_count
+        pid (int): 进程 PID
+        current_time (float): 当前时间（秒，time.time()）
+        timeout_interval (int): 超时警告间隔（秒）
+        external_on_timeout_path (str): 超时后触发的外部程序路径
+        timeout_threshold (int): 触发外部程序所需的超时累计次数阈值
     """
     run_time = current_time - process_info['start_time']
     time_since_last_warning = current_time - process_info['last_warning_time']
@@ -220,7 +220,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
     process_info['timeout_count'] += 1
 
     # 检查是否需要执行外部程序
-    if (another_external_program_path and
+    if (external_on_timeout_path and
             process_info['timeout_count'] % timeout_threshold == 0):
         LOGGER.info(
             f"进程 {process_name} (PID: {pid})，"
@@ -228,9 +228,9 @@ def _check_process_timeout(config, process_info, pid, current_time,
             f"正在调用外部程序..."
         )
         try:
-            run_external_program(another_external_program_path)
+            run_external_program(external_on_timeout_path)
             LOGGER.info(
-                f"外部程序 {another_external_program_path} "
+                f"外部程序 {external_on_timeout_path} "
                 f"执行成功"
             )
             # 发送外部程序执行通知
@@ -239,8 +239,8 @@ def _check_process_timeout(config, process_info, pid, current_time,
                 config,
                 'on_external',
                 external_program_name=_get_program_name(
-                    another_external_program_path),
-                external_program_path=another_external_program_path,
+                    external_on_timeout_path),
+                external_program_path=external_on_timeout_path,
                 process_name=process_name,
                 process_pid=pid,
             )
@@ -253,7 +253,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
             raise
         except Exception as e:
             LOGGER.error(
-                f"调用外部程序 {another_external_program_path} "
+                f"调用外部程序 {external_on_timeout_path} "
                 f"时发生错误: {e}",
                 exc_info=True
             )
@@ -383,8 +383,8 @@ def _monitor_single_pid(pid_info, config, sp):
             'timeout_interval',
             DEFAULT_VALUES['monitor']['timeout_interval']),
         DEFAULT_VALUES['monitor']['timeout_interval'])
-    another_external_program_path = external_section.get('on_timeout', '')
-    external_program_path = external_section.get('on_end', '')
+    external_on_timeout_path = external_section.get('on_timeout', '')
+    external_on_end_path = external_section.get('on_end', '')
     timeout_threshold = _get_timeout_count_threshold(
         external_section.get('timeout_threshold', 3)
     )
@@ -417,7 +417,7 @@ def _monitor_single_pid(pid_info, config, sp):
                     pid,
                     current_time,
                     timeout_interval,
-                    another_external_program_path,
+                    external_on_timeout_path,
                     timeout_threshold,
                 )
             except ProcessTimeoutExitRequested as e:
@@ -438,7 +438,7 @@ def _monitor_single_pid(pid_info, config, sp):
                 pid_info['name'],
                 pid,
                 run_time,
-                external_program_path,
+                external_on_end_path,
                 sp,
             )
             LOGGER.info("被监视进程已结束运行。")
@@ -708,8 +708,8 @@ def monitor_processes(config):
         DEFAULT_VALUES['wait']['check_interval'])
 
     # 外部程序调用设置
-    external_program_path = external_section.get('on_end', '')
-    another_external_program_path = external_section.get(
+    external_on_end_path = external_section.get('on_end', '')
+    external_on_timeout_path = external_section.get(
         'on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
         external_section.get('timeout_threshold', 3)
@@ -842,7 +842,7 @@ def monitor_processes(config):
                         process_info['name'],
                         pid,
                         run_time,
-                        external_program_path,
+                        external_on_end_path,
                         sp,
                     ))
                     # 从监视列表中移除
@@ -862,7 +862,7 @@ def monitor_processes(config):
                             pid,
                             current_time,
                             timeout_interval,
-                            another_external_program_path,
+                            external_on_timeout_path,
                             timeout_threshold,
                         )
                     except ProcessTimeoutExitRequested as e:
@@ -929,8 +929,8 @@ def monitor_via_task_scheduler(config):
             DEFAULT_VALUES['wait']['max_wait']),
         DEFAULT_VALUES['wait']['max_wait'])
 
-    external_program_path = external_section.get('on_end', '')
-    another_external_program_path = external_section.get('on_timeout', '')
+    external_on_end_path = external_section.get('on_end', '')
+    external_on_timeout_path = external_section.get('on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
         external_section.get('timeout_threshold', 3)
     )
