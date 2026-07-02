@@ -583,7 +583,7 @@ def parse_time_string(time_str):
         time_str (str): 时间字符串，格式如 "1h", "15m", "30s"
 
     Returns:
-        int: 转换后的秒数
+        float: 转换后的秒数
 
     Raises:
         ValueError: 如果时间字符串格式无效
@@ -601,7 +601,7 @@ def parse_time_string(time_str):
     }
     
     if time_str[-1] in units:
-        value = int(time_str[:-1])
+        value = float(time_str[:-1])
         unit = time_str[-1]
         seconds = value * units[unit]
         LOGGER.info(f"解析结果: {seconds} 秒")
