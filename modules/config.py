@@ -294,22 +294,6 @@ COMMENTS = {
 }
 
 
-def _deep_copy(obj):
-    """递归深拷贝配置对象（支持 dict 与 list）
-
-    Args:
-        obj: 待拷贝的对象
-
-    Returns:
-        拷贝后的对象
-    """
-    if isinstance(obj, dict):
-        return {k: _deep_copy(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_deep_copy(item) for item in obj]
-    return obj
-
-
 def _check_missing_params(config, required_params, section_name):
     """检查配置中是否缺少必要的参数，并补充缺失参数的默认值
 

@@ -14,8 +14,8 @@ LOGGER = logging.getLogger(__name__)
 _ICON_DONE = "\u2714\ufe0f"  # ✔️
 _ICON_FAIL = "\u274c"        # ❌
 
-# spinner 帧间隔（毫秒）；yaspin 默认约 80ms 会闪屏，放慢到 200ms
-_SPINNER_INTERVAL_MS = 200
+# spinner 帧间隔: 200ms
+_SPINNER_INTERVAL = 200
 
 # spinner 帧列表
 _SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -24,26 +24,6 @@ _CLEAR_LINE = "\r\033[2K"
 # 隐藏/显示光标 ANSI 序列
 _HIDE_CURSOR = "\033[?25l"
 _SHOW_CURSOR = "\033[?25h"
-
-
-def _make_yaspin(text):
-    """创建一个 yaspin spinner 实例
-
-    单独抽出便于测试替身注入；仅在 TTY 路径下被调用，
-    因此 yaspin 仅在交互式环境真正导入使用内联 dots 帧，避免
-    打包产物依赖 yaspin/data/spinners.json
-
-    Args:
-        text (str): spinner 初始文案（已包裹黄色）
-
-    Returns:
-        yaspin.Yaspin: 已配置 dots 动画的 spinner 实例
-    """
-    from yaspin import yaspin
-    from yaspin.core import Spinner
-    frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    spinner = Spinner(frames, _SPINNER_INTERVAL_MS)
-    return yaspin(spinner, text=text, color="yellow")
 
 
 class _SimpleTTYSpinner:
@@ -75,7 +55,7 @@ class _SimpleTTYSpinner:
 
     def _run(self):
         """后台刷新 spinner 帧"""
-        while not self._stop_event.wait(_SPINNER_INTERVAL_MS / 1000):
+        while not self._stop_event.wait(_SPINNER_INTERVAL / 1000):
             self._render_next_frame()
 
     def _render_next_frame(self):
@@ -163,23 +143,6 @@ class _SimpleTTYSpinner:
                 self._output.write(_CLEAR_LINE)
             self._output.write(_SHOW_CURSOR)
             self._output.flush()
-
-
-def _wrap_running(message):
-    """将旋转期间的文案包裹为黄色
-
-    前导空格使渲染的「帧字符 + 单空格 + 文案」变为双空格，
-    与 done/fail（图标后双空格）的对齐风格保持一致
-
-    Args:
-        message (str): 原始文案
-
-    Returns:
-        str: 前缀一个空格并包裹 Fore.YELLOW 的文案
-    """
-    return (" "
-            + colorama.Fore.YELLOW
-            + message + colorama.Style.RESET_ALL)
 
 
 def _format_done(message):
