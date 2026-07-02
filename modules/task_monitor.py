@@ -15,15 +15,15 @@ _EVT_NS = {'e': 'http://schemas.microsoft.com/win/2004/08/events/event'}
 
 
 def query_task_pid(task_name, lookback_minutes=10):
-    """通过 Windows 事件日志查询计划任务创建的最新进程 PID。
+    """通过 Windows 事件日志查询计划任务创建的最新进程 PID
 
-    使用 pywin32 EvtAPI 读取 Event 129（任务进程已创建）获取 PID。
-    进程是否存活由调用方通过 psutil.Process + create_time 校验判断。
+    使用 pywin32 EvtAPI 读取 Event 129（任务进程已创建）获取 PID
+    进程是否存活由调用方通过 psutil.Process + create_time 校验判断
 
     Args:
         task_name (str): 计划任务名称（完整路径或部分匹配），
-            如 "LaunchMyProgram" 或 "\\Custom\\LaunchMyProgram"。
-        lookback_minutes (int): 事件回溯时间（分钟）。
+            如 "LaunchMyProgram" 或 "\\Custom\\LaunchMyProgram"
+        lookback_minutes (int): 事件回溯时间（分钟）
 
     Returns:
         dict: {
@@ -59,14 +59,14 @@ def query_task_pid(task_name, lookback_minutes=10):
 
 
 def _get_latest_matching_event(task_name, event_id, lookback_minutes):
-    """使用 EvtAPI 查询指定事件 ID 且匹配任务名称的最近一条记录。
+    """使用 EvtAPI 查询指定事件 ID 且匹配任务名称的最近一条记录
 
-    通过 XPath 在查询端进行事件 ID 与时间过滤，倒序返回最新事件。
+    通过 XPath 在查询端进行事件 ID 与时间过滤，倒序返回最新事件
 
     Args:
-        task_name (str): 计划任务名称（支持部分匹配）。
-        event_id (int): 事件 ID（129 或 130）。
-        lookback_minutes (int): 回溯时间（分钟）。
+        task_name (str): 计划任务名称（支持部分匹配）
+        event_id (int): 事件 ID（129 或 130）
+        lookback_minutes (int): 回溯时间（分钟）
 
     Returns:
         dict or None: {
@@ -74,7 +74,7 @@ def _get_latest_matching_event(task_name, event_id, lookback_minutes):
             'process_name': str,
             'task_name': str,
             'time': str,
-        }，未找到返回 None。
+        }，未找到返回 None
     """
     lookback_ms = max(1, int(lookback_minutes) * 60 * 1000)
     xpath = (
@@ -131,13 +131,13 @@ def _get_latest_matching_event(task_name, event_id, lookback_minutes):
 
 
 def _parse_event_xml(evt_handle):
-    """渲染事件为 XML 并解析关键字段。
+    """渲染事件为 XML 并解析关键字段
 
     Args:
-        evt_handle: EvtAPI 事件句柄。
+        evt_handle: EvtAPI 事件句柄
 
     Returns:
-        dict or None: 包含 pid / process_name / task_name / time 的字典。
+        dict or None: 包含 pid / process_name / task_name / time 的字典
     """
     try:
         xml_str = win32evtlog.EvtRender(
@@ -198,13 +198,13 @@ def _parse_event_xml(evt_handle):
 
 
 def _find_first_integer_value(data_dict):
-    """从事件数据中查找第一个整数值。
+    """从事件数据中查找第一个整数值
 
     Args:
-        data_dict (dict): 事件数据字典。
+        data_dict (dict): 事件数据字典
 
     Returns:
-        str or None: 第一个可转换为整数的值，未找到返回 None。
+        str or None: 第一个可转换为整数的值，未找到返回 None
     """
     for value in data_dict.values():
         if not value:

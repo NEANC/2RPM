@@ -23,7 +23,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class ProcessTimeoutExitRequested(Exception):
-    """超时阈值到达并成功执行外部程序后，要求停止当前进程监视。"""
+    """超时阈值到达并成功执行外部程序后，要求停止当前进程监视"""
 
     def __init__(self, message: str, pid: int = None):
         super().__init__(message)
@@ -31,16 +31,16 @@ class ProcessTimeoutExitRequested(Exception):
 
 
 def _get_timeout_count_threshold(raw_threshold):
-    """规范化外部程序触发阈值，确保为正整数。
+    """规范化外部程序触发阈值，确保为正整数
 
-    将配置值转换为 int 后，保证阈值 >= 1。
-    当阈值无效或小于 1 时使用默认值，避免 modulo 零除与异常行为。
+    将配置值转换为 int 后，保证阈值 >= 1
+    当阈值无效或小于 1 时使用默认值，避免 modulo 零除与异常行为
 
     Args:
-        raw_threshold: 配置读取到的原始阈值。
+        raw_threshold: 配置读取到的原始阈值
 
     Returns:
-        int: 合法化后的阈值。
+        int: 合法化后的阈值
     """
     default_threshold = DEFAULT_VALUES['external']['timeout_threshold']
     try:
@@ -63,18 +63,18 @@ def _get_timeout_count_threshold(raw_threshold):
 
 
 def _parse_time_or_default(raw_value, default_value):
-    """解析时间字符串为秒，解析失败时回退默认值。
+    """解析时间字符串为秒，解析失败时回退默认值
 
     当配置项存在但值非法（如非时间格式字符串）时，parse_time_string 会
-    抛出 ValueError。本函数捕获该异常并回退到默认值，避免单个时间项填错
-    导致整个程序退出。
+    抛出 ValueError，本函数捕获该异常并回退到默认值，避免单个时间项填错
+    导致整个程序退出
 
     Args:
-        raw_value: 配置读取到的原始时间值。
-        default_value (str): 解析失败时回退的默认时间字符串。
+        raw_value: 配置读取到的原始时间值
+        default_value (str): 解析失败时回退的默认时间字符串
 
     Returns:
-        int: 解析后的秒数；解析失败时返回默认值对应的秒数。
+        int: 解析后的秒数；解析失败时返回默认值对应的秒数
     """
     try:
         return parse_time_string(raw_value)
@@ -86,30 +86,30 @@ def _parse_time_or_default(raw_value, default_value):
 
 
 def _get_program_name(program_path):
-    """获取程序的文件名部分。
+    """获取程序的文件名部分
 
     Args:
-        program_path (str): 程序完整路径。
+        program_path (str): 程序完整路径
 
     Returns:
-        str: 程序文件名。
+        str: 程序文件名
     """
     return os.path.basename(program_path)
 
 
 def _render_push_results(results, sp):
-    """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败。
+    """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败
 
     每个通道独立输出一条 ✔️/❌（不定格 spinner）；空结果（禁用、
-    缺变量、无有效通道）不输出任何内容。
+    缺变量、无有效通道）不输出任何内容
 
     Args:
         results (list[tuple[str, bool]]): send_notification 返回的各通道结果，
-            元素为 (provider, 是否成功)。
-        sp: spinner 句柄，用于内联反馈各通道成败（不定格）。
+            元素为 (provider, 是否成功)
+        sp: spinner 句柄，用于内联反馈各通道成败（不定格）
 
     Returns:
-        bool: 结果非空且所有通道均失败时为 True，否则为 False。
+        bool: 结果非空且所有通道均失败时为 True，否则为 False
     """
     if not results:
         return False
@@ -134,8 +134,8 @@ def _handle_process_end(config, process_name, pid, run_time,
         sp: spinner 句柄，用于内联反馈各通道及外部程序成败（不定格）
 
     Returns:
-        bool: 结束通知（on_end）所有通道均失败时为 True，否则为 False。
-            供监视循环决定最终定格使用 sp.done 还是 sp.fail。
+        bool: 结束通知（on_end）所有通道均失败时为 True，否则为 False
+            供监视循环决定最终定格使用 sp.done 还是 sp.fail
     """
     formatted_run_time = str(datetime.timedelta(seconds=int(run_time)))
 
@@ -172,7 +172,7 @@ def _handle_process_end(config, process_name, pid, run_time,
             )
             _render_push_results(ext_results, sp)
         except Exception as e:
-            sp.write_fail("外部程序执行失败。")
+            sp.write_fail("外部程序执行失败")
             LOGGER.error(
                 f"调用外部程序 {external_on_end_path} 时发生错误: {e}",
                 exc_info=True
@@ -185,7 +185,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
                             timeout_interval,
                             external_on_timeout_path,
                             timeout_threshold):
-    """检查进程超时，发送警告并在达到阈值时触发外部程序。
+    """检查进程超时，发送警告并在达到阈值时触发外部程序
 
     Args:
         config (dict): 配置信息
@@ -261,10 +261,10 @@ def _check_process_timeout(config, process_info, pid, current_time,
 
 
 def _collect_matching_processes(process_name):
-    """遍历系统进程，收集与指定名称匹配的 PID 及其 create_time。
+    """遍历系统进程，收集与指定名称匹配的 PID 及其 create_time
 
     Args:
-        process_name (str): 要匹配的进程名。
+        process_name (str): 要匹配的进程名
 
     Returns:
         dict: {pid: {'name', 'create_time'}}
@@ -281,17 +281,17 @@ def _collect_matching_processes(process_name):
 
 
 def _detect_ended_pids(monitored_pids, current_processes, processes):
-    """检测已结束或 PID 被复用的进程。
+    """检测已结束或 PID 被复用的进程
 
-    通过 PID 是否还在系统进程中及 create_time 是否匹配双重判断。
+    通过 PID 是否还在系统进程中及 create_time 是否匹配双重判断
 
     Args:
-        monitored_pids (set): 当前监视的 PID 集合。
-        current_processes (dict): 当前系统中与目标进程名匹配的进程信息。
-        processes (dict): 监视列表，值需包含 create_time。
+        monitored_pids (set): 当前监视的 PID 集合
+        current_processes (dict): 当前系统中与目标进程名匹配的进程信息
+        processes (dict): 监视列表，值需包含 create_time
 
     Returns:
-        set: 已结束或被复用的 PID 集合。
+        set: 已结束或被复用的 PID 集合
     """
     current_pids = set(current_processes.keys())
     # PID 已从系统中消失
@@ -305,13 +305,13 @@ def _detect_ended_pids(monitored_pids, current_processes, processes):
 
 
 def _add_new_process(processes, pid, name, create_time):
-    """将新检测到的进程加入监视列表。
+    """将新检测到的进程加入监视列表
 
     Args:
-        processes (dict): 监视列表。
-        pid (int): 进程 PID。
-        name (str): 进程名。
-        create_time (float): 进程创建时间戳。
+        processes (dict): 监视列表
+        pid (int): 进程 PID
+        name (str): 进程名
+        create_time (float): 进程创建时间戳
     """
     if pid in processes:
         return
@@ -326,16 +326,16 @@ def _add_new_process(processes, pid, name, create_time):
 
 
 def _split_args(args_str):
-    """将参数字符串拆分为列表，适配 subprocess.Popen。
+    """将参数字符串拆分为列表，适配 subprocess.Popen
 
-    使用 shlex.split 正确处理引号包裹的参数。
+    使用 shlex.split 正确处理引号包裹的参数
     示例: '--path "C:\\Program Files\\tool.exe"' → ['--path', 'C:\\Program Files\\tool.exe']
 
     Args:
-        args_str: 命令行参数字符串，可为 None 或空。
+        args_str: 命令行参数字符串，可为 None 或空
 
     Returns:
-        list[str]: 拆分后的参数列表。
+        list[str]: 拆分后的参数列表
     """
     if not args_str or not args_str.strip():
         return []
@@ -343,14 +343,14 @@ def _split_args(args_str):
 
 
 def _resolve_cwd(config_cwd, program_path):
-    """解析工作目录，用户未配置时从程序路径推导。
+    """解析工作目录，用户未配置时从程序路径推导
 
     Args:
-        config_cwd: 用户配置的工作目录，可为 None 或空字符串。
-        program_path (str): 程序完整路径。
+        config_cwd: 用户配置的工作目录，可为 None 或空字符串
+        program_path (str): 程序完整路径
 
     Returns:
-        str: 解析后的工作目录绝对路径。
+        str: 解析后的工作目录绝对路径
     """
     cwd = str(config_cwd).strip() if config_cwd else ''
     if cwd:
@@ -359,16 +359,16 @@ def _resolve_cwd(config_cwd, program_path):
 
 
 def _monitor_single_pid(pid_info, config, sp):
-    """监视单个 PID 的存活状态，处理超时和结束。
+    """监视单个 PID 的存活状态，处理超时和结束
 
     从 monitor_via_task_scheduler 阶段2 提取，供 launch 和
-    task_scheduler 两种模式复用。
+    task_scheduler 两种模式复用
 
     Args:
         pid_info (dict): 包含 pid/name/create_time/start_time/
-            last_warning_time/timeout_count 的字典。
-        config (dict): 配置信息。
-        sp: spinner 句柄。
+            last_warning_time/timeout_count 的字典
+        config (dict): 配置信息
+        sp: spinner 句柄
     """
     monitor_section = config.get('monitor', {})
     external_section = config.get('external', {})
@@ -441,7 +441,7 @@ def _monitor_single_pid(pid_info, config, sp):
                 external_on_end_path,
                 sp,
             )
-            LOGGER.info("被监视进程已结束运行。")
+            LOGGER.info("被监视进程已结束运行")
             if all_failed:
                 sp.fail("任务进程已退出，但推送全部失败")
             else:
@@ -450,16 +450,16 @@ def _monitor_single_pid(pid_info, config, sp):
 
 
 def _launch_program(launch_section):
-    """拉起可执行程序并返回 PID 信息。
+    """拉起可执行程序并返回 PID 信息
 
     Args:
-        launch_section (dict): launch 配置节。
+        launch_section (dict): launch 配置节
 
     Returns:
-        dict: pid_info 字典。
+        dict: pid_info 字典
 
     Raises:
-        SystemExit: 如果拉起失败。
+        SystemExit: 如果拉起失败
     """
     path = launch_section.get('path', '')
     if not path:
@@ -504,17 +504,17 @@ def _launch_program(launch_section):
 
 
 def _launch_task(launch_section, config):
-    """触发计划任务并等待 PID 出现。
+    """触发计划任务并等待 PID 出现
 
     Args:
-        launch_section (dict): launch 配置节。
-        config (dict): 配置信息。
+        launch_section (dict): launch 配置节
+        config (dict): 配置信息
 
     Returns:
-        dict: pid_info 字典。
+        dict: pid_info 字典
 
     Raises:
-        SystemExit: 如果触发失败或等待超时。
+        SystemExit: 如果触发失败或等待超时
     """
     task_name = launch_section.get('task_name', '')
     if not task_name:
@@ -622,19 +622,19 @@ def _launch_task(launch_section, config):
         else:
             sp.done("通知推送完成")
 
-    notify_fail("未能获取有效的 PID 信息。")
+    notify_fail("未能获取有效的 PID 信息")
     sys.exit(1)
 
 
 def monitor_via_launch(config):
-    """主动拉起目标程序或计划任务并监视其进程。
+    """主动拉起目标程序或计划任务并监视其进程
 
     根据 launch.type 决定拉起方式：
     - program: 用 subprocess.Popen 启动可执行文件
     - task: 触发 Windows 计划任务后轮询事件日志获取 PID
 
     Args:
-        config (dict): 配置信息。
+        config (dict): 配置信息
     """
     launch_section = config.get('launch', {})
     launch_type = launch_section.get('type', 'program')
@@ -658,12 +658,12 @@ def monitor_via_launch(config):
 
 
 def monitor_processes(config):
-    """监视进程列表。
+    """监视进程列表
 
-    等待指定的进程启动，监视其运行状态，并在进程结束或超时时发送通知。
+    等待指定的进程启动，监视其运行状态，并在进程结束或超时时发送通知
 
     Args:
-        config (dict): 配置信息。
+        config (dict): 配置信息
     """
     monitor_section = config.get('monitor', {})
     wait_section = config.get('wait', {})
@@ -740,7 +740,7 @@ def monitor_processes(config):
                 waited_time = time.time() - start_time
                 if waited_time > max_wait:
                     LOGGER.info("已等待超时，正在尝试发送通知")
-                    sp.fail("等待超时，被监视进程未运行。")
+                    sp.fail("等待超时，被监视进程未运行")
                     break
 
                 current_processes = _collect_matching_processes(process_name)
@@ -787,12 +787,12 @@ def monitor_processes(config):
                 LOGGER.info("等待进程启动超时，正在执行外部程序...")
                 try:
                     run_external_program(external_program_on_wait_timeout_path)
-                    sp.write_done("外部程序执行成功。")
+                    sp.write_done("外部程序执行成功")
                     LOGGER.info(
                         f"外部程序 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.write_fail("外部程序执行失败。")
+                    sp.write_fail("外部程序执行失败")
                     LOGGER.error(
                         f"执行外部程序 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",
@@ -808,7 +808,7 @@ def monitor_processes(config):
 
     # 如果没有任何进程需要监视，退出程序
     if not processes:
-        notify_fail("未检测到任意目标进程。")
+        notify_fail("未检测到任意目标进程")
         sys.exit(1)
 
     # 监视已启动的进程
@@ -873,7 +873,7 @@ def monitor_processes(config):
                         processes.pop(pid, None)
 
                 if not processes:
-                    LOGGER.info("所有被监视进程已结束运行。")
+                    LOGGER.info("所有被监视进程已结束运行")
                     # 本轮所有结束推送均全失败时，最终定格降级为 fail
                     if batch_all_failed and all(batch_all_failed):
                         sp.fail("进程已全部退出，但推送全部失败")
@@ -889,17 +889,17 @@ def monitor_processes(config):
 
 
 def monitor_via_task_scheduler(config):
-    """通过计划任务事件日志获取 PID 后监视进程。
+    """通过计划任务事件日志获取 PID 后监视进程
 
     查询 Windows 事件日志 Event 129（进程创建）获取 PID，
     通过 psutil.Process(pid) + create_time 校验精确监视该 PID，
-    避免同名进程的误判问题。
+    避免同名进程的误判问题
 
     阶段1: 等待计划任务触发（轮询 Event 129）
     阶段2: 监视 PID 存活状态，处理超时和结束
 
     Args:
-        config (dict): 配置信息。
+        config (dict): 配置信息
     """
     task_section = config.get('task', {})
     external_section = config.get('external', {})
@@ -1029,12 +1029,12 @@ def monitor_via_task_scheduler(config):
                 LOGGER.info("等待计划任务触发超时，正在执行外部程序...")
                 try:
                     run_external_program(external_program_on_wait_timeout_path)
-                    sp.write_done("外部程序执行成功。")
+                    sp.write_done("外部程序执行成功")
                     LOGGER.info(
                         f"外部程序 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.write_fail("外部程序执行失败。")
+                    sp.write_fail("外部程序执行失败")
                     LOGGER.error(
                         f"执行外部程序 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",
@@ -1046,7 +1046,7 @@ def monitor_via_task_scheduler(config):
             else:
                 sp.done("通知推送完成")
 
-        notify_fail("未能获取有效的 PID 信息。")
+        notify_fail("未能获取有效的 PID 信息")
         sys.exit(1)
 
     # 阶段2: 监视 PID 存活状态（复用 _monitor_single_pid）

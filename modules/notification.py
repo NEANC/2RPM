@@ -17,13 +17,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _parse_response_body(response):
-    """尝试将响应体解析为 JSON 字典。
+    """尝试将响应体解析为 JSON 字典
 
     Args:
-        response: requests.Response 对象。
+        response: requests.Response 对象
 
     Returns:
-        dict | None: 解析成功返回字典；无法解析或非字典返回 None。
+        dict | None: 解析成功返回字典；无法解析或非字典返回 None
     """
     try:
         body = response.json()
@@ -36,18 +36,18 @@ def _parse_response_body(response):
 
 
 def _is_push_successful(response):
-    """判定 onepush 返回的响应是否代表推送成功。
+    """判定 onepush 返回的响应是否代表推送成功
 
     onepush 的 notify() 即便服务端返回业务错误（如 HTTP 400、错误码、限流），
-    通常也不会抛出异常，而是返回 requests.Response（请求异常时返回 None）。
-    因此需检查 HTTP 状态码与响应体业务字段，才能判定真实成败。
+    通常也不会抛出异常，而是返回 requests.Response（请求异常时返回 None）
+    因此需检查 HTTP 状态码与响应体业务字段，才能判定真实成败
 
     Args:
         response: onepush notify() 的返回值，通常为 requests.Response，
-            请求异常时为 None。
+            请求异常时为 None
 
     Returns:
-        tuple[bool, str]: (是否成功, 失败原因描述)；成功时原因为空字符串。
+        tuple[bool, str]: (是否成功, 失败原因描述)；成功时原因为空字符串
     """
     # 守卫：请求异常时 onepush 内部吞掉异常并返回 None
     if response is None:
@@ -84,17 +84,17 @@ def _is_push_successful(response):
 
 
 def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval):
-    """记录单次发送失败并决定是否继续重试。
+    """记录单次发送失败并决定是否继续重试
 
     Args:
-        provider (str): 推送渠道名称。
-        attempt (int): 当前尝试序号（从 1 开始）。
-        max_count (int): 最大重试次数。
-        reason (str): 失败原因描述。
-        retry_interval (int): 重试间隔（秒）。
+        provider (str): 推送渠道名称
+        attempt (int): 当前尝试序号（从 1 开始）
+        max_count (int): 最大重试次数
+        reason (str): 失败原因描述
+        retry_interval (int): 重试间隔（秒）
 
     Returns:
-        bool: True 表示应继续重试；False 表示已达最大重试次数。
+        bool: True 表示应继续重试；False 表示已达最大重试次数
     """
     LOGGER.error(
         f"通道 [{provider}] 通知发送失败 (尝试 {attempt}/{max_count}): {reason}"
@@ -104,23 +104,23 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
         time.sleep(retry_interval)
         return True
     LOGGER.warning(
-        f"通道 [{provider}] 通知发送失败，已超过最大重试次数。"
+        f"通道 [{provider}] 通知发送失败，已超过最大重试次数"
     )
     return False
 
 
 def _notify_single_channel(channel, title, content, retry_interval, max_count):
-    """向单个推送通道发送通知，失败时按配置重试。
+    """向单个推送通道发送通知，失败时按配置重试
 
     Args:
-        channel (dict): 标准通道字典，含 provider 及该渠道所需参数。
-        title (str): 通知标题。
-        content (str): 通知内容。
-        retry_interval (int): 重试间隔（秒）。
-        max_count (int): 最大重试次数。
+        channel (dict): 标准通道字典，含 provider 及该渠道所需参数
+        title (str): 通知标题
+        content (str): 通知内容
+        retry_interval (int): 重试间隔（秒）
+        max_count (int): 最大重试次数
 
     Returns:
-        bool: 是否发送成功。
+        bool: 是否发送成功
     """
     params = dict(channel)
     provider = params.pop('provider', '')
@@ -154,20 +154,20 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
 
 
 def send_notification(config, template_key, **kwargs):
-    """发送通知。
+    """发送通知
 
-    使用 OnePush 库进行推送通知，内部通过 ThreadPoolExecutor 向各通道并发提交。
+    使用 OnePush 库进行推送通知，内部通过 ThreadPoolExecutor 向各通道并发提交
     多通道并发执行（含各自重试），但会等待所有通道完成后才返回（整体同步等待），
-    以确保推送线程不会在主进程退出时被强制终止。
+    以确保推送线程不会在主进程退出时被强制终止
 
     Args:
-        config (dict): 配置信息。
-        template_key (str): 模板键。
-        **kwargs: 模板参数。
+        config (dict): 配置信息
+        template_key (str): 模板键
+        **kwargs: 模板参数
 
     Returns:
-        list[tuple[str, bool]]: 各通道推送结果，元素为 (provider, 是否成功)。
-            禁用、模板缺变量、无有效通道等提前返回路径均返回空列表。
+        list[tuple[str, bool]]: 各通道推送结果，元素为 (provider, 是否成功)
+            禁用、模板缺变量、无有效通道等提前返回路径均返回空列表
     """
     LOGGER.info(f"使用模板: {template_key} 推送报告")
     push_section = config.get('push', {})
@@ -203,7 +203,7 @@ def send_notification(config, template_key, **kwargs):
         )
     except KeyError as e:
         LOGGER.error(
-            f"通知模板缺少变量: {e}，已跳过该条通知。模板键: {template_key}"
+            f"通知模板缺少变量: {e}，已跳过该条通知模板键: {template_key}"
         )
         return []
 
