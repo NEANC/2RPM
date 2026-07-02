@@ -559,6 +559,65 @@ def correct_push_channel_config(user_config):
     return True
 
 
+def _normalize_task_lookback_minutes(task_section):
+    """归一化 task.lookback_minutes 配置。
+
+    规则：
+    - 字符串与数值均可接受，保留字符串语义（如 '10'）
+    - 负值自动去符号为正
+    - 无法解析或非法类型回退默认值
+    """
+    if not isinstance(task_section, dict):
+        return False
+
+    raw_value = task_section.get('lookback_minutes')
+    if raw_value is None:
+        return False
+
+    # 空字符串回退默认值
+    if isinstance(raw_value, str) and not raw_value.strip():
+        LOGGER.warning('task.lookback_minutes 不能为空，已回退默认值')
+        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        return True
+
+    normalized_for_store = None
+    if isinstance(raw_value, str):
+        raw_str = raw_value.strip()
+        if raw_str.startswith('-'):
+            raw_str = raw_str.lstrip('-').strip()
+            LOGGER.warning(
+                f"检测到 task.lookback_minutes 负值，已去除负号: {raw_value!r}"
+            )
+        if not raw_str:
+            LOGGER.warning('task.lookback_minutes 去符号后为空，已回退默认值')
+            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            return True
+        try:
+            normalized = abs(int(raw_str))
+        except ValueError:
+            LOGGER.warning(
+                f"task.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
+            )
+            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            return True
+        normalized_for_store = str(normalized)
+    elif isinstance(raw_value, (int, float)):
+        normalized = abs(raw_value)
+        normalized_for_store = int(normalized)
+    else:
+        LOGGER.warning(
+            f"task.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+        )
+        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        return True
+
+    if task_section.get('lookback_minutes') == normalized_for_store:
+        return False
+
+    task_section['lookback_minutes'] = normalized_for_store
+    return True
+
+
 def merge_configs(user_config, default_config):
     """将用户配置合并到默认配置中
 
@@ -638,6 +697,12 @@ def load_config(config_file):
             user_config[section] = {}
             LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
             updated = True
+
+    task_section = user_config.get('task', {})
+
+    # 规整 task.lookback_minutes：支持负值去符号、非法值回退并回写
+    normalized = _normalize_task_lookback_minutes(task_section)
+    updated = updated or normalized
 
     # 检查每个配置节中的参数
     for section, section_config in default_config.items():

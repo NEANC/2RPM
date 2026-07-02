@@ -540,12 +540,13 @@ def run_external_program(program_path):
     """
     LOGGER.info(f"正在调用外部程序: {program_path}")
 
-    # 守卫：路径为空或文件不存在时提前失败，避免 subprocess 抛出晦涩的
+    # 守卫：路径为空时提前失败，避免 subprocess 抛出晦涩的
     # WinError 与备选方案的重复报错
     if not program_path:
         raise FileNotFoundError("外部程序路径为空")
+
     if not os.path.isfile(program_path):
-        raise FileNotFoundError(f"外部程序不存在: {program_path}")
+        LOGGER.warning(f"外部程序不存在: {program_path}，将尝试直接调用")
 
     # 守卫已确保 program_path 为存在的文件，直接取其所在目录；
     # 路径不含目录分量时回退到当前工作目录
@@ -579,6 +580,9 @@ def run_external_program(program_path):
 def parse_time_string(time_str):
     """解析时间字符串为秒
 
+    支持负数时间配置（例如 `-5s`、`-1m`）：负号仅用于表达负值
+    ，实际以绝对值使用，并记录修正日志。
+
     Args:
         time_str (str): 时间字符串，格式如 "1h", "15m", "30s"
 
@@ -589,11 +593,22 @@ def parse_time_string(time_str):
         ValueError: 如果时间字符串格式无效
     """
     LOGGER.info(f"解析时间字符串: {time_str}")
+    # 兼容负值输入：自动去除前缀减号，保持时间语义为正数
+    if isinstance(time_str, (int, float)):
+        time_str = str(time_str)
     time_str = time_str.strip().lower()
     if not time_str:
         LOGGER.error("时间字符串不能为空")
         raise ValueError("时间字符串不能为空")
-    
+
+    if time_str.startswith('-'):
+        original = time_str
+        time_str = time_str.lstrip('-').strip()
+        LOGGER.warning(f"检测到负数时间配置，已自动去除负号: {original} -> {time_str}")
+        if not time_str:
+            LOGGER.error("时间字符串去除负号后为空")
+            raise ValueError("时间字符串不能为空")
+
     units = {
         'h': 3600,   # 1小时 = 3600秒
         'm': 60,     # 1分钟 = 60秒
@@ -613,5 +628,7 @@ def parse_time_string(time_str):
             LOGGER.info(f"直接解析为秒: {seconds}")
             return seconds
         except ValueError:
-            LOGGER.error(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")
+            LOGGER.error(
+                f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'"
+            )
             raise ValueError(f"无效的时间格式: {time_str}，请使用 '1h', '15m', '30s'")

@@ -27,12 +27,21 @@ def query_task_pid(task_name, lookback_minutes=10):
 
     Returns:
         dict: {
-            'pid': int or None,          # 任务创建的最新进程 PID
+            'pid': int or None,          # 进程 PID
             'process_name': str or None, # 进程名
             'event_time': str or None,   # 事件生成时间
             'state': str,                # 'running' | 'not_found' | 'error'
         }
     """
+    try:
+        normalized = abs(int(lookback_minutes))
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            f"query_task_pid 参数 lookback_minutes 无效 ({lookback_minutes!r})，"
+            f"已回退为 10"
+        )
+        normalized = 10
+
     result = {
         'pid': None,
         'process_name': None,
@@ -41,7 +50,7 @@ def query_task_pid(task_name, lookback_minutes=10):
     }
 
     # 查询 Event 129（任务进程已创建）
-    event_129 = _get_latest_matching_event(task_name, 129, lookback_minutes)
+    event_129 = _get_latest_matching_event(task_name, 129, normalized)
     if event_129 is None:
         return result
 
