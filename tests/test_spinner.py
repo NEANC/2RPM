@@ -5,7 +5,6 @@
 import os
 import sys
 import logging
-import builtins
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -99,20 +98,6 @@ class TestSpinnerTTY(unittest.TestCase):
             + colorama.Style.RESET_ALL)
         fake_spinner.done.assert_not_called()
 
-    def test_make_yaspin_does_not_import_spinner_data(self):
-        """创建 yaspin 时不导入 yaspin.spinners，避免 Nuitka 漏打包 spinners.json。"""
-        real_import = builtins.__import__
-
-        def guarded_import(name, *args, **kwargs):
-            """阻止测试路径导入 yaspin.spinners。"""
-            self.assertNotEqual(name, 'yaspin.spinners')
-            return real_import(name, *args, **kwargs)
-
-        with patch.object(builtins, '__import__', side_effect=guarded_import), \
-                patch('yaspin.yaspin', return_value='fake-spinner') as fake_yaspin:
-            spinner = spinner_mod._make_yaspin("等待中...")
-        self.assertEqual(spinner, 'fake-spinner')
-        fake_yaspin.assert_called_once()
     def test_system_exit_marks_spinner_as_failed(self):
         """TTY：spinner 块内 SystemExit 应失败定格，避免残留旋转行。"""
         fake_spinner = MagicMock()
@@ -149,7 +134,7 @@ class TestSpinnerNonTTY(unittest.TestCase):
     def test_non_tty_falls_back_to_logging(self):
         """非 TTY：不调用 yaspin，text/done 走 logger.info。"""
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
-                patch.object(spinner_mod, '_make_yaspin') as mk, \
+                patch.object(spinner_mod, '_SimpleTTYSpinner') as mk, \
                 patch.object(spinner_mod.LOGGER, 'info') as log_info:
             with spinner_phase("等待中...") as sp:
                 sp.text("运行中...")
@@ -166,7 +151,7 @@ class TestSpinnerNonTTY(unittest.TestCase):
         root.addHandler(console)
         try:
             with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
-                    patch.object(spinner_mod, '_make_yaspin'):
+                    patch.object(spinner_mod, '_SimpleTTYSpinner'):
                 with spinner_phase("等待中..."):
                     self.assertEqual(console.level, logging.WARNING)
             self.assertEqual(console.level, logging.WARNING)
@@ -214,7 +199,7 @@ class TestSpinnerConsoleMute(unittest.TestCase):
         """进入时控台提级到 CRITICAL+1，退出后还原 INFO。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 self.assertEqual(self.console.level, logging.CRITICAL + 1)
                 sp.done("完成")
@@ -224,7 +209,7 @@ class TestSpinnerConsoleMute(unittest.TestCase):
         """静音期间文件处理器级别不受影响，始终保持 DEBUG。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 self.assertEqual(self.file_handler.level, logging.DEBUG)
                 sp.done("完成")
@@ -271,7 +256,7 @@ class TestSpinnerWriteHandler(unittest.TestCase):
         """进入挂载改道处理器，正常退出后移除。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with spinner_phase("等待中...") as sp:
                 self.assertEqual(self._count_write_handlers(), 1)
                 sp.done("完成")
@@ -281,7 +266,7 @@ class TestSpinnerWriteHandler(unittest.TestCase):
         """块内异常时改道处理器仍被移除。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
-                patch.object(spinner_mod, '_make_yaspin', return_value=fake_spinner):
+                patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with self.assertRaises(ValueError):
                 with spinner_phase("等待中..."):
                     raise ValueError("boom")
