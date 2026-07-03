@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""配置管理行为回归测试集合。"""
+
 import os
 import sys
 import tempfile
+from unittest.mock import MagicMock, patch
 from ruamel.yaml import YAML
 
-# Add the project root to the path
+# 将项目根目录加入模块搜索路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules.config import load_config, DEFAULT_VALUES
 
 
 def test_new_config_validation():
-    """测试新配置参数缺失检查功能（V4 键名）"""
+    """验证缺少字段时会按默认值补齐。"""
     print("\n=== 测试新配置参数缺失检查功能 ===")
 
     # 创建一个缺少参数的新版本配置文件
@@ -55,8 +58,33 @@ def test_new_config_validation():
             os.unlink(temp_config_file)
 
 
+def test_missing_config_file_should_create_default_and_prompt():
+    """缺失配置文件时应输出完整路径并提示退出。"""
+    config_path = os.path.abspath('config.yaml')
+    mock_spinner = MagicMock()
+
+    with patch('modules.config.os.path.exists', return_value=False), \
+            patch('modules.config.os.path.abspath', return_value=config_path), \
+            patch('modules.config.create_default_config') as create_default_mock, \
+            patch('modules.config.LOGGER.critical') as critical_mock, \
+            patch('modules.config.sys.stdout.write') as write_mock, \
+            patch('modules.config.sys.stdout.flush') as flush_mock, \
+            patch('modules.config.spinner_phase', return_value=mock_spinner) as spinner_mock, \
+            patch('builtins.input', return_value='') as input_mock, \
+            patch('modules.config.sys.exit') as exit_mock:
+        load_config('config.yaml')
+
+        create_default_mock.assert_called_once_with('config.yaml')
+        critical_mock.assert_any_call(f"配置文件不存在: {config_path}")
+        write_mock.assert_called()
+        flush_mock.assert_called_once()
+        spinner_mock.assert_called_once_with("请按任意键退出...")
+        input_mock.assert_called_once_with()
+        exit_mock.assert_called_once_with(0)
+
+
 def test_centralized_defaults():
-    """测试集中管理的默认值功能（V4 节名）"""
+    """测试集中管理的默认值结构完整性。"""
     print("\n=== 测试集中管理的默认值功能 ===")
 
     # 验证 DEFAULT_VALUES 结构完整
@@ -76,6 +104,7 @@ def test_centralized_defaults():
 if __name__ == "__main__":
     try:
         test_new_config_validation()
+        test_missing_config_file_should_create_default_and_prompt()
         test_centralized_defaults()
         print("\n所有测试通过！配置管理功能正常工作（V4）")
     except Exception as e:
