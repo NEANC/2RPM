@@ -7,7 +7,7 @@ import logging
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
-from modules.spinner import _format_done, spinner_phase
+from modules.spinner import spinner_phase
 from modules.utils import (
     build_push_channel_node,
     parse_push_channels,
@@ -879,11 +879,12 @@ def merge_configs(user_config, default_config):
     return default_config
 
 
-def load_config(config_file):
+def load_config(config_file, spinner=None):
     """加载配置文件
 
     Args:
         config_file (str): 配置文件路径
+        spinner: 可选的外部 spinner 句柄，用于在缺失配置文件时输出 ✔️ 提示
 
     Returns:
         dict: 配置字典
@@ -895,12 +896,8 @@ def load_config(config_file):
     if not os.path.exists(config_file):
         LOGGER.critical(f"配置文件不存在: {os.path.abspath(config_file)}")
         create_default_config(config_file)
-        sys.stdout.write(
-            "\r\033[2K"
-            + _format_done("配置文件已生成，请根据需要修改配置文件后再次运行程序")
-            + "\n"
-        )
-        sys.stdout.flush()
+        if spinner is not None:
+            spinner.write_done("配置文件已生成，请根据需要修改配置文件后再次运行程序")
         with spinner_phase("请按任意键退出..."):
             input()
         sys.exit(0)
