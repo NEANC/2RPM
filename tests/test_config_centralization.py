@@ -6,6 +6,7 @@
 import os
 import sys
 import tempfile
+import pytest
 from unittest.mock import MagicMock, patch
 from ruamel.yaml import YAML
 
@@ -69,8 +70,9 @@ def test_missing_config_file_should_create_default_and_prompt():
             patch('modules.config.LOGGER.critical') as critical_mock, \
             patch('modules.config.spinner_phase', return_value=mock_spinner) as spinner_mock, \
             patch('builtins.input', return_value='') as input_mock, \
-            patch('modules.config.sys.exit') as exit_mock:
-        load_config('config.yaml')
+            patch('modules.config.sys.exit', side_effect=SystemExit(0)) as exit_mock:
+        with pytest.raises(SystemExit):
+            load_config('config.yaml')
 
         create_default_mock.assert_called_once_with('config.yaml')
         critical_mock.assert_any_call(f"配置文件不存在: {config_path}")
