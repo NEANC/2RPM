@@ -67,8 +67,6 @@ def test_missing_config_file_should_create_default_and_prompt():
             patch('modules.config.os.path.abspath', return_value=config_path), \
             patch('modules.config.create_default_config') as create_default_mock, \
             patch('modules.config.LOGGER.critical') as critical_mock, \
-            patch('modules.config.sys.stdout.write') as write_mock, \
-            patch('modules.config.sys.stdout.flush') as flush_mock, \
             patch('modules.config.spinner_phase', return_value=mock_spinner) as spinner_mock, \
             patch('builtins.input', return_value='') as input_mock, \
             patch('modules.config.sys.exit') as exit_mock:
@@ -76,8 +74,6 @@ def test_missing_config_file_should_create_default_and_prompt():
 
         create_default_mock.assert_called_once_with('config.yaml')
         critical_mock.assert_any_call(f"配置文件不存在: {config_path}")
-        write_mock.assert_called()
-        flush_mock.assert_called_once()
         spinner_mock.assert_called_once_with("请按任意键退出...")
         input_mock.assert_called_once_with()
         exit_mock.assert_called_once_with(0)

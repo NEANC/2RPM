@@ -76,7 +76,7 @@ def main():
             config_file = os.path.join(program_dir, config_name)
 
         # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
-        CONFIG = load_config(config_file)
+        CONFIG = load_config(config_file, spinner=sp)
         LOGGER.info("配置已加载")
 
         # 设置日志
