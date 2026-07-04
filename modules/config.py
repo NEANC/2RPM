@@ -33,6 +33,8 @@ DEFAULT_VALUES = {
         'type': 'program',
         'path': 'C:\\path\\to\\target.exe',
         'task_name': '\\Custom\\MyTask',
+        'args': None,
+        'cwd': None,
     },
     'wait': {
         'max_wait': '30s',
@@ -120,9 +122,10 @@ COMMENTS = {
             "- 监视程序相关配置\n"
         ),
         'monitor_mode': (
-            "\n监视模式，可选值: psutil / task_scheduler\n"
+            "\n监视模式，可选值: psutil / task_scheduler / launch\n"
             "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
             "- task_scheduler: 通过事件日志获取计划任务PID后监视\n"
+            "- launch: 主动拉起目标程序或计划任务并获取 PID 进行监视\n"
         ),
         'process_name': (
             "\n要监视的进程名称"
@@ -142,7 +145,6 @@ COMMENTS = {
         'task_name': (
             "\n要监视的计划任务名称\n"
             "- 完整路径格式: \\\\Folder\\\\TaskName\n"
-            "- 部分匹配也可工作，如 MyTask\n"
         ),
         'lookback_minutes': (
             "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
@@ -153,10 +155,10 @@ COMMENTS = {
         '_comment': (
             "主动拉起目标设置\n"
             "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
-            "- 仅在 monitor.monitor_mode 为 launch 时生效\n"
+            "- 仅在 monitor_mode 为 launch 时生效\n"
         ),
         'type': (
-            "\n拉起类型，可选值: program / task\n"
+            "\n拉起类型: program / task\n"
             "- program: 直接启动可执行程序\n"
             "- task: 触发 Windows 计划任务后监视其进程\n"
         ),
@@ -164,6 +166,16 @@ COMMENTS = {
             "\n要拉起的可执行文件路径\n"
             "- 仅 type=program 时使用\n"
             "- 例如: C:\\app\\target.exe"
+        ),
+        'args': (
+            "\n命令行参数\n"
+            "- 选填，仅 type=program 时使用\n"
+            "- 例如: --verbose --config C:\\app\\config.ini"
+        ),
+        'cwd': (
+            "\n工作目录\n"
+            "- 选填，仅 type=program 时使用\n"
+            "- 默认取 path 所在目录"
         ),
         'task_name': (
             "\n要触发的计划任务名称\n"
