@@ -373,6 +373,13 @@ def spinner_phase(text):
     root_logger.addHandler(write_handler)
     try:
         yield handle
+    except SystemExit as e:
+        if not handle._closed:
+            if e.code == 0:
+                handle.done("程序已退出")
+            else:
+                handle.fail(f"程序异常退出 (code {e.code})")
+        raise
     except BaseException:
         if not handle._closed:
             handle.fail("程序已退出")

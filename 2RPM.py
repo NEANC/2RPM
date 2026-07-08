@@ -33,8 +33,8 @@ def parse_args():
     parser.add_argument('config_path', nargs='?', default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         '-c', '-C', '-config', '-Config', '--config', '--Config',
-        default=DEFAULT_CONFIG_FILE,
-        help="指定配置文件路径，示例 -c C:\\path\\config.yaml"
+        default=None,
+        help="指定配置文件路径，示例 -c C:\\path\\config.yaml",
     )
     args = parser.parse_args()
     LOGGER.info(f"命令行参数解析结果: {args}")
@@ -63,7 +63,15 @@ def main():
         program_dir = get_program_directory()
 
         # 配置文件路径优先级：位置参数（文件关联/拖拽） > -c 选项 > 默认值
-        config_name = args.config_path if args.config_path else args.config
+        if args.config_path is not None:
+            config_name = args.config_path
+            user_specified = True
+        elif args.config is not None:
+            config_name = args.config
+            user_specified = True
+        else:
+            config_name = DEFAULT_CONFIG_FILE
+            user_specified = False
 
         # 处理配置文件路径，自动添加 .yaml 扩展名（如果没有提供）
         if not config_name.endswith('.yaml') and not config_name.endswith('.yml'):
@@ -76,7 +84,7 @@ def main():
             config_file = os.path.join(program_dir, config_name)
 
         # 加载配置（异常由函数内部处理，未处理异常将升至顶层捕获）
-        CONFIG = load_config(config_file, spinner=sp)
+        CONFIG = load_config(config_file, spinner=sp, is_user_specified=user_specified)
         LOGGER.info("配置已加载")
 
         # 设置日志
