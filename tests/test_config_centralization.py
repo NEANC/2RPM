@@ -81,6 +81,24 @@ def test_missing_config_file_should_create_default_and_prompt():
         exit_mock.assert_called_once_with(0)
 
 
+def test_user_specified_config_missing_should_exit_with_error():
+    """用户显式指定的配置文件不存在时应报 CRITICAL 并以退出码 1 退出。"""
+    config_path = os.path.abspath('nonexistent.yaml')
+
+    with patch('modules.config.os.path.exists', return_value=False), \
+            patch('modules.config.os.path.abspath', return_value=config_path), \
+            patch('modules.config.create_default_config') as create_default_mock, \
+            patch('modules.config.LOGGER.critical') as critical_mock, \
+            patch('modules.config.sys.exit', side_effect=SystemExit(1)) as exit_mock:
+        with pytest.raises(SystemExit):
+            load_config('nonexistent.yaml', is_user_specified=True)
+
+        create_default_mock.assert_not_called()
+        critical_mock.assert_any_call(f"配置文件不存在: {config_path}")
+        critical_mock.assert_any_call("用户指定的配置文件不存在，请检查路径后重试")
+        exit_mock.assert_called_once_with(1)
+
+
 def test_centralized_defaults():
     """测试集中管理的默认值结构完整性。"""
     print("\n=== 测试集中管理的默认值功能 ===")

@@ -323,6 +323,8 @@ def _check_missing_params(config, required_params, section_name):
     for param, default_value in required_params.items():
         # 只在当前配置节中添加缺少的参数，避免跨节添加
         if param not in config:
+            if default_value is None:
+                continue  # 选填字段（值为 None），不触发迁移写回
             config[param] = default_value
             LOGGER.warning(
                 f"配置 '{section_name}' 中缺少参数 '{param}'，"
@@ -891,12 +893,15 @@ def merge_configs(user_config, default_config):
     return default_config
 
 
-def load_config(config_file, spinner=None):
+def load_config(config_file, spinner=None, is_user_specified=False):
     """加载配置文件
 
     Args:
         config_file (str): 配置文件路径
         spinner: 可选的外部 spinner 句柄，用于在缺失配置文件时输出 ✔️ 提示
+        is_user_specified (bool): 配置文件路径是否为用户显式指定
+            - True 且文件不存在时，报 CRITICAL 并退出（用户失误）
+            - False 且文件不存在时，生成默认配置文件并提示用户编辑
 
     Returns:
         dict: 配置字典
@@ -907,6 +912,9 @@ def load_config(config_file, spinner=None):
     LOGGER.info(f"正在加载配置文件: {os.path.abspath(config_file)}")
     if not os.path.exists(config_file):
         LOGGER.critical(f"配置文件不存在: {os.path.abspath(config_file)}")
+        if is_user_specified:
+            LOGGER.critical("用户指定的配置文件不存在，请检查路径后重试")
+            sys.exit(1)
         create_default_config(config_file)
         if spinner is not None:
             spinner.write_done("配置文件已生成，请根据需要修改配置文件后再次运行程序")

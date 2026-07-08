@@ -99,15 +99,15 @@ class TestSpinnerTTY(unittest.TestCase):
         fake_spinner.done.assert_not_called()
 
     def test_system_exit_marks_spinner_as_failed(self):
-        """TTY：spinner 块内 SystemExit 应失败定格，避免残留旋转行。"""
+        """TTY：SystemExit(0) 应绿色 done 定格，SystemExit(非0) 应红色 fail。"""
         fake_spinner = MagicMock()
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
                 patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=fake_spinner):
             with self.assertRaises(SystemExit):
                 with spinner_phase("程序正在初始化..."):
                     raise SystemExit(0)
-        fake_spinner.fail.assert_called_once_with(
-            colorama.Fore.RED + spinner_mod._ICON_FAIL + " 程序已退出"
+        fake_spinner.done.assert_called_once_with(
+            colorama.Fore.GREEN + spinner_mod._ICON_DONE + "  程序已退出"
             + colorama.Style.RESET_ALL)
 
 
