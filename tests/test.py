@@ -71,8 +71,9 @@ class TestUtils(unittest.TestCase):
         # 测试直接数字
         self.assertEqual(parse_time_string('5000'), 5000)
 
+    @patch('os.path.isfile', return_value=True)
     @patch('subprocess.Popen')
-    def test_run_external_program(self, mock_popen):
+    def test_run_external_program(self, mock_popen, mock_isfile):
         """测试运行外部程序"""
         # 测试批处理文件
         run_external_program('test.bat')
