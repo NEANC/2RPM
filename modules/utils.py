@@ -713,7 +713,7 @@ def run_external_program(program_path):
         raise FileNotFoundError("外部程序路径为空")
 
     if not os.path.isfile(program_path):
-        LOGGER.warning(f"外部程序不存在: {program_path}，将尝试直接调用")
+        raise FileNotFoundError(f"外部程序不存在: {program_path}")
 
     # 守卫已确保 program_path 为存在的文件，直接取其所在目录；
     # 路径不含目录分量时回退到当前工作目录
@@ -732,16 +732,15 @@ def run_external_program(program_path):
             # 这样可以更好地控制执行环境，避免os.startfile的潜在问题
             subprocess.Popen([program_path], shell=False, cwd=program_dir)
         LOGGER.info(f"成功调用外部程序: {program_path}")
-    except Exception as e:
-        LOGGER.error(f"调用外部程序失败: {e}")
+    except Exception as primary_error:
+        LOGGER.error(f"调用外部程序失败: {primary_error}")
         # 尝试使用os.startfile作为备选方案
         try:
             os.startfile(program_path)
             LOGGER.info(f"使用备选方案成功调用外部程序: {program_path}")
-        except Exception as e2:
-            LOGGER.error(f"备选方案调用外部程序也失败: {e2}")
-            # 两种方案均失败，向上抛出由调用方据此判定执行结果
-            raise
+        except Exception as fallback_error:
+            LOGGER.error(f"备选方案调用外部程序也失败: {fallback_error}")
+            raise primary_error from fallback_error
 
 
 def parse_time_string(time_str):
