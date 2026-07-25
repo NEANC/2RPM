@@ -617,8 +617,11 @@ def detect_external_action_type(value):
         return 'program'
     if _has_executable_suffix(value):
         return 'program'
-    if task_action_exists(value):
-        return 'task'
+    try:
+        if task_action_exists(value):
+            return 'task'
+    except (OSError, subprocess.SubprocessError) as e:
+        LOGGER.warning(f"计划任务探测失败，已按外部程序处理: {value}，{e}")
     return 'program'
 
 

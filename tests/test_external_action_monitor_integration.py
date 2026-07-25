@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """monitor.py external action 调用点回归测试。"""
 
-import datetime
 import os
+import subprocess
 import sys
 
 import pytest
@@ -141,6 +141,38 @@ def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
             patch('modules.monitor.notify_fail'):
         with pytest.raises(SystemExit):
             monitor.monitor_via_task_scheduler(config)
+
+    action_mock.assert_called_once_with(r'task:\Custom\MyTask')
+    notify_mock.assert_any_call(
+        config,
+        'on_external',
+        external_program_name='MyTask',
+        external_program_path=r'\Custom\MyTask',
+        process_name=r'\Custom\MainTask',
+        process_pid=None,
+    )
+
+
+def test_launch_task_wait_timeout_uses_external_action_metadata():
+    """launch task 等待进程启动超时时应调用统一入口并发送 on_external。"""
+    config = {
+        'wait': {'max_wait': '0s', 'check_interval': '1s'},
+        'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
+    }
+    launch_section = {'task_name': r'\Custom\MainTask'}
+    spinner = MagicMock()
+    spinner.__enter__.return_value = spinner
+    spinner.__exit__.return_value = False
+
+    with patch('modules.monitor.subprocess.run') as run_mock, \
+            patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}), \
+            patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
+            patch('modules.monitor.spinner_phase', return_value=spinner), \
+            patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
+            patch('modules.monitor.notify_fail'):
+        run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        with pytest.raises(SystemExit):
+            monitor._launch_task(launch_section, config)
 
     action_mock.assert_called_once_with(r'task:\Custom\MyTask')
     notify_mock.assert_any_call(
