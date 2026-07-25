@@ -104,7 +104,7 @@ def test_monitor_processes_wait_timeout_uses_external_action():
     spinner.__exit__.return_value = False
 
     with patch('modules.monitor._collect_matching_processes', return_value={}), \
-            patch('modules.monitor.send_notification', return_value=[]), \
+            patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
             patch('modules.monitor.spinner_phase', return_value=spinner), \
             patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
             patch('modules.monitor.notify_fail'):
@@ -112,6 +112,14 @@ def test_monitor_processes_wait_timeout_uses_external_action():
             monitor.monitor_processes(config)
 
     action_mock.assert_called_once_with(r'task:\Custom\MyTask')
+    notify_mock.assert_any_call(
+        config,
+        'on_external',
+        external_program_name='MyTask',
+        external_program_path=r'\Custom\MyTask',
+        process_name='missing.exe',
+        process_pid=None,
+    )
 
 
 def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
@@ -127,7 +135,7 @@ def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
     spinner.__exit__.return_value = False
 
     with patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}), \
-            patch('modules.monitor.send_notification', return_value=[]), \
+            patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
             patch('modules.monitor.spinner_phase', return_value=spinner), \
             patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
             patch('modules.monitor.notify_fail'):
@@ -135,3 +143,11 @@ def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
             monitor.monitor_via_task_scheduler(config)
 
     action_mock.assert_called_once_with(r'task:\Custom\MyTask')
+    notify_mock.assert_any_call(
+        config,
+        'on_external',
+        external_program_name='MyTask',
+        external_program_path=r'\Custom\MyTask',
+        process_name=r'\Custom\MainTask',
+        process_pid=None,
+    )

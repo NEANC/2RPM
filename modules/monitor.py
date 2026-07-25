@@ -609,8 +609,17 @@ def _launch_task(launch_section, config):
             sp.text("正在执行外部动作...")
             LOGGER.info("等待进程启动超时，正在执行外部动作...")
             try:
-                run_external_action(external_program_on_wait_timeout_path)
+                result = run_external_action(external_program_on_wait_timeout_path)
                 sp.write_done("外部动作执行成功")
+                ext_results = send_notification(
+                    config,
+                    'on_external',
+                    external_program_name=result['display_name'],
+                    external_program_path=result['display_path'],
+                    process_name=task_name,
+                    process_pid=None,
+                )
+                _render_push_results(ext_results, sp)
             except Exception as e:
                 sp.write_fail("外部动作执行失败")
                 LOGGER.error(f"执行外部动作失败: {e}", exc_info=True)
@@ -784,11 +793,17 @@ def monitor_processes(config):
                 sp.text("正在执行外部动作...")
                 LOGGER.info("等待进程启动超时，正在执行外部动作...")
                 try:
-                    run_external_action(external_program_on_wait_timeout_path)
+                    result = run_external_action(external_program_on_wait_timeout_path)
                     sp.write_done("外部动作执行成功")
-                    LOGGER.info(
-                        f"外部动作 {external_program_on_wait_timeout_path} "
-                        f"执行成功")
+                    ext_results = send_notification(
+                        config,
+                        'on_external',
+                        external_program_name=result['display_name'],
+                        external_program_path=result['display_path'],
+                        process_name=process_name,
+                        process_pid=None,
+                    )
+                    _render_push_results(ext_results, sp)
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(
@@ -1035,11 +1050,17 @@ def monitor_via_task_scheduler(config):
                 sp.text("正在执行外部动作...")
                 LOGGER.info("等待计划任务触发超时，正在执行外部动作...")
                 try:
-                    run_external_action(external_program_on_wait_timeout_path)
+                    result = run_external_action(external_program_on_wait_timeout_path)
                     sp.write_done("外部动作执行成功")
-                    LOGGER.info(
-                        f"外部动作 {external_program_on_wait_timeout_path} "
-                        f"执行成功")
+                    ext_results = send_notification(
+                        config,
+                        'on_external',
+                        external_program_name=result['display_name'],
+                        external_program_path=result['display_path'],
+                        process_name=task_name,
+                        process_pid=None,
+                    )
+                    _render_push_results(ext_results, sp)
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(
