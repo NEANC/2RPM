@@ -604,13 +604,14 @@ def _launch_task(launch_section, config):
         wait_all_failed = _render_push_results(wait_results, sp)
 
         external_section = config.get('external', {})
-        external_program_on_wait_timeout_path = external_section.get('on_wait_timeout', '')
-        if external_program_on_wait_timeout_path:
+        external_on_wait_timeout_path = external_section.get('on_wait_timeout', '')
+        if external_on_wait_timeout_path:
             sp.text("正在执行外部动作...")
             LOGGER.info("等待进程启动超时，正在执行外部动作...")
             try:
-                result = run_external_action(external_program_on_wait_timeout_path)
+                result = run_external_action(external_on_wait_timeout_path)
                 sp.write_done("外部动作执行成功")
+                LOGGER.info(f"外部动作 {external_on_wait_timeout_path} 执行成功")
                 ext_results = send_notification(
                     config,
                     'on_external',
@@ -721,7 +722,7 @@ def monitor_processes(config):
     timeout_threshold = _get_timeout_count_threshold(
         external_section.get('timeout_threshold', 3)
     )
-    external_program_on_wait_timeout_path = external_section.get(
+    external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
 
     LOGGER.info("初始化监视参数")
@@ -789,12 +790,15 @@ def monitor_processes(config):
             wait_all_failed = _render_push_results(wait_results, sp)
 
             # 执行外部动作
-            if external_program_on_wait_timeout_path:
+            if external_on_wait_timeout_path:
                 sp.text("正在执行外部动作...")
                 LOGGER.info("等待进程启动超时，正在执行外部动作...")
                 try:
-                    result = run_external_action(external_program_on_wait_timeout_path)
+                    result = run_external_action(external_on_wait_timeout_path)
                     sp.write_done("外部动作执行成功")
+                    LOGGER.info(
+                        f"外部动作 {external_on_wait_timeout_path} "
+                        f"执行成功")
                     ext_results = send_notification(
                         config,
                         'on_external',
@@ -807,7 +811,7 @@ def monitor_processes(config):
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(
-                        f"执行外部动作 {external_program_on_wait_timeout_path} "
+                        f"执行外部动作 {external_on_wait_timeout_path} "
                         f"时发生错误: {e}",
                         exc_info=True
                     )
@@ -948,7 +952,7 @@ def monitor_via_task_scheduler(config):
     timeout_threshold = _get_timeout_count_threshold(
         external_section.get('timeout_threshold', 3)
     )
-    external_program_on_wait_timeout_path = external_section.get(
+    external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
 
     if not task_name:
@@ -1046,12 +1050,15 @@ def monitor_via_task_scheduler(config):
             wait_all_failed = _render_push_results(wait_results, sp)
 
             # 执行等待超时外部动作
-            if external_program_on_wait_timeout_path:
+            if external_on_wait_timeout_path:
                 sp.text("正在执行外部动作...")
                 LOGGER.info("等待计划任务触发超时，正在执行外部动作...")
                 try:
-                    result = run_external_action(external_program_on_wait_timeout_path)
+                    result = run_external_action(external_on_wait_timeout_path)
                     sp.write_done("外部动作执行成功")
+                    LOGGER.info(
+                        f"外部动作 {external_on_wait_timeout_path} "
+                        f"执行成功")
                     ext_results = send_notification(
                         config,
                         'on_external',
@@ -1064,11 +1071,12 @@ def monitor_via_task_scheduler(config):
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(
-                        f"执行外部动作 {external_program_on_wait_timeout_path} "
+                        f"执行外部动作 {external_on_wait_timeout_path} "
                         f"时发生错误: {e}",
                         exc_info=True
                     )
-            # 推送全失败时最终定格降级为 fail
+
+        # 推送全失败时最终定格降级为 fail
             if wait_all_failed:
                 sp.fail("通知推送失败")
             else:
