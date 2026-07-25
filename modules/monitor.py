@@ -11,7 +11,7 @@ import sys
 import psutil
 
 from modules.utils import (
-    run_external_program,
+    run_external_action,
     parse_time_string
 )
 from modules.notification import send_notification
@@ -85,18 +85,6 @@ def _parse_time_or_default(raw_value, default_value):
         return parse_time_string(default_value)
 
 
-def _get_program_name(program_path):
-    """获取程序的文件名部分
-
-    Args:
-        program_path (str): 程序完整路径
-
-    Returns:
-        str: 程序文件名
-    """
-    return os.path.basename(program_path)
-
-
 def _render_push_results(results, sp):
     """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败
 
@@ -152,29 +140,29 @@ def _handle_process_end(config, process_name, pid, run_time,
     )
     all_failed = _render_push_results(end_results, sp)
 
-    # 进程结束时调用外部程序
+    # 进程结束时调用外部动作
     if external_on_end_path:
         LOGGER.info(
-            f"检测到进程 {process_name} 结束，正在调用外部程序..."
+            f"检测到进程 {process_name} 结束，正在执行外部动作..."
         )
         try:
-            run_external_program(external_on_end_path)
-            sp.write_done("外部程序执行完成")
-            LOGGER.info(f"成功调用外部程序 {external_on_end_path}")
-            # 发送外部程序执行通知
+            result = run_external_action(external_on_end_path)
+            sp.write_done("外部动作执行完成")
+            LOGGER.info(f"成功执行外部动作 {external_on_end_path}")
+            # 发送外部动作执行通知
             ext_results = send_notification(
                 config,
                 'on_external',
-                external_program_name=_get_program_name(external_on_end_path),
-                external_program_path=external_on_end_path,
+                external_program_name=result['display_name'],
+                external_program_path=result['display_path'],
                 process_name=process_name,
                 process_pid=pid,
             )
             _render_push_results(ext_results, sp)
         except Exception as e:
-            sp.write_fail("外部程序执行失败")
+            sp.write_fail("外部动作执行失败")
             LOGGER.error(
-                f"调用外部程序 {external_on_end_path} 时发生错误: {e}",
+                f"执行外部动作 {external_on_end_path} 时发生错误: {e}",
                 exc_info=True
             )
 
@@ -225,26 +213,24 @@ def _check_process_timeout(config, process_info, pid, current_time,
         LOGGER.info(
             f"进程 {process_name} (PID: {pid})，"
             f"超时次数达到阈值 {timeout_threshold}，"
-            f"正在调用外部程序..."
+            f"正在执行外部动作..."
         )
         try:
-            run_external_program(external_on_timeout_path)
+            result = run_external_action(external_on_timeout_path)
             LOGGER.info(
-                f"外部程序 {external_on_timeout_path} "
-                f"执行成功"
+                f"外部动作 {external_on_timeout_path} 执行成功"
             )
-            # 发送外部程序执行通知
+            # 发送外部动作执行通知
             # TODO: 同上，本函数不持 spinner 句柄，丢弃返回值不做内联渲染
             send_notification(
                 config,
                 'on_external',
-                external_program_name=_get_program_name(
-                    external_on_timeout_path),
-                external_program_path=external_on_timeout_path,
+                external_program_name=result['display_name'],
+                external_program_path=result['display_path'],
                 process_name=process_name,
                 process_pid=pid,
             )
-            LOGGER.info("外部程序执行完成，已请求停止该进程监视")
+            LOGGER.info("外部动作执行完成，已请求停止该进程监视")
             raise ProcessTimeoutExitRequested(
                 f"进程 {process_name} (PID: {pid}) 超时次数达到阈值 {timeout_threshold}，已停止该进程监视",
                 pid,
@@ -253,8 +239,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
             raise
         except Exception as e:
             LOGGER.error(
-                f"调用外部程序 {external_on_timeout_path} "
-                f"时发生错误: {e}",
+                f"执行外部动作 {external_on_timeout_path} 时发生错误: {e}",
                 exc_info=True
             )
 
@@ -621,14 +606,14 @@ def _launch_task(launch_section, config):
         external_section = config.get('external', {})
         external_program_on_wait_timeout_path = external_section.get('on_wait_timeout', '')
         if external_program_on_wait_timeout_path:
-            sp.text("正在执行外部程序...")
-            LOGGER.info("等待进程启动超时，正在执行外部程序...")
+            sp.text("正在执行外部动作...")
+            LOGGER.info("等待进程启动超时，正在执行外部动作...")
             try:
-                run_external_program(external_program_on_wait_timeout_path)
-                sp.write_done("外部程序执行成功")
+                run_external_action(external_program_on_wait_timeout_path)
+                sp.write_done("外部动作执行成功")
             except Exception as e:
-                sp.write_fail("外部程序执行失败")
-                LOGGER.error(f"执行外部程序失败: {e}", exc_info=True)
+                sp.write_fail("外部动作执行失败")
+                LOGGER.error(f"执行外部动作失败: {e}", exc_info=True)
 
         if wait_all_failed:
             sp.fail("通知推送失败")
@@ -794,20 +779,20 @@ def monitor_processes(config):
             )
             wait_all_failed = _render_push_results(wait_results, sp)
 
-            # 执行外部程序
+            # 执行外部动作
             if external_program_on_wait_timeout_path:
-                sp.text("正在执行外部程序...")
-                LOGGER.info("等待进程启动超时，正在执行外部程序...")
+                sp.text("正在执行外部动作...")
+                LOGGER.info("等待进程启动超时，正在执行外部动作...")
                 try:
-                    run_external_program(external_program_on_wait_timeout_path)
-                    sp.write_done("外部程序执行成功")
+                    run_external_action(external_program_on_wait_timeout_path)
+                    sp.write_done("外部动作执行成功")
                     LOGGER.info(
-                        f"外部程序 {external_program_on_wait_timeout_path} "
+                        f"外部动作 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.write_fail("外部程序执行失败")
+                    sp.write_fail("外部动作执行失败")
                     LOGGER.error(
-                        f"执行外部程序 {external_program_on_wait_timeout_path} "
+                        f"执行外部动作 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",
                         exc_info=True
                     )
@@ -1045,20 +1030,20 @@ def monitor_via_task_scheduler(config):
             )
             wait_all_failed = _render_push_results(wait_results, sp)
 
-            # 执行等待超时外部程序
+            # 执行等待超时外部动作
             if external_program_on_wait_timeout_path:
-                sp.text("正在执行外部程序...")
-                LOGGER.info("等待计划任务触发超时，正在执行外部程序...")
+                sp.text("正在执行外部动作...")
+                LOGGER.info("等待计划任务触发超时，正在执行外部动作...")
                 try:
-                    run_external_program(external_program_on_wait_timeout_path)
-                    sp.write_done("外部程序执行成功")
+                    run_external_action(external_program_on_wait_timeout_path)
+                    sp.write_done("外部动作执行成功")
                     LOGGER.info(
-                        f"外部程序 {external_program_on_wait_timeout_path} "
+                        f"外部动作 {external_program_on_wait_timeout_path} "
                         f"执行成功")
                 except Exception as e:
-                    sp.write_fail("外部程序执行失败")
+                    sp.write_fail("外部动作执行失败")
                     LOGGER.error(
-                        f"执行外部程序 {external_program_on_wait_timeout_path} "
+                        f"执行外部动作 {external_program_on_wait_timeout_path} "
                         f"时发生错误: {e}",
                         exc_info=True
                     )
