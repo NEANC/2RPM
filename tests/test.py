@@ -189,6 +189,14 @@ class TestExternalActionParsing(unittest.TestCase):
         self.assertEqual(result['target'], 'MyTask')
         exists_mock.assert_called_once_with('MyTask')
 
+    @patch('modules.utils.task_action_exists', side_effect=OSError('schtasks unavailable'))
+    def test_task_probe_exception_falls_back_to_program(self, exists_mock):
+        """计划任务探测异常时应回退 program，避免破坏外部程序兼容性。"""
+        result = parse_external_action('MyTask')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], 'MyTask')
+        exists_mock.assert_called_once_with('MyTask')
+
 
 class TestExternalActionExecution(unittest.TestCase):
     """测试 external 动作执行入口。"""
