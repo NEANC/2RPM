@@ -103,7 +103,7 @@ def test_monitor_processes_wait_timeout_uses_external_action():
     spinner.__enter__.return_value = spinner
     spinner.__exit__.return_value = False
 
-    with patch('modules.monitor._collect_matching_processes', return_value=[]), \
+    with patch('modules.monitor._collect_matching_processes', return_value={}), \
             patch('modules.monitor.send_notification', return_value=[]), \
             patch('modules.monitor.spinner_phase', return_value=spinner), \
             patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
