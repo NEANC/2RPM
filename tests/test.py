@@ -20,7 +20,12 @@ from modules.utils import (
     parse_time_string,
     parse_push_channels,
     build_push_channel_node,
-    push_channel_signature
+    push_channel_signature,
+    parse_external_action,
+    detect_external_action_type,
+    task_action_exists,
+    run_task_action,
+    run_external_action,
 )
 from modules.config import (
     load_config,
@@ -104,6 +109,129 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(_resolve_cwd(None, 'C:\\app\\test.exe'), 'C:\\app')
         # path 无目录分量 → 回退 os.getcwd()
         self.assertEqual(_resolve_cwd(None, 'test.exe'), os.getcwd())
+
+
+class TestExternalActionParsing(unittest.TestCase):
+    """测试 external 动作解析和自动判断。"""
+
+    def test_explicit_program_prefix_keeps_drive_colon(self):
+        """program 前缀只解析第一个冒号，不破坏 Windows 盘符。"""
+        result = parse_external_action(r'program:C:\x\a.bat')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], r'C:\x\a.bat')
+
+    def test_explicit_task_prefix_is_case_insensitive(self):
+        """task 前缀大小写不敏感。"""
+        result = parse_external_action(r'TASK:\Custom\MyTask')
+        self.assertEqual(result['type'], 'task')
+        self.assertEqual(result['target'], r'\Custom\MyTask')
+
+    def test_explicit_prefix_strips_target_spaces(self):
+        """显式前缀后的目标会清理首尾空白。"""
+        result = parse_external_action(r'program: C:\x\a.bat ')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], r'C:\x\a.bat')
+
+    def test_empty_task_target_raises(self):
+        """task 前缀目标为空时报错。"""
+        with self.assertRaises(ValueError):
+            parse_external_action('task:')
+
+    def test_empty_program_target_raises(self):
+        """program 前缀目标为空时报错。"""
+        with self.assertRaises(ValueError):
+            parse_external_action('program:')
+
+    @patch('modules.utils.task_action_exists')
+    def test_drive_path_is_program_without_task_probe(self, exists_mock):
+        """盘符路径直接判定为 program，不探测计划任务。"""
+        result = parse_external_action(r'C:\x\a.bat')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], r'C:\x\a.bat')
+        exists_mock.assert_not_called()
+
+    @patch('modules.utils.task_action_exists')
+    def test_unc_path_is_program_without_task_probe(self, exists_mock):
+        """UNC 路径直接判定为 program，不探测计划任务。"""
+        result = parse_external_action(r'\\server\share\a.bat')
+        self.assertEqual(result['type'], 'program')
+        exists_mock.assert_not_called()
+
+    @patch('modules.utils.task_action_exists')
+    def test_executable_suffix_is_program_without_task_probe(self, exists_mock):
+        """可执行后缀直接判定为 program，不探测计划任务。"""
+        result = parse_external_action('script.ps1')
+        self.assertEqual(result['type'], 'program')
+        exists_mock.assert_not_called()
+
+    @patch('modules.utils.task_action_exists', return_value=True)
+    def test_task_like_path_probe_success_is_task(self, exists_mock):
+        """无程序特征且计划任务探测成功时判定为 task。"""
+        result = parse_external_action(r'\Custom\MyTask')
+        self.assertEqual(result['type'], 'task')
+        self.assertEqual(result['target'], r'\Custom\MyTask')
+        exists_mock.assert_called_once_with(r'\Custom\MyTask')
+
+    @patch('modules.utils.task_action_exists', return_value=True)
+    def test_plain_name_probe_success_is_task(self, exists_mock):
+        """普通名称探测成功时判定为 task。"""
+        result = parse_external_action('MyTask')
+        self.assertEqual(result['type'], 'task')
+        self.assertEqual(result['target'], 'MyTask')
+        exists_mock.assert_called_once_with('MyTask')
+
+    @patch('modules.utils.task_action_exists', return_value=False)
+    def test_plain_name_probe_failure_falls_back_to_program(self, exists_mock):
+        """普通名称探测失败时回退 program。"""
+        result = parse_external_action('MyTask')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], 'MyTask')
+        exists_mock.assert_called_once_with('MyTask')
+
+
+class TestExternalActionExecution(unittest.TestCase):
+    """测试 external 动作执行入口。"""
+
+    @patch('modules.utils.run_external_program')
+    def test_run_external_action_program_returns_metadata(self, program_mock):
+        """program 动作调用 run_external_program 并返回通知元数据。"""
+        result = run_external_action(r'program:C:\x\a.bat')
+        program_mock.assert_called_once_with(r'C:\x\a.bat')
+        self.assertEqual(result['type'], 'program')
+        self.assertEqual(result['target'], r'C:\x\a.bat')
+        self.assertEqual(result['display_name'], 'a.bat')
+        self.assertEqual(result['display_path'], r'C:\x\a.bat')
+
+    @patch('modules.utils.run_task_action')
+    def test_run_external_action_task_returns_metadata(self, task_mock):
+        """task 动作调用 run_task_action 并返回通知元数据。"""
+        result = run_external_action(r'task:\Custom\MyTask')
+        task_mock.assert_called_once_with(r'\Custom\MyTask')
+        self.assertEqual(result['type'], 'task')
+        self.assertEqual(result['target'], r'\Custom\MyTask')
+        self.assertEqual(result['display_name'], 'MyTask')
+        self.assertEqual(result['display_path'], r'\Custom\MyTask')
+
+    @patch('modules.utils.subprocess.run')
+    def test_task_action_exists_uses_schtasks_query(self, run_mock):
+        """计划任务探测使用 schtasks query 且只看返回码。"""
+        run_mock.return_value.returncode = 0
+        self.assertTrue(task_action_exists(r'\Custom\MyTask'))
+        run_mock.assert_called_once_with(
+            ['schtasks', '/query', '/tn', r'\Custom\MyTask'],
+            shell=False,
+            capture_output=True,
+            text=True,
+        )
+
+    @patch('modules.utils.subprocess.run')
+    def test_run_task_action_raises_on_failure(self, run_mock):
+        """计划任务触发失败时抛出异常。"""
+        run_mock.return_value.returncode = 1
+        run_mock.return_value.stderr = 'ERROR'
+        run_mock.return_value.stdout = ''
+        with self.assertRaises(RuntimeError):
+            run_task_action(r'\Custom\MyTask')
 
 
 class TestConfig(unittest.TestCase):
