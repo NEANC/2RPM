@@ -12,6 +12,21 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 LOGGER = logging.getLogger(__name__)
 
+# external 动作中用于区分显式前缀的关键词集合
+EXTERNAL_ACTION_PREFIXES = {'program', 'task'}
+# 通过后缀判断是否为外部可执行程序的文件扩展名
+EXTERNAL_PROGRAM_EXTENSIONS = {
+    '.exe',
+    '.bat',
+    '.cmd',
+    '.ps1',
+    '.lnk',
+    '.vbs',
+    '.js',
+    '.wsf',
+    '.msi',
+}
+
 # 由程序在发送时自动填充的参数，定位位置参数时需要跳过，避免占用用户参数槽位
 PROGRAM_FILLED_PARAMS = {'title', 'content'}
 
@@ -527,6 +542,158 @@ def get_program_directory():
         # 使用主脚本所在目录
         program_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     return program_dir
+
+
+def _has_windows_drive_path(value):
+    """判断字符串是否为 Windows 盘符路径。"""
+    if len(value) < 3:
+        return False
+    return value[1] == ':' and value[0].isalpha() and value[2] in ('\\', '/')
+
+
+def _has_unc_path(value):
+    """判断字符串是否为 UNC 网络路径。"""
+    return value.startswith('\\\\') or value.startswith('//')
+
+
+def _has_executable_suffix(value):
+    """判断字符串是否带可执行类后缀。"""
+    return os.path.splitext(value.strip())[1].lower() in EXTERNAL_PROGRAM_EXTENSIONS
+
+
+def task_action_exists(task_name):
+    """精确探测 Windows 计划任务是否存在。
+
+    Args:
+        task_name (str): 计划任务名称或完整任务路径。
+
+    Returns:
+        bool: ``schtasks /query`` 返回码为 0 时为 True，否则为 False。
+    """
+    result = subprocess.run(
+        ['schtasks', '/query', '/tn', task_name],
+        shell=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def run_task_action(task_name):
+    """触发 Windows 计划任务。
+
+    Args:
+        task_name (str): 计划任务名称或完整任务路径。
+
+    Raises:
+        RuntimeError: 当 ``schtasks /run`` 返回非 0 时抛出。
+    """
+    result = subprocess.run(
+        ['schtasks', '/run', '/tn', task_name],
+        shell=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        LOGGER.info(f"成功触发计划任务: {task_name}")
+        return
+
+    message = result.stderr.strip() or result.stdout.strip() or '未知错误'
+    raise RuntimeError(f"触发计划任务失败: {task_name}，{message}")
+
+
+def detect_external_action_type(value):
+    """自动判断 external 动作类型。
+
+    Args:
+        value (str): 已清理空白且没有显式前缀的配置值。
+
+    Returns:
+        str: ``program`` 或 ``task``。
+    """
+    if _has_windows_drive_path(value):
+        return 'program'
+    if _has_unc_path(value):
+        return 'program'
+    if _has_executable_suffix(value):
+        return 'program'
+    if task_action_exists(value):
+        return 'task'
+    return 'program'
+
+
+def parse_external_action(value):
+    """解析 external 动作为程序或计划任务。
+
+    Args:
+        value (str): external 配置值，支持 ``program:`` 与 ``task:`` 前缀。
+
+    Returns:
+        dict: 包含 ``type`` 与 ``target`` 的解析结果。
+
+    Raises:
+        ValueError: 配置值为空或显式前缀后目标为空时抛出。
+    """
+    if not isinstance(value, str):
+        raise ValueError("external 动作配置必须是字符串")
+
+    raw_value = value.strip()
+    if not raw_value:
+        raise ValueError("external 动作配置不能为空")
+
+    prefix, separator, remainder = raw_value.partition(':')
+    normalized_prefix = prefix.strip().lower()
+    if separator and normalized_prefix in EXTERNAL_ACTION_PREFIXES:
+        target = remainder.strip()
+        if not target:
+            raise ValueError(f"external {normalized_prefix} 目标不能为空")
+        return {'type': normalized_prefix, 'target': target}
+
+    action_type = detect_external_action_type(raw_value)
+    return {'type': action_type, 'target': raw_value}
+
+
+def _get_task_display_name(task_name):
+    """获取计划任务用于通知展示的名称。"""
+    normalized = task_name.rstrip('\\/')
+    if not normalized:
+        return task_name
+    return normalized.replace('/', '\\').split('\\')[-1]
+
+
+def _build_external_action_result(action):
+    """根据动作解析结果构造通知元数据。"""
+    target = action['target']
+    if action['type'] == 'task':
+        return {
+            'type': 'task',
+            'target': target,
+            'display_name': _get_task_display_name(target),
+            'display_path': target,
+        }
+    return {
+        'type': 'program',
+        'target': target,
+        'display_name': os.path.basename(target),
+        'display_path': target,
+    }
+
+
+def run_external_action(value):
+    """执行 external 动作，支持外部程序与计划任务。
+
+    Args:
+        value (str): external 配置值。
+
+    Returns:
+        dict: 动作执行成功后的通知元数据。
+    """
+    action = parse_external_action(value)
+    if action['type'] == 'task':
+        run_task_action(action['target'])
+    else:
+        run_external_program(action['target'])
+    return _build_external_action_result(action)
 
 
 def run_external_program(program_path):
