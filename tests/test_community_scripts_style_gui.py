@@ -276,3 +276,37 @@ def test_spinner_tty_system_exit_finishes_success(caplog):
         assert root_logger.handlers == original_handlers
     finally:
         root_logger.removeHandler(handler)
+
+
+def test_readme_documents_copy_import_banner_spinner_and_example():
+    """README 应独立说明调用方如何复制和使用。"""
+    content = README_FILE.read_text(encoding='utf-8')
+
+    assert 'colorama' in content
+    assert '不是 Python 包' in content
+    assert '复制到目标项目入口同级目录' in content
+    assert 'from spinner import spinner_phase, notify_fail' in content
+    assert 'from banner import print_info' in content
+    assert 'app_name' in content
+    assert 'subtitle' in content
+    assert 'version' in content
+    assert 'license_name' in content
+    assert 'banner_art' in content
+    assert 'spinner_phase' in content
+    assert 'write_done' in content
+    assert 'notify_fail' in content
+    assert 'example.py' in content
+
+
+def test_example_runs_successfully():
+    """example.py 应可直接运行。"""
+    result = subprocess.run(
+        [sys.executable, str(STYLE_GUI_DIR / 'example.py')],
+        cwd=STYLE_GUI_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert 'Style GUI Demo' in result.stdout or 'Style GUI Demo' in result.stderr
