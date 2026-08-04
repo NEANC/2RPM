@@ -176,6 +176,39 @@ def test_spinner_non_tty_exception_logs_failure(caplog):
     assert '程序已退出' in caplog.text
 
 
+def test_spinner_non_tty_ignores_calls_after_done(caplog):
+    """非 TTY 下 done 后应忽略句柄的后续调用。"""
+    spinner = _load_module_from_path('style_gui_spinner_done_closed', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    with spinner.spinner_phase('运行中...') as handle:
+        handle.done('完成')
+        handle.text('不应更新')
+        handle.write('不应写入')
+        handle.write_done('不应写入成功')
+        handle.write_fail('不应写入失败')
+        handle.fail('不应再次结束')
+
+    assert '完成' in caplog.text
+    assert '不应' not in caplog.text
+
+
+def test_spinner_non_tty_does_not_finish_again_after_exception(caplog):
+    """非 TTY 下句柄结束后抛出异常不应重复收尾。"""
+    spinner = _load_module_from_path('style_gui_spinner_closed_exception', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    try:
+        with spinner.spinner_phase('运行中...') as handle:
+            handle.done('完成')
+            raise RuntimeError('boom')
+    except RuntimeError:
+        pass
+
+    assert '完成' in caplog.text
+    assert '程序已退出' not in caplog.text
+
+
 def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers():
     """TTY spinner 应初始化 Colorama，并恢复根 logger 所有控制台 handler。"""
     spinner = _load_module_from_path('style_gui_spinner_tty', SPINNER_FILE)
