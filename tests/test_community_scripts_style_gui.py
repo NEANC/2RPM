@@ -310,3 +310,25 @@ def test_example_runs_successfully():
 
     assert result.returncode == 0, result.stderr
     assert 'Style GUI Demo' in result.stdout or 'Style GUI Demo' in result.stderr
+
+
+def test_notify_fail_tty_outputs_clean_line_without_stderr(capsys):
+    """TTY 下 notify_fail 应输出干净失败行，且根 logger 无 handler 时 stderr 为空。"""
+    spinner = _load_module_from_path('style_gui_notify_fail_tty', SPINNER_FILE)
+    root_logger = logging.getLogger()
+    original_handlers = list(root_logger.handlers)
+    for handler in original_handlers:
+        root_logger.removeHandler(handler)
+
+    try:
+        with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner.colorama, 'just_fix_windows_console'):
+            spinner.notify_fail('测试失败消息')
+
+        captured = capsys.readouterr()
+        assert '❌' in captured.out
+        assert '测试失败消息' in captured.out
+        assert captured.err == ''
+    finally:
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
