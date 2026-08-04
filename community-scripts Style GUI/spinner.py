@@ -142,23 +142,34 @@ class _TtySpinner:
 
 
 class _LogSpinner:
+    def __init__(self):
+        self._closed = False
+
     def text(self, message):
-        LOGGER.info(message)
+        if not self._closed:
+            LOGGER.info(message)
 
     def done(self, message):
-        LOGGER.info(f"{_ICON_DONE}  {message}")
+        if not self._closed:
+            LOGGER.info(f"{_ICON_DONE}  {message}")
+            self._closed = True
 
     def fail(self, message):
-        LOGGER.error(f"{_ICON_FAIL}  {message}")
+        if not self._closed:
+            LOGGER.error(f"{_ICON_FAIL}  {message}")
+            self._closed = True
 
     def write(self, message):
-        LOGGER.info(message)
+        if not self._closed:
+            LOGGER.info(message)
 
     def write_done(self, message):
-        LOGGER.info(f"{_ICON_DONE}  {message}")
+        if not self._closed:
+            LOGGER.info(f"{_ICON_DONE}  {message}")
 
     def write_fail(self, message):
-        LOGGER.error(f"{_ICON_FAIL}  {message}")
+        if not self._closed:
+            LOGGER.error(f"{_ICON_FAIL}  {message}")
 
 
 class _SpinnerWriteHandler(logging.Handler):
@@ -196,7 +207,8 @@ def spinner_phase(text):
         try:
             yield handle
         except BaseException as exc:
-            _finish_for_exception(handle, exc)
+            if not handle._closed:
+                _finish_for_exception(handle, exc)
             raise
         return
 
