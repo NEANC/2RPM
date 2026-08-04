@@ -240,7 +240,8 @@ def notify_fail(message, exc_info=False):
     for handler in console_handlers:
         handler.setLevel(logging.CRITICAL + 1)
     try:
-        LOGGER.critical(message, exc_info=exc_info)
+        if logging.getLogger().handlers:
+            LOGGER.critical(message, exc_info=exc_info)
     finally:
         for handler, level in saved_levels:
             handler.setLevel(level)
