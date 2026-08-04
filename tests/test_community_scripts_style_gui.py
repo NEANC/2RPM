@@ -3,11 +3,13 @@
 """community-scripts Style GUI 独立复用模块测试。"""
 
 import ast
+import logging
 import shutil
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -142,3 +144,101 @@ def test_banner_divider_uses_dynamic_minimum_width(capsys):
     assert divider_width >= len('A much longer reusable subtitle')
     assert divider_width > 32
     assert divider_width >= len('Version: v9.9.9     License: Apache-2.0')
+
+
+def test_spinner_non_tty_system_exit_zero_logs_success(caplog):
+    """非 TTY 下 SystemExit(0) 应记录成功退出并继续抛出。"""
+    spinner = _load_module_from_path('style_gui_spinner_exit_zero', SPINNER_FILE)
+    caplog.set_level(logging.INFO, logger=spinner.__name__)
+
+    try:
+        with spinner.spinner_phase('运行中...'):
+            raise SystemExit(0)
+    except SystemExit as exc:
+        assert exc.code == 0
+
+    assert '程序已退出' in caplog.text
+
+
+def test_spinner_non_tty_system_exit_nonzero_logs_failure(caplog):
+    """非 TTY 下非零 SystemExit 应记录异常退出并继续抛出。"""
+    spinner = _load_module_from_path('style_gui_spinner_exit_nonzero', SPINNER_FILE)
+    caplog.set_level(logging.ERROR, logger=spinner.__name__)
+
+    try:
+        with spinner.spinner_phase('运行中...'):
+            raise SystemExit(2)
+    except SystemExit as exc:
+        assert exc.code == 2
+
+    assert '程序异常退出 (code 2)' in caplog.text
+
+
+def test_spinner_non_tty_exception_logs_failure(caplog):
+    """非 TTY 下普通异常应记录失败并继续抛出。"""
+    spinner = _load_module_from_path('style_gui_spinner_exception', SPINNER_FILE)
+    caplog.set_level(logging.ERROR, logger=spinner.__name__)
+
+    try:
+        with spinner.spinner_phase('运行中...'):
+            raise RuntimeError('boom')
+    except RuntimeError:
+        pass
+
+    assert '程序已退出' in caplog.text
+
+
+def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers():
+    """TTY spinner 应初始化 Colorama，并恢复根 logger 所有控制台 handler。"""
+    spinner = _load_module_from_path('style_gui_spinner_tty', SPINNER_FILE)
+    root_logger = logging.getLogger()
+    handler_a = logging.StreamHandler(sys.stdout)
+    handler_b = logging.StreamHandler(sys.stderr)
+    handler_a.setLevel(logging.INFO)
+    handler_b.setLevel(logging.WARNING)
+    root_logger.addHandler(handler_a)
+    root_logger.addHandler(handler_b)
+    original_handlers = list(root_logger.handlers)
+
+    fake_spinner = MagicMock()
+    try:
+        with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner.colorama, 'just_fix_windows_console') as colorama_mock, \
+                patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
+            with spinner.spinner_phase('等待中...') as sp:
+                sp.write_done('完成一部分')
+                sp.done('完成')
+
+        colorama_mock.assert_called()
+        assert handler_a.level == logging.INFO
+        assert handler_b.level == logging.WARNING
+        assert root_logger.handlers == original_handlers
+    finally:
+        root_logger.removeHandler(handler_a)
+        root_logger.removeHandler(handler_b)
+
+
+def test_spinner_tty_restores_handlers_after_exception():
+    """TTY spinner 异常退出后不得遗留临时 handler。"""
+    spinner = _load_module_from_path('style_gui_spinner_tty_exception', SPINNER_FILE)
+    root_logger = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    original_handlers = list(root_logger.handlers)
+
+    fake_spinner = MagicMock()
+    try:
+        with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
+            try:
+                with spinner.spinner_phase('等待中...'):
+                    raise RuntimeError('boom')
+            except RuntimeError:
+                pass
+
+        assert handler.level == logging.INFO
+        assert root_logger.handlers == original_handlers
+    finally:
+        root_logger.removeHandler(handler)
