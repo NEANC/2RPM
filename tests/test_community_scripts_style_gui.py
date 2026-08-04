@@ -3,7 +3,6 @@
 """community-scripts Style GUI 独立复用模块测试。"""
 
 import ast
-import os
 import shutil
 import subprocess
 import sys
@@ -120,6 +119,7 @@ def test_banner_print_info_omits_empty_fields(capsys):
     assert 'Terminal Application' not in output
     assert 'Version:' not in output
     assert 'License:' not in output
+    assert '─' not in output
 
 
 def test_banner_divider_uses_dynamic_minimum_width(capsys):
@@ -140,3 +140,5 @@ def test_banner_divider_uses_dynamic_minimum_width(capsys):
     divider_width = divider_lines[0].count('─')
     assert divider_width >= 32
     assert divider_width >= len('A much longer reusable subtitle')
+    assert divider_width > 32
+    assert divider_width >= len('Version: v9.9.9     License: Apache-2.0')
