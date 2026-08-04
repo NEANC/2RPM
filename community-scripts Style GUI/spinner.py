@@ -53,7 +53,11 @@ class _SimpleTTYSpinner:
             if self._closed:
                 return
             self._frame_index = (self._frame_index + 1) % len(self._frames)
-            self._output.write("\r" + colorama.Fore.YELLOW + self._frames[self._frame_index] + colorama.Style.RESET_ALL)
+            self._output.write(
+                "\r"
+                + colorama.Fore.YELLOW + self._frames[self._frame_index]
+                + colorama.Style.RESET_ALL
+            )
             self._output.flush()
 
     def _write_full_line(self):
@@ -199,24 +203,28 @@ def spinner_phase(text):
     colorama.just_fix_windows_console()
     console_handlers = _find_console_handlers()
     saved_levels = [(handler, handler.level) for handler in console_handlers]
-    for handler in console_handlers:
-        handler.setLevel(logging.CRITICAL + 1)
-
-    spinner = _SimpleTTYSpinner(text)
-    spinner.start()
-    handle = _TtySpinner(spinner)
     root_logger = logging.getLogger()
-    write_handler = _SpinnerWriteHandler(spinner)
-    root_logger.addHandler(write_handler)
+    spinner = None
+    handle = None
+    write_handler = None
     try:
+        for handler in console_handlers:
+            handler.setLevel(logging.CRITICAL + 1)
+        spinner = _SimpleTTYSpinner(text)
+        spinner.start()
+        handle = _TtySpinner(spinner)
+        write_handler = _SpinnerWriteHandler(spinner)
+        root_logger.addHandler(write_handler)
         yield handle
     except BaseException as exc:
-        if not handle._closed:
+        if handle is not None and not handle._closed:
             _finish_for_exception(handle, exc)
         raise
     finally:
-        root_logger.removeHandler(write_handler)
-        spinner.stop(clear_line=False)
+        if write_handler is not None:
+            root_logger.removeHandler(write_handler)
+        if spinner is not None:
+            spinner.stop(clear_line=False)
         for handler, level in saved_levels:
             handler.setLevel(level)
 

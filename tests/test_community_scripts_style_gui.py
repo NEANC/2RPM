@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 """community-scripts Style GUI 独立复用模块测试。"""
 
-import ast
+import io
 import logging
 import shutil
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -51,19 +52,6 @@ def test_modules_can_be_copied_next_to_entrypoint_and_imported(tmp_path):
     assert result.returncode == 0, result.stderr
     assert 'import ok' in result.stdout
     assert 'v1.2.3' in result.stdout or 'v1.2.3' in result.stderr
-
-
-def _import_names(path):
-    """返回 Python 文件内直接 import 的顶层模块名。"""
-    tree = ast.parse(path.read_text(encoding='utf-8'))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.name.split('.')[0])
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.add(node.module.split('.')[0])
-    return names
 
 
 def test_independent_modules_do_not_import_2rpm_internal_modules():
@@ -209,6 +197,8 @@ def test_spinner_tty_initializes_colorama_and_restores_all_root_console_handlers
                 sp.write_done('完成一部分')
                 sp.done('完成')
 
+        fake_spinner.write.assert_called()
+        fake_spinner.done.assert_called_once()
         colorama_mock.assert_called()
         assert handler_a.level == logging.INFO
         assert handler_b.level == logging.WARNING
@@ -238,6 +228,50 @@ def test_spinner_tty_restores_handlers_after_exception():
             except RuntimeError:
                 pass
 
+        assert handler.level == logging.INFO
+        assert root_logger.handlers == original_handlers
+    finally:
+        root_logger.removeHandler(handler)
+
+
+def test_simple_tty_spinner_runs_and_stops():
+    """真实 _SimpleTTYSpinner 应能启动、渲染并可靠停止。"""
+    spinner = _load_module_from_path('style_gui_simple_tty_spinner', SPINNER_FILE)
+    buf = io.StringIO()
+
+    instance = spinner._SimpleTTYSpinner('等待中...', output=buf)
+    instance.start()
+    time.sleep(0.3)
+    instance.stop(clear_line=True)
+
+    assert not instance._thread.is_alive()
+    output = buf.getvalue()
+    assert '\033[?25l' in output  # 隐藏光标
+    assert '等待中...' in output
+    assert '\033[?25h' in output  # 显示光标
+
+
+def test_spinner_tty_system_exit_finishes_success(caplog):
+    """TTY 下 SystemExit(0) 应定格成功并恢复日志状态。"""
+    spinner = _load_module_from_path('style_gui_spinner_tty_sysexit', SPINNER_FILE)
+    root_logger = logging.getLogger()
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.INFO)
+    root_logger.addHandler(handler)
+    original_handlers = list(root_logger.handlers)
+
+    fake_spinner = MagicMock()
+    try:
+        with patch.object(spinner.sys.stdout, 'isatty', return_value=True), \
+                patch.object(spinner.colorama, 'just_fix_windows_console'), \
+                patch.object(spinner, '_SimpleTTYSpinner', return_value=fake_spinner):
+            try:
+                with spinner.spinner_phase('等待中...'):
+                    raise SystemExit(0)
+            except SystemExit as exc:
+                assert exc.code == 0
+
+        fake_spinner.done.assert_called_once()
         assert handler.level == logging.INFO
         assert root_logger.handlers == original_handlers
     finally:
