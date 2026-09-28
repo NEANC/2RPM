@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from ruamel.yaml import YAML
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import modules.monitor as monitor
@@ -41,11 +43,11 @@ class TestTaskLookbackConfig(unittest.TestCase):
             self.assertEqual(config['monitor']['task_scheduler']['lookback_minutes'], 5)
 
             with open(config_file, 'r', encoding='utf-8') as f:
-                persisted = f.read()
+                persisted = YAML().load(f)
 
-            self.assertIn("lookback_minutes", persisted)
-            self.assertIn("5", persisted)
-            self.assertNotIn("-5", persisted)
+            self.assertEqual(
+                persisted['monitor']['task_scheduler']['lookback_minutes'],
+                5)
         finally:
             if os.path.exists(config_file):
                 os.unlink(config_file)
@@ -65,12 +67,11 @@ class TestTaskLookbackConfig(unittest.TestCase):
                 DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes'])
 
             with open(config_file, 'r', encoding='utf-8') as f:
-                persisted = f.read()
+                persisted = YAML().load(f)
 
-            self.assertIn("lookback_minutes", persisted)
-            self.assertIn(
-                str(DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']),
-                persisted)
+            self.assertEqual(
+                persisted['monitor']['task_scheduler']['lookback_minutes'],
+                DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes'])
         finally:
             if os.path.exists(config_file):
                 os.unlink(config_file)

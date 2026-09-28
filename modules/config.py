@@ -549,7 +549,7 @@ def _normalize_task_lookback_minutes(task_section):
 
     # 空字符串回退默认值
     if isinstance(raw_value, str) and not raw_value.strip():
-        LOGGER.warning('task.lookback_minutes 不能为空，已回退默认值')
+        LOGGER.warning('monitor.task_scheduler.lookback_minutes 不能为空，已回退默认值')
         task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True
 
@@ -559,17 +559,17 @@ def _normalize_task_lookback_minutes(task_section):
         if raw_str.startswith('-'):
             raw_str = raw_str.lstrip('-').strip()
             LOGGER.warning(
-                f"检测到 task.lookback_minutes 负值，已去除负号: {raw_value!r}"
+                f"检测到 monitor.task_scheduler.lookback_minutes 负值，已去除负号: {raw_value!r}"
             )
         if not raw_str:
-            LOGGER.warning('task.lookback_minutes 去符号后为空，已回退默认值')
+            LOGGER.warning('monitor.task_scheduler.lookback_minutes 去符号后为空，已回退默认值')
             task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
         try:
             normalized = abs(int(raw_str))
         except ValueError:
             LOGGER.warning(
-                f"task.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
+                f"monitor.task_scheduler.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
             )
             task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
@@ -579,7 +579,7 @@ def _normalize_task_lookback_minutes(task_section):
         normalized_for_store = int(normalized)
     else:
         LOGGER.warning(
-            f"task.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+            f"monitor.task_scheduler.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
         )
         task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True

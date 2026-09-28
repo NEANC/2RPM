@@ -52,15 +52,21 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(config['push']['retry']['interval'], '3s')
 
             with open(config_file, 'r', encoding='utf-8') as f:
-                persisted = f.read()
+                persisted = YAML().load(f)
 
-            self.assertIn('timeout_interval: 5m', persisted)
-            self.assertIn('loop_interval: 10s', persisted)
-            self.assertIn('max_wait: 30s', persisted)
-            self.assertIn('check_interval: 1s', persisted)
-            self.assertIn('interval: 3s', persisted)
-            self.assertNotIn('-5m', persisted)
-            self.assertNotIn('-10s', persisted)
+            self.assertEqual(
+                persisted['monitor']['common']['timeout_interval'], '5m')
+            self.assertEqual(
+                persisted['monitor']['common']['loop_interval'], '10s')
+            self.assertEqual(
+                persisted['monitor']['common']['max_wait'], '30s')
+            self.assertEqual(
+                persisted['monitor']['common']['check_interval'], '1s')
+            self.assertEqual(
+                persisted['monitor']['common']['timeout_threshold'], 3)
+            self.assertEqual(
+                persisted['monitor']['task_scheduler']['lookback_minutes'], 10)
+            self.assertEqual(persisted['push']['retry']['interval'], '3s')
         finally:
             if os.path.exists(config_file):
                 os.unlink(config_file)
@@ -92,16 +98,15 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(config['monitor']['task_scheduler']['lookback_minutes'], 10)
 
             with open(config_file, 'r', encoding='utf-8') as f:
-                persisted = f.read()
+                persisted = YAML().load(f)
 
-            self.assertIn('timeout_threshold: 3', persisted)
-            self.assertIn('max_log_files: 15', persisted)
-            self.assertIn('retention_days: 3', persisted)
-            self.assertIn('max_count: 3', persisted)
-            self.assertIn('lookback_minutes: 10', persisted)
-            self.assertNotIn('-3', persisted)
-            self.assertNotIn('-15', persisted)
-            self.assertNotIn('-10', persisted)
+            self.assertEqual(
+                persisted['monitor']['common']['timeout_threshold'], 3)
+            self.assertEqual(
+                persisted['monitor']['task_scheduler']['lookback_minutes'], 10)
+            self.assertEqual(persisted['log']['max_log_files'], 15)
+            self.assertEqual(persisted['log']['retention_days'], 3)
+            self.assertEqual(persisted['push']['retry']['max_count'], 3)
         finally:
             if os.path.exists(config_file):
                 os.unlink(config_file)
