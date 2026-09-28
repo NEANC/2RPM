@@ -12,6 +12,22 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from modules.config import COMMENTS, DEFAULT_VALUES, get_default_config
 
 
+def test_default_notification_templates_survive_production_yaml_round_trip(
+        tmp_path):
+    """验证默认通知模板内容经生产写回后保持不变。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'psutil', 'psutil': {'process_name': 'ok.exe'}},
+    })
+    first = load_config(str(path))
+    second = load_config(str(path))
+
+    for name, template in DEFAULT_VALUES['push']['templates'].items():
+        assert first['push']['templates'][name]['content'] == template['content']
+        assert second['push']['templates'][name]['content'] == template['content']
+
+
 def test_default_config_has_independent_nested_mutable_nodes():
     """验证 get_default_config 每次返回独立的嵌套可变节点。"""
     first = get_default_config()

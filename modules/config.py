@@ -373,6 +373,7 @@ def _make_write_yaml():
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.preserve_quotes = True
+    yaml.width = 4096
     return yaml
 
 
