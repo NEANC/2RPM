@@ -996,7 +996,9 @@ def _validate_active_monitor_config(user_config, require_explicit=False):
 
 
 def _validate_active_presence(user_config):
-    """在默认补全前校验当前模式的显式目标字段。"""
+    """在默认补全前仅校验显式模式的目标字段。"""
+    if 'mode' not in user_config.get('monitor', {}):
+        return
     _validate_active_monitor_config(user_config, require_explicit=True)
 
 def load_config(config_file, spinner=None, is_user_specified=False):

@@ -107,6 +107,95 @@ def test_new_values_win_by_key_presence(tmp_path):
     assert path.read_text(encoding='utf-8') == original
 
 
+@pytest.mark.parametrize('value', [None, '', 0, False, {'invalid': 'value'}])
+def test_migration_preserves_present_new_values_and_removes_old_keys(value):
+    """迁移按键存在优先保留新值，并删除冲突的旧字段。"""
+    from modules.config import _migrate_config_layout
+
+    config = {
+        'monitor': {
+            'mode': value, 'monitor_mode': 'psutil',
+            'process_name': 'old.exe',
+            'psutil': {'process_name': value},
+            'timeout_interval': '2m', 'loop_interval': '3s',
+            'common': {key: value for key in (
+                'timeout_interval', 'loop_interval', 'timeout_threshold',
+                'max_wait', 'check_interval')},
+            'task_scheduler': {'task_name': value, 'lookback_minutes': value},
+            'launch': {key: value for key in (
+                'type', 'path', 'args', 'cwd', 'task_name')},
+        },
+        'external': {'timeout_threshold': 9},
+        'wait': {'max_wait': '4m', 'check_interval': '5s'},
+        'task': {'task_name': 'old-task', 'lookback_minutes': 7},
+        'launch': {'type': 'program', 'path': 'old.exe', 'args': '--old',
+                   'cwd': 'old-dir', 'task_name': 'old-launch-task'},
+    }
+
+    assert _migrate_config_layout(config)
+    monitor = config['monitor']
+    assert set(monitor) == {
+        'mode', 'common', 'psutil', 'task_scheduler', 'launch'
+    }
+    assert monitor['mode'] is value
+    for section in ('common', 'psutil', 'task_scheduler', 'launch'):
+        assert all(item is value for item in monitor[section].values())
+    assert not {'task', 'launch', 'wait'} & config.keys()
+    assert 'timeout_threshold' not in config['external']
+
+
+@pytest.mark.parametrize('value', [
+    {'monitor': {'common': {'loop_interval': '2s'}}},
+    {'monitor': {'task_scheduler': {'task_name': 'task-a'}}},
+    {'task': {'task_name': 'old-task'}},
+    {'wait': {'max_wait': '2m'}},
+    {},
+])
+def test_missing_mode_uses_runnable_defaults(tmp_path, value):
+    """未指定模式的旧布局和部分新布局允许补全可运行默认配置。"""
+    from modules.config import load_config
+
+    config = load_config(str(_write_config(tmp_path, value)))
+    assert config['monitor']['mode'] == 'psutil'
+    assert config['monitor']['psutil']['process_name'] == (
+        DEFAULT_VALUES['monitor']['psutil']['process_name']
+    )
+
+
+@pytest.mark.parametrize('value', [None, '', 0, False, {'invalid': 'value'}])
+def test_missing_mode_still_validates_final_active_target(tmp_path, value):
+    """缺省模式不跳过补全后当前模式目标有效性校验。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'psutil': {'process_name': value}},
+    })
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('mode, section', [
+    ('psutil', {}),
+    ('task_scheduler', {}),
+    ('launch', {}),
+    ('launch', {'type': 'program'}),
+    ('launch', {'type': 'task'}),
+])
+def test_explicit_mode_requires_explicit_target(tmp_path, mode, section):
+    """显式模式不能用默认值补齐当前模式的必填目标。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {'monitor': {'mode': mode, mode: section}})
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+
+
 def test_invalid_structure_and_external_do_not_write(tmp_path):
     """新节点或 external 结构错误不写回。"""
     from modules.config import load_config
