@@ -28,7 +28,26 @@ def _external_result(action_type='task', target=r'\Custom\MyTask'):
 
 def _config_with_external(key, value):
     """构造只包含 external 触发项的测试配置。"""
-    return {'external': {key: value}}
+    return {
+        'monitor': {
+            'mode': 'psutil',
+            'common': {
+                'timeout_interval': '1s', 'loop_interval': '1s',
+                'timeout_threshold': 1, 'max_wait': '0s',
+                'check_interval': '1s',
+            },
+            'psutil': {'process_name': 'missing.exe'},
+            'task_scheduler': {
+                'task_name': r'\Custom\MainTask',
+                'lookback_minutes': 5,
+            },
+            'launch': {
+                'type': 'task', 'path': None, 'args': None,
+                'cwd': None, 'task_name': r'\Custom\MainTask',
+            },
+        },
+        'external': {key: value}
+    }
 
 
 def test_handle_process_end_uses_external_action_metadata():
@@ -95,8 +114,23 @@ def test_check_process_timeout_uses_external_action_metadata():
 def test_monitor_processes_wait_timeout_uses_external_action():
     """普通进程等待启动超时的 on_wait_timeout 应调用统一入口。"""
     config = {
-        'monitor': {'process_name': 'missing.exe'},
-        'wait': {'max_wait': '0s', 'check_interval': '1s'},
+        'monitor': {
+            'mode': 'psutil',
+            'common': {
+                'timeout_interval': '0s', 'loop_interval': '1s',
+                'timeout_threshold': 1, 'max_wait': '0s',
+                'check_interval': '1s',
+            },
+            'psutil': {'process_name': 'missing.exe'},
+            'task_scheduler': {
+                'task_name': r'\Custom\MainTask',
+                'lookback_minutes': 5,
+            },
+            'launch': {
+                'type': 'task', 'path': None, 'args': None,
+                'cwd': None, 'task_name': r'\Custom\MainTask',
+            },
+        },
         'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
     }
     spinner = MagicMock()
@@ -125,9 +159,23 @@ def test_monitor_processes_wait_timeout_uses_external_action():
 def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
     """task_scheduler 模式等待触发超时时 on_wait_timeout 应调用统一入口。"""
     config = {
-        'monitor': {'timeout_interval': '1s', 'loop_interval': '1s'},
-        'task': {'task_name': r'\Custom\MainTask', 'lookback_minutes': '10'},
-        'wait': {'max_wait': '0s', 'check_interval': '1s'},
+        'monitor': {
+            'mode': 'task_scheduler',
+            'common': {
+                'timeout_interval': '1s', 'loop_interval': '1s',
+                'timeout_threshold': 1, 'max_wait': '0s',
+                'check_interval': '1s',
+            },
+            'psutil': {'process_name': 'missing.exe'},
+            'task_scheduler': {
+                'task_name': r'\Custom\MainTask',
+                'lookback_minutes': 10,
+            },
+            'launch': {
+                'type': 'task', 'path': None, 'args': None,
+                'cwd': None, 'task_name': r'\Custom\MainTask',
+            },
+        },
         'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
     }
     spinner = MagicMock()
@@ -153,13 +201,56 @@ def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
     )
 
 
+def test_launch_task_uses_fixed_one_minute_lookback():
+    """launch task 查询 PID 时固定使用 1 分钟回溯窗口。"""
+    config = {
+        'monitor': {
+            'common': {'max_wait': '0s', 'check_interval': '1s'},
+            'launch': {
+                'type': 'task', 'path': None, 'args': None,
+                'cwd': None, 'task_name': r'\Custom\MainTask',
+            },
+        },
+        'external': {},
+    }
+    spinner = MagicMock()
+    spinner.__enter__.return_value = spinner
+    spinner.__exit__.return_value = False
+
+    with patch('modules.monitor.subprocess.run') as run_mock, \
+            patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}) as query_mock, \
+            patch('modules.monitor.spinner_phase', return_value=spinner), \
+            patch('modules.monitor.notify_fail'):
+        run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        with pytest.raises(SystemExit):
+            monitor._launch_task(config['monitor']['launch'], config)
+
+    query_mock.assert_called_with(r'\Custom\MainTask', lookback_minutes=1)
+
+
 def test_launch_task_wait_timeout_uses_external_action_metadata():
     """launch task 等待进程启动超时时应调用统一入口并发送 on_external。"""
     config = {
-        'wait': {'max_wait': '0s', 'check_interval': '1s'},
+        'monitor': {
+            'mode': 'launch',
+            'common': {
+                'timeout_interval': '1s', 'loop_interval': '1s',
+                'timeout_threshold': 1, 'max_wait': '0s',
+                'check_interval': '1s',
+            },
+            'psutil': {'process_name': 'missing.exe'},
+            'task_scheduler': {
+                'task_name': r'\Custom\MainTask',
+                'lookback_minutes': 5,
+            },
+            'launch': {
+                'type': 'task', 'path': None, 'args': None,
+                'cwd': None, 'task_name': r'\Custom\MainTask',
+            },
+        },
         'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
     }
-    launch_section = {'task_name': r'\Custom\MainTask'}
+    launch_section = config['monitor']['launch']
     spinner = MagicMock()
     spinner.__enter__.return_value = spinner
     spinner.__exit__.return_value = False
