@@ -1098,6 +1098,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
             LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
+            return merged_config
 
     LOGGER.info("配置参数版本差异检查完成")
     return merged_config

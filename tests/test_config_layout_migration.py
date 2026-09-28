@@ -280,3 +280,79 @@ def test_migration_is_idempotent_and_logs_conflict_without_values(tmp_path, capl
     assert 'monitor.common.timeout_threshold' in caplog.text
     assert 'external.timeout_threshold' in caplog.text
     assert 'external.timeout_threshold: 9' not in caplog.text
+
+
+def test_successful_migration_is_idempotent_and_second_load_does_not_write(tmp_path):
+    """成功迁移后第二次加载不触发写回。"""
+    from modules.config import load_config
+    from unittest.mock import patch
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    load_config(str(path))
+    persisted = path.read_text(encoding='utf-8')
+    with patch('modules.config._make_write_yaml') as write_yaml:
+        load_config(str(path))
+    assert path.read_text(encoding='utf-8') == persisted
+    write_yaml.assert_not_called()
+
+
+def test_migration_preserves_push_log_and_custom_user_values(tmp_path):
+    """迁移不重置用户推送、日志和自定义值。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'push': {'templates': {'on_end': {'title': '用户标题'}},
+                 'push_channel_settings': {'channels': [
+                     {'provider': 'custom', 'token': 'user-token'}]}},
+        'log': {'log_directory': 'user-logs', 'max_log_files': 7},
+    })
+    config = load_config(str(path))
+    assert config['push']['templates']['on_end']['title'] == '用户标题'
+    assert config['push']['push_channel_settings']['channels'][0]['token'] == 'user-token'
+    assert config['log']['log_directory'] == 'user-logs'
+    assert config['log']['max_log_files'] == 7
+
+
+def test_write_open_failure_returns_memory_config_without_success_log(tmp_path, caplog, monkeypatch):
+    """写回打开失败时返回内存配置且不记录成功写回。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    original_open = open
+
+    def fail_write_open(file, mode='r', *args, **kwargs):
+        if mode == 'w':
+            raise OSError('write-open-failed')
+        return original_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr('builtins.open', fail_write_open)
+    config = load_config(str(path))
+    assert config['monitor']['mode'] == 'psutil'
+    assert '正在写回配置信息' not in caplog.text
+    assert '无法写回配置文件' in caplog.text
+
+
+def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_path, caplog, monkeypatch):
+    """写回 dump 失败时返回内存配置且不记录完成日志。"""
+    from modules.config import _make_write_yaml, load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    yaml = _make_write_yaml()
+
+    def fail_dump(*args, **kwargs):
+        raise OSError('dump-failed')
+
+    monkeypatch.setattr(yaml, 'dump', fail_dump)
+    monkeypatch.setattr('modules.config._make_write_yaml', lambda: yaml)
+    config = load_config(str(path))
+    assert config['monitor']['mode'] == 'psutil'
+    assert '正在写回配置信息' not in caplog.text
+    assert '配置参数版本差异检查完成' not in caplog.text
+    assert '无法写回配置文件' in caplog.text
