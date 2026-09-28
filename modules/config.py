@@ -1100,15 +1100,32 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                 suffix='.tmp',
             )
             try:
-                with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                try:
+                    stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
+                except Exception:
+                    try:
+                        os.close(temp_fd)
+                    except Exception:
+                        pass
+                    temp_fd = None
+                    raise
+                temp_fd = None
+                with stream as f:
                     yaml.dump(merged_config, f)
                 os.replace(temp_path, config_file)
                 temp_path = None
-            finally:
+            except Exception:
                 if temp_path is not None:
                     try:
                         os.unlink(temp_path)
-                    except FileNotFoundError:
+                    except Exception:
+                        pass
+                raise
+            finally:
+                if temp_fd is not None:
+                    try:
+                        os.close(temp_fd)
+                    except Exception:
                         pass
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:

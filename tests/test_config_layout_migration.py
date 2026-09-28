@@ -333,6 +333,79 @@ def test_write_open_failure_returns_memory_config_without_success_log(tmp_path, 
     assert '无法写回配置文件' in caplog.text
 
 
+@pytest.mark.parametrize('failure_stage', [
+    'fdopen', 'fdopen_close_cleanup', 'replace', 'replace_unlink_cleanup',
+])
+def test_atomic_write_failure_cleans_temp_and_preserves_original_error(
+        tmp_path, caplog, monkeypatch, failure_stage):
+    """真实临时文件的写回失败保留原字节、内存配置和原始错误。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    original = path.read_bytes()
+    original_close = os.close
+    original_unlink = os.unlink
+    opened_fds = []
+    closed_fds = []
+    error_message = f'{failure_stage}-original-error'
+
+    def fail_fdopen(fd, *args, **kwargs):
+        """记录真实描述符并模拟包装失败。"""
+        opened_fds.append(fd)
+        raise OSError(error_message)
+
+    def close_fd(fd):
+        """关闭真实描述符，并按场景报告清理异常。"""
+        original_close(fd)
+        closed_fds.append(fd)
+        if failure_stage == 'fdopen_close_cleanup':
+            raise OSError('close-cleanup-error')
+
+    def fail_replace(source, destination):
+        """确认真实临时文件已写入后模拟原子替换失败。"""
+        assert os.path.getsize(source) > 0
+        assert os.path.abspath(destination) == str(path)
+        raise OSError(error_message)
+
+    def unlink_temp(temp_path):
+        """删除真实临时文件，并按场景报告清理异常。"""
+        original_unlink(temp_path)
+        if failure_stage == 'replace_unlink_cleanup':
+            raise OSError('unlink-cleanup-error')
+
+    caplog.set_level('INFO', logger='modules.config')
+    monkeypatch.setattr('modules.config.os.close', close_fd)
+    monkeypatch.setattr('modules.config.os.unlink', unlink_temp)
+    if failure_stage.startswith('fdopen'):
+        monkeypatch.setattr('modules.config.os.fdopen', fail_fdopen)
+    else:
+        monkeypatch.setattr('modules.config.os.replace', fail_replace)
+
+    try:
+        config = load_config(str(path))
+        assert config['monitor']['mode'] == 'psutil'
+        assert config['monitor']['psutil']['process_name'] == 'custom.exe'
+        assert 'monitor_mode' not in config['monitor']
+        assert path.read_bytes() == original
+        assert closed_fds == opened_fds
+        assert list(tmp_path.iterdir()) == [path]
+        assert '无法写回配置文件' in caplog.text
+        assert error_message in caplog.text
+        assert 'close-cleanup-error' not in caplog.text
+        assert 'unlink-cleanup-error' not in caplog.text
+        assert '正在写回配置信息' not in caplog.text
+        assert '配置参数版本差异检查完成' not in caplog.text
+    finally:
+        # 红灯阶段也释放真实资源，避免测试自身遗留句柄和文件。
+        for fd in opened_fds:
+            if fd not in closed_fds:
+                original_close(fd)
+        for temp_path in tmp_path.glob('*.tmp'):
+            original_unlink(temp_path)
+
+
 def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_path, caplog, monkeypatch):
     """写回 dump 失败时返回内存配置且不记录完成日志。"""
     from modules.config import _make_write_yaml, load_config
