@@ -246,6 +246,16 @@ class TestExternalActionExecution(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     """测试 config.py 模块"""
 
+    def test_runtime_fixtures_use_only_new_monitor_layout(self):
+        """运行时配置只在 monitor.common 中保存超时阈值。"""
+        for config in (
+                TestMonitorLoopSmoke()._build_config(),
+                TestLaunchSmoke()._build_config()):
+            with self.subTest(mode=config['monitor']['mode']):
+                self.assertNotIn('timeout_threshold', config['external'])
+                self.assertEqual(config['monitor']['common']['timeout_threshold'], 3)
+                self.assertFalse({'task', 'wait', 'launch'} & config.keys())
+
     def test_merge_configs(self):
         """测试配置合并（V4 键名）"""
         user_config = {
@@ -607,7 +617,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         """构造 psutil 模式的最小监视配置（V4 键名）。
 
         Returns:
-            dict: 含 monitor / wait / external 节的配置。
+            dict: 含 monitor 新布局与 external 动作的配置。
         """
         return {
             'monitor': {
@@ -634,7 +644,6 @@ class TestMonitorLoopSmoke(unittest.TestCase):
                 'on_end': '',
                 'on_timeout': '',
                 'on_wait_timeout': '',
-                'timeout_threshold': 3,
             },
         }
 
@@ -691,7 +700,7 @@ class TestLaunchSmoke(unittest.TestCase):
         """构造 launch 模式的最小配置。
 
         Returns:
-            dict: 含 monitor / launch / wait / external 节的配置。
+            dict: 含 monitor 新布局与 external 动作的配置。
         """
         return {
             'monitor': {
@@ -720,7 +729,6 @@ class TestLaunchSmoke(unittest.TestCase):
                 'on_end': '',
                 'on_timeout': '',
                 'on_wait_timeout': '',
-                'timeout_threshold': 3,
             },
         }
 

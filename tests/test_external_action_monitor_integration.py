@@ -219,7 +219,9 @@ def test_launch_task_uses_fixed_one_minute_lookback():
     """launch task 查询 PID 时固定使用 1 分钟回溯窗口。"""
     config = {
         'monitor': {
+            'mode': 'launch',
             'common': {'max_wait': '0s', 'check_interval': '1s'},
+            'task_scheduler': {'lookback_minutes': 99},
             'launch': {
                 'type': 'task', 'path': None, 'args': None,
                 'cwd': None, 'task_name': r'\Custom\MainTask',

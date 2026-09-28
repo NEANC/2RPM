@@ -13,6 +13,7 @@ from ruamel.yaml import YAML
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules.config import load_config, DEFAULT_VALUES
+from modules.utils import parse_time_string
 
 
 class TestConfigWritableValueNormalization(unittest.TestCase):
@@ -70,6 +71,63 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
         finally:
             if os.path.exists(config_file):
                 os.unlink(config_file)
+
+    def test_common_zero_values_are_preserved_and_written_back(self):
+        """四个时间字段与阈值的零值应保留并按零秒解析。"""
+        time_fields = (
+            'timeout_interval', 'loop_interval', 'max_wait', 'check_interval',
+        )
+        config_file = self._make_tmp_config(
+            "monitor:\n"
+            "  mode: psutil\n"
+            "  psutil:\n"
+            "    process_name: test.exe\n"
+            "  common:\n"
+            + ''.join(f"    {field}: 0s\n" for field in time_fields)
+            + "    timeout_threshold: 0\n"
+        )
+        try:
+            config = load_config(config_file)
+            with open(config_file, 'r', encoding='utf-8') as stream:
+                persisted = YAML().load(stream)
+            for result in (config, persisted):
+                common = result['monitor']['common']
+                for field in time_fields:
+                    self.assertEqual(common[field], '0s')
+                    self.assertEqual(parse_time_string(common[field]), 0)
+                self.assertEqual(common['timeout_threshold'], 0)
+                self.assertNotIn('timeout_threshold', result['external'])
+        finally:
+            os.unlink(config_file)
+
+    def test_invalid_common_values_default_at_new_paths_and_persist(self):
+        """非法时间和阈值按新路径告警、回退并持久化。"""
+        fields = (
+            'timeout_interval', 'loop_interval', 'max_wait',
+            'check_interval', 'timeout_threshold',
+        )
+        for invalid in ('invalid', "''", '[]'):
+            with self.subTest(value=invalid):
+                config_file = self._make_tmp_config(
+                    "monitor:\n"
+                    "  mode: psutil\n"
+                    "  psutil:\n"
+                    "    process_name: test.exe\n"
+                    "  common:\n"
+                    + ''.join(f"    {field}: {invalid}\n" for field in fields)
+                )
+                try:
+                    with self.assertLogs('modules.config', level='WARNING') as logs:
+                        config = load_config(config_file)
+                    with open(config_file, 'r', encoding='utf-8') as stream:
+                        persisted = YAML().load(stream)
+                    for field in fields:
+                        expected = DEFAULT_VALUES['monitor']['common'][field]
+                        self.assertEqual(config['monitor']['common'][field], expected)
+                        self.assertEqual(persisted['monitor']['common'][field], expected)
+                        self.assertIn(f'monitor.common.{field}', '\n'.join(logs.output))
+                finally:
+                    os.unlink(config_file)
 
     def test_negative_positive_int_fields_are_normalized(self):
         """整数型参数：负值应去符号为正并写回。"""

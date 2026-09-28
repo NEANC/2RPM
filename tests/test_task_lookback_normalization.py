@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""验证 task.lookback_minutes 的解析行为与配置回写。
+"""验证 monitor.task_scheduler.lookback_minutes 的解析行为与配置回写。
 
 执行本文件可验证：
 - 负值 lookback_minutes 自动转为正值并写回配置
@@ -24,7 +24,7 @@ from modules import task_monitor
 
 
 class TestTaskLookbackConfig(unittest.TestCase):
-    """测试 task.lookback_minutes 的配置归一化与回写行为。"""
+    """测试 monitor.task_scheduler.lookback_minutes 的归一化与回写。"""
 
     def _write_config(self, content):
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
@@ -77,20 +77,27 @@ class TestTaskLookbackConfig(unittest.TestCase):
             if os.path.exists(config_file):
                 os.unlink(config_file)
 
-    def test_lookback_string_minutes_accepted(self):
-        """允许类似 '10' 这种字符串分钟值"""
-        config_file = self._write_config(
-            "monitor:\n"
-            "  task_scheduler:\n"
-            "    task_name: task_a\n"
-            "    lookback_minutes: '10'\n"
-        )
-        try:
-            config = load_config(config_file)
-            self.assertEqual(config['monitor']['task_scheduler']['lookback_minutes'], '10')
-        finally:
-            if os.path.exists(config_file):
-                os.unlink(config_file)
+    def test_lookback_string_and_zero_values_are_persisted(self):
+        """字符串保留类型、负字符串去符号，零值不回退默认值。"""
+        for raw, expected in (("'10'", '10'), ("'-5'", '5'), ('0', 0)):
+            with self.subTest(value=raw):
+                config_file = self._write_config(
+                    "monitor:\n"
+                    "  mode: task_scheduler\n"
+                    "  task_scheduler:\n"
+                    "    task_name: task_a\n"
+                    f"    lookback_minutes: {raw}\n"
+                )
+                try:
+                    config = load_config(config_file)
+                    with open(config_file, 'r', encoding='utf-8') as stream:
+                        persisted = YAML().load(stream)
+                    for result in (config, persisted):
+                        value = result['monitor']['task_scheduler']['lookback_minutes']
+                        self.assertEqual(value, expected)
+                        self.assertIsInstance(value, type(expected))
+                finally:
+                    os.unlink(config_file)
 
 
 class TestTaskMonitorLookbackQuery(unittest.TestCase):
@@ -129,6 +136,17 @@ class TestTaskMonitorLookbackQuery(unittest.TestCase):
 
         self.assertEqual(calls.get('task_name'), 'task_a')
         self.assertEqual(calls.get('lookback_minutes'), 5)
+
+    def test_query_normalizes_string_negative_invalid_and_zero(self):
+        """查询入口保持字符串、负数、非法回退和零值的既有语义。"""
+        for raw, expected in (('10', 10), (-5, 5), ('abc', 10), (0, 0)):
+            with self.subTest(value=raw):
+                with patch.object(
+                        task_monitor, '_get_latest_matching_event',
+                        return_value=None) as event_mock:
+                    result = task_monitor.query_task_pid('task_a', raw)
+                event_mock.assert_called_once_with('task_a', 129, expected)
+                self.assertEqual(result['state'], 'not_found')
 
     def test_zero_lookback_uses_one_millisecond_query_window(self):
         """lookback=0 时查询 XPath 仍使用至少 1 毫秒窗口。"""
