@@ -8,7 +8,23 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from modules.config import COMMENTS, DEFAULT_VALUES
+from modules.config import COMMENTS, DEFAULT_VALUES, get_default_config
+
+
+def test_default_config_has_independent_nested_mutable_nodes():
+    """验证 get_default_config 每次返回独立的嵌套可变节点。"""
+    first = get_default_config()
+    second = get_default_config()
+
+    first['monitor']['common']['timeout_interval'] = '1h'
+    first['monitor']['launch']['args'] = ['--changed']
+    first['push']['templates']['on_end']['enable'] = False
+    first['push']['push_channel_settings']['channels'].append({'provider': 'test'})
+
+    assert second['monitor']['common']['timeout_interval'] == '15m'
+    assert second['monitor']['launch']['args'] is None
+    assert second['push']['templates']['on_end']['enable'] is True
+    assert len(second['push']['push_channel_settings']['channels']) == 5
 
 
 def test_monitor_schema_is_nested_and_external_threshold_is_removed():
