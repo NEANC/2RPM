@@ -685,17 +685,21 @@ def monitor_processes(config):
     external_section = config.get('external', {})
 
     # 检查监视模式
-    monitor_mode = monitor_section.get('mode', 'psutil')
+    mode = monitor_section.get('mode', 'psutil')
 
-    if monitor_mode == 'task_scheduler':
+    if mode == 'task_scheduler':
         LOGGER.info("读取计划任务来获取 PID 进行监视")
         monitor_via_task_scheduler(config)
         return
 
-    if monitor_mode == 'launch':
+    if mode == 'launch':
         LOGGER.info("主动拉起目标程序或任务进行监视")
         monitor_via_launch(config)
         return
+
+    if mode != 'psutil':
+        LOGGER.error(f"监视模式无效: {mode}，仅支持 psutil/task_scheduler/launch")
+        sys.exit(1)
 
     process_name = psutil_section.get(
         'process_name', DEFAULT_VALUES['monitor']['psutil']['process_name'])

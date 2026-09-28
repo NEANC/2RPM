@@ -50,6 +50,20 @@ def _config_with_external(key, value):
     }
 
 
+def test_monitor_processes_rejects_invalid_mode_without_fallback():
+    """直接调用时非法 mode 应记录错误并停止，不应回退到 psutil。"""
+    config = _config_with_external('on_end', '')
+    config['monitor']['mode'] = 'invalid'
+
+    with patch('modules.monitor.LOGGER.error') as error_mock, \
+            patch('modules.monitor._collect_matching_processes') as collect_mock:
+        with pytest.raises(SystemExit):
+            monitor.monitor_processes(config)
+
+    error_mock.assert_called_once()
+    collect_mock.assert_not_called()
+
+
 def test_handle_process_end_uses_external_action_metadata():
     """on_end 成功执行后应使用 external action 元数据发送 on_external。"""
     sp = MagicMock()
