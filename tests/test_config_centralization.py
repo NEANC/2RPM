@@ -95,6 +95,41 @@ def test_existing_common_section_is_recursively_completed():
             os.unlink(temp_config_file)
 
 
+def test_load_config_normalizes_new_schema_values_without_mocking():
+    """验证真实加载流程归一化新 schema 的时间、阈值和任务回溯值。"""
+    new_config = {
+        'monitor': {
+            'common': {
+                'timeout_interval': '-5m',
+                'loop_interval': '0s',
+                'timeout_threshold': -2,
+                'max_wait': '0s',
+                'check_interval': '2s',
+            },
+            'task_scheduler': {'lookback_minutes': -7},
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
+        yaml = YAML()
+        yaml.dump(new_config, f)
+        temp_config_file = f.name
+
+    try:
+        config = load_config(temp_config_file)
+        common = config['monitor']['common']
+        assert common['timeout_interval'] == '5m'
+        assert common['loop_interval'] == '0s'
+        assert common['timeout_threshold'] == 2
+        assert common['max_wait'] == '0s'
+        assert common['check_interval'] == '2s'
+        assert config['monitor']['task_scheduler']['lookback_minutes'] == 7
+    finally:
+        if os.path.exists(temp_config_file):
+            os.unlink(temp_config_file)
+
+
 def test_missing_config_file_should_create_default_and_prompt():
     """缺失配置文件时应输出完整路径并提示退出。"""
     config_path = os.path.abspath('config.yaml')

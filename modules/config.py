@@ -539,17 +539,7 @@ def correct_push_channel_config(user_config):
 
 
 def _normalize_task_lookback_minutes(task_section):
-    """归一化 task.lookback_minutes 配置。
-
-    规则：
-    - 字符串与数值均可接受，保留字符串语义（如 '10'）
-    - 负值自动去符号为正
-    - 无法解析或非法类型回退默认值
-    - 归一化成功后回写配置原文，确保配置持久化一致
-
-    说明：
-    - 保留字符串输出（例如 '10'）可以兼容历史与手工编辑行为
-    """
+    """归一化 monitor.task_scheduler.lookback_minutes 配置。"""
     if not isinstance(task_section, dict):
         return False
 
@@ -560,7 +550,7 @@ def _normalize_task_lookback_minutes(task_section):
     # 空字符串回退默认值
     if isinstance(raw_value, str) and not raw_value.strip():
         LOGGER.warning('task.lookback_minutes 不能为空，已回退默认值')
-        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True
 
     normalized_for_store = None
@@ -573,7 +563,7 @@ def _normalize_task_lookback_minutes(task_section):
             )
         if not raw_str:
             LOGGER.warning('task.lookback_minutes 去符号后为空，已回退默认值')
-            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
         try:
             normalized = abs(int(raw_str))
@@ -581,7 +571,7 @@ def _normalize_task_lookback_minutes(task_section):
             LOGGER.warning(
                 f"task.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
             )
-            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
         normalized_for_store = str(normalized)
     elif isinstance(raw_value, (int, float)):
@@ -591,7 +581,7 @@ def _normalize_task_lookback_minutes(task_section):
         LOGGER.warning(
             f"task.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
         )
-        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True
 
     if task_section.get('lookback_minutes') == normalized_for_store:
@@ -755,41 +745,47 @@ def _normalize_config_writable_values(user_config):
     updated = False
 
     monitor_section = user_config.get('monitor', {})
-    wait_section = user_config.get('wait', {})
+    common_section = monitor_section.get('common', {}) if isinstance(monitor_section, dict) else {}
+    task_scheduler_section = monitor_section.get('task_scheduler', {}) if isinstance(monitor_section, dict) else {}
     push_section = user_config.get('push', {})
     retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
     external_section = user_config.get('external', {})
     log_section = user_config.get('log', {})
 
-    # monitor.*：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
+    # monitor.common：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'timeout_interval',
-        DEFAULT_VALUES['monitor']['timeout_interval'],
-        'monitor.timeout_interval'
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'],
+        'monitor.common.timeout_interval'
     ) or updated
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'loop_interval',
-        DEFAULT_VALUES['monitor']['loop_interval'],
-        'monitor.loop_interval'
+        DEFAULT_VALUES['monitor']['common']['loop_interval'],
+        'monitor.common.loop_interval'
     ) or updated
-
-    # wait.*：等待行为配置，保持 H/M/S 字符串语义
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'max_wait',
-        DEFAULT_VALUES['wait']['max_wait'],
-        'wait.max_wait'
+        DEFAULT_VALUES['monitor']['common']['max_wait'],
+        'monitor.common.max_wait'
     ) or updated
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'check_interval',
-        DEFAULT_VALUES['wait']['check_interval'],
-        'wait.check_interval'
+        DEFAULT_VALUES['monitor']['common']['check_interval'],
+        'monitor.common.check_interval'
     ) or updated
+    updated = _normalize_positive_int_config(
+        common_section,
+        'timeout_threshold',
+        DEFAULT_VALUES['monitor']['common']['timeout_threshold'],
+        'monitor.common.timeout_threshold'
+    ) or updated
+    updated = _normalize_task_lookback_minutes(task_scheduler_section) or updated
 
-    # push.retry.interval：重试间隔也按时间串处理
+    # push.retry.interval：重试间隔也按时间字符串处理
     updated = _normalize_time_like_config(
         retry_section,
         'interval',
@@ -805,13 +801,8 @@ def _normalize_config_writable_values(user_config):
         'push.retry.max_count'
     ) or updated
 
-    # external.timeout_threshold：超时阈值，必须为正整数
-    updated = _normalize_positive_int_config(
-        external_section,
-        'timeout_threshold',
-        DEFAULT_VALUES['external']['timeout_threshold'],
-        'external.timeout_threshold'
-    ) or updated
+    # common.timeout_threshold：超时阈值，必须为正整数
+    # 已在 monitor.common 中统一归一化
 
     # log.max_log_files、log.retention_days：日志归档参数，统一转为非负整数字符语义
     updated = _normalize_positive_int_config(
@@ -919,11 +910,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
             updated = True
 
-    task_section = user_config.get('task', {})
-    if isinstance(task_section, dict):
-        updated = _normalize_task_lookback_minutes(task_section) or updated
-
-    # 统一处理可写配置中的负值/非法值参数（负值去除负号并回写，非法值回退默认值）
+    # 统一处理可写配置中的负值/非法值参数（负值去除负号，非法值回退默认值）
     updated = _normalize_config_writable_values(user_config) or updated
 
     # 检查每个配置节中的参数
