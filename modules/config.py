@@ -5,6 +5,7 @@ import copy
 import logging
 import os
 import sys
+import tempfile
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
@@ -1093,8 +1094,22 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         LOGGER.info("配置文件已更新，正在执行无缝迁移")
         try:
             yaml = _make_write_yaml()
-            with open(config_file, 'w', encoding='utf-8') as f:
-                yaml.dump(merged_config, f)
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(os.path.abspath(config_file)),
+                prefix=f'.{os.path.basename(config_file)}.',
+                suffix='.tmp',
+            )
+            try:
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
+                    yaml.dump(merged_config, f)
+                os.replace(temp_path, config_file)
+                temp_path = None
+            finally:
+                if temp_path is not None:
+                    try:
+                        os.unlink(temp_path)
+                    except FileNotFoundError:
+                        pass
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
             LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")

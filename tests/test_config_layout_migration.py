@@ -323,14 +323,10 @@ def test_write_open_failure_returns_memory_config_without_success_log(tmp_path, 
     path = _write_config(tmp_path, {
         'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
     })
-    original_open = open
+    def fail_write_temp(*args, **kwargs):
+        raise OSError('write-open-failed')
 
-    def fail_write_open(file, mode='r', *args, **kwargs):
-        if mode == 'w':
-            raise OSError('write-open-failed')
-        return original_open(file, mode, *args, **kwargs)
-
-    monkeypatch.setattr('builtins.open', fail_write_open)
+    monkeypatch.setattr('modules.config.tempfile.mkstemp', fail_write_temp)
     config = load_config(str(path))
     assert config['monitor']['mode'] == 'psutil'
     assert '正在写回配置信息' not in caplog.text
@@ -344,6 +340,7 @@ def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_pat
     path = _write_config(tmp_path, {
         'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
     })
+    original = path.read_bytes()
     yaml = _make_write_yaml()
 
     def fail_dump(*args, **kwargs):
@@ -353,6 +350,65 @@ def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_pat
     monkeypatch.setattr('modules.config._make_write_yaml', lambda: yaml)
     config = load_config(str(path))
     assert config['monitor']['mode'] == 'psutil'
+    assert path.read_bytes() == original
     assert '正在写回配置信息' not in caplog.text
     assert '配置参数版本差异检查完成' not in caplog.text
+    assert '无法写回配置文件' in caplog.text
+
+
+def test_partial_dump_failure_preserves_original_bytes(tmp_path, caplog, monkeypatch):
+    """写回部分内容后 dump 失败时保留原配置字节。"""
+    from modules.config import _make_write_yaml, load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    original = path.read_bytes()
+    yaml = _make_write_yaml()
+
+    def partial_dump(config, stream):
+        stream.write('partial: true\n')
+        raise OSError('partial-dump-failed')
+
+    monkeypatch.setattr(yaml, 'dump', partial_dump)
+    monkeypatch.setattr('modules.config._make_write_yaml', lambda: yaml)
+    config = load_config(str(path))
+
+    assert config['monitor']['mode'] == 'psutil'
+    assert path.read_bytes() == original
+    assert '无法写回配置文件' in caplog.text
+
+
+def test_write_close_failure_preserves_original_bytes(tmp_path, caplog, monkeypatch):
+    """临时文件关闭失败时保留原配置字节。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+    })
+    original = path.read_bytes()
+    original_fdopen = os.fdopen
+
+    class CloseFailingStream:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self._stream.close()
+            raise OSError('close-failed')
+
+        def write(self, value):
+            return self._stream.write(value)
+
+    def fdopen(*args, **kwargs):
+        return CloseFailingStream(original_fdopen(*args, **kwargs))
+
+    monkeypatch.setattr('modules.config.os.fdopen', fdopen)
+    config = load_config(str(path))
+
+    assert config['monitor']['mode'] == 'psutil'
+    assert path.read_bytes() == original
     assert '无法写回配置文件' in caplog.text
