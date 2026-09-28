@@ -49,12 +49,42 @@
 
 配置文件是注释型 YAML，核心结构如下：
 
-- `monitor_settings`: 监控策略（目标进程、检测间隔、告警周期）
-- `wait_process_settings`: 进程启动等待策略
-- `task_monitor_settings`: 任务监控字段
-- `push_settings`: 推送模板与通道参数
-- `external_program_settings`: 外部程序执行参数
-- `log_settings`: 日志输出与清理策略
+- `monitor.mode`：监控模式（`psutil`、`task_scheduler` 或 `launch`）
+- `monitor.common`：共用的超时、轮询、等待与外部动作触发阈值
+- `monitor.psutil`：按进程名监控的目标
+- `monitor.task_scheduler`：计划任务名称与事件回溯窗口
+- `monitor.launch`：主动启动的程序或计划任务
+- `push`：推送模板与通道参数
+- `external`：`on_end`、`on_timeout`、`on_wait_timeout` 三个外部动作
+- `log`：日志输出与清理策略
+
+```yaml
+monitor:
+  mode: psutil
+  common:
+    timeout_interval: 15m
+    loop_interval: 1s
+    timeout_threshold: 3
+    max_wait: 30s
+    check_interval: 1s
+  psutil:
+    process_name: notepad.exe
+  task_scheduler:
+    task_name: '\Custom\MyTask'
+    lookback_minutes: 10
+  launch:
+    type: program
+    path: 'C:\path\to\target.exe'
+    args: null
+    cwd: null
+    task_name: '\Custom\MyTask'
+external:
+  on_end: null
+  on_timeout: null
+  on_wait_timeout: null
+```
+
+当前旧 layout 仅由 `load_config` 在加载配置文件时自动迁移；直接构造的运行时配置必须使用上述新 layout。当前模式的目标字段必须有效；`launch.type` 为 `program` 时填写 `path`，为 `task` 时填写 `task_name`。`task_scheduler.lookback_minutes` 为 `0` 时查询窗口至少为 1 毫秒，launch-task 查询固定回溯 1 分钟。
 
 ### 推送通道配置示例
 
