@@ -755,10 +755,7 @@ def _normalize_config_writable_values(user_config):
     updated = False
 
     monitor_section = user_config.get('monitor', {})
-    common_section = (
-        monitor_section.get('common', {})
-        if isinstance(monitor_section, dict) else {}
-    )
+    wait_section = user_config.get('wait', {})
     push_section = user_config.get('push', {})
     retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
     external_section = user_config.get('external', {})
@@ -766,30 +763,30 @@ def _normalize_config_writable_values(user_config):
 
     # monitor.*：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
     updated = _normalize_time_like_config(
-        common_section,
+        monitor_section,
         'timeout_interval',
-        DEFAULT_VALUES['monitor']['common']['timeout_interval'],
-        'monitor.common.timeout_interval'
+        DEFAULT_VALUES['monitor']['timeout_interval'],
+        'monitor.timeout_interval'
     ) or updated
     updated = _normalize_time_like_config(
-        common_section,
+        monitor_section,
         'loop_interval',
-        DEFAULT_VALUES['monitor']['common']['loop_interval'],
-        'monitor.common.loop_interval'
+        DEFAULT_VALUES['monitor']['loop_interval'],
+        'monitor.loop_interval'
     ) or updated
 
-    # monitor.common.*：等待行为配置，保持 H/M/S 字符串语义
+    # wait.*：等待行为配置，保持 H/M/S 字符串语义
     updated = _normalize_time_like_config(
-        common_section,
+        wait_section,
         'max_wait',
-        DEFAULT_VALUES['monitor']['common']['max_wait'],
-        'monitor.common.max_wait'
+        DEFAULT_VALUES['wait']['max_wait'],
+        'wait.max_wait'
     ) or updated
     updated = _normalize_time_like_config(
-        common_section,
+        wait_section,
         'check_interval',
-        DEFAULT_VALUES['monitor']['common']['check_interval'],
-        'monitor.common.check_interval'
+        DEFAULT_VALUES['wait']['check_interval'],
+        'wait.check_interval'
     ) or updated
 
     # push.retry.interval：重试间隔也按时间串处理
@@ -808,12 +805,12 @@ def _normalize_config_writable_values(user_config):
         'push.retry.max_count'
     ) or updated
 
-    # monitor.common.timeout_threshold：超时阈值，必须为正整数
+    # external.timeout_threshold：超时阈值，必须为正整数
     updated = _normalize_positive_int_config(
-        common_section,
+        external_section,
         'timeout_threshold',
-        DEFAULT_VALUES['monitor']['common']['timeout_threshold'],
-        'monitor.common.timeout_threshold'
+        DEFAULT_VALUES['external']['timeout_threshold'],
+        'external.timeout_threshold'
     ) or updated
 
     # log.max_log_files、log.retention_days：日志归档参数，统一转为非负整数字符语义
@@ -922,11 +919,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
             updated = True
 
-    monitor_section = user_config.get('monitor', {})
-    task_section = (
-        monitor_section.get('task_scheduler', {})
-        if isinstance(monitor_section, dict) else {}
-    )
+    task_section = user_config.get('task', {})
     if isinstance(task_section, dict):
         updated = _normalize_task_lookback_minutes(task_section) or updated
 

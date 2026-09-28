@@ -41,7 +41,8 @@ def test_new_config_validation():
 
     try:
         # 加载配置
-        config = load_config(temp_config_file)
+        with patch('modules.config._normalize_config_writable_values', return_value=False):
+            config = load_config(temp_config_file)
         print("新配置加载成功")
 
         # 检查是否填充了默认值
@@ -57,6 +58,39 @@ def test_new_config_validation():
 
     finally:
         # 清理临时文件
+        if os.path.exists(temp_config_file):
+            os.unlink(temp_config_file)
+
+
+def test_existing_common_section_is_recursively_completed():
+    """验证已有 common 节缺少单字段时仍会递归补齐。"""
+    new_config = {
+        'monitor': {
+            'common': {
+                'timeout_interval': '20m',
+            },
+            'psutil': {
+                'process_name': 'notepad.exe',
+            },
+        },
+    }
+
+    with tempfile.NamedTemporaryFile(
+            mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
+        yaml = YAML()
+        yaml.dump(new_config, f)
+        temp_config_file = f.name
+
+    try:
+        with patch('modules.config._normalize_config_writable_values', return_value=False):
+            config = load_config(temp_config_file)
+        common = config['monitor']['common']
+        assert common['timeout_interval'] == '20m'
+        assert common['loop_interval'] == '1s'
+        assert common['timeout_threshold'] == 3
+        assert common['max_wait'] == '30s'
+        assert common['check_interval'] == '1s'
+    finally:
         if os.path.exists(temp_config_file):
             os.unlink(temp_config_file)
 
