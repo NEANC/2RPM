@@ -847,6 +847,158 @@ def merge_configs(user_config, default_config):
     return default_config
 
 
+
+
+def _fail_config_layout(path, message):
+    """记录配置布局错误并终止加载。"""
+    LOGGER.error(f"配置布局错误: {path}，{message}，不写回")
+    sys.exit(1)
+
+
+def _validate_config_shapes(user_config):
+    """预检新布局共享节点的映射类型。"""
+    monitor = user_config.get('monitor')
+    if monitor is not None and not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+    if isinstance(monitor, dict):
+        for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+            if key in monitor and not isinstance(monitor[key], dict):
+                _fail_config_layout(f'monitor.{key}', '必须是映射结构')
+    external = user_config.get('external')
+    if external is not None and not isinstance(external, dict):
+        _fail_config_layout('external', '必须是映射结构')
+
+
+def _set_migrated_leaf(target, target_path, old_path, old_value):
+    """按目标键存在性迁移单个旧配置叶。"""
+    target_section, target_key = target
+    if target_key in target_section:
+        if target_section[target_key] != old_value:
+            LOGGER.warning(
+                f"配置冲突: {target_path} 与 {old_path}，新字段优先"
+            )
+        return False
+    target_section[target_key] = old_value
+    return True
+
+
+def _migrate_config_layout(user_config):
+    """在默认补全前迁移旧配置布局。"""
+    changed = False
+    # 初始化监视配置节，确保旧版布局可以迁移到新结构
+    if 'monitor' not in user_config:
+        user_config['monitor'] = CommentedMap()
+        changed = True
+    monitor = user_config['monitor']
+    if not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+    for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+        if key not in monitor:
+            monitor[key] = CommentedMap()
+            changed = True
+    common = monitor['common']
+    psutil = monitor['psutil']
+    task_scheduler = monitor['task_scheduler']
+    launch = monitor['launch']
+    if 'external' not in user_config:
+        user_config['external'] = CommentedMap()
+        changed = True
+    external = user_config['external']
+
+    mappings = [
+        (monitor, 'mode', 'monitor.mode', monitor, 'monitor_mode', 'monitor.monitor_mode'),
+        (common, 'timeout_interval', 'monitor.common.timeout_interval',
+         monitor, 'timeout_interval', 'monitor.timeout_interval'),
+        (common, 'loop_interval', 'monitor.common.loop_interval',
+         monitor, 'loop_interval', 'monitor.loop_interval'),
+        (psutil, 'process_name', 'monitor.psutil.process_name',
+         monitor, 'process_name', 'monitor.process_name'),
+        (common, 'timeout_threshold', 'monitor.common.timeout_threshold',
+         external, 'timeout_threshold', 'external.timeout_threshold'),
+    ]
+    wait = user_config.get('wait')
+    task = user_config.get('task')
+    old_launch = user_config.get('launch')
+    if isinstance(wait, dict):
+        mappings.extend([
+            (common, 'max_wait', 'monitor.common.max_wait', wait, 'max_wait', 'wait.max_wait'),
+            (common, 'check_interval', 'monitor.common.check_interval', wait, 'check_interval', 'wait.check_interval'),
+        ])
+    if isinstance(task, dict):
+        mappings.extend([
+            (task_scheduler, 'task_name', 'monitor.task_scheduler.task_name', task, 'task_name', 'task.task_name'),
+            (task_scheduler, 'lookback_minutes', 'monitor.task_scheduler.lookback_minutes', task, 'lookback_minutes', 'task.lookback_minutes'),
+        ])
+    if isinstance(old_launch, dict):
+        for key in ('type', 'path', 'args', 'cwd', 'task_name'):
+            mappings.append((launch, key, f'monitor.launch.{key}', old_launch, key, f'launch.{key}'))
+
+    for target_section, target_key, target_path, source_section, source_key, source_path in mappings:
+        if source_key in source_section:
+            _set_migrated_leaf(
+                (target_section, target_key), target_path, source_path,
+                source_section[source_key]
+            )
+            if source_section is not target_section:
+                del source_section[source_key]
+                changed = True
+
+    for key in ('task', 'launch', 'wait'):
+        if key in user_config:
+            del user_config[key]
+            changed = True
+    for key in ('monitor_mode', 'timeout_interval', 'loop_interval', 'process_name'):
+        if key in monitor:
+            monitor.pop(key)
+            changed = True
+    if isinstance(external, dict) and 'timeout_threshold' in external:
+        external.pop('timeout_threshold')
+        changed = True
+    return changed
+
+
+def _validate_active_monitor_config(user_config, require_explicit=False):
+    """校验当前监视模式及其目标字段。"""
+    monitor = user_config.get('monitor', {})
+    mode = monitor.get('mode', 'psutil')
+    if mode not in ('psutil', 'task_scheduler', 'launch'):
+        _fail_config_layout('monitor.mode', '值无效')
+    section = monitor.get(mode, {})
+    required = {
+        'psutil': ('process_name',),
+        'task_scheduler': ('task_name',),
+    }
+    if require_explicit:
+        fields = required.get(mode, ())
+        for field in fields:
+            if field not in section:
+                _fail_config_layout(f'monitor.{mode}.{field}', '当前模式要求显式配置')
+        if mode == 'launch':
+            for field in ('type',):
+                if field not in section:
+                    _fail_config_layout(f'monitor.launch.{field}', '当前模式要求显式配置')
+    if mode in required:
+        value = section.get(required[mode][0])
+        if not isinstance(value, str) or not value.strip():
+            _fail_config_layout(f'monitor.{mode}.{required[mode][0]}', '当前模式值无效')
+        return
+    launch_type = section.get('type')
+    if launch_type not in ('program', 'task'):
+        _fail_config_layout('monitor.launch.type', '当前模式值无效')
+    target_key = 'path' if launch_type == 'program' else 'task_name'
+    target_value = section.get(target_key)
+    if not isinstance(target_value, str) or not target_value.strip():
+        _fail_config_layout(f'monitor.launch.{target_key}', '当前模式值无效')
+    if launch_type == 'program':
+        for key in ('args', 'cwd'):
+            if section.get(key) is not None and not isinstance(section.get(key), str):
+                _fail_config_layout(f'monitor.launch.{key}', '必须是字符串或空值')
+
+
+def _validate_active_presence(user_config):
+    """在默认补全前校验当前模式的显式目标字段。"""
+    _validate_active_monitor_config(user_config, require_explicit=True)
+
 def load_config(config_file, spinner=None, is_user_specified=False):
     """加载配置文件
 
@@ -899,9 +1051,10 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         sys.exit(1)
 
     # 加载默认配置
+    _validate_config_shapes(user_config)
+    updated = _migrate_config_layout(user_config)
+    _validate_active_presence(user_config)
     default_config = get_default_config()
-
-    updated = False
 
     # 确保所有必要的配置节都存在
     for section in default_config:
@@ -930,6 +1083,8 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     # 规范化推送通道并统一回写为标准流式格式
     # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
     corrected = correct_push_channel_config(merged_config)
+
+    _validate_active_monitor_config(merged_config)
 
     if updated or cleaned or corrected:
         LOGGER.info("配置文件已更新，正在执行无缝迁移")
