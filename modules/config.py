@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import copy
+import logging
 import os
 import sys
-import logging
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
@@ -17,28 +18,31 @@ from modules.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
-# 默认配置值集中管理（V4 精简键名）
+# 默认配置值集中管理
 DEFAULT_VALUES = {
     'monitor': {
-        'monitor_mode': 'psutil',
-        'process_name': 'notepad.exe',
-        'timeout_interval': '15m',
-        'loop_interval': '1s',
-    },
-    'task': {
-        'task_name': '\\Custom\\MyTask',
-        'lookback_minutes': 10,
-    },
-    'launch': {
-        'type': 'program',
-        'path': 'C:\\path\\to\\target.exe',
-        'task_name': '\\Custom\\MyTask',
-        'args': None,
-        'cwd': None,
-    },
-    'wait': {
-        'max_wait': '30s',
-        'check_interval': '1s',
+        'mode': 'psutil',
+        'common': {
+            'timeout_interval': '15m',
+            'loop_interval': '1s',
+            'timeout_threshold': 3,
+            'max_wait': '30s',
+            'check_interval': '1s',
+        },
+        'psutil': {
+            'process_name': 'notepad.exe',
+        },
+        'task_scheduler': {
+            'task_name': '\\Custom\\MyTask',
+            'lookback_minutes': 10,
+        },
+        'launch': {
+            'type': 'program',
+            'path': 'C:\\path\\to\\target.exe',
+            'task_name': '\\Custom\\MyTask',
+            'args': None,
+            'cwd': None,
+        },
     },
     'push': {
         'templates': {
@@ -104,7 +108,6 @@ DEFAULT_VALUES = {
     'external': {
         'on_end': 'C:\\path\\to\\your\\script.bat',
         'on_timeout': 'C:\\path\\to\\another_script.bat',
-        'timeout_threshold': 3,
         'on_wait_timeout': 'C:\\path\\to\\wait_timeout_script.bat',
     },
     'log': {
@@ -114,86 +117,49 @@ DEFAULT_VALUES = {
     },
 }
 
-# 注释集中管理（V4 精简键名与节名）
+# 注释集中管理
 COMMENTS = {
     'monitor': {
         '_comment': (
             "监视设置\n"
             "- 监视程序相关配置\n"
         ),
-        'monitor_mode': (
+        'mode': (
             "\n监视模式，可选值: psutil / task_scheduler / launch\n"
             "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
-            "- task_scheduler: 通过事件日志获取计划任务PID后监视\n"
+            "- task_scheduler: 通过事件日志获取计划任务 PID 后监视\n"
             "- launch: 主动拉起目标程序或计划任务并获取 PID 进行监视\n"
         ),
-        'process_name': (
-            "\n要监视的进程名称"
-        ),
-        'timeout_interval': (
-            "\n超时警告间隔，默认值15分钟，支持 H/M/S 格式\n"
-        ),
-        'loop_interval': (
-            "\n监视循环间隔，默认值1秒，支持 H/M/S 格式\n"
-        ),
-    },
-    'task': {
-        '_comment': (
-            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
-            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
-        ),
-        'task_name': (
-            "\n要监视的计划任务名称\n"
-            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
-        ),
-        'lookback_minutes': (
-            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
-            "- 默认值: 10\n"
-        ),
-    },
-    'launch': {
-        '_comment': (
-            "主动拉起目标设置\n"
-            "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
-            "- 仅在 monitor_mode 为 launch 时生效\n"
-        ),
-        'type': (
-            "\n拉起类型: program / task\n"
-            "- program: 直接启动可执行程序\n"
-            "- task: 触发 Windows 计划任务后监视其进程\n"
-        ),
-        'path': (
-            "\n要拉起的可执行文件路径\n"
-            "- 仅 type=program 时使用\n"
-            "- 例如: C:\\app\\target.exe"
-        ),
-        'args': (
-            "\n命令行参数\n"
-            "- 选填，仅 type=program 时使用\n"
-            "- 例如: --verbose --config C:\\app\\config.ini"
-        ),
-        'cwd': (
-            "\n工作目录\n"
-            "- 选填，仅 type=program 时使用\n"
-            "- 默认取 path 所在目录"
-        ),
-        'task_name': (
-            "\n要触发的计划任务名称\n"
-            "- 仅 type=task 时使用\n"
-            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
-        ),
-    },
-    'wait': {
-        '_comment': (
-            "等待进程设置\n"
-            "- 配置等待进程启动的相关参数\n"
-        ),
-        'max_wait': (
-            "\n最长等待时间，默认值: 30秒，支持 H/M/S 格式\n"
-        ),
-        'check_interval': (
-            "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
-        ),
+        'common': {
+            '_comment': "\n监视通用参数设置\n",
+            'timeout_interval': "\n超时警告间隔，默认值 15 分钟，支持 H/M/S 格式\n",
+            'loop_interval': "\n监视循环间隔，默认值 1 秒，支持 H/M/S 格式\n",
+            'timeout_threshold': "\n进程超时触发外部程序前的次数阈值，默认值 3\n",
+            'max_wait': "\n最长等待时间，默认值 30 秒，支持 H/M/S 格式\n",
+            'check_interval': "\n等待进程检查间隔，默认值 1 秒，支持 H/M/S 格式\n",
+        },
+        'psutil': {
+            '_comment': "\npsutil 监视设置（仅在 mode 为 psutil 时生效）\n",
+            'process_name': "\n要监视的进程名称",
+        },
+        'task_scheduler': {
+            '_comment': (
+                "\n计划任务监视设置（仅在 mode 为 task_scheduler 时生效）\n"
+                "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
+            ),
+            'task_name': "\n要监视的计划任务名称\n- 完整路径格式: \\\\Folder\\\\TaskName\n",
+            'lookback_minutes': "\n事件回溯时间（分钟），默认值: 10\n",
+        },
+        'launch': {
+            '_comment': (
+                "\n主动拉起目标设置（仅在 mode 为 launch 时生效）\n"
+            ),
+            'type': "\n拉起类型: program / task\n",
+            'path': "\n要拉起的可执行文件路径（仅 type=program 时使用）\n",
+            'args': "\n命令行参数（选填，仅 type=program 时使用）\n",
+            'cwd': "\n工作目录（选填，仅 type=program 时使用）\n",
+            'task_name': "\n要触发的计划任务名称（仅 type=task 时使用）\n",
+        },
     },
     'push': {
         '_comment': (
@@ -284,9 +250,6 @@ COMMENTS = {
         'on_timeout': (
             "\n进程运行超时后触发的外部程序/BAT脚本的详细路径，例如: "
             "C:\\path\\timeout\\timeout_script.bat"
-        ),
-        'timeout_threshold': (
-            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
         ),
         'on_wait_timeout': (
             "\n等待进程启动超时后触发的外部程序/BAT脚本的详细路径\n"
@@ -425,7 +388,7 @@ def get_default_config(for_file_creation=False):
     """
     LOGGER.info("正在读取默认配置")
 
-    config = _create_commented_map(DEFAULT_VALUES)
+    config = _create_commented_map(copy.deepcopy(DEFAULT_VALUES))
 
     LOGGER.info("正在应用注释到默认配置")
     apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
@@ -792,7 +755,10 @@ def _normalize_config_writable_values(user_config):
     updated = False
 
     monitor_section = user_config.get('monitor', {})
-    wait_section = user_config.get('wait', {})
+    common_section = (
+        monitor_section.get('common', {})
+        if isinstance(monitor_section, dict) else {}
+    )
     push_section = user_config.get('push', {})
     retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
     external_section = user_config.get('external', {})
@@ -800,30 +766,30 @@ def _normalize_config_writable_values(user_config):
 
     # monitor.*：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'timeout_interval',
-        DEFAULT_VALUES['monitor']['timeout_interval'],
-        'monitor.timeout_interval'
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'],
+        'monitor.common.timeout_interval'
     ) or updated
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'loop_interval',
-        DEFAULT_VALUES['monitor']['loop_interval'],
-        'monitor.loop_interval'
+        DEFAULT_VALUES['monitor']['common']['loop_interval'],
+        'monitor.common.loop_interval'
     ) or updated
 
-    # wait.*：等待行为配置，保持 H/M/S 字符串语义
+    # monitor.common.*：等待行为配置，保持 H/M/S 字符串语义
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'max_wait',
-        DEFAULT_VALUES['wait']['max_wait'],
-        'wait.max_wait'
+        DEFAULT_VALUES['monitor']['common']['max_wait'],
+        'monitor.common.max_wait'
     ) or updated
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'check_interval',
-        DEFAULT_VALUES['wait']['check_interval'],
-        'wait.check_interval'
+        DEFAULT_VALUES['monitor']['common']['check_interval'],
+        'monitor.common.check_interval'
     ) or updated
 
     # push.retry.interval：重试间隔也按时间串处理
@@ -842,12 +808,12 @@ def _normalize_config_writable_values(user_config):
         'push.retry.max_count'
     ) or updated
 
-    # external.timeout_threshold：超时阈值，必须为正整数
+    # monitor.common.timeout_threshold：超时阈值，必须为正整数
     updated = _normalize_positive_int_config(
-        external_section,
+        common_section,
         'timeout_threshold',
-        DEFAULT_VALUES['external']['timeout_threshold'],
-        'external.timeout_threshold'
+        DEFAULT_VALUES['monitor']['common']['timeout_threshold'],
+        'monitor.common.timeout_threshold'
     ) or updated
 
     # log.max_log_files、log.retention_days：日志归档参数，统一转为非负整数字符语义
@@ -956,7 +922,11 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
             updated = True
 
-    task_section = user_config.get('task', {})
+    monitor_section = user_config.get('monitor', {})
+    task_section = (
+        monitor_section.get('task_scheduler', {})
+        if isinstance(monitor_section, dict) else {}
+    )
     if isinstance(task_section, dict):
         updated = _normalize_task_lookback_minutes(task_section) or updated
 
