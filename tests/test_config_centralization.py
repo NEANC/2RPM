@@ -13,7 +13,7 @@ from ruamel.yaml import YAML
 # 将项目根目录加入模块搜索路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from modules.config import load_config, DEFAULT_VALUES
+from modules.config import get_default_config, load_config, DEFAULT_VALUES
 
 
 def test_new_config_validation():
@@ -23,12 +23,13 @@ def test_new_config_validation():
     # 创建一个缺少参数的新版本配置文件
     new_config = {
         'monitor': {
-            'process_name': 'notepad.exe'
-            # 缺少 timeout_interval 和 loop_interval
+            'psutil': {
+                'process_name': 'notepad.exe'
+            }
+            # 缺少 common 中的时间参数
         },
-        'wait': {
-            'max_wait': '30s'
-            # 缺少 check_interval
+        'push': {
+            'retry': {}
         }
     }
 
@@ -44,14 +45,15 @@ def test_new_config_validation():
         print("新配置加载成功")
 
         # 检查是否填充了默认值
-        assert 'timeout_interval' in config['monitor'], "未填充 timeout_interval 默认值"
-        assert 'loop_interval' in config['monitor'], "未填充 loop_interval 默认值"
-        assert 'check_interval' in config['wait'], "未填充 check_interval 默认值"
+        assert 'timeout_interval' in config['monitor']['common'], "未填充 timeout_interval 默认值"
+        assert 'loop_interval' in config['monitor']['common'], "未填充 loop_interval 默认值"
+        assert 'max_wait' in config['monitor']['common'], "未填充 max_wait 默认值"
+        assert 'check_interval' in config['monitor']['common'], "未填充 check_interval 默认值"
 
         print("所有缺失参数已填充默认值")
-        print(f"   - timeout_interval 默认值: {config['monitor']['timeout_interval']}")
-        print(f"   - loop_interval 默认值: {config['monitor']['loop_interval']}")
-        print(f"   - check_interval 默认值: {config['wait']['check_interval']}")
+        print(f"   - timeout_interval 默认值: {config['monitor']['common']['timeout_interval']}")
+        print(f"   - loop_interval 默认值: {config['monitor']['common']['loop_interval']}")
+        print(f"   - check_interval 默认值: {config['monitor']['common']['check_interval']}")
 
     finally:
         # 清理临时文件
@@ -100,21 +102,52 @@ def test_user_specified_config_missing_should_exit_with_error():
 
 
 def test_centralized_defaults():
-    """测试集中管理的默认值结构完整性。"""
-    print("\n=== 测试集中管理的默认值功能 ===")
+    """测试集中管理的新配置默认值结构。"""
+    monitor = DEFAULT_VALUES['monitor']
+    assert set(monitor) == {'mode', 'common', 'psutil', 'task_scheduler', 'launch'}
+    assert monitor['mode'] == 'psutil'
+    assert monitor['common'] == {
+        'timeout_interval': '15m',
+        'loop_interval': '1s',
+        'timeout_threshold': 3,
+        'max_wait': '30s',
+        'check_interval': '1s',
+    }
+    assert monitor['psutil'] == {'process_name': 'notepad.exe'}
+    assert monitor['task_scheduler'] == {
+        'task_name': '\\Custom\\MyTask',
+        'lookback_minutes': 10,
+    }
+    assert monitor['launch'] == {
+        'type': 'program',
+        'path': 'C:\\path\\to\\target.exe',
+        'task_name': '\\Custom\\MyTask',
+        'args': None,
+        'cwd': None,
+    }
+    assert 'timeout_threshold' not in DEFAULT_VALUES['external']
+    assert DEFAULT_VALUES['push']['retry'] == {'interval': '3s', 'max_count': 3}
+    assert DEFAULT_VALUES['log'] == {
+        'log_directory': 'logs',
+        'max_log_files': 15,
+        'retention_days': 3,
+    }
 
-    # 验证 DEFAULT_VALUES 结构完整
-    assert 'monitor' in DEFAULT_VALUES, "DEFAULT_VALUES 缺少 monitor"
-    assert 'wait' in DEFAULT_VALUES, "DEFAULT_VALUES 缺少 wait"
-    assert 'push' in DEFAULT_VALUES, "DEFAULT_VALUES 缺少 push"
-    assert 'external' in DEFAULT_VALUES, "DEFAULT_VALUES 缺少 external"
-    assert 'log' in DEFAULT_VALUES, "DEFAULT_VALUES 缺少 log"
 
-    print("DEFAULT_VALUES 结构完整")
-    print(f"   - monitor.process_name 默认值: {DEFAULT_VALUES['monitor']['process_name']}")
-    print(f"   - monitor.timeout_interval 默认值: {DEFAULT_VALUES['monitor']['timeout_interval']}")
-    print(f"   - wait.max_wait 默认值: {DEFAULT_VALUES['wait']['max_wait']}")
-    print(f"   - push.retry.max_count 默认值: {DEFAULT_VALUES['push']['retry']['max_count']}")
+def test_get_default_config_creates_independent_mutable_nodes():
+    """验证每次获取默认配置都不会共享可变节点。"""
+    first = get_default_config()
+    second = get_default_config()
+
+    first['monitor']['common']['timeout_interval'] = '1h'
+    first['monitor']['launch']['args'] = ['--changed']
+    first['push']['templates']['on_end']['enable'] = False
+    first['push']['push_channel_settings']['channels'].append({'provider': 'test'})
+
+    assert second['monitor']['common']['timeout_interval'] == '15m'
+    assert second['monitor']['launch']['args'] is None
+    assert second['push']['templates']['on_end']['enable'] is True
+    assert len(second['push']['push_channel_settings']['channels']) == 5
 
 
 if __name__ == "__main__":
