@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 import modules.monitor as monitor
 from modules.config import load_config, DEFAULT_VALUES
+from modules import task_monitor
 
 
 class TestTaskLookbackConfig(unittest.TestCase):
@@ -93,10 +94,9 @@ class TestTaskLookbackConfig(unittest.TestCase):
 
 
 class TestTaskMonitorLookbackQuery(unittest.TestCase):
-    """在可控环境验证 lookback_minutes 被传入事件查询。"""
+    """在可控环境验证规范化后的 lookback_minutes 被传入事件查询。"""
 
-    @unittest.skip('monitor.py consumer 仍使用旧 task 路径，本次范围不修改')
-    def test_query_called_with_lookback_minutes(self):
+    def test_query_called_with_normalized_lookback_minutes(self):
         """确保 monitor_via_task_scheduler 使用规范化后的 lookback 值。"""
         calls = {}
 
@@ -110,6 +110,7 @@ class TestTaskMonitorLookbackQuery(unittest.TestCase):
                 "common": {
                     "timeout_interval": "1m",
                     "loop_interval": "1s",
+                    "timeout_threshold": 3,
                     "max_wait": "1s",
                     "check_interval": "1s",
                 },
@@ -128,6 +129,16 @@ class TestTaskMonitorLookbackQuery(unittest.TestCase):
 
         self.assertEqual(calls.get('task_name'), 'task_a')
         self.assertEqual(calls.get('lookback_minutes'), 5)
+
+    def test_zero_lookback_uses_one_millisecond_query_window(self):
+        """lookback=0 时查询 XPath 仍使用至少 1 毫秒窗口。"""
+        with patch.object(task_monitor.win32evtlog, 'EvtQuery') as query_mock, \
+                patch.object(task_monitor.win32evtlog, 'EvtNext', return_value=[]), \
+                patch.object(task_monitor.win32evtlog, 'EvtClose', create=True):
+            task_monitor._get_latest_matching_event('task_a', 129, 0)
+
+        xpath = query_mock.call_args.args[2]
+        self.assertIn('timediff(@SystemTime) <= 1', xpath)
 
 
 if __name__ == '__main__':

@@ -250,14 +250,14 @@ class TestConfig(unittest.TestCase):
         """测试配置合并（V4 键名）"""
         user_config = {
             'monitor': {
-                'process_name': 'custom.exe'
+                'psutil': {'process_name': 'custom.exe'}
             }
         }
-        
+
         default_config = get_default_config()
-        
+
         merged_config = merge_configs(user_config, default_config)
-        self.assertEqual(merged_config['monitor']['process_name'], 'custom.exe')
+        self.assertEqual(merged_config['monitor']['psutil']['process_name'], 'custom.exe')
 
 
 class TestParsePushChannels(unittest.TestCase):
@@ -611,14 +611,24 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         """
         return {
             'monitor': {
-                'monitor_mode': 'psutil',
-                'process_name': 'target.exe',
-                'timeout_interval': '15m',
-                'loop_interval': '1s',
-            },
-            'wait': {
-                'max_wait': '15m',
-                'check_interval': '1s',
+                'mode': 'psutil',
+                'common': {
+                    'timeout_interval': '15m',
+                    'loop_interval': '1s',
+                    'timeout_threshold': 3,
+                    'max_wait': '15m',
+                    'check_interval': '1s',
+                },
+                'psutil': {'process_name': 'target.exe'},
+                'task_scheduler': {
+                    'task_name': r'\Custom\MyTask',
+                    'lookback_minutes': 10,
+                },
+                'launch': {
+                    'type': 'program', 'path': r'C:\app\target.exe',
+                    'args': None, 'cwd': None,
+                    'task_name': r'\Custom\MyTask',
+                },
             },
             'external': {
                 'on_end': '',
@@ -663,7 +673,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         ]
         config = self._build_config()
         # timeout_interval 设为 0s，任意流逝时间均触发超时，无需 mock time.time
-        config['monitor']['timeout_interval'] = '0s'
+        config['monitor']['common']['timeout_interval'] = '0s'
         monitor_processes(config)
 
         timeout_calls = [
@@ -685,18 +695,26 @@ class TestLaunchSmoke(unittest.TestCase):
         """
         return {
             'monitor': {
-                'monitor_mode': 'launch',
-                'timeout_interval': '15m',
-                'loop_interval': '1s',
-            },
-            'launch': {
-                'type': launch_type,
-                'path': 'C:\\app\\target.exe',
-                'task_name': '\\Custom\\MyTask',
-            },
-            'wait': {
-                'max_wait': '30s',
-                'check_interval': '1s',
+                'mode': 'launch',
+                'common': {
+                    'timeout_interval': '15m',
+                    'loop_interval': '1s',
+                    'timeout_threshold': 3,
+                    'max_wait': '30s',
+                    'check_interval': '1s',
+                },
+                'psutil': {'process_name': 'target.exe'},
+                'task_scheduler': {
+                    'task_name': r'\Custom\MyTask',
+                    'lookback_minutes': 10,
+                },
+                'launch': {
+                    'type': launch_type,
+                    'path': 'C:\\app\\target.exe',
+                    'args': None,
+                    'cwd': None,
+                    'task_name': '\\Custom\\MyTask',
+                },
             },
             'external': {
                 'on_end': '',
@@ -752,7 +770,7 @@ class TestLaunchSmoke(unittest.TestCase):
         ]
 
         config = self._build_config()
-        config['monitor']['timeout_interval'] = '0s'
+        config['monitor']['common']['timeout_interval'] = '0s'
         monitor_via_launch(config)
 
         timeout_calls = [

@@ -42,7 +42,7 @@ def _get_timeout_count_threshold(raw_threshold):
     Returns:
         int: 合法化后的阈值
     """
-    default_threshold = DEFAULT_VALUES['external']['timeout_threshold']
+    default_threshold = DEFAULT_VALUES['monitor']['common']['timeout_threshold']
     try:
         threshold = int(raw_threshold)
     except (TypeError, ValueError):
@@ -366,22 +366,25 @@ def _monitor_single_pid(pid_info, config, sp):
         sp: spinner 句柄
     """
     monitor_section = config.get('monitor', {})
+    common_section = monitor_section.get('common', {})
     external_section = config.get('external', {})
 
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     external_on_timeout_path = external_section.get('on_timeout', '')
     external_on_end_path = external_section.get('on_end', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
 
     LOGGER.info(
@@ -532,13 +535,16 @@ def _launch_task(launch_section, config):
         sys.exit(1)
 
     # 等待 PID 出现
-    wait_section = config.get('wait', {})
+    common_section = config.get('monitor', {}).get('common', {})
     max_wait = _parse_time_or_default(
-        wait_section.get('max_wait', DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
     check_interval = _parse_time_or_default(
-        wait_section.get('check_interval', DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+        common_section.get(
+            'check_interval',
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
 
     LOGGER.info(
         f"等待计划任务进程启动，每 {check_interval} 秒检查一次"
@@ -644,7 +650,7 @@ def monitor_via_launch(config):
     Args:
         config (dict): 配置信息
     """
-    launch_section = config.get('launch', {})
+    launch_section = config.get('monitor', {}).get('launch', {})
     launch_type = launch_section.get('type', 'program')
 
     if launch_type not in ('program', 'task'):
@@ -674,11 +680,12 @@ def monitor_processes(config):
         config (dict): 配置信息
     """
     monitor_section = config.get('monitor', {})
-    wait_section = config.get('wait', {})
+    common_section = monitor_section.get('common', {})
+    psutil_section = monitor_section.get('psutil', {})
     external_section = config.get('external', {})
 
     # 检查监视模式
-    monitor_mode = monitor_section.get('monitor_mode', 'psutil')
+    monitor_mode = monitor_section.get('mode', 'psutil')
 
     if monitor_mode == 'task_scheduler':
         LOGGER.info("读取计划任务来获取 PID 进行监视")
@@ -690,37 +697,37 @@ def monitor_processes(config):
         monitor_via_launch(config)
         return
 
-    process_name = monitor_section.get(
-        'process_name',
-        DEFAULT_VALUES['monitor']['process_name'])
+    process_name = psutil_section.get(
+        'process_name', DEFAULT_VALUES['monitor']['psutil']['process_name'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
 
     max_wait = _parse_time_or_default(
-        wait_section.get(
-            'max_wait',
-            DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
     check_interval = _parse_time_or_default(
-        wait_section.get(
+        common_section.get(
             'check_interval',
-            DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
 
     # 外部程序调用设置
     external_on_end_path = external_section.get('on_end', '')
     external_on_timeout_path = external_section.get(
         'on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
     external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
@@ -918,39 +925,42 @@ def monitor_via_task_scheduler(config):
     Args:
         config (dict): 配置信息
     """
-    task_section = config.get('task', {})
+    task_section = config.get('monitor', {}).get('task_scheduler', {})
     external_section = config.get('external', {})
     monitor_section = config.get('monitor', {})
-    wait_section = config.get('wait', {})
+    common_section = monitor_section.get('common', {})
 
     task_name = task_section.get('task_name', '')
     # 关键参数：对齐 task.lookback_minutes 的边界行为，确保非法值回退默认 10 并回写已归一化后的值
-    lookback_minutes = task_section.get('lookback_minutes', DEFAULT_VALUES['task']['lookback_minutes'])
+    lookback_minutes = task_section.get(
+        'lookback_minutes',
+        DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes'])
     check_interval = _parse_time_or_default(
-        wait_section.get(
+        common_section.get(
             'check_interval',
-            DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     max_wait = _parse_time_or_default(
-        wait_section.get(
-            'max_wait',
-            DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
 
     external_on_end_path = external_section.get('on_end', '')
     external_on_timeout_path = external_section.get('on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
     external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
