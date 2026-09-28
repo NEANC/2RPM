@@ -220,7 +220,7 @@ def test_launch_task_uses_fixed_one_minute_lookback():
     config = {
         'monitor': {
             'mode': 'launch',
-            'common': {'max_wait': '0s', 'check_interval': '1s'},
+            'common': {'max_wait': '1s', 'check_interval': '1s'},
             'task_scheduler': {'lookback_minutes': 99},
             'launch': {
                 'type': 'task', 'path': None, 'args': None,
