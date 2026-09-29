@@ -139,6 +139,7 @@ def test_registration_and_four_argument_signature():
         'catbox': providers.upload_catbox,
         'wmimg': providers.upload_wmimg,
         'beeimg': adapter,
+        'superbed': providers.upload_superbed,
     }
     assert list(signature(adapter).parameters) == [
         'image_bytes', 'filename', 'token', 'options',

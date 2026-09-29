@@ -19,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 CATBOX_ENDPOINT = 'https://catbox.moe/user/api.php'
 WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
 BEEIMG_ENDPOINT = 'https://beeimg.com/api/upload/file/json/'
+SUPERBED_ENDPOINT = 'https://api.superbed.cn/upload'
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 15
 
@@ -172,4 +173,59 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
     except Exception:
         pass
     # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
+    raise ImageHostError('upload_failed', '')
+
+
+def upload_superbed(image_bytes, filename, token, options) -> str:
+    """依据 Superbed 官方客户端上传示例发送内存 PNG。
+
+    契约来源：https://www.superbed.cn/help 的 PicGo 和 ShareX 示例；
+    仅核验公开文档，未做真实上传。已解析的凭证原样进入表单 token，
+    不混发通用说明中的 X-API-Key，也不推测匿名支持。categories
+    为可选相册名称字符串。公开是项目约定，不代表已验证服务端权限；
+    未确认私有能力，因此请求前拒绝私有要求及原生 privacy 参数。
+    官方提取根级 url，不要求额外成功字段；明确失败标记防御性拒绝。
+    每次最多一次请求，连接和读取超时不保证服务端尚未保存图片。
+    """
+    if not isinstance(token, str) or not token:
+        raise ImageHostError('invalid_token', '')
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission != 1 or 'privacy' in options):
+        raise ImageHostError('invalid_options', '')
+
+    data = {'token': token}
+    if 'categories' in options:
+        categories = options['categories']
+        if not isinstance(categories, str):
+            raise ImageHostError('invalid_options', '')
+        data['categories'] = categories
+    if any(name not in {'permission', 'categories'} for name in options):
+        LOGGER.warning('Superbed 存在不支持的其他选项，已忽略')
+
+    try:
+        with requests.Session() as session:
+            with session.post(
+                    SUPERBED_ENDPOINT,
+                    data=data,
+                    files={'file': (filename, image_bytes, 'image/png')},
+                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                    verify=True,
+                    stream=True,
+                    allow_redirects=False) as response:
+                if not 200 <= response.status_code < 300:
+                    raise ImageHostError('upload_failed', '')
+                payload = response.json()
+                if not isinstance(payload, Mapping):
+                    raise ImageHostError('upload_failed', '')
+                if (payload.get('success') is False
+                        or payload.get('status') is False
+                        or payload.get('error')):
+                    raise ImageHostError('upload_failed', '')
+                return validate_image_url(payload.get('url'))
+    except ImageHostError:
+        raise
+    except Exception:
+        pass
+    # 离开异常处理器后再抛出，避免保存包含凭证或正文的异常链。
     raise ImageHostError('upload_failed', '')
