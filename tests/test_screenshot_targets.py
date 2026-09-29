@@ -175,6 +175,65 @@ def test_declared_names_are_reserved_before_allocation(declarations, expected):
         target['renamed_from'] is not None for target in targets)
 
 
+@pytest.mark.parametrize(('suffix', 'next_suffix'), [
+    pytest.param('9' * 5000, '1' + '0' * 5000, id='long-carry'),
+    pytest.param('0' * 10 + '9' * 5000, '1' + '0' * 5000,
+                 id='long-leading-zeros'),
+    pytest.param('0' * 5000 + '9', '10', id='many-leading-zeros'),
+    pytest.param('8', '9', id='ordinary'),
+    pytest.param('009', '10', id='leading-zeros'),
+    pytest.param('000', '1', id='all-zeros'),
+    pytest.param('0', '1', id='zero'),
+    pytest.param('099', '100', id='carry-leading-zero'),
+])
+def test_duplicate_numbered_output_increments_without_integer_limit(
+        suffix, next_suffix):
+    """重复编号支持超长后缀，保留首项且规范化递增后的前导零。"""
+    name = 'screenshot_' + suffix
+    replacement = 'screenshot_' + next_suffix
+    raw = [make_target(out=name), make_target(out=name), make_target()]
+    before = deepcopy(raw)
+
+    targets, warnings = allocate(raw)
+
+    assert output_names(targets) == [name, replacement, 'screenshot_3']
+    assert [target['index'] for target in targets] == [1, 2, 3]
+    assert all(target['error'] is None for target in targets)
+    assert [target['renamed_from'] for target in targets] == [None, name, None]
+    assert warnings == [
+        f'截图目标 2：输出名“{name}”重复，已改为“{replacement}”。']
+    assert raw == before
+
+
+@pytest.mark.parametrize('occupancy', ['declared', 'reserved'])
+def test_long_numbered_output_skips_occupied_successors(occupancy):
+    """超长编号递增时连续跳过后续声明或保留名以及已分配名。"""
+    name = 'screenshot_' + '9' * 5000
+    prefix = 'screenshot_1' + '0' * 4999
+    occupied = [prefix + '0', prefix + '1']
+    raw = [
+        make_target(out=name), make_target(out=name), make_target(),
+        make_target(out=name),
+    ]
+    reserved = occupied.copy() if occupancy == 'reserved' else []
+    if occupancy == 'declared':
+        raw.extend(make_target(out=out) for out in occupied)
+    before = deepcopy((raw, reserved))
+
+    targets, warnings = allocate(raw, reserved)
+
+    expected = [name, prefix + '2', 'screenshot_3', prefix + '3']
+    if occupancy == 'declared':
+        expected.extend(occupied)
+    assert output_names(targets) == expected
+    assert all(target['error'] is None for target in targets)
+    assert warnings == [
+        f'截图目标 2：输出名“{name}”重复，已改为“{prefix}2”。',
+        f'截图目标 4：输出名“{name}”重复，已改为“{prefix}3”。',
+    ]
+    assert (raw, reserved) == before
+
+
 def test_reserved_names_and_aggregate_are_never_overwritten():
     """聚合变量及调用方保留名不可覆盖，也不修改保留集合。"""
     reserved = {'custom', 'screenshot_1', 'screenshot_2', 'screenshot_4'}

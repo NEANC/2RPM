@@ -56,11 +56,23 @@ def _normalize_target(raw, index):
     return result
 
 
+def _increment_number(number):
+    """通过十进制字符串进位递增编号，并移除前导零。"""
+    digits = list(number.lstrip('0') or '0')
+    for index in range(len(digits) - 1, -1, -1):
+        if digits[index] != '9':
+            digits[index] = chr(ord(digits[index]) + 1)
+            return ''.join(digits)
+        digits[index] = '0'
+    return '1' + ''.join(digits)
+
+
 def _next_output_name(start, unavailable):
     """从指定编号起寻找未声明、未分配且未被保留的输出名。"""
+    start = str(start)
     candidate = f'screenshot_{start}'
     while candidate in unavailable:
-        start += 1
+        start = _increment_number(start)
         candidate = f'screenshot_{start}'
     return candidate
 
@@ -107,7 +119,7 @@ def allocate_targets(raw_targets=None, reserved_names=()):
             reason = '重复'
             numbered = _NUMBERED_NAME.fullmatch(name)
             if numbered:
-                start = int(numbered.group(1)) + 1
+                start = _increment_number(numbered.group(1))
         else:
             assigned.add(name)
             continue
