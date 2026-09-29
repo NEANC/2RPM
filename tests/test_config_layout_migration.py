@@ -349,31 +349,35 @@ def test_atomic_write_failure_cleans_temp_and_preserves_original_error(
     original_unlink = os.unlink
     opened_fds = []
     closed_fds = []
-    error_message = f'{failure_stage}-original-error'
+    error_message = f'{failure_stage}-original-secret'
+    primary_error = OSError(28, error_message, 'private-filename')
+    primary_error.winerror = 112
+    cleanup_error = OSError(5, 'cleanup-secret')
+    cleanup_error.winerror = 1117
 
     def fail_fdopen(fd, *args, **kwargs):
         """记录真实描述符并模拟包装失败。"""
         opened_fds.append(fd)
-        raise OSError(error_message)
+        raise primary_error
 
     def close_fd(fd):
         """关闭真实描述符，并按场景报告清理异常。"""
         original_close(fd)
         closed_fds.append(fd)
         if failure_stage == 'fdopen_close_cleanup':
-            raise OSError('close-cleanup-error')
+            raise cleanup_error
 
     def fail_replace(source, destination):
         """确认真实临时文件已写入后模拟原子替换失败。"""
         assert os.path.getsize(source) > 0
         assert os.path.abspath(destination) == str(path)
-        raise OSError(error_message)
+        raise primary_error
 
     def unlink_temp(temp_path):
         """删除真实临时文件，并按场景报告清理异常。"""
         original_unlink(temp_path)
         if failure_stage == 'replace_unlink_cleanup':
-            raise OSError('unlink-cleanup-error')
+            raise cleanup_error
 
     caplog.set_level('INFO', logger='modules.config')
     monkeypatch.setattr('modules.config.os.close', close_fd)
@@ -392,9 +396,17 @@ def test_atomic_write_failure_cleans_temp_and_preserves_original_error(
         assert closed_fds == opened_fds
         assert list(tmp_path.iterdir()) == [path]
         assert '无法写回配置文件' in caplog.text
-        assert error_message in caplog.text
-        assert 'close-cleanup-error' not in caplog.text
-        assert 'unlink-cleanup-error' not in caplog.text
+        stage = 'fdopen' if failure_stage.startswith('fdopen') else 'replace'
+        assert f'stage={stage}' in caplog.text
+        assert 'type=OSError' in caplog.text
+        assert 'errno=28' in caplog.text
+        assert 'winerror=112' in caplog.text
+        assert 'category=ENOSPC' in caplog.text
+        assert 'errno=5' not in caplog.text
+        assert 'winerror=1117' not in caplog.text
+        assert error_message not in caplog.text
+        assert 'private-filename' not in caplog.text
+        assert 'cleanup-secret' not in caplog.text
         assert '正在写回配置信息' not in caplog.text
         assert '配置参数版本差异检查完成' not in caplog.text
     finally:
