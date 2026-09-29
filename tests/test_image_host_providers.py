@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""通过本地合成响应验证 Catbox 契约，不访问网络或模拟实站证据。"""
+"""通过本地合成响应验证 Catbox 契约，不访问外网或模拟实站证据。"""
 
+from http.server import BaseHTTPRequestHandler
+from http.server import HTTPServer
 from importlib import import_module
 from inspect import signature
 import logging
+from threading import Thread
 import traceback
 
 import pytest
@@ -96,12 +99,15 @@ class FakeSession:
 
 @pytest.fixture(autouse=True)
 def forbid_network(monkeypatch):
-    """阻止任何漏过替身的 requests 请求意外访问网络。"""
+    """阻止意外联网，保留原方法供严格限定端点的回环测试使用。"""
+    original_request = requests.sessions.Session.request
+
     def forbidden(*args, **kwargs):
         """立即拒绝真实请求。"""
         raise AssertionError('测试禁止访问网络')
 
     monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
+    return original_request
 
 
 @pytest.fixture
@@ -131,6 +137,7 @@ def test_anonymous_multipart_contract(client, token):
         'data': {'reqtype': 'fileupload'},
         'files': {'fileToUpload': (FILENAME, IMAGE, 'image/png')},
         'timeout': (5, 15), 'verify': True, 'allow_redirects': False,
+        'stream': True,
     })]
     assert client.created == client.closed == client.response.closed == 1
 
@@ -228,6 +235,141 @@ def test_response_read_failure_closes_both_resources(client, caplog):
     assert result.failures[0].code == 'upload_failed'
     assert client.closed == client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize('status, body, encoding', [
+    pytest.param(200, URL.encode(), None, id='success'),
+    pytest.param(500, SECRET.encode(), None, id='http-error'),
+    pytest.param(200, b'not-gzip-' * 8192, 'gzip', id='broken-gzip'),
+])
+def test_real_response_cleanup(
+        monkeypatch, forbid_network, caplog, status, body, encoding):
+    """经真实注册表读取回环响应，在兜底清理前验证连接确定性释放。"""
+    received = []
+    responses = []
+    connections = []
+    sockets = []
+    closed = []
+    decoding_errors = []
+
+    class Handler(BaseHTTPRequestHandler):
+        """仅接收本地合成上传，返回指定的 HTTP/1.1 响应。"""
+
+        protocol_version = 'HTTP/1.1'
+
+        def setup(self):
+            """限制测试连接等待时间，避免服务线程无限阻塞。"""
+            super().setup()
+            self.connection.settimeout(2)
+
+        def handle(self):
+            """容许客户端关闭未读响应导致的预期连接重置。"""
+            try:
+                super().handle()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+
+        def do_POST(self):
+            """读取固定合成请求后发送具有正确长度的测试正文。"""
+            received.append(self.rfile.read(int(self.headers['Content-Length'])))
+            self.send_response(status)
+            self.send_header('Content-Length', str(len(body)))
+            if encoding:
+                self.send_header('Content-Encoding', encoding)
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+
+        def log_message(self, format, *args):
+            """不输出本地服务请求日志。"""
+            pass
+
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    endpoint = f'http://127.0.0.1:{server.server_port}/user/api.php'
+    thread = Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05})
+    thread.daemon = True
+    original_send = requests.adapters.HTTPAdapter.send
+
+    def local_request(session, method, url, **kwargs):
+        """仅允许指定回环 POST，且不读取本机会话代理或认证配置。"""
+        assert method.upper() == 'POST'
+        assert url == endpoint
+        session.trust_env = False
+        return forbid_network(session, method, url, **kwargs)
+
+    def observe_send(adapter, request, **kwargs):
+        """保留真实传输及解压行为，在预读取之前记录响应所有权。"""
+        response = original_send(adapter, request, **kwargs)
+        responses.append(response)
+        connection = response.raw.connection
+        connections.append(connection)
+        sockets.append(connection.sock)
+        original_close = response.close
+        original_iter_content = response.iter_content
+
+        def observe_close():
+            """记录关闭调用并执行原始响应清理。"""
+            closed.append(response)
+            return original_close()
+
+        def observe_content(*args, **kwargs):
+            """执行真实解压，仅记录异常类型而不保存敏感原文。"""
+            try:
+                yield from original_iter_content(*args, **kwargs)
+            except requests.exceptions.ContentDecodingError:
+                decoding_errors.append(requests.exceptions.ContentDecodingError)
+                raise
+
+        monkeypatch.setattr(response, 'close', observe_close)
+        monkeypatch.setattr(response, 'iter_content', observe_content)
+        return response
+
+    try:
+        monkeypatch.setattr(providers(), 'CATBOX_ENDPOINT', endpoint)
+        monkeypatch.setattr(requests.sessions.Session, 'request', local_request)
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', observe_send)
+        thread.start()
+        result = upload(SECRET)
+        assert result.attempts == ('catbox',)
+        if status == 200 and encoding is None:
+            assert result.success
+            assert result.url == URL
+        else:
+            assert not result.success
+            assert result.url is None
+            assert result.failures[0].code == 'upload_failed'
+            assert result.failures[0].message == '图床上传失败'
+        assert len(received) == len(responses) == 1
+        assert IMAGE in received[0]
+        assert SECRET.encode() in received[0]
+        assert SECRET not in repr(result) + caplog.text
+        assert 'not-gzip-' not in repr(result) + caplog.text
+        assert decoding_errors == (
+            [requests.exceptions.ContentDecodingError] if encoding else [])
+        response = responses[0]
+        assert {
+            'close_calls': closed.count(response),
+            'raw_closed': response.raw.closed,
+            'connection_released': response.raw.connection is None,
+        } == {
+            'close_calls': 1,
+            'raw_closed': True,
+            'connection_released': True,
+        }
+        if encoding:
+            assert sockets[0].fileno() == -1
+            assert connections[0].sock is None
+    finally:
+        for response in responses:
+            response.close()
+        for connection in connections:
+            connection.close()
+        if thread.ident is not None:
+            server.shutdown()
+        server.server_close()
+        if thread.ident is not None:
+            thread.join(timeout=3)
+            assert not thread.is_alive()
 
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])

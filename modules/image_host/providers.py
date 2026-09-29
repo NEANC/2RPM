@@ -48,6 +48,7 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
                     files={'fileToUpload': (filename, image_bytes, 'image/png')},
                     timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                     verify=True,
+                    stream=True,
                     allow_redirects=False) as response:
                 if not 200 <= response.status_code < 300:
                     raise ImageHostError('upload_failed', '')
