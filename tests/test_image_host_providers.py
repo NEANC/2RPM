@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""通过本地合成响应验证 Catbox 契约，不访问网络或模拟实站证据。"""
+
+from importlib import import_module
+from inspect import signature
+import logging
+import traceback
+
+import pytest
+import requests
+
+
+IMAGE = b'local-synthetic-png-bytes'
+FILENAME = 'screenshot.png'
+SECRET = 'FAKE_CATBOX_SECRET_7319'
+ENV_NAME = 'CATBOX_LOCAL_TEST_TOKEN'
+URL = 'https://cdn.example.com/image?id=1&signature=a%2Fb%3D'
+ENDPOINT = 'https://catbox.moe/user/api.php'
+
+
+def providers():
+    """延迟读取真实适配器，使尚未实现表现为用例失败。"""
+    return import_module('modules.image_host.providers')
+
+
+def registry():
+    """读取实际静态注册表和上传入口。"""
+    return import_module('modules.image_host.registry')
+
+
+def upload(token=None, options=None, extra_hosts=()):
+    """经真实入口上传本地合成图片，凭证统一由注册表解析。"""
+    hosts = [{'provider': 'catbox', 'token': token, 'options': options}]
+    return registry().upload_with_fallback(
+        IMAGE, FILENAME, hosts + list(extra_hosts))
+
+
+class FakeResponse:
+    """仅在内存中提供状态和文本，并记录资源关闭。"""
+
+    def __init__(self, status=200, text=URL, error=None):
+        """保存合成响应，不代表 Catbox 实站返回内容。"""
+        self.status_code = status
+        self.body = text
+        self.error = error
+        self.closed = 0
+
+    @property
+    def text(self):
+        """返回合成文本或模拟读取响应失败。"""
+        if self.error is not None:
+            raise self.error
+        return self.body
+
+    def __enter__(self):
+        """进入响应所有权作用域。"""
+        return self
+
+    def __exit__(self, *args):
+        """记录响应释放且不吞掉异常。"""
+        self.closed += 1
+
+
+class FakeSession:
+    """只记录上传参数的本地客户端，不提供任何网络能力。"""
+
+    def __init__(self):
+        """初始化响应、异常和所有权记录。"""
+        self.response = FakeResponse()
+        self.error = None
+        self.calls = []
+        self.closed = 0
+        self.created = 0
+
+    def create(self):
+        """记录每次新建客户端，返回当前用例独占替身。"""
+        self.created += 1
+        return self
+
+    def __enter__(self):
+        """进入客户端所有权作用域。"""
+        return self
+
+    def __exit__(self, *args):
+        """记录客户端释放且保留进程控制信号。"""
+        self.closed += 1
+
+    def post(self, url, **kwargs):
+        """记录唯一 POST，随后返回合成响应或抛出合成异常。"""
+        self.calls.append((url, kwargs))
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+@pytest.fixture(autouse=True)
+def forbid_network(monkeypatch):
+    """阻止任何漏过替身的 requests 请求意外访问网络。"""
+    def forbidden(*args, **kwargs):
+        """立即拒绝真实请求。"""
+        raise AssertionError('测试禁止访问网络')
+
+    monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
+
+
+@pytest.fixture
+def client(monkeypatch):
+    """替换 HTTP 边界而保留真实适配器和注册表。"""
+    fake = FakeSession()
+    monkeypatch.setattr(requests, 'Session', fake.create)
+    return fake
+
+
+def test_only_catbox_is_registered():
+    """生产注册表只声明唯一已实现站点，不注册空壳。"""
+    assert set(registry().UPLOADERS) == {'catbox'}
+    assert registry().UPLOADERS['catbox'] is providers().upload_catbox
+    parameters = signature(providers().upload_catbox).parameters
+    assert list(parameters) == ['image_bytes', 'filename', 'token', 'options']
+    assert signature(providers().upload_catbox).return_annotation is str
+
+
+@pytest.mark.parametrize('token', [None, ''])
+def test_anonymous_multipart_contract(client, token):
+    """匿名 POST 精确发送字段、文件名、PNG MIME 和安全 HTTP 参数。"""
+    result = upload(token)
+    assert result.success
+    assert result.url == URL
+    assert client.calls == [(ENDPOINT, {
+        'data': {'reqtype': 'fileupload'},
+        'files': {'fileToUpload': (FILENAME, IMAGE, 'image/png')},
+        'timeout': (5, 15), 'verify': True, 'allow_redirects': False,
+    })]
+    assert client.created == client.closed == client.response.closed == 1
+
+
+@pytest.mark.parametrize('token', [SECRET, '  ' + SECRET + '  '])
+def test_direct_userhash_is_preserved(client, token):
+    """非空凭证原样放入 userhash，不作为 Bearer 或修改空白。"""
+    assert upload(token).success
+    assert client.calls[0][1]['data'] == {
+        'reqtype': 'fileupload', 'userhash': token,
+    }
+    assert 'headers' not in client.calls[0][1]
+    assert 'auth' not in client.calls[0][1]
+
+
+@pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
+def test_environment_is_resolved_once(client, monkeypatch, resolved):
+    """真实入口解析环境引用，适配器不再次展开其值。"""
+    monkeypatch.setenv(ENV_NAME, resolved)
+    assert upload('${' + ENV_NAME + '}').success
+    assert client.calls[0][1]['data']['userhash'] == resolved
+
+
+@pytest.mark.parametrize('body', [URL, ' \r\n' + URL + '\r\n ',
+                                   'http://other.example/image?x=1+2'])
+def test_valid_candidate_preserves_full_url(client, caplog, body):
+    """核心校验保留合法候选链接及签名，不探测域名或扩展名。"""
+    client.response.body = body
+    result = upload()
+    assert result.success
+    assert result.url == body.strip()
+    assert len(client.calls) == 1
+    assert not caplog.records
+    assert result.url not in repr(result)
+
+
+@pytest.mark.parametrize('status', [199, 301, 302, 307, 308, 401, 429, 500])
+def test_non_2xx_is_safe_failure(client, caplog, status):
+    """非成功状态包括重定向均失败，不暴露响应或发起第二次请求。"""
+    client.response = FakeResponse(status, SECRET + URL)
+    result = upload(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert SECRET not in repr(result) + caplog.text
+    assert len(client.calls) == 1
+    assert client.closed == client.response.closed == 1
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('error_type', [
+    requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+    requests.exceptions.RequestException,
+])
+def test_request_exceptions_are_sanitized(client, caplog, error_type):
+    """请求异常携带假密钥时，结果和格式化异常均只保留安全摘要。"""
+    client.error = error_type(SECRET + URL)
+    result = upload(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert len(client.calls) == 1
+    assert client.closed == 1
+    assert client.response.closed == 0
+    error_class = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_class) as caught:
+        providers().upload_catbox(IMAGE, FILENAME, SECRET, {})
+    text = ''.join(traceback.format_exception(caught.value))
+    assert SECRET not in text + repr(caught.value) + repr(result) + caplog.text
+    assert URL not in text + repr(caught.value) + repr(result) + caplog.text
+    assert not caplog.records
+    assert client.closed == 2
+
+
+@pytest.mark.parametrize('body', [
+    '', ' \r\n', '<html>' + SECRET + '</html>', 'error: ' + SECRET,
+    'https://user:' + SECRET + '@example.com/image',
+    'https://example.com:bad/image', 'ftp://example.com/image',
+])
+def test_200_invalid_body_is_rejected(client, caplog, body):
+    """HTTP 200 不等于成功，空体、HTML 和非法链接安全失败。"""
+    client.response.body = body
+    result = upload(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'invalid_url'
+    assert SECRET not in repr(result) + caplog.text
+    assert client.closed == client.response.closed == 1
+    assert len(client.calls) == 1
+
+
+def test_response_read_failure_closes_both_resources(client, caplog):
+    """响应读取失败也释放已取得的响应与会话，不泄露原文。"""
+    client.response.error = requests.exceptions.ConnectionError(SECRET)
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert client.closed == client.response.closed == 1
+    assert SECRET not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['post', 'text'])
+def test_control_signals_propagate_and_cleanup(client, signal_type, stage):
+    """上传或响应处理中的控制信号原样传播，按已获得所有权释放。"""
+    signal = signal_type('local stop')
+    if stage == 'post':
+        client.error = signal
+    else:
+        client.response.error = signal
+    with pytest.raises(signal_type) as caught:
+        upload()
+    assert caught.value is signal
+    assert client.closed == 1
+    assert client.response.closed == (stage == 'text')
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize('permission', [0, '0', False])
+def test_private_permission_rejected_before_network(client, permission):
+    """私有要求不能被静默改为公开上传，必须在创建会话前拒绝。"""
+    result = upload(options={'permission': permission})
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert client.calls == []
+    assert client.created == 0
+
+
+def test_public_permission_is_not_forwarded(client, caplog):
+    """公开要求可接受，但不发送服务未确认支持的 permission 字段。"""
+    assert upload(options={'permission': 1}).success
+    assert client.calls[0][1]['data'] == {'reqtype': 'fileupload'}
+    assert not caplog.records
+
+
+def test_unsupported_options_warn_without_values_or_unknown_keys(
+        client, caplog):
+    """已知选项只记录固定名称，未知键不成为日志注入渠道。"""
+    options = {'album_id': SECRET, 'strategy_id': URL,
+               SECRET + '\nforged warning': {'token': SECRET}}
+    with caplog.at_level(logging.WARNING):
+        result = upload(options=options)
+    assert result.success
+    assert client.calls[0][1]['data'] == {'reqtype': 'fileupload'}
+    assert 'album_id' in caplog.text
+    assert 'strategy_id' in caplog.text
+    assert SECRET not in caplog.text
+    assert URL not in caplog.text
+    assert 'forged warning' not in caplog.text
+    assert caplog.records
+    assert all(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize('status', [200, 500])
+def test_real_registry_fallback_and_stop(client, monkeypatch, status):
+    """Catbox 失败才调用本地备用，成功后不再尝试下一项。"""
+    client.response.status_code = status
+    calls = []
+
+    def fallback(image_bytes, filename, token, options):
+        """提供仅在内存中成功的备用适配器。"""
+        calls.append((image_bytes, filename, token, options))
+        return URL
+
+    monkeypatch.setitem(registry().UPLOADERS, 'local', fallback)
+    result = upload(extra_hosts=[{'provider': 'local'}])
+    assert result.success
+    if status == 200:
+        assert result.provider == 'catbox'
+        assert result.attempts == ('catbox',)
+        assert calls == []
+    else:
+        assert result.provider == 'local'
+        assert result.attempts == ('catbox', 'local')
+        assert result.failures[0].code == 'upload_failed'
+        assert calls == [(IMAGE, FILENAME, '', {})]
+    assert len(client.calls) == 1
+
+
+def test_unimplemented_provider_remains_unknown(client):
+    """尚未实现的图床仍按未知提供方返回，不发送网络请求。"""
+    result = registry().upload_with_fallback(
+        IMAGE, FILENAME, [{'provider': 'smms'}])
+    assert not result.success
+    assert result.failures[0].code == 'unknown_provider'
+    assert client.calls == []
+
+
+def test_signed_success_diagnostics_hide_secrets(client, caplog):
+    """业务结果完整保留合成签名链接，而日志和 repr 不泄露。"""
+    signed = URL + '&token=' + SECRET
+    client.response.body = signed
+    result = upload(SECRET)
+    assert result.success
+    assert result.url == signed
+    assert SECRET not in repr(result) + str(result) + caplog.text
+    assert signed not in repr(result) + str(result) + caplog.text
