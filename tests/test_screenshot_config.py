@@ -301,6 +301,13 @@ def test_write_error_does_not_disclose_token_and_preserves_file(
         (None, 'permission', None, False),
         ('os', 'permission', None, True),
         (None, 'permission', None, True),
+        ('os', 'permission', 'os', True),
+        ('interrupt', 'permission', 'os', True),
+        ('exit', 'permission', 'os', True),
+        ('os', 'interrupt', None, True),
+        ('os', 'exit', None, True),
+        ('os', 'permission', 'interrupt', True),
+        ('os', 'permission', 'exit', True),
         ('interrupt', 'permission', 'os', False),
         ('exit', 'permission', 'os', False),
         ('interrupt', 'exit', 'os', False),
@@ -313,6 +320,10 @@ def test_write_error_does_not_disclose_token_and_preserves_file(
     ids=[
         'serialize-close', 'serialize-close-unlink', 'serialize-only',
         'close-only', 'serialize-close-before-release', 'close-before-release',
+        'serialize-close-before-unlink', 'serialize-interrupt-close-before',
+        'serialize-exit-close-before', 'close-before-interrupt',
+        'close-before-exit', 'unlink-interrupt-close-before',
+        'unlink-exit-close-before',
         'serialize-interrupt', 'serialize-exit', 'interrupt-before-exit',
         'exit-before-interrupt', 'close-interrupt', 'close-exit',
         'unlink-interrupt', 'unlink-exit',
@@ -421,13 +432,13 @@ def test_atomic_stream_failure_preserves_primary_and_releases_resources(
             replace.assert_not_called()
         assert path.read_bytes() == original
         assert len(streams) == len(descriptors) == 1
-        assert close_attempts
+        assert close_attempts == streams
         for fd in descriptors:
             with pytest.raises(OSError) as caught:
                 os.fstat(fd)
             assert caught.value.errno == 9
-        if not close_before:
-            assert all(stream.stream.closed for stream in streams)
+        assert all(stream.stream.closed for stream in streams)
+        assert all(stream.stream.buffer.raw.closed for stream in streams)
         assert len(unlink_attempts) == 1
         if unlink_error is None:
             assert list(tmp_path.iterdir()) == [path]
@@ -465,6 +476,134 @@ def test_atomic_stream_failure_preserves_primary_and_releases_resources(
                 pass
         for temp_path in tmp_path.glob('*.tmp'):
             original_unlink(temp_path)
+
+
+@pytest.mark.parametrize('serialize_fails', [False, True])
+@pytest.mark.parametrize('delayed_action', ['flush', 'close', 'release'])
+def test_failed_close_cannot_touch_reused_descriptor(
+        tmp_path, caplog, serialize_fails, delayed_action):
+    """关闭前失败后，旧流的延迟操作不能污染或关闭显式复用的描述符。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    unrelated = tmp_path / 'unrelated.bin'
+    expected = b'unrelated-file-must-survive'
+    original_fdopen = os.fdopen
+    streams = []
+    descriptors = []
+    reused_fd = None
+
+    class CloseBeforeFailingStream:
+        """保留真实缓冲流，并在触及底层关闭前报告失败。"""
+
+        def __init__(self, stream):
+            """保存底层流供延迟操作验收。"""
+            self.stream = stream
+
+        def __getattr__(self, name):
+            """转发真实流属性与写入操作。"""
+            return getattr(self.stream, name)
+
+        def close(self):
+            """不释放任何底层资源就抛出关闭异常。"""
+            raise PermissionError(13, 'FAKE_CLOSE_SECRET')
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """记录实际描述符和仍可能含有待写数据的真实流。"""
+        descriptors.append(fd)
+        stream = original_fdopen(fd, *args, **kwargs)
+        streams.append(stream)
+        return CloseBeforeFailingStream(stream)
+
+    def partial_dump(value, stream):
+        """留下实际缓冲内容，并按场景触发序列化主异常。"""
+        stream.write('FAKE_BUFFERED_SECRET\n')
+        if serialize_fails:
+            raise OSError(28, 'FAKE_SERIALIZE_SECRET')
+
+    writer = config_module._make_write_yaml()
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump', side_effect=partial_dump), \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            result = config_module.load_config(str(path))
+            replace.assert_not_called()
+        assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+        assert path.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [path]
+        assert len(streams) == len(descriptors) == 1
+        expected_summary = (
+            'stage=serialize type=OSError errno=28 category=ENOSPC'
+            if serialize_fails else
+            'stage=close type=PermissionError errno=13 category=EACCES'
+        )
+        assert expected_summary in caplog.text
+        assert 'FAKE_' not in caplog.text
+        with pytest.raises(OSError) as caught:
+            os.fstat(descriptors[0])
+        assert caught.value.errno == 9
+
+        source_fd = os.open(
+            unrelated, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_BINARY,
+            0o600,
+        )
+        reused_fd = source_fd
+        if source_fd != descriptors[0]:
+            try:
+                os.dup2(source_fd, descriptors[0])
+            finally:
+                os.close(source_fd)
+            reused_fd = descriptors[0]
+        assert reused_fd == descriptors[0]
+        assert os.fstat(reused_fd) == unrelated.stat()
+        assert os.write(reused_fd, expected) == len(expected)
+        os.lseek(reused_fd, 0, os.SEEK_SET)
+
+        old_stream = streams.pop()
+        try:
+            if delayed_action == 'release':
+                # 显式运行析构路径，不依赖垃圾回收发生的时机。
+                old_stream.__del__()
+            else:
+                getattr(old_stream, delayed_action)()
+        except (OSError, ValueError):
+            pass
+        finally:
+            streams.append(old_stream)
+        content_after = unrelated.read_bytes()
+        try:
+            os.fstat(reused_fd)
+            descriptor_alive = True
+        except OSError:
+            descriptor_alive = False
+        assert (content_after, descriptor_alive) == (expected, True)
+
+        try:
+            old_stream.close()
+        except (OSError, ValueError):
+            pass
+        streams.clear()
+        del old_stream
+        assert unrelated.read_bytes() == expected
+        os.lseek(reused_fd, 0, os.SEEK_SET)
+        assert os.read(reused_fd, len(expected)) == expected
+        os.lseek(reused_fd, 0, os.SEEK_END)
+        assert os.write(reused_fd, b'-still-writable') == 15
+        assert unrelated.read_bytes() == expected + b'-still-writable'
+    finally:
+        # 先退休旧流，再释放测试拥有的复用资源，防止失败断言遗留活流。
+        for stream in streams:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+        if reused_fd is not None:
+            try:
+                os.close(reused_fd)
+            except OSError:
+                pass
+        for temp_path in tmp_path.glob('*.tmp'):
+            os.unlink(temp_path)
 
 
 @pytest.mark.parametrize('exception', [KeyboardInterrupt, SystemExit])
