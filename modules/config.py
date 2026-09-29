@@ -7,7 +7,8 @@ import os
 import sys
 import tempfile
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 
 from modules.spinner import spinner_phase
 from modules.utils import (
@@ -46,9 +47,14 @@ DEFAULT_VALUES = {
         },
     },
     'push': {
+        'screenshot': {
+            'targets': [],
+            'image_host': [{'provider': 'catbox', 'token': ''}],
+        },
         'templates': {
             'on_end': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '进程结束通报',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -60,6 +66,7 @@ DEFAULT_VALUES = {
             },
             'on_timeout': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '进程超时运行警告',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -71,6 +78,7 @@ DEFAULT_VALUES = {
             },
             'on_wait_timeout': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '等待超时未运行报告',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -81,6 +89,7 @@ DEFAULT_VALUES = {
             },
             'on_external': {
                 'enable': False,
+                'capture_screenshot': True,
                 'title': '外部程序执行通知',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -167,6 +176,23 @@ COMMENTS = {
             "推送设置\n"
             "- 包含推送通知的相关配置\n"
         ),
+        'screenshot': {
+            '_comment': "\n截图目标与图床配置\n",
+            'targets': (
+                "\n独立于监控目标的截图列表，默认留空，不自动匹配目标\n"
+                "- window 支持窗口标题或 PID，adb 使用设备地址\n"
+                "- 按列表位置生成 screenshot_N，可使用 out 自定义变量名\n"
+                "- 示例: {provider: window, target: MuMu模拟器 1, out: screenshot_2}\n"
+                "- 示例: {provider: adb, target: 127.0.0.1:16384}\n"
+            ),
+            'image_host': (
+                "\n图床按列表顺序尝试，成功后停止\n"
+                "- token 可引用环境变量，配置加载时保留字面量，不展开\n"
+                "- options 保留各图床专属参数，由图床实现解释\n"
+                "- 示例: {provider: wmimg, token: '${WMIMG_TOKEN}', "
+                "options: {strategy_id: 1, album_id: 12}}\n"
+            ),
+        },
         'templates': {
             '_comment': (
                 "推送模板配置\n"
@@ -183,28 +209,35 @@ COMMENTS = {
                 "进程积累等待时间: {process_wait_time}\n"
                 "调用的程序名: {external_program_name}\n"
                 "调用的程序路径: {external_program_path}\n"
+                "截图结果聚合: {screenshot}\n"
+                "单个截图结果: {screenshot_N}，N 为目标位置；也可使用自定义 out\n"
+                "截图变量需自行加入 content，不自动修改通知正文\n"
             ),
             'on_end': (
                 "\n进程结束通知模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_timeout': (
                 "\n进程超时运行警告模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_wait_timeout': (
                 "\n等待超时未运行报告模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_external': (
                 "\n外部程序执行通知模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
@@ -289,11 +322,17 @@ def _check_missing_params(config, required_params, section_name):
         if param not in config:
             if default_value is None:
                 continue  # 选填字段（值为 None），不触发迁移写回
-            config[param] = default_value
-            LOGGER.warning(
-                f"配置 '{section_name}' 中缺少参数 '{param}'，"
-                f"使用默认值: {default_value}"
-            )
+            config[param] = copy.deepcopy(default_value)
+            if (section_name == 'push' and param == 'screenshot'
+                    or section_name.startswith('push.screenshot')):
+                LOGGER.warning(
+                    f"配置 '{section_name}' 中缺少参数 '{param}'，已补充默认值"
+                )
+            else:
+                LOGGER.warning(
+                    f"配置 '{section_name}' 中缺少参数 '{param}'，"
+                    f"使用默认值: {default_value}"
+                )
             updated = True
         elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
             # 递归检查嵌套配置
@@ -391,6 +430,7 @@ def get_default_config(for_file_creation=False):
     LOGGER.info("正在读取默认配置")
 
     config = _create_commented_map(copy.deepcopy(DEFAULT_VALUES))
+    correct_screenshot_config(config)
 
     LOGGER.info("正在应用注释到默认配置")
     apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
@@ -538,6 +578,57 @@ def correct_push_channel_config(user_config):
         f"推送通道配置已规范化为标准格式（通道: {providers}）"
     )
     return True
+
+
+def _format_screenshot_node(value, block_sequence=False):
+    """复制截图节点并调整容器风格，不解释 provider 或改写参数。"""
+    if isinstance(value, dict):
+        node = (copy.deepcopy(value) if isinstance(value, CommentedMap)
+                else CommentedMap(copy.deepcopy(value)))
+        changed = bool(node) and node.fa.flow_style() is not True
+        node.fa.set_flow_style()
+        for key, item in list(node.items()):
+            node[key], item_changed = _format_screenshot_node(item)
+            changed = item_changed or changed
+        return node, changed
+    if isinstance(value, list):
+        node = (copy.deepcopy(value) if isinstance(value, CommentedSeq)
+                else CommentedSeq(copy.deepcopy(value)))
+        flow_style = not block_sequence
+        changed = bool(node) and node.fa.flow_style() is not flow_style
+        if flow_style:
+            node.fa.set_flow_style()
+        else:
+            node.fa.set_block_style()
+        for index, item in enumerate(node):
+            node[index], item_changed = _format_screenshot_node(item)
+            changed = item_changed or changed
+        return node, changed
+    if (isinstance(value, str) and '${' in value
+            and not isinstance(value, ScalarString)):
+        return SingleQuotedScalarString(value), True
+    return copy.deepcopy(value), False
+
+
+def correct_screenshot_config(user_config):
+    """仅将截图列表格式化为块序列，保留非法输入供后续编排诊断。"""
+    push = user_config.get('push')
+    if not isinstance(push, dict):
+        return False
+    screenshot = push.get('screenshot')
+    if not isinstance(screenshot, dict):
+        return False
+    changed = False
+    for key in ('targets', 'image_host'):
+        value = screenshot.get(key)
+        if not isinstance(value, list):
+            continue
+        node, node_changed = _format_screenshot_node(
+            value, block_sequence=True
+        )
+        screenshot[key] = node
+        changed = node_changed or changed
+    return changed
 
 
 def _normalize_task_lookback_minutes(task_section):
@@ -823,12 +914,13 @@ def _normalize_config_writable_values(user_config):
     return updated
 
 
-def merge_configs(user_config, default_config):
+def merge_configs(user_config, default_config, section_name=''):
     """将用户配置合并到默认配置中
 
     Args:
         user_config (dict): 用户配置字典
         default_config (CommentedMap): 默认配置字典
+        section_name (str): 当前配置路径，用于隔离截图可变节点
 
     Returns:
         CommentedMap: 合并后的配置字典
@@ -837,9 +929,12 @@ def merge_configs(user_config, default_config):
         return default_config
 
     for key, value in user_config.items():
+        path = f'{section_name}.{key}' if section_name else key
+        if path == 'push.screenshot':
+            value = copy.deepcopy(value)
         if key in default_config:
             if isinstance(value, dict) and isinstance(default_config[key], CommentedMap):
-                merge_configs(value, default_config[key])
+                merge_configs(value, default_config[key], path)
             else:
                 default_config[key] = value
         else:
@@ -1035,6 +1130,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     # 加载用户配置
     try:
         yaml = YAML()
+        yaml.preserve_quotes = True
         with open(config_file, 'r', encoding='utf-8') as f:
             user_config = yaml.load(f)
         if user_config is None:
@@ -1051,8 +1147,18 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
-        LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
+        # YAML 异常可能附带含凭证的源码行，只记录异常类型。
+        LOGGER.critical(
+            f"无法加载配置文件: {os.path.abspath(config_file)}: "
+            f"{type(e).__name__}"
+        )
         sys.exit(1)
+
+    # 在默认补全前记录截图输入，避免影响旧配置的错误诊断。
+    push_section = user_config.get('push')
+    has_user_screenshot = (
+        isinstance(push_section, dict) and 'screenshot' in push_section
+    )
 
     # 加载默认配置
     _validate_config_shapes(user_config)
@@ -1087,6 +1193,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     # 规范化推送通道并统一回写为标准流式格式
     # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
     corrected = correct_push_channel_config(merged_config)
+    corrected = correct_screenshot_config(merged_config) or corrected
 
     _validate_active_monitor_config(merged_config)
 
@@ -1129,7 +1236,11 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                         pass
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
-            LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
+            # 用户截图节点可能含凭证，禁止输出异常中的原值。
+            detail = type(e).__name__ if has_user_screenshot else str(e)
+            LOGGER.error(
+                f"无法写回配置文件 {os.path.abspath(config_file)}: {detail}"
+            )
             return merged_config
 
     LOGGER.info("配置参数版本差异检查完成")
