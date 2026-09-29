@@ -6,6 +6,8 @@ from collections import UserDict
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
 from importlib import import_module
+from inspect import Parameter
+from inspect import signature
 import os
 import traceback
 
@@ -65,6 +67,58 @@ def test_models_are_frozen_and_public_exports_are_real():
     assert package.upload_with_fallback is registry().upload_with_fallback
     assert isinstance(registry().UPLOADERS, dict)
     assert registry().UPLOADERS == {}
+
+
+@pytest.mark.parametrize('render', [repr, str])
+def test_success_diagnostics_hide_signed_url(monkeypatch, render):
+    """真实上传结果保留完整签名链接，但诊断表示不暴露假凭证。"""
+    signed_url = URL + '&token=' + SECRET
+
+    def signed_adapter(image_bytes, filename, token, options):
+        """仅在本地返回带合成凭证和签名的合法链接。"""
+        assert image_bytes == IMAGE
+        assert filename == FILENAME
+        assert token == SECRET
+        return URL + '&token=' + token
+
+    install(monkeypatch, 'local', signed_adapter)
+    result = upload([{'provider': 'local', 'token': SECRET}])
+    assert result.success is True
+    assert result.url == signed_url
+    assert result.provider == 'local'
+    assert result.attempts == ('local',)
+    assert result.failures == ()
+    with pytest.raises(FrozenInstanceError):
+        result.url = URL
+    output = render(result)
+    assert signed_url not in output
+    assert SECRET not in output
+    assert 'a%2Fb%3D' not in output
+    assert 'https://cdn.example.com/' not in output
+
+
+def test_result_constructor_contract_is_unchanged():
+    """结果字段保持原顺序、类型和必填语义，兼容位置及关键字构造。"""
+    module = core()
+    parameters = signature(module.UploadResult).parameters
+    expected = {
+        'success': bool,
+        'provider': str | None,
+        'url': str | None,
+        'attempts': tuple[str, ...],
+        'failures': tuple[module.UploadFailure, ...],
+    }
+    assert list(parameters) == list(expected)
+    for name, annotation in expected.items():
+        assert parameters[name].annotation == annotation
+        assert parameters[name].default is Parameter.empty
+        assert parameters[name].kind is Parameter.POSITIONAL_OR_KEYWORD
+    positional = module.UploadResult(True, 'local', URL, ('local',), ())
+    keyword = module.UploadResult(
+        success=True, provider='local', url=URL, attempts=('local',),
+        failures=())
+    assert positional == keyword
+    assert positional.url == URL
 
 
 def test_first_failure_second_success_stops_before_third(monkeypatch):
