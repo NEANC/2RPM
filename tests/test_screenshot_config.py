@@ -292,6 +292,181 @@ def test_write_error_does_not_disclose_token_and_preserves_file(
     assert 'errno=' not in caplog.text
 
 
+@pytest.mark.parametrize(
+    'serialize_kind, close_kind, unlink_kind, close_before',
+    [
+        ('os', 'permission', None, False),
+        ('os', 'permission', 'os', False),
+        ('os', None, None, False),
+        (None, 'permission', None, False),
+        ('os', 'permission', None, True),
+        (None, 'permission', None, True),
+        ('interrupt', 'permission', 'os', False),
+        ('exit', 'permission', 'os', False),
+        ('interrupt', 'exit', 'os', False),
+        ('exit', 'interrupt', 'os', False),
+        ('os', 'interrupt', None, False),
+        ('os', 'exit', None, False),
+        ('os', 'permission', 'interrupt', False),
+        ('os', 'permission', 'exit', False),
+    ],
+    ids=[
+        'serialize-close', 'serialize-close-unlink', 'serialize-only',
+        'close-only', 'serialize-close-before-release', 'close-before-release',
+        'serialize-interrupt', 'serialize-exit', 'interrupt-before-exit',
+        'exit-before-interrupt', 'close-interrupt', 'close-exit',
+        'unlink-interrupt', 'unlink-exit',
+    ],
+)
+def test_atomic_stream_failure_preserves_primary_and_releases_resources(
+        tmp_path, caplog, serialize_kind, close_kind, unlink_kind,
+        close_before):
+    """组合故障保留主因和控制信号，关闭资源且不替换原配置。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    original_fdopen = os.fdopen
+    original_unlink = os.unlink
+    streams = []
+    descriptors = []
+    close_attempts = []
+    unlink_attempts = []
+
+    def make_failure(kind, message):
+        """构造仅含合成敏感文本的普通异常或控制信号。"""
+        if kind == 'os':
+            return OSError(28, message)
+        if kind == 'permission':
+            return PermissionError(13, message)
+        if kind == 'interrupt':
+            return KeyboardInterrupt(message)
+        if kind == 'exit':
+            return SystemExit(message)
+        return None
+
+    serialize_error = make_failure(serialize_kind, 'FAKE_PRIMARY_SECRET')
+    close_error = make_failure(close_kind, 'FAKE_CLEANUP_SECRET')
+    unlink_error = make_failure(unlink_kind, 'FAKE_UNLINK_SECRET')
+    failures = [error for error in (
+        serialize_error, close_error, unlink_error,
+    ) if error is not None]
+    control_error = next((error for error in failures
+                          if not isinstance(error, Exception)), None)
+
+    class FailingStream:
+        """包装真实临时流，模拟释放底层资源之前或之后关闭失败。"""
+
+        def __init__(self, stream):
+            """保留真实流以验证关闭状态。"""
+            self.stream = stream
+
+        def __getattr__(self, name):
+            """将普通流操作交给真实文件对象。"""
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            """兼容原有上下文管理器写回路径。"""
+            return self
+
+        def __exit__(self, *args):
+            """在退出上下文时执行同一关闭故障。"""
+            self.close()
+
+        def close(self):
+            """记录关闭尝试，并在指定释放时机抛出合成异常。"""
+            close_attempts.append(self)
+            if close_before and close_error is not None:
+                raise close_error
+            self.stream.close()
+            if close_error is not None:
+                raise close_error
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """记录实际描述符并包装生产路径创建的临时流。"""
+        descriptors.append(fd)
+        wrapped = FailingStream(original_fdopen(fd, *args, **kwargs))
+        streams.append(wrapped)
+        return wrapped
+
+    def partial_dump(value, stream):
+        """写入部分临时内容后按场景触发序列化失败。"""
+        stream.write('partial: true\n')
+        if serialize_error is not None:
+            raise serialize_error
+
+    def unlink_temp(temp_path):
+        """记录删除尝试，在故障场景模拟系统拒绝删除。"""
+        unlink_attempts.append(temp_path)
+        if unlink_error is not None:
+            raise unlink_error
+        original_unlink(temp_path)
+
+    writer = config_module._make_write_yaml()
+    caplog.set_level('INFO', logger='modules.config')
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.unlink', side_effect=unlink_temp), \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump', side_effect=partial_dump), \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            if control_error is not None:
+                with pytest.raises(BaseException) as caught:
+                    config_module.load_config(str(path))
+                assert caught.value is control_error
+            else:
+                result = config_module.load_config(str(path))
+                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                for name in TEMPLATE_NAMES:
+                    assert result['push']['templates'][name][
+                        'capture_screenshot'] is True
+            replace.assert_not_called()
+        assert path.read_bytes() == original
+        assert len(streams) == len(descriptors) == 1
+        assert close_attempts
+        for fd in descriptors:
+            with pytest.raises(OSError) as caught:
+                os.fstat(fd)
+            assert caught.value.errno == 9
+        if not close_before:
+            assert all(stream.stream.closed for stream in streams)
+        assert len(unlink_attempts) == 1
+        if unlink_error is None:
+            assert list(tmp_path.iterdir()) == [path]
+        else:
+            assert os.path.exists(unlink_attempts[0])
+        if control_error is None:
+            expected = (
+                'stage=serialize type=OSError errno=28 category=ENOSPC'
+                if serialize_error is not None else
+                'stage=close type=PermissionError errno=13 category=EACCES'
+            )
+            assert expected in caplog.text
+            if serialize_error is not None:
+                assert 'type=PermissionError' not in caplog.text
+                assert 'errno=13' not in caplog.text
+        else:
+            assert '无法写回配置文件' not in caplog.text
+        for secret in ('FAKE_PRIMARY_SECRET', 'FAKE_CLEANUP_SECRET',
+                       'FAKE_UNLINK_SECRET'):
+            assert secret not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+        assert '正在写回配置信息' not in caplog.text
+        assert '配置参数版本差异检查完成' not in caplog.text
+    finally:
+        # 即使红灯阶段未释放资源，也不让测试遗留句柄和临时文件。
+        for stream in streams:
+            try:
+                stream.stream.close()
+            except OSError:
+                pass
+        for fd in descriptors:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        for temp_path in tmp_path.glob('*.tmp'):
+            original_unlink(temp_path)
+
+
 @pytest.mark.parametrize('exception', [KeyboardInterrupt, SystemExit])
 def test_load_does_not_swallow_control_exceptions(tmp_path, monkeypatch, exception):
     """截图配置处理不能吞掉进程控制异常。"""

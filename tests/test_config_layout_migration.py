@@ -473,23 +473,41 @@ def test_write_close_failure_preserves_original_bytes(tmp_path, caplog, monkeypa
     })
     original = path.read_bytes()
     original_fdopen = os.fdopen
+    streams = []
 
     class CloseFailingStream:
+        """转发真实流接口，仅在关闭资源后注入关闭异常。"""
+
         def __init__(self, stream):
+            """保存真实流以验证资源释放。"""
             self._stream = stream
 
+        def __getattr__(self, name):
+            """转发序列化所需属性和关闭状态。"""
+            return getattr(self._stream, name)
+
         def __enter__(self):
+            """兼容上下文管理器调用。"""
             return self
 
         def __exit__(self, exc_type, exc_value, traceback):
+            """退出上下文时执行相同的关闭故障。"""
+            self.close()
+
+        def close(self):
+            """释放真实资源后抛出合成关闭异常。"""
             self._stream.close()
             raise OSError('close-failed')
 
         def write(self, value):
+            """向真实临时流写入序列化内容。"""
             return self._stream.write(value)
 
     def fdopen(*args, **kwargs):
-        return CloseFailingStream(original_fdopen(*args, **kwargs))
+        """记录包装流以检查底层资源已经关闭。"""
+        stream = CloseFailingStream(original_fdopen(*args, **kwargs))
+        streams.append(stream)
+        return stream
 
     monkeypatch.setattr('modules.config.os.fdopen', fdopen)
     config = load_config(str(path))
@@ -497,3 +515,8 @@ def test_write_close_failure_preserves_original_bytes(tmp_path, caplog, monkeypa
     assert config['monitor']['mode'] == 'psutil'
     assert path.read_bytes() == original
     assert '无法写回配置文件' in caplog.text
+    assert 'stage=close type=OSError' in caplog.text
+    assert 'AttributeError' not in caplog.text
+    assert len(streams) == 1
+    assert all(stream.closed for stream in streams)
+    assert list(tmp_path.iterdir()) == [path]

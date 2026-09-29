@@ -1242,37 +1242,50 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                 suffix='.tmp',
             )
             try:
+                stage = 'fdopen'
+                stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
+                primary_error = None
                 try:
-                    stage = 'fdopen'
-                    stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
-                except Exception:
-                    try:
-                        os.close(temp_fd)
-                    except Exception:
-                        pass
-                    temp_fd = None
-                    raise
-                temp_fd = None
-                with stream as f:
                     stage = 'serialize'
-                    yaml.dump(merged_config, f)
-                    stage = 'close'
+                    yaml.dump(merged_config, stream)
+                except BaseException as error:
+                    primary_error = error
+                try:
+                    if primary_error is None:
+                        stage = 'close'
+                    stream.close()
+                except BaseException as error:
+                    if primary_error is None or (
+                            isinstance(primary_error, Exception)
+                            and not isinstance(error, Exception)):
+                        primary_error = error
+                finally:
+                    if stream.closed:
+                        temp_fd = None
+                if primary_error is not None:
+                    raise primary_error
+                temp_fd = None
                 stage = 'replace'
                 os.replace(temp_path, config_file)
                 temp_path = None
-            except Exception:
-                if temp_path is not None:
-                    try:
-                        os.unlink(temp_path)
-                    except Exception:
-                        pass
-                raise
-            finally:
+            except BaseException as primary_error:
+                # 普通清理异常不覆盖主因，最先出现的控制信号仍须传播。
                 if temp_fd is not None:
                     try:
                         os.close(temp_fd)
-                    except Exception:
-                        pass
+                    except BaseException as cleanup_error:
+                        if (isinstance(primary_error, Exception)
+                                and not isinstance(cleanup_error, Exception)):
+                            primary_error = cleanup_error
+                    temp_fd = None
+                if temp_path is not None:
+                    try:
+                        os.unlink(temp_path)
+                    except BaseException as cleanup_error:
+                        if (isinstance(primary_error, Exception)
+                                and not isinstance(cleanup_error, Exception)):
+                            primary_error = cleanup_error
+                raise primary_error
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
             LOGGER.error(
