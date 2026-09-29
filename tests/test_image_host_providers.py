@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""通过本地合成响应验证 Catbox 契约，不访问外网或模拟实站证据。"""
+"""通过本地合成响应验证图床契约，不访问外网或模拟实站证据。"""
 
+from collections import UserDict
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 from importlib import import_module
 from inspect import signature
+import json
 import logging
 from threading import Thread
 import traceback
@@ -20,6 +23,7 @@ SECRET = 'FAKE_CATBOX_SECRET_7319'
 ENV_NAME = 'CATBOX_LOCAL_TEST_TOKEN'
 URL = 'https://cdn.example.com/image?id=1&signature=a%2Fb%3D'
 ENDPOINT = 'https://catbox.moe/user/api.php'
+WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
 
 
 def providers():
@@ -118,9 +122,9 @@ def client(monkeypatch):
     return fake
 
 
-def test_only_catbox_is_registered():
-    """生产注册表只声明唯一已实现站点，不注册空壳。"""
-    assert set(registry().UPLOADERS) == {'catbox'}
+def test_only_implemented_providers_are_registered():
+    """生产注册表仅声明已实现的两个站点，不注册空壳。"""
+    assert set(registry().UPLOADERS) == {'catbox', 'wmimg'}
     assert registry().UPLOADERS['catbox'] is providers().upload_catbox
     parameters = signature(providers().upload_catbox).parameters
     assert list(parameters) == ['image_bytes', 'filename', 'token', 'options']
@@ -468,3 +472,380 @@ def test_signed_success_diagnostics_hide_secrets(client, caplog):
     assert result.url == signed
     assert SECRET not in repr(result) + str(result) + caplog.text
     assert signed not in repr(result) + str(result) + caplog.text
+
+
+def wmimg_payload(url=URL):
+    """依据官方字段表构造合成夹具，不代表实际上传返回结果。"""
+    return {'status': True, 'data': {'links': {'url': url}}}
+
+
+def upload_wmimg(token=None, options=None, extra_hosts=()):
+    """经真实注册表调用 WMIMG，不替换凭证解析或故障转移。"""
+    hosts = [{'provider': 'wmimg', 'token': token, 'options': options}]
+    return registry().upload_with_fallback(
+        IMAGE, FILENAME, hosts + list(extra_hosts))
+
+
+class WmimgResponse(FakeResponse):
+    """使用真实 JSON 解码器读取本地合成正文并验证响应所有权。"""
+
+    def __init__(self):
+        """初始化依据官方字段表生成的成功正文。"""
+        super().__init__(text=json.dumps(wmimg_payload()))
+        self.active = False
+        self.reads = 0
+
+    def __enter__(self):
+        """标记响应正文可以在此作用域内读取。"""
+        self.active = True
+        return super().__enter__()
+
+    def __exit__(self, *args):
+        """清除所有权标记并执行已有关闭记录。"""
+        self.active = False
+        return super().__exit__(*args)
+
+    def json(self):
+        """只允许在响应上下文内读取并解析 JSON。"""
+        assert self.active
+        self.reads += 1
+        response = requests.Response()
+        response._content = self.text.encode('utf-8')
+        response.encoding = 'utf-8'
+        return response.json()
+
+
+@pytest.fixture
+def wmclient(client):
+    """沿用无网络会话替身，仅替换 WMIMG 的合成响应。"""
+    client.response = WmimgResponse()
+    return client
+
+
+def test_wmimg_registration_and_signature():
+    """静态注册指向真实适配器，签名与上传核心一致。"""
+    adapter = getattr(providers(), 'upload_wmimg', None)
+    assert callable(adapter)
+    assert registry().UPLOADERS['wmimg'] is adapter
+    assert list(signature(adapter).parameters) == [
+        'image_bytes', 'filename', 'token', 'options',
+    ]
+    assert signature(adapter).return_annotation is str
+
+
+@pytest.mark.parametrize('token', [None, '', SECRET, '  ' + SECRET + '  '])
+def test_wmimg_multipart_and_credentials(wmclient, token):
+    """账号凭证只进入 Bearer，匿名不被本地拒绝且不手设边界。"""
+    result = upload_wmimg(token)
+    assert result.success
+    assert result.url == URL
+    headers = {'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    assert wmclient.calls == [(WMIMG_ENDPOINT, {
+        'data': {'permission': 1},
+        'files': {'file': (FILENAME, IMAGE, 'image/png')},
+        'headers': headers, 'timeout': (5, 15), 'verify': True,
+        'stream': True, 'allow_redirects': False,
+    })]
+    assert wmclient.created == wmclient.closed == wmclient.response.closed == 1
+    assert wmclient.response.reads == 1
+    assert 'trust_env' not in vars(wmclient)
+
+
+@pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
+def test_wmimg_environment_reference_is_resolved_once(
+        wmclient, monkeypatch, resolved):
+    """只读取测试设置的环境引用，解析值原样用于账号请求头。"""
+    monkeypatch.setenv(ENV_NAME, resolved)
+    assert upload_wmimg('${' + ENV_NAME + '}').success
+    request = wmclient.calls[0][1]
+    assert request['headers']['Authorization'] == 'Bearer ' + resolved
+    assert request['data'] == {'permission': 1}
+
+
+@pytest.mark.parametrize('options, expected', [
+    ({}, {'permission': 1}),
+    ({'permission': 0}, {'permission': 0}),
+    ({'permission': 1}, {'permission': 1}),
+    ({'album_id': 1}, {'permission': 1, 'album_id': 1}),
+    ({'strategy_id': 2}, {'permission': 1, 'strategy_id': 2}),
+    ({'permission': 0, 'album_id': 23, 'strategy_id': 45},
+     {'permission': 0, 'album_id': 23, 'strategy_id': 45}),
+])
+def test_wmimg_supported_options_are_exact_and_unchanged(
+        wmclient, options, expected):
+    """权限不被真值默认覆盖，可选整数仅在显式配置时发送。"""
+    original = deepcopy(options)
+    assert upload_wmimg(options=options).success
+    assert wmclient.calls[0][1]['data'] == expected
+    assert options == original
+    providers().upload_wmimg(IMAGE, FILENAME, '', options)
+    assert options == original
+
+
+@pytest.mark.parametrize('name', ['album_id', 'strategy_id'])
+@pytest.mark.parametrize('value', [0, -1])
+def test_wmimg_explicit_integer_ids_are_forwarded(wmclient, name, value):
+    """文档未定义 ID 范围，显式整数原样交由服务端验证有效性。"""
+    result = upload_wmimg(options={'permission': 0, name: value})
+    assert result.success
+    assert wmclient.calls[0][1]['data'] == {'permission': 0, name: value}
+    assert wmclient.created == wmclient.closed == wmclient.response.closed == 1
+
+
+@pytest.mark.parametrize('name', ['permission', 'album_id', 'strategy_id'])
+@pytest.mark.parametrize('value', [None, True, False, '1', 1.0, [], {}])
+def test_wmimg_invalid_option_types_fail_before_request(
+        wmclient, name, value):
+    """非法类型在创建会话前拒绝，不改变显式安全要求。"""
+    options = {name: value}
+    original = deepcopy(options)
+    result = upload_wmimg(options=options)
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert wmclient.created == 0
+    assert wmclient.calls == []
+    assert options == original
+
+
+@pytest.mark.parametrize('options', [
+    {'permission': 2}, {'permission': -1},
+])
+def test_wmimg_invalid_option_range_fails_before_request(wmclient, options):
+    """权限仅允许整数零或一，越界值在创建会话前拒绝。"""
+    result = upload_wmimg(options=options)
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert wmclient.created == 0
+    assert wmclient.calls == []
+
+
+def test_wmimg_unknown_options_warn_without_sensitive_data(wmclient, caplog):
+    """未支持字段仅产生固定警告，不转发临时凭证或过期选项。"""
+    options = {'permission': 0, 'token': SECRET, 'expired_at': SECRET,
+               SECRET + '\nforged warning': {'url': URL}}
+    original = deepcopy(options)
+    with caplog.at_level(logging.WARNING):
+        result = upload_wmimg(SECRET, options)
+    assert result.success
+    assert wmclient.calls[0][1]['data'] == {'permission': 0}
+    assert options == original
+    assert [record.getMessage() for record in caplog.records] == [
+        'WMIMG 存在不支持的其他选项，已忽略',
+    ]
+    assert all(record.levelno == logging.WARNING for record in caplog.records)
+    assert SECRET not in caplog.text + repr(result)
+    assert URL not in caplog.text + repr(result)
+
+
+@pytest.mark.parametrize('status', [False, 'true', 1, 0, None, [], {}])
+def test_wmimg_business_status_requires_boolean_true(wmclient, caplog, status):
+    """即使错误正文含有效链接，也只允许布尔真代表业务成功。"""
+    payload = wmimg_payload()
+    payload.update(status=status, message=SECRET + URL)
+    wmclient.response.body = json.dumps(payload)
+    result = upload_wmimg(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert result.failures[0].message == '图床上传失败'
+    assert wmclient.closed == wmclient.response.closed == 1
+    assert SECRET not in repr(result) + caplog.text
+    assert URL not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize('payload', [
+    None, [], 'true', True, 1, {}, {'data': {'links': {'url': URL}}},
+    {'status': True}, {'status': True, 'data': None},
+    {'status': True, 'data': []}, {'status': True, 'data': 'bad'},
+    {'status': True, 'data': {}},
+    {'status': True, 'data': {'links': None}},
+    {'status': True, 'data': {'links': []}},
+    {'status': True, 'data': {'links': 'bad'}},
+])
+def test_wmimg_invalid_json_structure_is_safe(wmclient, payload):
+    """JSON 顶层、数据与链接容器必须为映射，必要字段不得缺失。"""
+    wmclient.response.body = json.dumps(payload)
+    result = upload_wmimg()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert wmclient.closed == wmclient.response.closed == 1
+
+
+@pytest.mark.parametrize('body', ['', '<html>' + SECRET + URL + '</html>',
+                                  'not-json-' + SECRET, '{"status":'])
+def test_wmimg_non_json_is_sanitized_and_closed(wmclient, caplog, body):
+    """HTML 或畸形 JSON 不回退猜测链接，格式化异常不泄露正文。"""
+    wmclient.response.body = body
+    result = upload_wmimg(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert wmclient.closed == wmclient.response.closed == 1
+    error_class = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_class) as caught:
+        providers().upload_wmimg(IMAGE, FILENAME, SECRET, {})
+    output = (''.join(traceback.format_exception(caught.value))
+              + repr(caught.value) + repr(result) + caplog.text)
+    assert SECRET not in output
+    assert URL not in output
+    assert wmclient.closed == wmclient.response.closed == 2
+
+
+@pytest.mark.parametrize('url', [None, False, 1, [], {}, '',
+                               'ftp://example.com/image',
+                               'https://user:' + SECRET + '@example.com/a',
+                               'https://example.com:' + SECRET])
+def test_wmimg_invalid_url_is_sanitized_and_closed(wmclient, caplog, url):
+    """候选直链走核心校验，错误释放响应且不暴露假敏感字段。"""
+    wmclient.response.body = json.dumps(wmimg_payload(url))
+    result = upload_wmimg(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'invalid_url'
+    assert wmclient.closed == wmclient.response.closed == 1
+    assert SECRET not in repr(result) + caplog.text
+
+
+def test_wmimg_missing_url_is_rejected(wmclient):
+    """只接受明确的直链字段，不从缩略图或删除链接推断成功。"""
+    wmclient.response.body = json.dumps({
+        'status': True, 'data': {'links': {'thumbnail_url': URL}},
+    })
+    result = upload_wmimg()
+    assert not result.success
+    assert result.failures[0].code == 'invalid_url'
+    assert wmclient.closed == wmclient.response.closed == 1
+
+
+def test_wmimg_mapping_and_signed_url_are_preserved(
+        wmclient, monkeypatch, caplog):
+    """各层允许映射，签名直链完整返回但不进入日志或诊断表示。"""
+    signed = URL + '&token=' + SECRET
+    payload = UserDict(status=True, data=UserDict(
+        links=UserDict(url=signed)))
+
+    def mapping_json():
+        """在响应作用域内返回合成映射，而非限制实现为字典。"""
+        assert wmclient.response.active
+        return payload
+
+    monkeypatch.setattr(wmclient.response, 'json', mapping_json)
+    result = upload_wmimg(SECRET)
+    assert result.success
+    assert result.url == signed
+    assert SECRET not in repr(result) + str(result) + caplog.text
+    assert signed not in repr(result) + str(result) + caplog.text
+    assert wmclient.closed == wmclient.response.closed == 1
+    assert len(wmclient.calls) == 1
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('status', [199, 302, 401, 403, 429, 500])
+def test_wmimg_http_errors_do_not_read_or_follow(wmclient, caplog, status):
+    """非成功 HTTP 状态直接失败，不解析正文或跟随重定向。"""
+    wmclient.response.status_code = status
+    wmclient.response.body = SECRET + URL
+    result = upload_wmimg(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert wmclient.response.reads == 0
+    assert wmclient.closed == wmclient.response.closed == 1
+    assert len(wmclient.calls) == 1
+    assert SECRET not in repr(result) + caplog.text
+    assert URL not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize('error_type', [
+    requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+    requests.exceptions.ContentDecodingError,
+])
+@pytest.mark.parametrize('stage', ['post', 'json'])
+def test_wmimg_transport_errors_are_safe_and_closed(
+        wmclient, caplog, error_type, stage):
+    """连接、读取与解压错误仅保留安全摘要并释放已取得的资源。"""
+    if stage == 'post':
+        wmclient.error = error_type(SECRET + URL)
+    else:
+        wmclient.response.error = error_type(SECRET + URL)
+    result = upload_wmimg(SECRET)
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert wmclient.closed == 1
+    assert wmclient.response.closed == (stage == 'json')
+    error_class = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_class) as caught:
+        providers().upload_wmimg(IMAGE, FILENAME, SECRET, {})
+    output = (''.join(traceback.format_exception(caught.value))
+              + repr(caught.value) + repr(result) + caplog.text)
+    assert SECRET not in output
+    assert URL not in output
+    assert not caplog.records
+    assert wmclient.closed == 2
+    assert wmclient.response.closed == 2 * (stage == 'json')
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['post', 'json'])
+def test_wmimg_control_signals_propagate_and_close(
+        wmclient, monkeypatch, signal_type, stage):
+    """控制信号原样上抛，资源照常释放且备用站点不会执行。"""
+    signal = signal_type('local stop')
+    if stage == 'post':
+        wmclient.error = signal
+    else:
+        wmclient.response.error = signal
+    calls = []
+
+    def fallback(*args):
+        """记录控制信号后不应发生的备用调用。"""
+        calls.append(args)
+        return URL
+
+    monkeypatch.setitem(registry().UPLOADERS, 'local', fallback)
+    with pytest.raises(signal_type) as caught:
+        upload_wmimg(extra_hosts=[{'provider': 'local'}])
+    assert caught.value is signal
+    assert calls == []
+    assert wmclient.closed == 1
+    assert wmclient.response.closed == (stage == 'json')
+
+
+@pytest.mark.parametrize('failure', [None, 'http', 'business', 'json',
+                                     'structure', 'url', 'options'])
+def test_wmimg_registry_fallback_and_stop(wmclient, monkeypatch, failure):
+    """各类当前项失败允许本地备用，首次成功则停止逐站尝试。"""
+    options = {}
+    if failure == 'http':
+        wmclient.response.status_code = 500
+    elif failure == 'business':
+        wmclient.response.body = json.dumps({'status': False, 'message': SECRET})
+    elif failure == 'json':
+        wmclient.response.body = '<html>' + SECRET
+    elif failure == 'structure':
+        wmclient.response.body = '[]'
+    elif failure == 'url':
+        wmclient.response.body = json.dumps(wmimg_payload('invalid'))
+    elif failure == 'options':
+        options = {'permission': False}
+    calls = []
+
+    def fallback(image_bytes, filename, token, options):
+        """记录不访问网络的备用上传参数。"""
+        calls.append((image_bytes, filename, token, options))
+        return URL
+
+    monkeypatch.setitem(registry().UPLOADERS, 'local', fallback)
+    result = upload_wmimg(SECRET, options, [{'provider': 'local'}])
+    assert result.success
+    if failure is None:
+        assert result.provider == 'wmimg'
+        assert result.attempts == ('wmimg',)
+        assert result.failures == ()
+        assert calls == []
+    else:
+        assert result.provider == 'local'
+        assert result.attempts == ('wmimg', 'local')
+        assert len(result.failures) == 1
+        assert result.failures[0].provider == 'wmimg'
+        assert calls == [(IMAGE, FILENAME, '', {})]
+    assert len(wmclient.calls) == (failure != 'options')
