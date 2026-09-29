@@ -1272,6 +1272,9 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             try:
                 stage = 'fdopen'
                 stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
+                temp_fd = None
+                # 描述符由原始流独占；保留引用以在上层关闭失败时安全退休它。
+                raw_stream = stream.buffer.raw
                 primary_error = None
                 try:
                     stage = 'serialize'
@@ -1287,12 +1290,17 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                             isinstance(primary_error, Exception)
                             and not isinstance(error, Exception)):
                         primary_error = error
-                finally:
-                    if stream.closed:
-                        temp_fd = None
+                try:
+                    # 先使原始流失效，遗留缓冲层便不能再访问复用后的描述符。
+                    if not raw_stream.closed:
+                        raw_stream.close()
+                except BaseException as error:
+                    if primary_error is None or (
+                            isinstance(primary_error, Exception)
+                            and not isinstance(error, Exception)):
+                        primary_error = error
                 if primary_error is not None:
                     raise primary_error
-                temp_fd = None
                 stage = 'replace'
                 os.replace(temp_path, config_file)
                 temp_path = None
