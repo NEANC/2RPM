@@ -67,7 +67,9 @@ def test_models_are_frozen_and_public_exports_are_real():
     assert package.upload_with_fallback is registry().upload_with_fallback
     assert isinstance(registry().UPLOADERS, dict)
     providers = import_module('modules.image_host.providers')
-    assert registry().UPLOADERS == {'catbox': providers.upload_catbox}
+    assert registry().UPLOADERS == {
+        'catbox': providers.upload_catbox, 'wmimg': providers.upload_wmimg,
+    }
 
 
 @pytest.mark.parametrize('render', [repr, str])
