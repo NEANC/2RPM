@@ -6,10 +6,12 @@
 import copy
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from ruamel.yaml import YAML
+from ruamel.yaml.parser import ParserError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -253,13 +255,15 @@ def test_yaml_parse_error_does_not_disclose_token(tmp_path, caplog):
     assert path.read_bytes() == original
 
 
+@pytest.mark.parametrize('with_screenshot', [False, True])
 @pytest.mark.parametrize('stage', ['mkstemp', 'fdopen', 'dump', 'replace'])
 def test_write_error_does_not_disclose_token_and_preserves_file(
-        tmp_path, monkeypatch, caplog, stage):
+        tmp_path, monkeypatch, caplog, stage, with_screenshot):
     """截图配置写回异常不泄露凭证，并保留原文件及清理临时文件。"""
-    path = _write_config(tmp_path, {'screenshot': {
+    push = {'screenshot': {
         'targets': [], 'image_host': [{'provider': 'wmimg', 'token': SECRET}],
-    }})
+    }} if with_screenshot else {}
+    path = _write_config(tmp_path, push)
     original = path.read_bytes()
 
     def fail(*args, **kwargs):
@@ -275,11 +279,17 @@ def test_write_error_does_not_disclose_token_and_preserves_file(
         owner = config_module.tempfile if stage == 'mkstemp' else os
         monkeypatch.setattr(owner, stage, fail)
         result = config_module.load_config(str(path))
-    assert result['push']['screenshot']['image_host'][0]['token'] == SECRET
+    expected_token = SECRET if with_screenshot else ''
+    assert result['push']['screenshot']['image_host'][0]['token'] == expected_token
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
     assert SECRET not in caplog.text
+    assert 'cannot write token:' not in caplog.text
     assert '无法写回配置文件' in caplog.text
+    expected_stage = 'serialize' if stage == 'dump' else stage
+    assert f'stage={expected_stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=' not in caplog.text
 
 
 @pytest.mark.parametrize('exception', [KeyboardInterrupt, SystemExit])
@@ -365,3 +375,180 @@ def test_screenshot_lists_bypass_channel_parser_and_preserve_environment(
     )
     for name in TEMPLATE_NAMES:
         assert result['push']['templates'][name]['content'] == '用户正文 {screenshot}'
+
+
+@pytest.mark.parametrize('with_errno', [False, True])
+def test_read_failure_keeps_safe_diagnostics_and_exit(
+        tmp_path, monkeypatch, caplog, with_errno):
+    """读取失败保留阶段及数字错误码，不输出异常原文或文件名。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    monkeypatch.setenv('CONFIG_TEST_TOKEN', 'expanded-config-secret')
+    message = f'{SECRET}\n{os.environ["CONFIG_TEST_TOKEN"]}'
+    failure = (PermissionError(13, message, f'{message}.yaml')
+               if with_errno else OSError(message))
+    failure.filename = f'{message}.yaml'
+    with patch('modules.config.open', side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert SECRET not in caplog.text
+    assert 'expanded-config-secret' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+    assert 'stage=read' in caplog.text
+    if with_errno:
+        assert 'type=PermissionError' in caplog.text
+        assert 'errno=13' in caplog.text
+        assert 'category=EACCES' in caplog.text
+    else:
+        assert 'type=OSError' in caplog.text
+        assert 'errno=' not in caplog.text
+
+
+def test_yaml_error_without_screenshot_reports_one_based_positions(
+        tmp_path, caplog):
+    """无截图的坏 YAML 也保留行列，且不输出凭证源码。"""
+    path = tmp_path / 'invalid.yaml'
+    path.write_text(f'token: ["{SECRET}"\n', encoding='utf-8')
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert 'stage=parse' in caplog.text
+    assert 'type=ParserError' in caplog.text
+    assert 'problem_line=2 problem_column=1' in caplog.text
+    assert 'context_line=1 context_column=8' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'token:' not in caplog.text
+
+
+def test_yaml_context_is_not_used_as_diagnostic_text(
+        tmp_path, monkeypatch, caplog):
+    """解析上下文及标记中的原文不进入摘要，只保留数字位置。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    monkeypatch.setenv('CONFIG_TEST_TOKEN', 'expanded-config-secret')
+    message = f'{SECRET}\n{os.environ["CONFIG_TEST_TOKEN"]}'
+    context_mark = SimpleNamespace(
+        line=2, column=4, buffer=message, name=message,
+    )
+    problem_mark = SimpleNamespace(
+        line=6, column=8, buffer=message, name=message,
+    )
+    failure = ParserError(message, context_mark, message, problem_mark)
+    with patch.object(YAML, 'load', side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert 'stage=parse' in caplog.text
+    assert 'type=ParserError' in caplog.text
+    assert 'problem_line=7 problem_column=9' in caplog.text
+    assert 'context_line=3 context_column=5' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'expanded-config-secret' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('push', [
+    {},
+    {'screenshot': {}},
+    {'screenshot': []},
+    {'screenshot': {'image_host': [{'provider': 'wmimg', 'token': SECRET}]}},
+], ids=['missing', 'empty-map', 'empty-list', 'credentials'])
+@pytest.mark.parametrize('stage', ['mkstemp', 'fdopen', 'dump', 'replace'])
+def test_write_errno_diagnostics_do_not_depend_on_screenshot(
+        tmp_path, monkeypatch, caplog, push, stage):
+    """所有截图形态使用相同安全诊断，保留磁盘错误码与原文件。"""
+    path = _write_config(tmp_path, push)
+    original = path.read_bytes()
+    failure = OSError(28, SECRET, f'{SECRET}.yaml')
+    failure.winerror = 112
+
+    def fail(*args, **kwargs):
+        """模拟带敏感消息和文件名的磁盘空间不足。"""
+        raise failure
+
+    if stage == 'dump':
+        writer = config_module._make_write_yaml()
+        monkeypatch.setattr(writer, 'dump', fail)
+        with patch('modules.config._make_write_yaml', return_value=writer):
+            result = config_module.load_config(str(path))
+    else:
+        owner = config_module.tempfile if stage == 'mkstemp' else os
+        monkeypatch.setattr(owner, stage, fail)
+        result = config_module.load_config(str(path))
+    assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+    expected_stage = 'serialize' if stage == 'dump' else stage
+    assert f'stage={expected_stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=28' in caplog.text
+    assert 'winerror=112' in caplog.text
+    assert 'category=ENOSPC' in caplog.text
+    assert SECRET not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('failure_kind', ['os', 'yaml', 'generic'])
+def test_untrusted_exception_fields_do_not_enter_summary(
+        tmp_path, caplog, failure_kind):
+    """异常元数据只接受数值，通用异常仅记录安全类型及阶段。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    message = f'{SECRET}\nforged-log-entry'
+    if failure_kind == 'os':
+        failure = OSError(message)
+        failure.errno = message
+        failure.winerror = message
+        target = 'modules.config.open'
+        expected_type = 'OSError'
+        expected_stage = 'read'
+    elif failure_kind == 'yaml':
+        mark = SimpleNamespace(line=message, column=message, buffer=message)
+        failure = ParserError(message, mark, message, mark)
+        target = 'ruamel.yaml.YAML.load'
+        expected_type = 'ParserError'
+        expected_stage = 'parse'
+    else:
+        failure = ValueError(message)
+        target = 'ruamel.yaml.YAML.load'
+        expected_type = 'ValueError'
+        expected_stage = 'parse'
+    with patch(target, side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert f'stage={expected_stage}' in caplog.text
+    assert f'type={expected_type}' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'forged-log-entry' not in caplog.text
+    assert 'errno=' not in caplog.text
+    assert 'winerror=' not in caplog.text
+    assert '_line=' not in caplog.text
+    assert '_column=' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('stage', ['create', 'serialize'])
+def test_default_creation_error_keeps_safe_summary_and_reraises(
+        tmp_path, caplog, stage):
+    """默认文件创建异常继续抛出，但日志不使用异常消息或文件名。"""
+    path = tmp_path / 'default.yaml'
+    failure = OSError(28, SECRET, f'{SECRET}.yaml')
+    target = 'modules.config.open' if stage == 'create' else (
+        'ruamel.yaml.YAML.dump'
+    )
+    with patch(target, side_effect=failure):
+        with pytest.raises(OSError) as error:
+            config_module.create_default_config(str(path))
+    assert error.value is failure
+    assert f'stage={stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=28' in caplog.text
+    assert 'category=ENOSPC' in caplog.text
+    assert SECRET not in caplog.text

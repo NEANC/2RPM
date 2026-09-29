@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import copy
+import errno
 import logging
 import os
 import sys
 import tempfile
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 
 from modules.spinner import spinner_phase
@@ -507,6 +509,31 @@ def apply_comments(config_section, comments_section, depth=0,
         first_section_done = True
 
 
+def _config_exception_summary(exc, stage):
+    """仅提取配置异常的阶段、安全类型、数字错误码和源码位置。"""
+    error_type = type(exc).__name__
+    if not error_type.isascii() or not error_type.isidentifier():
+        error_type = 'Exception'
+    details = [f'stage={stage}', f'type={error_type}']
+    if isinstance(exc, OSError):
+        for field in ('errno', 'winerror'):
+            value = getattr(exc, field, None)
+            if type(value) is int:
+                details.append(f'{field}={value}')
+        if type(exc.errno) is int:
+            category = errno.errorcode.get(exc.errno)
+            if category is not None:
+                details.append(f'category={category}')
+    if isinstance(exc, YAMLError):
+        for kind in ('problem', 'context'):
+            mark = getattr(exc, f'{kind}_mark', None)
+            for field in ('line', 'column'):
+                value = getattr(mark, field, None)
+                if type(value) is int and value >= 0:
+                    details.append(f'{kind}_{field}={value + 1}')
+    return ' '.join(details)
+
+
 def create_default_config(config_file):
     """创建默认配置文件
 
@@ -518,13 +545,19 @@ def create_default_config(config_file):
     """
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
     default_config = get_default_config(for_file_creation=True)
+    stage = 'prepare'
     try:
         yaml = _make_write_yaml()
+        stage = 'create'
         with open(config_file, 'w', encoding='utf-8') as f:
+            stage = 'serialize'
             yaml.dump(default_config, f)
+            stage = 'close'
         LOGGER.info(f"配置文件创建成功: {os.path.abspath(config_file)}")
     except Exception as e:
-        LOGGER.critical(f"创建配置文件失败: {e}")
+        LOGGER.critical(
+            "创建配置文件失败: %s", _config_exception_summary(e, stage)
+        )
         raise
 
 
@@ -1128,11 +1161,19 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         sys.exit(0)
 
     # 加载用户配置
+    stage = 'prepare'
     try:
         yaml = YAML()
         yaml.preserve_quotes = True
+        stage = 'read'
         with open(config_file, 'r', encoding='utf-8') as f:
-            user_config = yaml.load(f)
+            stage = 'parse'
+            try:
+                user_config = yaml.load(f)
+            except OSError:
+                stage = 'read'
+                raise
+            stage = 'close'
         if user_config is None:
             LOGGER.warning(
                 f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，"
@@ -1147,18 +1188,10 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
-        # YAML 异常可能附带含凭证的源码行，只记录异常类型。
         LOGGER.critical(
-            f"无法加载配置文件: {os.path.abspath(config_file)}: "
-            f"{type(e).__name__}"
+            "无法加载配置文件: %s", _config_exception_summary(e, stage)
         )
         sys.exit(1)
-
-    # 在默认补全前记录截图输入，避免影响旧配置的错误诊断。
-    push_section = user_config.get('push')
-    has_user_screenshot = (
-        isinstance(push_section, dict) and 'screenshot' in push_section
-    )
 
     # 加载默认配置
     _validate_config_shapes(user_config)
@@ -1199,8 +1232,10 @@ def load_config(config_file, spinner=None, is_user_specified=False):
 
     if updated or cleaned or corrected:
         LOGGER.info("配置文件已更新，正在执行无缝迁移")
+        stage = 'prepare'
         try:
             yaml = _make_write_yaml()
+            stage = 'mkstemp'
             temp_fd, temp_path = tempfile.mkstemp(
                 dir=os.path.dirname(os.path.abspath(config_file)),
                 prefix=f'.{os.path.basename(config_file)}.',
@@ -1208,6 +1243,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             )
             try:
                 try:
+                    stage = 'fdopen'
                     stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
                 except Exception:
                     try:
@@ -1218,7 +1254,10 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                     raise
                 temp_fd = None
                 with stream as f:
+                    stage = 'serialize'
                     yaml.dump(merged_config, f)
+                    stage = 'close'
+                stage = 'replace'
                 os.replace(temp_path, config_file)
                 temp_path = None
             except Exception:
@@ -1236,10 +1275,8 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                         pass
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
-            # 用户截图节点可能含凭证，禁止输出异常中的原值。
-            detail = type(e).__name__ if has_user_screenshot else str(e)
             LOGGER.error(
-                f"无法写回配置文件 {os.path.abspath(config_file)}: {detail}"
+                "无法写回配置文件: %s", _config_exception_summary(e, stage)
             )
             return merged_config
 
