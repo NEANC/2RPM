@@ -69,6 +69,7 @@ def test_models_are_frozen_and_public_exports_are_real():
     providers = import_module('modules.image_host.providers')
     assert registry().UPLOADERS == {
         'catbox': providers.upload_catbox, 'wmimg': providers.upload_wmimg,
+        'beeimg': providers.upload_beeimg,
     }
 
 

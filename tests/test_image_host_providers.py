@@ -123,8 +123,8 @@ def client(monkeypatch):
 
 
 def test_only_implemented_providers_are_registered():
-    """生产注册表仅声明已实现的两个站点，不注册空壳。"""
-    assert set(registry().UPLOADERS) == {'catbox', 'wmimg'}
+    """生产注册表仅声明已实现的三个站点，不注册空壳。"""
+    assert set(registry().UPLOADERS) == {'catbox', 'wmimg', 'beeimg'}
     assert registry().UPLOADERS['catbox'] is providers().upload_catbox
     parameters = signature(providers().upload_catbox).parameters
     assert list(parameters) == ['image_bytes', 'filename', 'token', 'options']
