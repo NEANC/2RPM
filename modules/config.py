@@ -9,8 +9,13 @@ import sys
 import tempfile
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.error import YAMLError
+from ruamel.yaml.composer import ComposerError
+from ruamel.yaml.constructor import ConstructorError, DuplicateKeyError
+from ruamel.yaml.error import MarkedYAMLError, YAMLError
+from ruamel.yaml.parser import ParserError
+from ruamel.yaml.reader import ReaderError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
+from ruamel.yaml.scanner import ScannerError
 
 from modules.spinner import spinner_phase
 from modules.utils import (
@@ -21,6 +26,27 @@ from modules.utils import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+_CONFIG_EXCEPTION_TYPES = (
+    (PermissionError, 'PermissionError'),
+    (FileNotFoundError, 'FileNotFoundError'),
+    (FileExistsError, 'FileExistsError'),
+    (IsADirectoryError, 'IsADirectoryError'),
+    (NotADirectoryError, 'NotADirectoryError'),
+    (TimeoutError, 'TimeoutError'),
+    (OSError, 'OSError'),
+    (ParserError, 'ParserError'),
+    (ScannerError, 'ScannerError'),
+    (ComposerError, 'ComposerError'),
+    (ConstructorError, 'ConstructorError'),
+    (DuplicateKeyError, 'DuplicateKeyError'),
+    (ReaderError, 'ReaderError'),
+    (MarkedYAMLError, 'MarkedYAMLError'),
+    (YAMLError, 'YAMLError'),
+    (ValueError, 'ValueError'),
+    (TypeError, 'TypeError'),
+    (RuntimeError, 'RuntimeError'),
+)
 
 # 默认配置值集中管理
 DEFAULT_VALUES = {
@@ -511,9 +537,11 @@ def apply_comments(config_section, comments_section, depth=0,
 
 def _config_exception_summary(exc, stage):
     """仅提取配置异常的阶段、安全类型、数字错误码和源码位置。"""
-    error_type = type(exc).__name__
-    if not error_type.isascii() or not error_type.isidentifier():
-        error_type = 'Exception'
+    error_type = 'Exception'
+    for exception_class, label in _CONFIG_EXCEPTION_TYPES:
+        if isinstance(exc, exception_class):
+            error_type = label
+            break
     details = [f'stage={stage}', f'type={error_type}']
     if isinstance(exc, OSError):
         for field in ('errno', 'winerror'):
