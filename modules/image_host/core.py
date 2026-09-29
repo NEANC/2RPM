@@ -3,6 +3,7 @@
 """定义上传结果、凭证解析及图片链接的安全边界。"""
 
 from dataclasses import dataclass
+from dataclasses import field
 import ipaddress
 import os
 import re
@@ -43,7 +44,7 @@ class UploadResult:
 
     success: bool
     provider: str | None
-    url: str | None
+    url: str | None = field(repr=False)
     attempts: tuple[str, ...]
     failures: tuple[UploadFailure, ...]
 
