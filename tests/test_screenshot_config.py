@@ -668,6 +668,89 @@ def test_write_errno_diagnostics_do_not_depend_on_screenshot(
     assert not any(record.exc_info for record in caplog.records)
 
 
+@pytest.mark.parametrize('name, base, module, expected_type', [
+    ('FakeToken_7319', OSError, 'custom', 'OSError'),
+    ('FakeGenericToken_7319', Exception, 'custom', 'Exception'),
+    ('FakePermissionToken_7319', PermissionError, 'custom', 'PermissionError'),
+    ('PermissionError', Exception, 'builtins', 'Exception'),
+    ('PermissionError', OSError, 'builtins', 'OSError'),
+    ('ParserError', Exception, 'ruamel.yaml.parser', 'Exception'),
+    ('FakeParserToken_7319', ParserError, 'custom', 'ParserError'),
+])
+def test_custom_exception_names_never_become_diagnostic_labels(
+        tmp_path, caplog, name, base, module, expected_type):
+    """自定义类名及伪装模块不能成为日志标签，安全错误码仍保留。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    failure_type = type(name, (base,), {'__module__': module})
+    message = 'FAKE_MESSAGE_SECRET'
+    if issubclass(base, OSError):
+        code = 13 if issubclass(base, PermissionError) else 28
+        failure = failure_type(code, message, 'FAKE_FILENAME_SECRET')
+        failure.winerror = 112
+        expected_stage = 'read'
+    else:
+        failure = failure_type(message)
+        expected_stage = 'parse'
+    if isinstance(failure, ParserError):
+        failure.problem_mark = SimpleNamespace(
+            line=2, column=4, buffer=message, name=message,
+        )
+    with patch.object(YAML, 'load', side_effect=failure):
+        with pytest.raises(SystemExit) as caught:
+            config_module.load_config(str(path))
+    assert caught.value.code == 1
+    assert path.read_bytes() == original
+    messages = [record.getMessage() for record in caplog.records
+                if '无法加载配置文件' in record.getMessage()]
+    assert len(messages) == 1
+    diagnostic = messages[0]
+    assert f'stage={expected_stage} type={expected_type}' in diagnostic
+    assert diagnostic.split('type=', 1)[1].split()[0] == expected_type
+    for secret in ('FakeToken_7319', 'FakeGenericToken_7319',
+                   'FakePermissionToken_7319', 'FakeParserToken_7319',
+                   message, 'FAKE_FILENAME_SECRET'):
+        assert secret not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+    if isinstance(failure, OSError):
+        assert f'errno={code}' in diagnostic
+        assert 'winerror=112' in diagnostic
+        category = 'EACCES' if code == 13 else 'ENOSPC'
+        assert f'category={category}' in diagnostic
+    else:
+        assert 'errno=' not in diagnostic
+        assert 'winerror=' not in diagnostic
+    if isinstance(failure, ParserError):
+        assert 'problem_line=3 problem_column=5' in diagnostic
+    else:
+        assert '_line=' not in diagnostic
+        assert '_column=' not in diagnostic
+
+
+@pytest.mark.parametrize('failure, expected_type', [
+    (PermissionError(13, 'FAKE_MESSAGE_SECRET'), 'PermissionError'),
+    (FileNotFoundError(2, 'FAKE_MESSAGE_SECRET'), 'FileNotFoundError'),
+    (FileExistsError(17, 'FAKE_MESSAGE_SECRET'), 'FileExistsError'),
+    (IsADirectoryError(21, 'FAKE_MESSAGE_SECRET'), 'IsADirectoryError'),
+    (NotADirectoryError(20, 'FAKE_MESSAGE_SECRET'), 'NotADirectoryError'),
+    (TimeoutError(110, 'FAKE_MESSAGE_SECRET'), 'TimeoutError'),
+    (OSError(28, 'FAKE_MESSAGE_SECRET'), 'OSError'),
+    (ValueError('FAKE_MESSAGE_SECRET'), 'ValueError'),
+    (TypeError('FAKE_MESSAGE_SECRET'), 'TypeError'),
+    (RuntimeError('FAKE_MESSAGE_SECRET'), 'RuntimeError'),
+    (Exception('FAKE_MESSAGE_SECRET'), 'Exception'),
+])
+def test_builtin_exception_labels_remain_specific(failure, expected_type):
+    """固定类型分派保留常见内置异常的具体标签且不输出消息。"""
+    summary = config_module._config_exception_summary(failure, 'serialize')
+    assert summary.split()[:2] == [
+        'stage=serialize', f'type={expected_type}',
+    ]
+    assert 'FAKE_MESSAGE_SECRET' not in summary
+    if isinstance(failure, OSError):
+        assert f'errno={failure.errno}' in summary
+
+
 @pytest.mark.parametrize('failure_kind', ['os', 'yaml', 'generic'])
 def test_untrusted_exception_fields_do_not_enter_summary(
         tmp_path, caplog, failure_kind):
