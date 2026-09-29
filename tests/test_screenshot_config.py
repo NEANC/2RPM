@@ -478,6 +478,107 @@ def test_atomic_stream_failure_preserves_primary_and_releases_resources(
             original_unlink(temp_path)
 
 
+@pytest.mark.parametrize('failure_kind', ['os', 'interrupt', 'exit'])
+@pytest.mark.parametrize('close_fails', [False, True])
+def test_raw_lookup_failure_attempts_owned_stream_cleanup(
+        tmp_path, caplog, failure_kind, close_fails):
+    """获取底层流失败仍关闭拥有者，关闭失败也不覆盖原始主因。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    original_fdopen = os.fdopen
+    original_unlink = os.unlink
+    streams = []
+    descriptors = []
+    close_attempts = []
+    primary_error = {
+        'os': OSError(28, 'FAKE_RAW_SECRET', 'FAKE_FILENAME_SECRET'),
+        'interrupt': KeyboardInterrupt('FAKE_RAW_SECRET'),
+        'exit': SystemExit('FAKE_RAW_SECRET'),
+    }[failure_kind]
+
+    class RawLookupFailingStream:
+        """保留真实临时流，在获取缓冲层时注入资源准备故障。"""
+
+        def __init__(self, stream):
+            """持有真实流，避免析构掩盖生产路径遗漏的关闭。"""
+            self.stream = stream
+
+        @property
+        def buffer(self):
+            """在获取原始流引用的操作点抛出指定异常。"""
+            raise primary_error
+
+        def close(self):
+            """记录关闭尝试，并可在释放真实资源前拒绝关闭。"""
+            close_attempts.append(self)
+            if close_fails:
+                raise PermissionError(13, 'FAKE_CLOSE_SECRET')
+            self.stream.close()
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """包装生产代码创建的真实临时流并保留描述符以供验收。"""
+        descriptors.append(fd)
+        wrapped = RawLookupFailingStream(original_fdopen(fd, *args, **kwargs))
+        streams.append(wrapped)
+        return wrapped
+
+    writer = config_module._make_write_yaml()
+    caplog.set_level('INFO', logger='modules.config')
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.unlink', wraps=original_unlink) as unlink, \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump') as dump, \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            if failure_kind == 'os':
+                result = config_module.load_config(str(path))
+                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                for name in TEMPLATE_NAMES:
+                    assert result['push']['templates'][name][
+                        'capture_screenshot'] is True
+            else:
+                with pytest.raises(BaseException) as caught:
+                    config_module.load_config(str(path))
+                assert caught.value is primary_error
+            replace.assert_not_called()
+            dump.assert_not_called()
+        assert path.read_bytes() == original
+        if failure_kind == 'os':
+            assert (
+                'stage=fdopen type=OSError errno=28 category=ENOSPC'
+                in caplog.text
+            )
+            assert 'type=PermissionError' not in caplog.text
+            assert 'errno=13' not in caplog.text
+        else:
+            assert '无法写回配置文件' not in caplog.text
+        assert 'FAKE_' not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+        assert '正在写回配置信息' not in caplog.text
+        assert '配置参数版本差异检查完成' not in caplog.text
+        assert len(streams) == len(descriptors) == 1
+        assert close_attempts == streams
+        unlink.assert_called_once()
+        if close_fails:
+            # 无法取得原始流且拥有者拒绝关闭时，不以裸描述符兜底。
+            assert not streams[0].stream.closed
+            assert not streams[0].stream.buffer.raw.closed
+            os.fstat(descriptors[0])
+        else:
+            assert streams[0].stream.closed
+            assert streams[0].stream.buffer.raw.closed
+            with pytest.raises(OSError) as caught:
+                os.fstat(descriptors[0])
+            assert caught.value.errno == 9
+            assert list(tmp_path.iterdir()) == [path]
+    finally:
+        # 红灯及关闭被拒绝时，由测试拥有的真实流显式释放资源。
+        for wrapped in streams:
+            wrapped.stream.close()
+        for temp_path in tmp_path.glob('*.tmp'):
+            original_unlink(temp_path)
+
+
 @pytest.mark.parametrize('serialize_fails', [False, True])
 @pytest.mark.parametrize('delayed_action', ['flush', 'close', 'release'])
 def test_failed_close_cannot_touch_reused_descriptor(

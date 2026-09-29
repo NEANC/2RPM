@@ -1271,34 +1271,36 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             )
             try:
                 stage = 'fdopen'
-                stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
-                temp_fd = None
-                # 描述符由原始流独占；保留引用以在上层关闭失败时安全退休它。
-                raw_stream = stream.buffer.raw
+                raw_stream = None
                 primary_error = None
+                stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
                 try:
+                    temp_fd = None
+                    # 描述符由原始流独占；获取引用失败时仍须关闭拥有者。
+                    raw_stream = stream.buffer.raw
                     stage = 'serialize'
                     yaml.dump(merged_config, stream)
                 except BaseException as error:
                     primary_error = error
-                try:
-                    if primary_error is None:
-                        stage = 'close'
-                    stream.close()
-                except BaseException as error:
-                    if primary_error is None or (
-                            isinstance(primary_error, Exception)
-                            and not isinstance(error, Exception)):
-                        primary_error = error
-                try:
-                    # 先使原始流失效，遗留缓冲层便不能再访问复用后的描述符。
-                    if not raw_stream.closed:
-                        raw_stream.close()
-                except BaseException as error:
-                    if primary_error is None or (
-                            isinstance(primary_error, Exception)
-                            and not isinstance(error, Exception)):
-                        primary_error = error
+                finally:
+                    try:
+                        if primary_error is None:
+                            stage = 'close'
+                        stream.close()
+                    except BaseException as error:
+                        if primary_error is None or (
+                                isinstance(primary_error, Exception)
+                                and not isinstance(error, Exception)):
+                            primary_error = error
+                    try:
+                        # 先使原始流失效，遗留缓冲层便不能再访问复用后的描述符。
+                        if raw_stream is not None and not raw_stream.closed:
+                            raw_stream.close()
+                    except BaseException as error:
+                        if primary_error is None or (
+                                isinstance(primary_error, Exception)
+                                and not isinstance(error, Exception)):
+                            primary_error = error
                 if primary_error is not None:
                     raise primary_error
                 stage = 'replace'
