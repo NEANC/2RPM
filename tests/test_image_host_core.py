@@ -66,7 +66,8 @@ def test_models_are_frozen_and_public_exports_are_real():
         assert getattr(package, name) is getattr(module, name)
     assert package.upload_with_fallback is registry().upload_with_fallback
     assert isinstance(registry().UPLOADERS, dict)
-    assert registry().UPLOADERS == {}
+    providers = import_module('modules.image_host.providers')
+    assert registry().UPLOADERS == {'catbox': providers.upload_catbox}
 
 
 @pytest.mark.parametrize('render', [repr, str])
