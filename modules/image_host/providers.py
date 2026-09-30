@@ -238,16 +238,22 @@ def _upload_v2_storage(endpoint, label, image_bytes, filename, token,
                        options) -> str:
     """按 v2 图床契约上传内存 PNG，返回经核心校验的完整直链。
 
-    契约来源：官方接口文档页面 /api/v2/upload，仅核验文档未做真实上传。
-    multipart 必填 file 与 storage_id，可选整数 album_id；文档未给出可
-    确定的默认存储，因此 storage_id 必须由用户在 options 显式提供非布尔
-    正整数，缺失或非法一律在请求前安全失败且不猜测文档示例值。
+    契约来源：官方接口文档页面 /api/v2/upload。BeeIMG.cn 已于 2026-09-30
+    用账号令牌完成真实上传验证；Boltp 因账号需先绑定手机号，仅验证到鉴权被
+    接受与业务拒绝提示，未取得成功响应。
+    multipart 必填 file 与 storage_id，可选整数 album_id；官方文档未给出可
+    确定的默认存储，且示例编号并不适用于所有账号，因此 storage_id 必须由用户
+    在 options 显式提供非布尔正整数（取账号实际可用存储，即官方
+    GET /api/v2/group 返回的 data.storages 项编号，或站点界面所示存储），
+    缺失或非法一律在请求前安全失败且不猜测示例值。
     项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
     字符串 "1"/"0" 显式表达该布尔表单字段，不省略该字段；原生 is_public
     不作为可覆盖权限语义的选项，显式传入即安全拒绝。
-    该 "1"/"0" 编码为未经实机验证的推断：文档仅写 boolean（示例分别为空
-    串与 true），未说明字符串取值。可用公开与非公开各上传一次核对，若返回
-    422 类型错误或行为相反，可能需改为 "true"/"false"。
+    编码依据 2026-09-30 实测：带账号令牌上传时发送 is_public="1" 未触发类型
+    校验错误（HTTP 200 且 status 为 success），返回的 public_url 经确认可
+    匿名访问。但该账号所属用户组的 allow_public_upload 为 false，响应中的
+    data.is_public 仍为 false，说明是否真正公开由账号策略决定：本实现只表达
+    用户意图，不能保证服务端采纳，也不得据此声称已实现私有访问控制。
     非空令牌原样作为 Bearer 账号凭证，空令牌按文档允许匿名上传。
     每次最多发送一次请求；连接和读取超时不是整个操作的硬总时限，超时
     也不能保证服务端尚未保存图片。
@@ -306,8 +312,10 @@ def _upload_v2_storage(endpoint, label, image_bytes, filename, token,
 def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
     """依据 BeeIMG.cn 官方文档上传内存 PNG，不适用于 BeeIMG.com。
 
-    契约来源：https://www.beeimg.cn/api/v2/pages/api-docs，核对日期
-    2026-09-30；仅核验文档，未做真实上传，也未使用真实令牌。
+    契约来源：https://www.beeimg.cn/api/v2/pages/api-docs 与站点 Apifox，
+    核对日期 2026-09-30。已于同日用账号令牌完成真实上传验证：使用该账号
+    实际可用存储编号时返回 status 为 success 且 public_url 可匿名访问；
+    文档示例编号在该账号上会返回“不存在的储存驱动”。
     """
     return _upload_v2_storage(
         BEEIMG_CN_ENDPOINT, 'BeeIMG.cn', image_bytes, filename, token, options)
@@ -317,9 +325,10 @@ def upload_boltp(image_bytes, filename, token, options) -> str:
     """依据 Boltp 官方文档上传内存 PNG。
 
     契约来源：https://www.boltp.com/api/v2/pages/api-docs，核对日期
-    2026-09-30；仅核验文档，未做真实上传，也未使用真实令牌。文档字段表
-    与请求示例对存储 ID 的取值互相冲突，因此不采用任何文档示例值，改由
-    用户在 options 显式提供。
+    2026-09-30。同日实测：Bearer 令牌被服务端接受，但在账号未绑定手机号时
+    返回业务错误“请先绑定手机号”，因此尚未取得成功响应。文档字段表与请求
+    示例对存储 ID 的取值互相冲突，故不采用任何文档示例值，改由用户在
+    options 显式提供账号实际可用存储编号。
     """
     return _upload_v2_storage(
         BOLTP_ENDPOINT, 'Boltp', image_bytes, filename, token, options)
