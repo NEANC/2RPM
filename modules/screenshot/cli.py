@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""解析截图调试参数并执行单次截图并保存，不读写配置或图床设置。"""
+"""解析截图调试参数并执行单次截图并保存。
+
+未带 --upload 时不读取任何配置也不涉及图床；带 --upload 时只读解析
+配置文件中的 push.screenshot.image_host，并按列表顺序尝试上传。
+"""
 
 import argparse
-import os
+from collections.abc import Mapping
 from datetime import datetime
 from io import BytesIO
+import os
 
 from PIL import Image
+from ruamel.yaml import YAML
+
+from modules.image_host.registry import upload_with_fallback
 
 from .models import CaptureError
+from .pipeline import _markdown_image
 from .service import capture
 
 
@@ -41,6 +50,15 @@ SAVE_FAILURE_MESSAGE = '截图保存失败：无法写入输出路径'
 # 目标文件已存在且不覆盖时的专用固定提示
 SAVE_EXISTS_MESSAGE = '截图保存失败：目标文件已存在，未覆盖'
 
+# 未指定 --config/-c 时相对程序根目录的默认配置文件名
+DEFAULT_CONFIG_FILENAME = 'config.yaml'
+
+# 上传相关固定安全提示，均不携带凭证、响应原文或完整配置
+UPLOAD_MISSING_CONFIG_MESSAGE = '上传失败：未找到配置文件'
+UPLOAD_INVALID_CONFIG_MESSAGE = '上传失败：配置文件解析失败'
+UPLOAD_NOT_CONFIGURED_MESSAGE = '上传失败：未配置图床'
+UPLOAD_FILTER_INVALID_MESSAGE = '上传失败：--image-host 未提供有效名称'
+
 
 def _build_parser():
     """构建截图调试子命令的参数解析器。
@@ -64,12 +82,16 @@ def _build_parser():
         'positional_targets', nargs='*', default=[], metavar='TARGET',
         help=argparse.SUPPRESS,
     )
-    parser.add_argument('--output', default=None, help='预留：截图输出路径')
-    parser.add_argument('--upload', default=None, help='预留：是否上传图床')
+    parser.add_argument('--output', default=None, help='截图输出路径')
     parser.add_argument(
-        '--image-host', dest='image_host', default=None, help='预留：图床名称')
+        '--upload', action='store_true',
+        help='读取配置文件并尝试上传截图到图床')
     parser.add_argument(
-        '-c', '--config', dest='config', default=None, help='预留：指定配置文件')
+        '--image-host', dest='image_host', default=None,
+        help='逗号分隔的图床名称筛选，仅在 --upload 时有效')
+    parser.add_argument(
+        '-c', '--config', dest='config', default=None,
+        help='上传所用的配置文件，默认 program_dir/config.yaml')
     return parser
 
 
@@ -174,8 +196,8 @@ def parse_screenshot_args(argv):
     """解析截图调试参数，参数错误统一以 SystemExit(2) 表达。
 
     支持 "adb:序列号"、"window:窗口标题"、裸窗口标题、来源关键字加位置目标、
-    来源关键字加 --target 五种形态，并接受尚未实现的 --output、--upload、
-    --image-host 与 --config/-c 预留选项。目标按用户输入使用，不做外形判定。
+    来源关键字加 --target 五种形态，并解析 --output、--upload、
+    --image-host 与 --config/-c 选项。目标按用户输入使用，不做外形判定。
 
     Args:
         argv (list[str]): 截图子命令之后的参数列表；允许包含开头的
@@ -183,7 +205,7 @@ def parse_screenshot_args(argv):
 
     Returns:
         argparse.Namespace: 至少含 source（window/adb）与 target（非空字符串），
-            并携带 output、upload、image_host、config 预留选项。
+            并携带 output、upload、image_host、config 选项。
     """
     remaining = list(argv)
     if remaining and remaining[0] == 'screenshot':
@@ -377,24 +399,204 @@ def _save_capture(result, output, program_dir):
     return target
 
 
+def _read_yaml_config(config_path):
+    """以只读 safe 模式解析 YAML 文件并返回顶层对象。
+
+    只做解析，不展开环境变量、不补全字段、不迁移也不回写文件。
+
+    Args:
+        config_path (str): 配置文件绝对路径。
+
+    Returns:
+        解析后的顶层对象；文件缺失或解析失败时抛出异常。
+    """
+    yaml = YAML(typ='safe')
+    with open(config_path, 'r', encoding='utf-8') as handle:
+        return yaml.load(handle)
+
+
+def _extract_image_hosts(data):
+    """从只读配置对象中取出 push.screenshot.image_host 列表。
+
+    Args:
+        data: _read_yaml_config 解析得到的顶层对象。
+
+    Returns:
+        list: 图床项列表；缺失、非列表或为空列表时返回 None。
+    """
+    if not isinstance(data, Mapping):
+        return None
+    push = data.get('push')
+    if not isinstance(push, Mapping):
+        return None
+    screenshot = push.get('screenshot')
+    if not isinstance(screenshot, Mapping):
+        return None
+    hosts = screenshot.get('image_host')
+    if not isinstance(hosts, list) or not hosts:
+        return None
+    return hosts
+
+
+def _load_image_hosts(config_path):
+    """只读加载图床配置，返回图床项列表或固定安全提示。
+
+    Args:
+        config_path (str): 配置文件绝对路径。
+
+    Returns:
+        tuple: (图床项列表, None) 或 (None, 固定安全提示)。
+    """
+    if not os.path.isfile(config_path):
+        return None, UPLOAD_MISSING_CONFIG_MESSAGE
+    try:
+        data = _read_yaml_config(config_path)
+    except Exception:
+        return None, UPLOAD_INVALID_CONFIG_MESSAGE
+    hosts = _extract_image_hosts(data)
+    if hosts is None:
+        return None, UPLOAD_NOT_CONFIGURED_MESSAGE
+    return hosts, None
+
+
+def _resolve_config_path(config, program_dir):
+    """把 --config/-c 归一为绝对路径，缺省时用程序根目录下的配置文件。
+
+    显式相对路径相对当前工作目录解析，绝对路径原样使用。
+
+    Args:
+        config: --config/-c 的原始取值。
+        program_dir (str): 程序根目录。
+
+    Returns:
+        str: 配置文件绝对路径。
+    """
+    if config is None or not isinstance(config, str) or not config.strip():
+        return os.path.join(program_dir, DEFAULT_CONFIG_FILENAME)
+    raw = config.strip()
+    return os.path.normpath(
+        raw if os.path.isabs(raw) else os.path.abspath(raw))
+
+
+def _provider_name(host):
+    """取图床项规范化后的 provider 名称，无法识别时返回 None。
+
+    Args:
+        host: 配置中的单个图床项。
+
+    Returns:
+        str | None: 去空白并转小写后的名称。
+    """
+    if not isinstance(host, Mapping):
+        return None
+    provider = host.get('provider')
+    if not isinstance(provider, str):
+        return None
+    return provider.strip().lower()
+
+
+def _select_image_hosts(hosts, raw_names):
+    """按 --image-host 名称筛选并重排图床项，各项保留自身凭证与参数。
+
+    每个名称必须唯一对应一个完整图床项；未找到或对应多项时返回安全提示。
+
+    Args:
+        hosts (list): 配置中的图床项列表。
+        raw_names (str): 逗号分隔的图床名称。
+
+    Returns:
+        tuple: (选中图床项列表, None) 或 (None, 固定安全提示)。
+    """
+    names = [part.strip().lower() for part in raw_names.split(',')]
+    names = [name for name in names if name]
+    if not names:
+        return None, UPLOAD_FILTER_INVALID_MESSAGE
+    selected = []
+    for name in names:
+        matched = [host for host in hosts if _provider_name(host) == name]
+        if not matched:
+            return None, f'上传失败：未找到图床 {name}'
+        if len(matched) > 1:
+            return None, f'上传失败：图床 {name} 对应多项配置'
+        selected.append(matched[0])
+    return selected, None
+
+
+def _upload_failure_message(result):
+    """把失败结果压缩为固定安全分类，不携带凭证或响应原文。
+
+    Args:
+        result (UploadResult): 顺序上传的最终结果。
+
+    Returns:
+        str: 形如 "上传失败：图床：固定分类" 的安全提示。
+    """
+    details = '；'.join(
+        f'{item.provider}：{item.message}' for item in result.failures)
+    return f'上传失败：{details}' if details else '上传失败：图床未返回有效链接'
+
+
+def _upload_debug_image(args, png_bytes, saved_path, program_dir):
+    """读取图床配置并执行一次顺序上传，返回退出码。
+
+    本地调试图片已落盘，无论上传成败均保留；失败时只输出固定安全分类。
+
+    Args:
+        args (argparse.Namespace): 解析结果，携带 config 与 image_host。
+        png_bytes (bytes): 待上传的原始 PNG 字节。
+        saved_path (str): 已保存的调试图片路径。
+        program_dir (str): 程序根目录。
+
+    Returns:
+        int: 上传成功为 0，配置或上传失败为 1。
+    """
+    config_path = _resolve_config_path(
+        getattr(args, 'config', None), program_dir)
+    hosts, message = _load_image_hosts(config_path)
+    if message is not None:
+        print(message)
+        return CAPTURE_FAILURE_CODE
+    raw_names = getattr(args, 'image_host', None)
+    if raw_names is not None:
+        hosts, message = _select_image_hosts(hosts, raw_names)
+        if message is not None:
+            print(message)
+            return CAPTURE_FAILURE_CODE
+    filename = os.path.basename(saved_path)
+    uploaded = upload_with_fallback(png_bytes, filename, hosts)
+    if not uploaded.success:
+        print(_upload_failure_message(uploaded))
+        return CAPTURE_FAILURE_CODE
+    markdown = _markdown_image(os.path.splitext(filename)[0], uploaded.url)
+    print(f'上传成功：图床 {uploaded.provider}')
+    print(f'图片地址：{uploaded.url}')
+    print(f'Markdown：{markdown}')
+    return 0
+
+
 def run_screenshot_cli(args, program_dir):
     """执行一次截图并保存，输出来源、目标、尺寸与保存路径，返回退出码。
 
-    本步不读取配置也不上传图床；--upload、--image-host 与 --config/-c
-    仍被接受但保持无行为。
+    未带 --upload 时不读取配置也不上传图床；带 --upload 时只读解析
+    配置文件并尝试按顺序上传，保存与上传失败均返回 1。
 
     Args:
         args (argparse.Namespace): parse_screenshot_args 的解析结果。
         program_dir (str): 程序根目录，默认输出目录相对该目录解析。
 
     Returns:
-        int: 全部请求操作成功为 0，参数错误为 2，截图或保存失败为 1。
+        int: 全部请求操作成功为 0，参数错误为 2，截图、保存或上传失败为 1。
     """
     source = getattr(args, 'source', None)
     target = getattr(args, 'target', None)
     if source not in SOURCE_PROVIDERS or not isinstance(target, str) \
             or not target.strip():
         print('截图参数无效：请提供有效的 --source 与目标')
+        return ARGUMENT_ERROR_CODE
+
+    upload = bool(getattr(args, 'upload', None))
+    if getattr(args, 'image_host', None) is not None and not upload:
+        print('参数错误：--image-host 仅在 --upload 时有效')
         return ARGUMENT_ERROR_CODE
 
     try:
@@ -422,4 +624,7 @@ def run_screenshot_cli(args, program_dir):
     print(f'已保存：{saved_path}')
     for warning in result.warnings or ():
         print(f'提示：{warning}')
-    return 0
+    if not upload:
+        return 0
+    return _upload_debug_image(
+        args, result.png_bytes, saved_path, program_dir)

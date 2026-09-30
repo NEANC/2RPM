@@ -146,19 +146,27 @@ def test_adb_serial_is_opaque_and_not_reclassified():
 
 
 def test_reserved_options_are_accepted_and_readable():
-    """预留选项可被接受读取，且不改变 source/target 归一结果。"""
+    """上传与配置选项可被解析，且不改变 source/target 归一结果。"""
     args = parse([
         '--source', 'window:MuMu模拟器 1',
         '--output', 'debug.png',
-        '--upload', 'true',
+        '--upload',
         '--image-host', 'superbed',
         '-c', 'custom.yaml',
     ])
     assert (args.source, args.target) == ('window', 'MuMu模拟器 1')
     assert args.output == 'debug.png'
-    assert args.upload == 'true'
+    assert args.upload is True
     assert args.image_host == 'superbed'
     assert args.config == 'custom.yaml'
+
+
+def test_upload_flag_defaults_to_disabled():
+    """未提供 --upload 时上传开关为关闭，且不影响来源与目标归一。"""
+    args = parse(['--source', 'window:MuMu模拟器 1'])
+    assert args.upload is False
+    assert args.image_host is None
+    assert args.config is None
 
 
 @pytest.mark.parametrize('argv', [

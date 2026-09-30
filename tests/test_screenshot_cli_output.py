@@ -407,15 +407,19 @@ def test_invalid_arguments_return_two(monkeypatch, tmp_path, args):
 
 
 def test_output_ignores_config_and_upload_options(monkeypatch, tmp_path):
-    """输出路径不读取配置，也不因上传预留选项改变行为。"""
+    """输出路径不读取配置，也不因配置类选项改变行为。"""
     config = import_module('modules.config')
     config_spy = Mock(return_value={})
     monkeypatch.setattr(config, 'load_config', config_spy)
+    cli = cli_module()
+    reader = Mock(side_effect=AssertionError('未带 --upload 不应读取配置'))
+    monkeypatch.setattr(cli, '_read_yaml_config', reader, raising=False)
 
     code, _, program_dir = run_cli(
-        monkeypatch, tmp_path, None, upload='true',
-        image_host='superbed', config='custom.yaml')
+        monkeypatch, tmp_path, None, upload=None,
+        image_host=None, config='custom.yaml')
 
     assert code == 0
     config_spy.assert_not_called()
+    reader.assert_not_called()
     assert len(created_pngs(program_dir / 'screenshot')) == 1
