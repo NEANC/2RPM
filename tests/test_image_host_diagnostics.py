@@ -126,6 +126,29 @@ def test_multiple_overlapping_secrets_and_inputs_are_preserved():
     assert text == '上传失败 ' + SECRET + ' ' + SECOND_SECRET
 
 
+@pytest.mark.parametrize('separator', [
+    '\x00', '\u200b', '\u202e', '\ud800', '\x1b[31m', '\x9b31m',
+    '\x1b]0;hidden title\x07', '\x9d0;hidden title\x9c',
+    '\x1bPhidden payload\x1b\\', '\x1b(B',
+])
+@pytest.mark.parametrize('prefix', ['', '上传失败 ', '甲' * 190])
+@pytest.mark.parametrize('secret_has_controls', [False, True])
+def test_overlapping_secrets_split_by_controls_are_fully_redacted(
+        separator, prefix, secret_has_controls):
+    """包含关系与控制清理组合时完整脱敏，截断前不残留秘密后缀。"""
+    short = 'FAKE_PREFIX'
+    suffix = '_PRIVATE_SUFFIX'
+    split_secret = short + separator + suffix
+    long = split_secret if secret_has_controls else short + suffix
+    secrets = [short, long]
+    before = secrets.copy()
+    text = prefix + split_secret
+    result = diagnostics().sanitize_message(text, secrets)
+    assert result == (prefix + '[已隐藏]')[:200]
+    assert secrets == before
+    assert text == prefix + split_secret
+
+
 @pytest.mark.parametrize('separator', ['\x00', '\u200b', '\x1b[31m'])
 def test_secret_split_by_controls_is_redacted_again(separator):
     """清理控制字符重新拼成的秘密仍需再次脱敏。"""
