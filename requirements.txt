@@ -1,6 +1,7 @@
 colorama>=0.4.4
 psutil>=5.9.0
 pywin32>=301
+Pillow>=12.0.0,<13
 requests>=2.34.2,<3
 ruamel.yaml>=0.17.21
 onepush>=1.0.0
