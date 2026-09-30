@@ -704,6 +704,29 @@ def test_error_rejects_unsafe_diagnostic_metadata(diagnostic):
     assert error.diagnostic is None
 
 
+@pytest.mark.parametrize('credential', [
+    'Authorization: Basic FAKE_VALUE', 'Bearer FAKE_VALUE',
+    'token=FAKE_VALUE',
+])
+@pytest.mark.parametrize('separator', ['', '\u200b', '\x1b[31m'])
+def test_error_rejects_chinese_adjacent_credentials(credential, separator):
+    """核心拒绝中文紧邻认证字段及被控制字符拆分的危险诊断。"""
+    text = '错误' + credential[:2] + separator + credential[2:]
+    error = core().ImageHostError('upload_failed', '', diagnostic=text)
+    assert error.diagnostic is None
+
+
+@pytest.mark.parametrize('diagnostic', [
+    '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
+    'mytoken=ready', 'token_count=3', 'preauthorization pending',
+    'BearerCount=2',
+])
+def test_error_preserves_ordinary_words(diagnostic):
+    """核心保留正常中文及仅包含认证标识片段的普通英文词语。"""
+    error = core().ImageHostError('upload_failed', '', diagnostic=diagnostic)
+    assert error.diagnostic == diagnostic
+
+
 @pytest.mark.parametrize('diagnostic', ['请先绑定手机号', '不存在的储存驱动',
                                         '甲' * 200])
 def test_error_preserves_safe_short_diagnostics(diagnostic):
