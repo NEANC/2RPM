@@ -13,6 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from modules import config as config_module
 from modules import notification as notif
 from modules.image_host.core import UploadResult
 from modules.screenshot.models import CaptureError
@@ -392,6 +393,56 @@ def test_configured_empty_target_keeps_original_hint(monkeypatch):
     assert '内部错误' not in sent[0][1]
     capture.assert_not_called()
     upload.assert_not_called()
+
+
+def test_unreferenced_screenshot_skips_orchestration_without_warning(
+        monkeypatch, caplog):
+    """模板未引用截图变量且无目标时不执行编排，也不产生目标缺失告警。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(targets=[])
+    config['push']['templates']['on_end']['content'] = '正文 {process_name}'
+    with caplog.at_level(logging.WARNING, logger='modules.screenshot.pipeline'):
+        results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert sent[0][1] == '正文 demo.exe'
+    capture.assert_not_called()
+    upload.assert_not_called()
+    assert '未配置有效截图目标' not in caplog.text
+
+
+def test_referenced_screenshot_keeps_missing_target_warning(monkeypatch, caplog):
+    """模板引用截图变量且无目标时仍按安全失败处理并保留目标缺失告警。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(targets=[])
+    config['push']['templates']['on_end']['content'] = '结果 {screenshot}'
+    with caplog.at_level(logging.WARNING, logger='modules.screenshot.pipeline'):
+        results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert '未配置有效截图目标' in sent[0][1]
+    assert '未配置有效截图目标' in caplog.text
+    capture.assert_not_called()
+    upload.assert_not_called()
+
+
+def test_default_templates_do_not_add_missing_target_warning(monkeypatch, caplog):
+    """默认配置的既有模板未引用截图变量且无目标，不产生目标缺失告警。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = config_module.get_default_config()
+    config['push']['push_channel_settings']['channels'] = deepcopy(CHANNELS)
+    config['push']['retry'] = {'interval': '0s', 'max_count': 1}
+    assert config['push']['screenshot']['targets'] == []
+    assert config['push']['templates']['on_end']['capture_screenshot'] is True
+    with caplog.at_level(logging.WARNING, logger='modules.screenshot.pipeline'):
+        results = notif.send_notification(
+            config, 'on_end', process_name='demo.exe',
+            process_pid=4242, process_run_time='1s')
+    assert results == [('serverchan', True)]
+    assert capture.call_count == upload.call_count == 0
+    assert '未配置有效截图目标' not in caplog.text
+    assert '未配置有效截图目标' not in sent[0][1]
 
 
 def test_conflicting_out_is_renamed_and_appended(monkeypatch):
