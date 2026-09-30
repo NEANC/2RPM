@@ -56,6 +56,7 @@ class FakeSocket:
         self.pending = bytearray()
         self.closed = False
         self.close_count = 0
+        self.recv_calls = 0
         self.timeouts = []
         self.command = None
 
@@ -110,6 +111,7 @@ class FakeSocket:
     def recv(self, count):
         """分片返回二进制，或在指定协议阶段抛出原始故障对象。"""
         assert not self.closed
+        self.recv_calls += 1
         if self.command == self.environment.read_failure:
             raise self.environment.failure
         size = min(count, self.environment.chunk_size, len(self.pending))
@@ -315,6 +317,71 @@ def test_incomplete_or_malformed_protocol_fails(environment, response):
     environment.raw_responses[f'host-serial:{SERIAL}:get-state'] = response
     assert_capture_error(backend, 'adb_protocol_failed')
     assert 'shell:screencap -p' not in environment.commands
+
+
+def test_adb_response_limit_is_64_mib(environment):
+    """生产截图响应上限固定为 64 MiB。"""
+    backend = load_backend()
+    assert backend._MAX_PNG_RESPONSE_BYTES == 64 * 1024 * 1024
+
+
+def test_exact_adb_response_limit_is_read_before_png_validation(
+        environment, monkeypatch):
+    """恰好达到上限且随后 EOF 时不提前拒绝接收。"""
+    backend = load_backend()
+    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    environment.raw_responses['shell:screencap -p'] = b'OKAY' + (b'x' * 8)
+    assert_capture_error(backend, 'adb_image_failed')
+    assert environment.sockets[-1].recv_calls <= 8
+
+
+@pytest.mark.parametrize('payload', [b'x' * 9, b'xxxxxxx' + b'xx'])
+def test_oversized_adb_response_is_rejected_during_receive(
+        environment, monkeypatch, payload):
+    """单字节及跨分片超限响应在继续接收前固定失败并关闭连接。"""
+    backend = load_backend()
+    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    environment.raw_responses['shell:screencap -p'] = b'OKAY' + payload
+    assert_capture_error(backend, 'adb_image_failed')
+    assert environment.sockets[-1].recv_calls <= 8
+    assert 'shell:screencap -p' in environment.commands
+    environment.assert_closed()
+
+
+def test_continuous_oversized_adb_response_stops_with_bounded_reads(
+        environment, monkeypatch):
+    """持续输出超过上限时只读取有限次数，不等待 EOF。"""
+    backend = load_backend()
+    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    environment.chunk_size = 1
+    environment.raw_responses['shell:screencap -p'] = b'OKAY' + (b'x' * 100)
+    assert_capture_error(backend, 'adb_image_failed')
+    assert environment.sockets[-1].recv_calls <= 12
+    environment.assert_closed()
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_limit_cleanup_preserves_control_signal(
+        environment, monkeypatch, signal_type):
+    """超限路径的连接清理不覆盖控制信号。"""
+    backend = load_backend()
+    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    signal = signal_type('control-signal')
+    original_recv = FakeSocket.recv
+
+    def recv_with_signal(connection, count):
+        """在响应超限判定期间模拟控制信号。"""
+        value = original_recv(connection, count)
+        if connection.command == 'shell:screencap -p':
+            raise signal
+        return value
+
+    monkeypatch.setattr(FakeSocket, 'recv', recv_with_signal)
+    environment.raw_responses['shell:screencap -p'] = b'OKAY' + (b'x' * 20)
+    with pytest.raises(signal_type) as caught:
+        backend.capture_adb(SERIAL)
+    assert caught.value is signal
+    environment.assert_closed()
 
 
 @pytest.mark.parametrize('kind', [

@@ -26,6 +26,7 @@ _ADBUTILS_VERSION = '2.12.0'
 _SERVER_HOST = '127.0.0.1'
 _SERVER_PORT = 5037
 _SOCKET_TIMEOUT = 5.0
+_MAX_PNG_RESPONSE_BYTES = 64 * 1024 * 1024
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 _PNG_END = b'\x00\x00\x00\x00IEND\xaeB`\x82'
 _MESSAGES = {
@@ -93,13 +94,18 @@ class _SocketConnection(AdbConnection):
         return self.read_exact(count)
 
     def read_until_close(self, encoding='utf-8'):
-        """以有限单次读取等待接收原始字节，正常 EOF 结束输出。"""
+        """接收压缩 PNG 响应并在进入缓存前限制累计字节数。"""
         chunks = []
+        received = 0
         while True:
-            chunk = self.recv(65536)
+            remaining = _MAX_PNG_RESPONSE_BYTES - received
+            chunk = self.recv(min(65536, remaining + 1))
             if not chunk:
                 break
+            if len(chunk) > remaining:
+                raise _error('adb_image_failed')
             chunks.append(chunk)
+            received += len(chunk)
         content = b''.join(chunks)
         return content.decode(encoding) if encoding else content
 
