@@ -175,6 +175,36 @@ def test_upload_success_keeps_local_image_and_reports_details(
     assert f'![{saved[0].stem}]({URL})' in out
 
 
+def test_upload_filename_matches_png_content_with_jpeg_output(
+        monkeypatch, tmp_path, capsys):
+    """显式 .jpg 输出时上传文件名与 PNG 内容一致，本地仍是真实 JPEG。"""
+    calls = []
+
+    def adapter(image_bytes, filename, token, options):
+        """记录上传载荷与实际使用的文件名。"""
+        calls.append((image_bytes, filename))
+        return URL
+
+    install(monkeypatch, 'local', adapter)
+    config = write_config(tmp_path, config_with_hosts('{provider: local}'))
+    work = tmp_path / 'work'
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    code, png, _ = run_cli(
+        monkeypatch, tmp_path, config=config, output='shot.jpg')
+
+    assert code == 0
+    assert calls[0][0] == png
+    assert calls[0][1] == 'shot.png'
+    target = work / 'shot.jpg'
+    assert target.read_bytes().startswith(b'\xff\xd8')
+    with Image.open(target) as image:
+        image.load()
+        assert image.format == 'JPEG'
+    assert f'![shot]({URL})' in capsys.readouterr().out
+
+
 def test_missing_config_file_returns_one_without_uploading(
         monkeypatch, tmp_path, capsys):
     """配置文件缺失时明确报错返回 1，且不暗中调用任何图床。"""

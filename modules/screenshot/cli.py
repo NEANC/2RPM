@@ -562,7 +562,7 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
         if message is not None:
             print(message)
             return CAPTURE_FAILURE_CODE
-    filename = os.path.basename(saved_path)
+    filename = os.path.splitext(os.path.basename(saved_path))[0] + '.png'
     uploaded = upload_with_fallback(png_bytes, filename, hosts)
     if not uploaded.success:
         print(_upload_failure_message(uploaded))
