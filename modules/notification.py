@@ -181,17 +181,20 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
     return False
 
 
-def _collect_template_fields(*templates):
-    """按 Formatter 语义递归收集模板引用的根字段名
+def _collect_template_fields(values, *templates):
+    """递归收集模板引用的根字段名，并完成可判定的 format 结构校验
 
-    支持转义花括号、字段访问及嵌套 format spec；任一模板花括号不配对时
-    返回 None，供通知层在截图前判定模板语法是否合法。
+    支持转义花括号、字段访问及嵌套 format spec。转换符仅允许 None/s/r/a；
+    对本次已提供的普通变量按真实字段访问语义解析属性与下标，任一模板花括号
+    不配对、转换符非法或字段访问失败均返回 None，供通知层在截图前判定模板
+    是否可用。不评估 format spec 的语义，也不把截图占位变量当作缺失变量。
 
     Args:
+        values (dict): 本次已可解析的普通模板变量，不含截图占位变量
         *templates: 待解析的模板字符串（如标题与正文）
 
     Returns:
-        set[str] | None: 引用到的根字段名集合；畸形模板返回 None
+        set[str] | None: 引用到的根字段名集合；结构不可用时返回 None
     """
     formatter = Formatter()
     fields = set()
@@ -199,14 +202,22 @@ def _collect_template_fields(*templates):
         pending = [template]
         try:
             while pending:
-                for _, name, specification, _ in formatter.parse(pending.pop()):
+                parsed = formatter.parse(pending.pop())
+                for _, name, specification, conversion in parsed:
+                    # 守卫：转换符仅允许字符串化、repr 化与 ascii 化
+                    if conversion not in (None, 's', 'r', 'a'):
+                        return None
                     # 守卫：转义花括号不产生字段引用
                     if name is None:
                         continue
-                    fields.add(name.split('.')[0].split('[')[0])
+                    root = name.split('.')[0].split('[')[0]
+                    fields.add(root)
+                    # 仅对本次已知变量按真实语义解析属性与下标访问
+                    if root in values:
+                        formatter.get_field(name, (), values)
                     if specification:
                         pending.append(specification)
-        except ValueError:
+        except (ValueError, AttributeError, IndexError, KeyError, TypeError):
             return None
     return fields
 
@@ -358,7 +369,7 @@ def send_notification(config, template_key, **kwargs):
     reserved_names = _RESERVED_VARIABLES | set(kwargs)
 
     # 截图前校验模板语法与普通变量，避免明知失败仍截图上传
-    fields = _collect_template_fields(raw_title, raw_content)
+    fields = _collect_template_fields(kwargs, raw_title, raw_content)
     if fields is None:
         LOGGER.error("通知模板格式无效，已跳过该条通知模板键: %s", template_key)
         return []

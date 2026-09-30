@@ -202,6 +202,27 @@ def test_template_errors_fail_before_screenshot(monkeypatch, caplog, content):
     assert SECRET not in caplog.text
 
 
+@pytest.mark.parametrize('content,extra', [
+    ('{process_name!z}', {}),
+    ('{process_name.foo}', {}),
+    ('{extra[missing]}', {'extra': {}}),
+])
+def test_invalid_format_structure_fails_before_screenshot(
+        monkeypatch, caplog, content, extra):
+    """非法转换符与失败的属性、下标访问须在截图前失败，零副作用。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, getter = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = content
+    results = notif.send_notification(
+        config, 'on_end', process_name='v', **extra)
+    assert results == []
+    capture.assert_not_called()
+    upload.assert_not_called()
+    getter.assert_not_called()
+    assert SECRET not in caplog.text
+
+
 def test_escaped_braces_and_nested_spec_fields(monkeypatch):
     """转义花括号不是引用，嵌套 format spec 字段照常参与变量合并。"""
     capture, upload = _install_boundaries(monkeypatch)
