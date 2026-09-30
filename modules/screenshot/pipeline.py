@@ -54,7 +54,7 @@ class ScreenshotBatch:
     renamed_outputs: tuple[str, ...]
 
 
-def _markdown_image(name, url):
+def markdown_image(name, url):
     """保留主机方括号，仅转义结构字符，不重组查询或已有百分号转义。"""
     authority_start = url.index('://') + 3
     authority_end = authority_start + len(urlsplit(url).netloc)
@@ -93,7 +93,7 @@ def _prepare_target(item, hosts, warnings, diagnostics):
         uploaded = upload_with_fallback(
             result.png_bytes, item['out'] + '.png', hosts)
         if uploaded.success:
-            return _markdown_image(item['out'], uploaded.url)
+            return markdown_image(item['out'], uploaded.url)
     except Exception:
         pass
     diagnostics.append(f'截图目标 {item["index"]}：截图上传失败')

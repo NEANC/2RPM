@@ -108,6 +108,12 @@ def test_upload_reuses_shared_fallback_entry():
         registry_module().upload_with_fallback
 
 
+def test_cli_markdown_helper_is_pipeline_public_function():
+    """CLI 使用的链接生成函数与 pipeline 公开接口是同一对象。"""
+    module = import_module('modules.screenshot.pipeline')
+    assert cli_module().markdown_image is module.markdown_image
+
+
 def test_without_upload_reads_no_config_and_calls_no_uploader(
         monkeypatch, tmp_path):
     """不带 --upload 时不读取任何配置，也不触发任何图床调用。"""
