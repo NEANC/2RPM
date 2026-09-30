@@ -222,21 +222,20 @@ def _collect_template_fields(values, *templates):
     return fields
 
 
-def _resolve_capture_flag(template, kwargs):
+def _resolve_capture_flag(template):
     """解析本次事件的截图开关
 
-    未提供 capture_screenshot 时按启用处理；仅显式布尔值生效，其余类型
-    一律按关闭处理并给出不含配置内容的安全诊断，避免意外上传。
+    截图开关是模板级配置，仅从模板读取；调用方传入的同名 kwarg 按普通模板
+    变量处理，不影响是否截图。模板未提供时按启用处理；仅显式布尔值生效，
+    其余类型一律按关闭处理并给出不含配置内容的安全诊断，避免意外上传。
 
     Args:
         template (dict): 当前模板配置
-        kwargs (dict): 本次模板参数
 
     Returns:
         bool: 是否执行截图
     """
-    value = kwargs.get(
-        'capture_screenshot', template.get('capture_screenshot', True))
+    value = template.get('capture_screenshot', True)
     if value is True:
         return True
     if value is False:
@@ -395,7 +394,7 @@ def send_notification(config, template_key, **kwargs):
         return []
 
     # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
-    enabled = _resolve_capture_flag(template, kwargs)
+    enabled = _resolve_capture_flag(template)
     batch = _prepare_screenshot_batch(
         screenshot_section, enabled, reserved_names)
 
