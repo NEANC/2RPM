@@ -311,6 +311,36 @@ def test_injected_secret_exception_never_reaches_diagnostics(monkeypatch, caplog
     assert SECRET not in caplog.text
 
 
+def test_internal_error_hint_differs_from_unconfigured(monkeypatch, caplog):
+    """截图编排未知异常时给出不误导的固定提示，且不泄露异常原文。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    monkeypatch.setattr(
+        notif, 'prepare_screenshots', Mock(side_effect=RuntimeError(SECRET)))
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '结果 {screenshot}'
+    results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    body = sent[0][1]
+    assert '内部错误' in body
+    assert '未配置' not in body
+    assert SECRET not in body and SECRET not in caplog.text
+
+
+def test_configured_empty_target_keeps_original_hint(monkeypatch):
+    """已配置截图但目标为空时仍使用既有未配置提示，不退化为内部错误。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(targets=[])
+    config['push']['templates']['on_end']['content'] = '结果 {screenshot}'
+    results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert '未配置有效截图目标' in sent[0][1]
+    assert '内部错误' not in sent[0][1]
+    capture.assert_not_called()
+    upload.assert_not_called()
+
+
 def test_conflicting_out_is_renamed_and_appended(monkeypatch):
     """out 不得覆盖普通变量，改名结果按既有规则补附到正文末尾。"""
     capture, upload = _install_boundaries(monkeypatch)
