@@ -266,6 +266,40 @@ def test_configured_custom_out_is_available(monkeypatch):
     assert sent[0][1] == f'截图: ![custom]({URL})'
 
 
+@pytest.mark.parametrize('content,targets', [
+    ('{screenshot.attr}', (WINDOW_TARGET,)),
+    ('{screenshot[99]}', (WINDOW_TARGET,)),
+    ('{custom.attr}', ({**WINDOW_TARGET, 'out': 'custom'},)),
+])
+def test_placeholder_field_access_fails_before_screenshot(
+        monkeypatch, caplog, content, targets):
+    """占位变量的属性或下标访问必为模板笔误，须在截图前失败且零副作用。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, getter = _install_onepush(monkeypatch)
+    config = _base_config(targets=targets)
+    config['push']['templates']['on_end']['content'] = content
+    results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == []
+    capture.assert_not_called()
+    upload.assert_not_called()
+    getter.assert_not_called()
+    assert URL not in caplog.text
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize('content', ['{screenshot}', '{screenshot_1}'])
+def test_placeholder_plain_reference_still_captures(monkeypatch, content):
+    """白名单占位变量的普通引用不因字段访问拦截而回归。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = content
+    results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert capture.call_count == upload.call_count == 1
+    assert URL in sent[0][1]
+
+
 def test_partial_capture_failure_still_notifies(monkeypatch, caplog):
     """单目标截图失败不影响其他目标与本次通知。"""
     capture, upload = _install_boundaries(monkeypatch, capture_side_effect=[

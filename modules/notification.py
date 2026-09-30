@@ -183,16 +183,39 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
     return False
 
 
-def _collect_template_fields(values, *templates):
+def _is_placeholder_root(name, configured_names):
+    """判定根字段名是否为截图占位变量（其值恒为字符串）
+
+    聚合 screenshot、按位置编号的 screenshot_N 及本次已配置 out 的输出名
+    均由截图编排产出字符串，模板对其做属性或下标访问必为笔误。
+
+    Args:
+        name (str): 模板字段的根名
+        configured_names (set[str]): 本次实际分配的截图输出变量名
+
+    Returns:
+        bool: 是否为截图占位变量根名
+    """
+    return (
+        name in configured_names
+        or name == _AGGREGATE_VARIABLE
+        or _SCREENSHOT_INDEX.fullmatch(name) is not None
+    )
+
+
+def _collect_template_fields(values, configured_names, *templates):
     """递归收集模板引用的根字段名，并完成可判定的 format 结构校验
 
     支持转义花括号、字段访问及嵌套 format spec。转换符仅允许 None/s/r/a；
     对本次已提供的普通变量按真实字段访问语义解析属性与下标，任一模板花括号
-    不配对、转换符非法或字段访问失败均返回 None，供通知层在截图前判定模板
-    是否可用。不评估 format spec 的语义，也不把截图占位变量当作缺失变量。
+    不配对、转换符非法或字段访问失败均返回 None。截图占位变量的值恒为字符串，
+    其根名带属性或下标访问时同样判定为无效模板并返回 None，供通知层在截图前
+    判定模板是否可用。不评估 format spec 的语义，也不把截图占位变量当作缺失
+    变量。
 
     Args:
         values (dict): 本次已可解析的普通模板变量，不含截图占位变量
+        configured_names (set[str]): 本次实际分配的截图输出变量名
         *templates: 待解析的模板字符串（如标题与正文）
 
     Returns:
@@ -217,6 +240,10 @@ def _collect_template_fields(values, *templates):
                     # 仅对本次已知变量按真实语义解析属性与下标访问
                     if root in values:
                         formatter.get_field(name, (), values)
+                    # 守卫：占位变量值恒为字符串，字段访问必为模板笔误
+                    elif (name != root
+                          and _is_placeholder_root(root, configured_names)):
+                        return None
                     if specification:
                         pending.append(specification)
         except (ValueError, AttributeError, IndexError, KeyError, TypeError):
@@ -369,21 +396,19 @@ def send_notification(config, template_key, **kwargs):
 
     screenshot_section = push_section.get('screenshot', {})
     reserved_names = _RESERVED_VARIABLES | set(kwargs)
+    configured_names = _configured_screenshot_names(
+        screenshot_section, reserved_names)
 
-    # 截图前校验模板语法与普通变量，避免明知失败仍截图上传
-    fields = _collect_template_fields(kwargs, raw_title, raw_content)
+    # 截图前校验模板语法、普通变量与占位变量字段，避免明知失败仍截图上传
+    fields = _collect_template_fields(
+        kwargs, configured_names, raw_title, raw_content)
     if fields is None:
         LOGGER.error("通知模板格式无效，已跳过该条通知模板键: %s", template_key)
         return []
 
-    configured_names = _configured_screenshot_names(
-        screenshot_section, reserved_names)
     placeholders = {
         name for name in fields
-        if name not in kwargs and (
-            name in configured_names
-            or name == _AGGREGATE_VARIABLE
-            or _SCREENSHOT_INDEX.fullmatch(name))
+        if name not in kwargs and _is_placeholder_root(name, configured_names)
     }
     missing = [
         name for name in fields
