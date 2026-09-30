@@ -26,12 +26,20 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _is_screenshot_command():
-    """判断首个命令参数是否为截图调试子命令。
+    """判断命令是否确为截图调试子命令。
+
+    仅当首个命令参数为 screenshot 且其后紧跟以 - 开头的选项时才分流，
+    避免裸用 "2RPM.py screenshot" 时丢失既有的位置配置解析。
 
     Returns:
-        bool: 首个命令参数恰好为 screenshot 时为 True。
+        bool: 形如 "2RPM.py screenshot --source ..." 时为 True。
     """
-    return len(sys.argv) > 1 and sys.argv[1] == SCREENSHOT_COMMAND
+    return (
+        len(sys.argv) > 2
+        and sys.argv[1] == SCREENSHOT_COMMAND
+        and isinstance(sys.argv[2], str)
+        and sys.argv[2].startswith('-')
+    )
 
 
 def parse_args():
