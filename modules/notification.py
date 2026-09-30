@@ -139,7 +139,8 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
     return False
 
 
-def _notify_single_channel(channel, title, content, retry_interval, max_count):
+def _notify_single_channel(channel, title, content, retry_interval, max_count,
+                           screenshot_count=0):
     """向单个推送通道发送通知，失败时按配置重试
 
     Args:
@@ -148,6 +149,8 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
         content (str): 通知内容
         retry_interval (int): 重试间隔（秒）
         max_count (int): 最大重试次数
+        screenshot_count (int): 标题或正文实际引用的截图项数量；大于 0 时
+            成功日志改用不含标题的安全摘要，避免签名直链进入日志
 
     Returns:
         bool: 是否发送成功
@@ -174,7 +177,13 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count):
         # 请求未抛异常，仍需依据响应判定真实成败
         success, reason = _is_push_successful(response)
         if success:
-            LOGGER.info(f"通知发送成功 [{provider}]: {title}")
+            # 标题可能引用含签名直链的截图结果，此时只记录安全摘要
+            if screenshot_count:
+                LOGGER.info(
+                    "通知发送成功 [%s]（含截图结果，截图项 %d）",
+                    provider, screenshot_count)
+            else:
+                LOGGER.info(f"通知发送成功 [{provider}]: {title}")
             return True
 
         if not _handle_attempt_failure(
@@ -314,6 +323,26 @@ def _prepare_screenshot_batch(section, enabled, reserved_names):
         return ScreenshotBatch({}, (), ()), True
 
 
+def _referenced_screenshot_count(title, content, batch):
+    """统计本次通知实际引用的截图批次项数，供日志脱敏判定复用
+
+    仅当标题或正文确实包含非空的批次值时才计数，使未使用截图结果的
+    场景保持既有日志不变。
+
+    Args:
+        title (str): 渲染后的标题
+        content (str): 渲染后的正文
+        batch (ScreenshotBatch): 本次截图批次
+
+    Returns:
+        int: 标题或正文实际引用的非空截图项数量
+    """
+    return sum(
+        1 for value in batch.values.values()
+        if value and (value in title or value in content)
+    )
+
+
 def _log_rendered_notification(template_key, title, content, batch):
     """记录待发送通知
 
@@ -326,8 +355,7 @@ def _log_rendered_notification(template_key, title, content, batch):
         content (str): 渲染后的正文
         batch (ScreenshotBatch): 本次截图批次
     """
-    if any(value and (value in title or value in content)
-           for value in batch.values.values()):
+    if _referenced_screenshot_count(title, content, batch):
         LOGGER.info(
             "通知包含截图结果，已省略完整正文: %s（截图项 %d，提示 %d）",
             template_key,
@@ -445,6 +473,8 @@ def send_notification(config, template_key, **kwargs):
 
     # 用原始正文追加一次告警与必要改名结果，不再重复格式化
     content = append_screenshot_notices(content, raw_content, batch)
+    # 本次通知是否引用截图结果，同一判定同时决定待发送日志与成功日志
+    screenshot_count = _referenced_screenshot_count(title, content, batch)
     _log_rendered_notification(template_key, title, content, batch)
 
     retry_settings = push_section.get('retry', {})
@@ -484,6 +514,7 @@ def send_notification(config, template_key, **kwargs):
                     content,
                     retry_interval,
                     max_count,
+                    screenshot_count,
                 ),
             )
             for channel in channels

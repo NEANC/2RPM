@@ -539,3 +539,31 @@ def test_signed_url_stays_in_content_and_out_of_logs(monkeypatch, caplog):
     assert 'FAKE_SIGNED_KEY' not in caplog.text
     assert 'FAKE_HOST_TOKEN' not in caplog.text
     assert URL not in caplog.text
+
+
+def test_screenshot_title_not_leaked_in_success_log(monkeypatch, caplog):
+    """标题引用截图结果时成功日志改为安全摘要，不泄露签名直链。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+    config['push']['templates']['on_end']['content'] = '{screenshot}'
+    with caplog.at_level(logging.DEBUG, logger='modules.notification'):
+        results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert URL in sent[0][0] and 'FAKE_SIGNED_KEY' in sent[0][0]
+    assert URL in sent[0][1]
+    assert URL not in caplog.text
+    assert 'FAKE_SIGNED_KEY' not in caplog.text
+
+
+def test_success_log_unchanged_without_screenshot(monkeypatch, caplog):
+    """未使用截图结果时成功日志保持原有逐字格式。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '正文 {process_name}'
+    with caplog.at_level(logging.INFO, logger='modules.notification'):
+        results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert '通知发送成功 [serverchan]: 标题 demo.exe' in caplog.text
