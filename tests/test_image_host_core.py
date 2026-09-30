@@ -70,6 +70,7 @@ def test_models_are_frozen_and_public_exports_are_real():
     assert registry().UPLOADERS == {
         'catbox': providers.upload_catbox, 'wmimg': providers.upload_wmimg,
         'beeimg': providers.upload_beeimg,
+        'beeimg_cn': providers.upload_beeimg_cn,
         'superbed': providers.upload_superbed,
     }
 

@@ -12,6 +12,7 @@ from .core import _has_control
 from .core import resolve_token
 from .core import validate_image_url
 from .providers import upload_beeimg
+from .providers import upload_beeimg_cn
 from .providers import upload_catbox
 from .providers import upload_superbed
 from .providers import upload_wmimg
@@ -20,7 +21,7 @@ from .providers import upload_wmimg
 # 仅在具体站点契约核验并实现后添加适配器，不预注册空壳。
 UPLOADERS = {
     'catbox': upload_catbox, 'wmimg': upload_wmimg, 'beeimg': upload_beeimg,
-    'superbed': upload_superbed,
+    'beeimg_cn': upload_beeimg_cn, 'superbed': upload_superbed,
 }
 
 
