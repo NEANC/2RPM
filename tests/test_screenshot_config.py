@@ -76,8 +76,11 @@ def test_comments_explain_independent_targets_and_template_variables():
     comments = config_module.COMMENTS['push']
     targets = comments['screenshot']['targets']
     hosts = comments['screenshot']['image_host']
-    for text in ('window', 'adb', 'PID', 'out', '位置', '独立'):
+    for text in ('window', 'adb', '完整窗口标题', '精确匹配', '设备地址', 'out',
+                 '位置', '独立'):
         assert text in targets
+    # 窗口后端只做完整标题精确匹配，注释不得再声称支持 PID
+    assert 'PID' not in targets
     for text in ('顺序', '成功', 'token', '环境', 'options'):
         assert text in hosts
     variables = comments['templates']['_comment_extra']
