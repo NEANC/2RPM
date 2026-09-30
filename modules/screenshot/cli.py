@@ -288,7 +288,11 @@ def _write_exclusive_file(path, data):
 
 
 def _encode_jpeg(png_bytes):
-    """把 PNG 字节转码为真实 JPEG 字节并去除 alpha 通道。
+    """把 PNG 字节转码为真实 JPEG 字节。
+
+    JPEG 不支持 alpha 通道，因此按黑底合成：先把图像转为 RGBA，
+    再叠加到纯黑背景上并丢弃 alpha，最后编码输出，以满足 JPEG
+    无 alpha 的契约。
 
     Args:
         png_bytes (bytes): 原始 PNG 字节。

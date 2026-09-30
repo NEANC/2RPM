@@ -177,6 +177,13 @@ def test_jpeg_suffix_is_real_jpeg_without_alpha(monkeypatch, tmp_path, name):
     assert mode == 'RGB'
 
 
+def test_jpeg_encoder_documents_black_background_and_alpha_drop():
+    """_encode_jpeg 的契约说明按黑底合成并丢弃 alpha，以保证 JPEG 无 alpha。"""
+    document = cli_module()._encode_jpeg.__doc__ or ''
+    assert '黑底' in document
+    assert 'alpha' in document
+
+
 def test_directory_with_other_suffix_is_created(monkeypatch, tmp_path):
     """非图片后缀的取值按目录处理。"""
     work = tmp_path / 'work'
