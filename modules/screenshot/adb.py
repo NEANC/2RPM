@@ -94,15 +94,20 @@ class _SocketConnection(AdbConnection):
         return self.read_exact(count)
 
     def read_until_close(self, encoding='utf-8'):
-        """接收压缩 PNG 响应并在进入缓存前限制累计字节数。"""
+        """仅限制二进制 PNG 接收，保留文本读取及严格解码行为。
+
+        超限最多额外接收一字节，不代表总内存上限；分片与拼接结果
+        可同时存在，图像解码还需额外内存。
+        """
         chunks = []
         received = 0
         while True:
             remaining = _MAX_PNG_RESPONSE_BYTES - received
-            chunk = self.recv(min(65536, remaining + 1))
+            count = 65536 if encoding else min(65536, remaining + 1)
+            chunk = self.recv(count)
             if not chunk:
                 break
-            if len(chunk) > remaining:
+            if not encoding and len(chunk) > remaining:
                 raise _error('adb_image_failed')
             chunks.append(chunk)
             received += len(chunk)
