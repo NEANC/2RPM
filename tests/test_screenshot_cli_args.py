@@ -370,9 +370,10 @@ def test_entry_keeps_legacy_parsing_without_screenshot_command(
     pytest.param(['2RPM.py', '-c', 'screenshot'], id='short-option'),
     pytest.param(['2RPM.py', '--config', 'screenshot'], id='long-option'),
     pytest.param(['2RPM.py', 'screenshot.yaml'], id='positional-path'),
+    pytest.param(['2RPM.py', 'screenshot'], id='bare-keyword'),
 ])
 def test_named_screenshot_config_stays_reachable(monkeypatch, tmp_path, argv):
-    """名为 screenshot 的配置文件仍可经常规解析访问。"""
+    """名为 screenshot 的配置（含裸用关键字）仍可经常规解析访问。"""
     entry, _ = _capture_entry_environment(monkeypatch, tmp_path)
     config_spy = _patch_entry_config(monkeypatch, entry)
     run_spy = Mock()
