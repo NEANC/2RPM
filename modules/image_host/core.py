@@ -23,7 +23,7 @@ _ERROR_MESSAGES = {
     'invalid_token': '图床凭证必须为字符串',
     'invalid_environment_reference': '图床凭证环境引用格式无效',
     'missing_environment': '图床凭证环境变量缺失或为空',
-    'invalid_options': '图床参数必须为可独立复制的映射',
+    'invalid_options': '图床参数无效或不受该图床支持',
     'invalid_url': '图床返回的图片链接无效',
     'upload_failed': '图床上传失败',
 }
