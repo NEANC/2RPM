@@ -46,7 +46,7 @@ _UNSAFE_DIAGNOSTIC = re.compile(
     r'|(?a:\b(?:token|access_token|refresh_token|api[_-]?key|secret|password'
     r'|passwd|cookie|set-cookie)\b)[\"\']?\s*[:=]'
     r'|-----BEGIN [A-Z ]*PRIVATE KEY-----'
-    r'|\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',
+    r'|(?a:\b)eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',
     re.IGNORECASE,
 )
 
