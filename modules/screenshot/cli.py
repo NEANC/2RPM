@@ -38,6 +38,9 @@ JPEG_QUALITY = 90
 # 保存失败时的固定安全提示，不携带底层异常内容
 SAVE_FAILURE_MESSAGE = '截图保存失败：无法写入输出路径'
 
+# 目标文件已存在且不覆盖时的专用固定提示
+SAVE_EXISTS_MESSAGE = '截图保存失败：目标文件已存在，未覆盖'
+
 
 def _build_parser():
     """构建截图调试子命令的参数解析器。
@@ -402,6 +405,9 @@ def run_screenshot_cli(args, program_dir):
     try:
         saved_path = _save_capture(result, getattr(args, 'output', None),
                                    program_dir)
+    except FileExistsError:
+        print(SAVE_EXISTS_MESSAGE)
+        return CAPTURE_FAILURE_CODE
     except OSError:
         print(SAVE_FAILURE_MESSAGE)
         return CAPTURE_FAILURE_CODE
