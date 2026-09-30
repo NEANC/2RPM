@@ -208,7 +208,7 @@ COMMENTS = {
             '_comment': "\n截图目标与图床配置\n",
             'targets': (
                 "\n独立于监控目标的截图列表，默认留空，不自动匹配目标\n"
-                "- window 支持窗口标题或 PID，adb 使用设备地址\n"
+                "- window 使用完整窗口标题精确匹配，adb 使用设备地址/serial\n"
                 "- 按列表位置生成 screenshot_N，可使用 out 自定义变量名\n"
                 "- 示例: {provider: window, target: MuMu模拟器 1, out: screenshot_2}\n"
                 "- 示例: {provider: adb, target: 127.0.0.1:16384}\n"
