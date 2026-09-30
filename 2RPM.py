@@ -9,6 +9,7 @@ import logging
 from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
+from modules.screenshot.cli import parse_screenshot_args, run_screenshot_cli
 from modules.spinner import spinner_phase, notify_fail
 from modules.utils import get_program_directory
 from modules.version import VERSION, print_info
@@ -16,9 +17,21 @@ from modules.version import VERSION, print_info
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
 
+# 截图调试子命令关键字
+SCREENSHOT_COMMAND = 'screenshot'
+
 # 全局变量
 CONFIG = {}
 LOGGER = logging.getLogger(__name__)
+
+
+def _is_screenshot_command():
+    """判断首个命令参数是否为截图调试子命令。
+
+    Returns:
+        bool: 首个命令参数恰好为 screenshot 时为 True。
+    """
+    return len(sys.argv) > 1 and sys.argv[1] == SCREENSHOT_COMMAND
 
 
 def parse_args():
@@ -44,9 +57,15 @@ def parse_args():
 def main():
     """主函数。
 
-    初始化程序，加载配置，设置日志，并运行主监视器。
+    首个命令参数为 screenshot 时进入截图调试分流，否则初始化程序、
+    加载配置、设置日志，并运行主监视器。
     """
     global CONFIG, LOGGER
+
+    # 截图调试分流：只解析截图参数并执行一次截图，不加载配置、不初始化日志、不运行监视
+    if _is_screenshot_command():
+        screenshot_args = parse_screenshot_args(sys.argv[2:])
+        sys.exit(run_screenshot_cli(screenshot_args, get_program_directory()))
 
     print_info()
     
