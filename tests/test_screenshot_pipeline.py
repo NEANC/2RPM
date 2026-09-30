@@ -442,6 +442,81 @@ def test_control_signals_propagate_identically(monkeypatch, signal_type, stage):
     assert upload.call_count == (stage == 'upload')
 
 
+@pytest.mark.parametrize(('raw', 'safe'), [
+    pytest.param(
+        'https://[2001:db8::1]/image.png?sig=a%2Fb%3D&token=FAKE_ONLY',
+        'https://[2001:db8::1]/image.png?sig=a%2Fb%3D&token=FAKE_ONLY',
+        id='ipv6-signed'),
+    pytest.param(
+        'https://[2001:db8::1]:8443/image.png?sig=a%2Fb%3D',
+        'https://[2001:db8::1]:8443/image.png?sig=a%2Fb%3D',
+        id='ipv6-port'),
+    pytest.param(
+        'https://[2001:db8::1]:8443/a[b](c).png'
+        '?sig=a%2Fb%3D&token=FAKE_ONLY&part=[x](y)#part[z](w)',
+        'https://[2001:db8::1]:8443/a%5Bb%5D%28c%29.png'
+        '?sig=a%2Fb%3D&token=FAKE_ONLY&part=%5Bx%5D%28y%29'
+        '#part%5Bz%5D%28w%29',
+        id='ipv6-markdown-delimiters'),
+    pytest.param(
+        'HTTPS://[2001:DB8::A]:08443/Image%2f.png'
+        '?z=a%2Fb%3D&a=%2f%3d&z=FAKE_ONLY#',
+        'HTTPS://[2001:DB8::A]:08443/Image%2f.png'
+        '?z=a%2Fb%3D&a=%2f%3d&z=FAKE_ONLY#',
+        id='ipv6-original-spelling'),
+    pytest.param(
+        'https://[2001:db8::1]?', 'https://[2001:db8::1]?',
+        id='ipv6-empty-query'),
+    pytest.param(
+        'https://[2001:db8::1]#', 'https://[2001:db8::1]#',
+        id='ipv6-empty-fragment'),
+    pytest.param(
+        'https://[2001:db8::1]?#', 'https://[2001:db8::1]?#',
+        id='ipv6-empty-query-and-fragment'),
+    pytest.param(
+        'https://[2001:db8::1]?part=[x](y)&sig=a%2Fb%3D',
+        'https://[2001:db8::1]?part=%5Bx%5D%28y%29&sig=a%2Fb%3D',
+        id='ipv6-query-without-path'),
+    pytest.param(
+        'https://CDN.example.com/a[b](c).png'
+        '?sig=a%2Fb%3D&part=[x](y)#part[z](w)',
+        'https://CDN.example.com/a%5Bb%5D%28c%29.png'
+        '?sig=a%2Fb%3D&part=%5Bx%5D%28y%29#part%5Bz%5D%28w%29',
+        id='domain-markdown-delimiters'),
+])
+def test_real_registry_markdown_preserves_url_structure(
+        monkeypatch, caplog, raw, safe):
+    """真实上传校验后保留主机及签名，独立输出与聚合使用同一链接。"""
+    module = pipeline()
+    registry = import_module('modules.image_host.registry')
+    calls = []
+    capture = Mock(side_effect=lambda source, name: captured(source, name))
+    monkeypatch.setattr(module, 'capture', capture)
+
+    def local_upload(image, filename, token, options):
+        """仅返回合成链接，经真实 registry 校验，不发起网络请求。"""
+        assert image == captured().png_bytes
+        assert token == '' and options == {}
+        calls.append(filename)
+        return raw
+
+    monkeypatch.setitem(registry.UPLOADERS, 'local', local_upload)
+    config = section([target(out='custom'), target()])
+    config['image_host'] = [{'provider': 'local'}]
+    batch = module.prepare_screenshots(config, True, ())
+    custom = f'![custom]({safe})'
+    automatic = f'![screenshot_2]({safe})'
+    assert batch.values == {
+        'custom': custom,
+        'screenshot_2': automatic,
+        'screenshot': custom + '\n\n' + automatic,
+    }
+    assert calls == ['custom.png', 'screenshot_2.png']
+    assert capture.call_count == 2
+    assert batch.warnings == batch.renamed_outputs == ()
+    assert not caplog.records
+
+
 def test_markdown_url_escapes_only_structure_and_preserves_signature(
         monkeypatch, caplog):
     """只编码链接结构字符，既有百分号转义、签名查询和完整业务链接保留。"""
