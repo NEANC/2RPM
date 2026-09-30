@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""验证纯诊断脱敏边界与上下文作用域隔离。"""
+
+from contextvars import copy_context
+from importlib import import_module
+
+import pytest
+
+
+SECRET = 'FAKE_OTHER_HOST_TOKEN_7319'
+SECOND_SECRET = 'FAKE_PRIMARY_TOKEN_8420'
+
+
+def diagnostics():
+    """延迟加载实际模块，使缺少实现表现为测试失败。"""
+    return import_module('modules.image_host.diagnostics')
+
+
+@pytest.mark.parametrize('text', ['请先绑定手机号', '不存在的储存驱动'])
+def test_normal_chinese_is_preserved(text):
+    """保留可用中文诊断，避免用一律丢弃掩盖功能缺失。"""
+    assert diagnostics().sanitize_message(text, ()) == text
+
+
+@pytest.mark.parametrize('text', [None, False, 1, [], {}, b'error', '', '  '])
+def test_invalid_or_empty_message_is_discarded(text):
+    """非字符串和无可展示内容的输入不强制转换。"""
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+@pytest.mark.parametrize('length', [199, 200, 201, 4096, 4097])
+def test_input_and_output_length_boundaries(length):
+    """先限制原始输入，再将安全输出截断到两百字符。"""
+    result = diagnostics().sanitize_message('甲' * length, ())
+    assert result == (None if length > 4096 else '甲' * min(length, 200))
+
+
+def test_oversized_input_is_rejected_before_cleaning():
+    """超长原文即使脱敏后很短也直接舍弃。"""
+    assert diagnostics().sanitize_message('x' * 4097, ('x' * 4097,)) is None
+
+
+@pytest.mark.parametrize('text, removed', [
+    ('上传失败 https://example.test/a?sig=private&token=value', 'sig=private'),
+    ('上传失败 HTTP://example.test/a?signature=private', 'signature=private'),
+    ('上传失败 ${OTHER_TOKEN}', 'OTHER_TOKEN'),
+    ('上传失败 $OTHER_TOKEN', 'OTHER_TOKEN'),
+    ('上传失败 %OTHER_TOKEN%', 'OTHER_TOKEN'),
+    ('上传失败 $env:OTHER_TOKEN', 'OTHER_TOKEN'),
+])
+def test_url_and_environment_references_are_removed(text, removed):
+    """移除整条链接及常见环境引用，不留下查询签名。"""
+    result = diagnostics().sanitize_message(text, ())
+    assert result is not None
+    assert '上传失败' in result
+    assert removed not in result
+    assert 'http' not in result.lower()
+
+
+@pytest.mark.parametrize('text', [
+    '<html>请先绑定手机号</html>', '<!DOCTYPE html>', '<!-- private -->',
+    '&lt;html&gt;private&lt;/html&gt;',
+    'Authorization: Basic abc123', 'authorization = private',
+    'Bearer FAKE_TOKEN', 'bearer\tFAKE_TOKEN',
+    'token=private', 'api_key: private', 'password=private',
+    '{"access_token": "private"}', 'Cookie: session=private',
+    '-----BEGIN PRIVATE KEY-----',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature',
+])
+def test_html_and_obvious_credentials_are_discarded(text):
+    """无法可靠展示的页面、认证头与凭证结构整体舍弃。"""
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+@pytest.mark.parametrize('text', [
+    '\x1b[31m请先绑定手机号\x1b[0m',
+    '\x1b]0;hidden title\x07请先绑定手机号',
+    '\x1b]8;;https://example.test/?sig=private\x1b\\请先绑定手机号'
+    '\x1b]8;;\x1b\\',
+    '\x9b31m请先绑定手机号\x9b0m',
+    '\x9d0;hidden title\x9c请先绑定手机号',
+    '\x1b(B请先绑定手机号',
+    '请\x00先\u200b绑定\u202e手机\ud800号',
+])
+def test_terminal_sequences_and_unicode_controls_are_cleaned(text):
+    """移除终端指令、隐藏载荷和 Unicode 控制字符后保留中文。"""
+    assert diagnostics().sanitize_message(text, ()) == '请先绑定手机号'
+
+
+@pytest.mark.parametrize('text', ['\x1b]unclosed private', '\x1b[31'])
+def test_incomplete_terminal_sequences_are_discarded(text):
+    """不可靠的未闭合终端指令不作为普通文本展示。"""
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+@pytest.mark.parametrize('text', ['\x00\u200b', '\x1b[0m'])
+def test_cleaning_to_empty_returns_none(text):
+    """清理后没有可展示内容时返回空诊断。"""
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+def test_secrets_are_removed_before_truncation():
+    """跨截断边界的备用站令牌不得留下可识别片段。"""
+    text = '上传失败 ' + '甲' * 190 + SECRET + ' https://example.test/a?sig=x'
+    result = diagnostics().sanitize_message(text, (SECRET, '${OTHER_TOKEN}'))
+    assert result is not None
+    assert len(result) <= 200
+    assert SECRET not in result
+    assert 'FAKE_OTHER' not in result
+    assert 'https://' not in result
+
+
+def test_multiple_overlapping_secrets_and_inputs_are_preserved():
+    """较长秘密先替换，整链多站令牌都脱敏且输入不变。"""
+    secrets = [SECRET[:10], SECRET, SECOND_SECRET, '', None, 42]
+    before = secrets.copy()
+    text = '上传失败 ' + SECRET + ' ' + SECOND_SECRET
+    result = diagnostics().sanitize_message(text, secrets)
+    assert result is not None
+    assert '上传失败' in result
+    assert SECRET not in result
+    assert SECRET[10:] not in result
+    assert SECOND_SECRET not in result
+    assert secrets == before
+    assert text == '上传失败 ' + SECRET + ' ' + SECOND_SECRET
+
+
+@pytest.mark.parametrize('separator', ['\x00', '\u200b', '\x1b[31m'])
+def test_secret_split_by_controls_is_redacted_again(separator):
+    """清理控制字符重新拼成的秘密仍需再次脱敏。"""
+    text = '上传失败 ' + SECRET[:8] + separator + SECRET[8:]
+    result = diagnostics().sanitize_message(text, (SECRET,))
+    assert result is not None
+    assert '上传失败' in result
+    assert 'FAKE_OTHER' not in result
+    assert SECRET not in result
+
+
+@pytest.mark.parametrize('text', [
+    '上传失败 ht\u200btps://example.test/a?sig=private',
+    '上传失败 $\u200b{OTHER_TOKEN}',
+])
+def test_cleaning_cannot_reassemble_sensitive_references(text):
+    """清理后的链接和环境引用重新检测并移除。"""
+    result = diagnostics().sanitize_message(text, ())
+    assert result is not None
+    assert '上传失败' in result
+    assert 'private' not in result
+    assert 'OTHER_TOKEN' not in result
+    assert 'https://' not in result
+
+
+@pytest.mark.parametrize('text', [
+    'Autho\u200brization: private', 'Bea\x00rer private',
+    '<ht\u200bml>private</html>', 'to\x00ken=private',
+])
+def test_cleaning_cannot_reassemble_credentials_or_html(text):
+    """控制字符清理后再次拒绝认证结构与页面内容。"""
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+def test_scope_default_disabled_and_explicit_empty_enabled():
+    """默认关闭与显式无秘密的开启状态语义不同。"""
+    module = diagnostics()
+    assert module.safe_current_message('请先绑定手机号') is None
+    with module.diagnostic_scope(()):
+        assert module.safe_current_message('请先绑定手机号') == '请先绑定手机号'
+    assert module.safe_current_message('请先绑定手机号') is None
+
+
+def test_nested_scope_restores_secret_sets_and_disabled_state():
+    """嵌套关闭与替换秘密集合后精确恢复外层作用域。"""
+    module = diagnostics()
+    text = '上传失败 ' + SECRET
+    with module.diagnostic_scope((SECRET,)):
+        outer = module.safe_current_message(text)
+        assert outer is not None and SECRET not in outer
+        with module.diagnostic_scope(None):
+            assert module.safe_current_message(text) is None
+        assert module.safe_current_message(text) == outer
+        with module.diagnostic_scope(()):
+            assert module.safe_current_message(text) == text
+        assert module.safe_current_message(text) == outer
+    assert module.safe_current_message(text) is None
+
+
+def test_scope_snapshots_caller_secret_container():
+    """外部可变容器的后续修改不更改已进入的上下文秘密。"""
+    module = diagnostics()
+    secrets = [SECRET]
+    with module.diagnostic_scope(secrets):
+        assert secrets == [SECRET]
+        secrets.clear()
+        result = module.safe_current_message('上传失败 ' + SECRET)
+        assert result is not None and SECRET not in result
+
+
+@pytest.mark.parametrize('error_type', [
+    RuntimeError, KeyboardInterrupt, SystemExit,
+])
+def test_exception_exit_restores_context_and_preserves_object(error_type):
+    """普通异常和两个控制信号原对象传播并恢复外层状态。"""
+    module = diagnostics()
+    error = error_type('stop')
+    with module.diagnostic_scope(()):
+        with pytest.raises(error_type) as caught:
+            with module.diagnostic_scope(None):
+                raise error
+        assert caught.value is error
+        assert module.safe_current_message('请先绑定手机号') == '请先绑定手机号'
+    assert module.safe_current_message('请先绑定手机号') is None
+
+
+def test_copied_contexts_are_isolated():
+    """复制上下文保持各自状态且不能影响当前执行上下文。"""
+    module = diagnostics()
+    disabled = copy_context()
+    with module.diagnostic_scope((SECRET,)):
+        enabled = copy_context()
+        assert disabled.run(module.safe_current_message, '普通中文') is None
+    assert module.safe_current_message('普通中文') is None
+    assert enabled.run(module.safe_current_message, '普通中文') == '普通中文'
+    result = enabled.run(module.safe_current_message, '上传失败 ' + SECRET)
+    assert result is not None and SECRET not in result
+
+    def temporarily_disable():
+        """仅在复制的上下文中临时关闭诊断。"""
+        with module.diagnostic_scope(None):
+            assert module.safe_current_message('普通中文') is None
+
+    enabled.run(temporarily_disable)
+    assert enabled.run(module.safe_current_message, '普通中文') == '普通中文'
+    assert disabled.run(module.safe_current_message, '普通中文') is None

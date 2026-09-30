@@ -115,7 +115,9 @@ def test_result_constructor_contract_is_unchanged():
         'attempts': tuple[str, ...],
         'failures': tuple[module.UploadFailure, ...],
     }
-    assert list(parameters) == list(expected)
+    assert list(parameters) == [*expected, 'warnings']
+    assert parameters['warnings'].annotation == tuple[str, ...]
+    assert parameters['warnings'].default == ()
     for name, annotation in expected.items():
         assert parameters[name].annotation == annotation
         assert parameters[name].default is Parameter.empty
@@ -558,3 +560,155 @@ def test_boundary_exception_text_and_chain_are_safe(caplog):
         assert caught.value.__cause__ is None
         assert caught.value.__context__ is None
     assert not caplog.records
+
+
+def test_extended_models_preserve_positional_defaults_and_freezing():
+    """旧位置构造保持兼容，新字段有默认值且仍不可修改。"""
+    module = core()
+    failure = module.UploadFailure('local', 'upload_failed', '图床上传失败')
+    result = module.UploadResult(False, None, URL, ('local',), (failure,))
+    assert (failure.stage, failure.http_status, failure.diagnostic) == (
+        '', None, None)
+    assert result.warnings == ()
+    assert URL not in repr(result)
+    for name, value in [('stage', 'upload'), ('http_status', 400),
+                        ('diagnostic', '请先绑定手机号')]:
+        with pytest.raises(FrozenInstanceError):
+            setattr(failure, name, value)
+    with pytest.raises(FrozenInstanceError):
+        result.warnings = ('提醒',)
+    warned = module.UploadResult(True, 'local', URL, (), (), ('提醒',))
+    assert warned.warnings == ('提醒',)
+
+
+def test_extended_error_and_failure_hide_diagnostic_and_raw_message():
+    """安全诊断独立保存，不进入异常表示或失败记录的表示。"""
+    module = core()
+    error = module.ImageHostError(
+        'business_rejected', 'FAKE_RAW_SECRET', stage='upload',
+        http_status=422, diagnostic='请先绑定手机号')
+    failure = module.UploadFailure(
+        'local', error.code, error.message, error.stage,
+        error.http_status, error.diagnostic)
+    assert error.stage == failure.stage == 'upload'
+    assert error.http_status == failure.http_status == 422
+    assert error.diagnostic == failure.diagnostic == '请先绑定手机号'
+    assert error.args == (error.message,)
+    assert str(error) == error.message
+    assert repr(error) == f'ImageHostError({error.message!r})'
+    assert 'FAKE_RAW_SECRET' not in (
+        str(error) + repr(error) + repr(vars(error)))
+    assert '请先绑定手机号' not in repr(error) + repr(failure)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_error_optional_metadata_is_keyword_only():
+    """异常保留两个位置参数，新增元数据只允许关键字传入。"""
+    module = core()
+    error = module.ImageHostError('upload_failed', SECRET)
+    assert (error.stage, error.http_status, error.diagnostic) == (
+        '', None, None)
+    parameters = signature(module.ImageHostError).parameters
+    assert list(parameters) == ['code', 'message', 'stage', 'http_status',
+                                'diagnostic']
+    for name in ('stage', 'http_status', 'diagnostic'):
+        assert parameters[name].kind is Parameter.KEYWORD_ONLY
+    with pytest.raises(TypeError):
+        module.ImageHostError('upload_failed', SECRET, 'upload')
+
+
+@pytest.mark.parametrize('code, summary', [
+    ('invalid_input', '图片数据或文件名无效'),
+    ('not_configured', '未配置图床'),
+    ('invalid_hosts', '图床配置必须为列表'),
+    ('invalid_host', '图床项必须为映射'),
+    ('invalid_provider', '图床名称无效'),
+    ('unknown_provider', '图床尚未注册'),
+    ('invalid_token', '图床凭证必须为字符串'),
+    ('invalid_environment_reference', '图床凭证环境引用格式无效'),
+    ('missing_environment', '图床凭证环境变量缺失或为空'),
+    ('invalid_options', '图床参数无效或不受该图床支持'),
+    ('invalid_url', '图床返回的图片链接无效'),
+    ('upload_failed', '图床上传失败'),
+    ('config_error', '图床配置无效'),
+    ('storage_lookup_failed', '储存驱动查询失败'),
+    ('storage_unavailable', '储存驱动不可用'),
+    ('transport_failed', '图床网络传输失败'),
+    ('http_failed', '图床 HTTP 请求失败'),
+    ('business_rejected', '图床拒绝上传'),
+    ('invalid_response', '图床响应无效'),
+])
+def test_error_codes_have_fixed_safe_summaries(code, summary):
+    """保留旧错误类别并为新增类别提供固定安全中文摘要。"""
+    error = core().ImageHostError(code, SECRET)
+    assert error.code == code
+    assert error.message == summary
+    assert error.args == (summary,)
+    assert SECRET not in str(error) + repr(error)
+
+
+@pytest.mark.parametrize('code', [SECRET, None, False, 1, [], {}])
+def test_unknown_error_codes_fall_back_without_retaining_input(code):
+    """未知类别和非法类别类型均回退固定上传失败。"""
+    error = core().ImageHostError(code, SECRET)
+    assert error.code == 'upload_failed'
+    assert error.args == ('图床上传失败',)
+    assert SECRET not in repr(vars(error)) + repr(error.args)
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile', 'upload', 'storage',
+                                   'expiration'])
+def test_error_accepts_only_known_stages(stage):
+    """接受约定的五个处理阶段。"""
+    error = core().ImageHostError('upload_failed', '', stage=stage)
+    assert error.stage == stage
+
+
+@pytest.mark.parametrize('stage', ['', 'UPLOAD', 'unknown', SECRET, None,
+                                   True, False, 1, [], {}])
+def test_error_discards_invalid_stage(stage):
+    """非法阶段及非法类型不进入异常元数据。"""
+    assert core().ImageHostError('upload_failed', '', stage=stage).stage == ''
+
+
+@pytest.mark.parametrize('status', [100, 200, 422, 599])
+def test_error_accepts_http_status_range(status):
+    """HTTP 状态只接受范围内的非布尔整数。"""
+    error = core().ImageHostError('http_failed', '', http_status=status)
+    assert error.http_status == status
+
+
+@pytest.mark.parametrize('status', [None, True, False, 99, 600, -1, 200.0,
+                                    '200', [], {}])
+def test_error_discards_invalid_http_status(status):
+    """布尔值、越界值及非整数不作为 HTTP 状态保存。"""
+    error = core().ImageHostError('http_failed', '', http_status=status)
+    assert error.http_status is None
+
+
+@pytest.mark.parametrize('diagnostic', [
+    None, False, 1, [], {}, b'error', '甲' * 201, '错误\n详情',
+    '错误\x1b[31m详情', '错误\u200b详情', '错误\ud800详情',
+    'Authorization: private', 'Bearer private', 'token=private',
+    'api_key: private', '{"access_token": "private"}',
+    'password=private', 'Cookie: session=private',
+    'https://example.test/?sig=private', '${OTHER_TOKEN}',
+    '<html>private</html>', '&lt;html&gt;private&lt;/html&gt;',
+    '-----BEGIN PRIVATE KEY-----',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature',
+])
+def test_error_rejects_unsafe_diagnostic_metadata(diagnostic):
+    """核心仅接收已脱敏短文本，不承担识别未知秘密的责任。"""
+    error = core().ImageHostError('upload_failed', '', diagnostic=diagnostic)
+    assert error.diagnostic is None
+
+
+@pytest.mark.parametrize('diagnostic', ['请先绑定手机号', '不存在的储存驱动',
+                                        '甲' * 200])
+def test_error_preserves_safe_short_diagnostics(diagnostic):
+    """正常中文和长度边界内的安全诊断可独立读取。"""
+    error = core().ImageHostError(
+        'upload_failed', SECRET, diagnostic=diagnostic)
+    assert error.diagnostic == diagnostic
+    assert diagnostic not in repr(error) + repr(error.args)
