@@ -26,7 +26,29 @@ _ERROR_MESSAGES = {
     'invalid_options': '图床参数无效或不受该图床支持',
     'invalid_url': '图床返回的图片链接无效',
     'upload_failed': '图床上传失败',
+    'config_error': '图床配置无效',
+    'storage_lookup_failed': '储存驱动查询失败',
+    'storage_unavailable': '储存驱动不可用',
+    'transport_failed': '图床网络传输失败',
+    'http_failed': '图床 HTTP 请求失败',
+    'business_rejected': '图床拒绝上传',
+    'invalid_response': '图床响应无效',
 }
+_ERROR_STAGES = frozenset({
+    'group', 'profile', 'upload', 'storage', 'expiration',
+})
+_DIAGNOSTIC_LIMIT = 200
+_UNSAFE_DIAGNOSTIC = re.compile(
+    r'<|>|&(?:lt|gt|#0*60|#x0*3c);|https?://'
+    r'|\$\{|\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*'
+    r'|%[A-Za-z_][A-Za-z0-9_]*%'
+    r'|\b(?:authorization|proxy-authorization|bearer)\b'
+    r'|\b(?:token|access_token|refresh_token|api[_-]?key|secret|password'
+    r'|passwd|cookie|set-cookie)\b[\"\']?\s*[:=]'
+    r'|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+    r'|\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+',
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +58,9 @@ class UploadFailure:
     provider: str
     code: str
     message: str
+    stage: str = ''
+    http_status: int | None = None
+    diagnostic: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -47,18 +72,37 @@ class UploadResult:
     url: str | None = field(repr=False)
     attempts: tuple[str, ...]
     failures: tuple[UploadFailure, ...]
+    warnings: tuple[str, ...] = ()
 
 
 class ImageHostError(Exception):
     """通过固定错误码表达失败，不保存调用方提供的原始消息。"""
 
-    def __init__(self, code, message):
-        """忽略不可信消息，将未知错误码归入通用上传失败。"""
+    def __init__(self, code, message, *, stage='', http_status=None,
+                 diagnostic=None):
+        """忽略原文并限制元数据；诊断须由调用方预先脱敏。
+
+        本边界只拒绝明显危险结构，不能识别调用方未提供的未知秘密。
+        不保存请求、响应、原始消息或底层异常。
+        """
         self.code = (
             code if type(code) is str and code in _ERROR_MESSAGES
             else 'upload_failed'
         )
         self.message = _ERROR_MESSAGES[self.code]
+        self.stage = (
+            stage if type(stage) is str and stage in _ERROR_STAGES else ''
+        )
+        self.http_status = (
+            http_status if type(http_status) is int
+            and 100 <= http_status <= 599 else None
+        )
+        self.diagnostic = (
+            diagnostic if type(diagnostic) is str
+            and 0 < len(diagnostic) <= _DIAGNOSTIC_LIMIT
+            and diagnostic.strip() and not _has_control(diagnostic)
+            and _UNSAFE_DIAGNOSTIC.search(diagnostic) is None else None
+        )
         super().__init__(self.message)
 
 
