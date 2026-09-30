@@ -304,7 +304,8 @@ def _prepare_screenshot_batch(section, enabled, reserved_names):
     """调用一次截图编排，未知普通异常时安全降级为空批次
 
     控制信号保持原对象向上传播，不被吞掉或包装。降级时一并返回内部错误
-    标记，供上层区分“未配置目标”与“截图内部错误”两种占位提示。
+    标记，供上层区分“未配置目标”与“截图内部错误”两种占位提示；日志只
+    记录异常类型名用于诊断，不输出异常原文、配置或堆栈。
 
     Args:
         section: screenshot 配置映射
@@ -318,8 +319,11 @@ def _prepare_screenshot_batch(section, enabled, reserved_names):
         return prepare_screenshots(section, enabled, reserved_names), False
     except (KeyboardInterrupt, SystemExit):
         raise
-    except Exception:
-        LOGGER.error("截图编排出现未知异常，已跳过本次截图结果")
+    except Exception as exc:
+        # 仅记录异常类型名用于诊断，不输出异常原文、配置或堆栈
+        LOGGER.error(
+            "截图编排出现未知异常（%s），已跳过本次截图结果",
+            type(exc).__name__)
         return ScreenshotBatch({}, (), ()), True
 
 
