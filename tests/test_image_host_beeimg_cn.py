@@ -149,6 +149,7 @@ def test_registration_and_four_argument_signature():
         'beeimg': providers.upload_beeimg,
         'superbed': providers.upload_superbed,
         'beeimg_cn': adapter,
+        'boltp': providers.upload_boltp,
     }
     assert list(signature(adapter).parameters) == [
         'image_bytes', 'filename', 'token', 'options',

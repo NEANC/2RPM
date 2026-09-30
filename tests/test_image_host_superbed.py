@@ -97,6 +97,7 @@ def test_registration_and_signature():
         'wmimg': providers.upload_wmimg,
         'beeimg': providers.upload_beeimg,
         'beeimg_cn': providers.upload_beeimg_cn,
+        'boltp': providers.upload_boltp,
         'superbed': adapter,
     }
     assert list(signature(adapter).parameters) == [
