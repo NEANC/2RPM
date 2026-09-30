@@ -300,6 +300,21 @@ def _configured_screenshot_names(section, reserved_names):
     return {item['out'] for item in targets if item['out']}
 
 
+def _has_valid_screenshot_target(section, reserved_names):
+    """判定本次是否配置了通过校验的截图目标（无截图或上传副作用）
+
+    Args:
+        section: screenshot 配置映射
+        reserved_names: 调用方保留的普通变量名集合
+
+    Returns:
+        bool: 配置中存在可用目标时为 True
+    """
+    raw_targets = section.get('targets') if isinstance(section, Mapping) else None
+    targets, _ = allocate_targets(raw_targets, reserved_names)
+    return any(item['error'] is None for item in targets)
+
+
 def _prepare_screenshot_batch(section, enabled, reserved_names):
     """调用一次截图编排，未知普通异常时安全降级为空批次
 
@@ -455,6 +470,11 @@ def send_notification(config, template_key, **kwargs):
 
     # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
     enabled = _resolve_capture_flag(template)
+    # 模板未引用任何截图变量且无有效目标时按纯禁用路径处理，避免未使用
+    # 截图的既有用户每次通知都产生目标缺失告警
+    if enabled and not placeholders and not _has_valid_screenshot_target(
+            screenshot_section, reserved_names):
+        enabled = False
     batch, internal_error = _prepare_screenshot_batch(
         screenshot_section, enabled, reserved_names)
 
