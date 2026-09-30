@@ -73,6 +73,27 @@ def test_html_and_obvious_credentials_are_discarded(text):
     assert diagnostics().sanitize_message(text, ()) is None
 
 
+@pytest.mark.parametrize('credential', [
+    'Authorization: Basic FAKE_VALUE', 'Bearer FAKE_VALUE',
+    'token=FAKE_VALUE',
+])
+@pytest.mark.parametrize('separator', ['', '\u200b', '\x1b[31m'])
+def test_chinese_adjacent_credentials_are_discarded(credential, separator):
+    """中文紧邻认证标识及控制清理重建的认证结构均不得展示。"""
+    text = '错误' + credential[:2] + separator + credential[2:]
+    assert diagnostics().sanitize_message(text, ()) is None
+
+
+@pytest.mark.parametrize('text', [
+    '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
+    'mytoken=ready', 'token_count=3', 'preauthorization pending',
+    'BearerCount=2',
+])
+def test_ordinary_words_are_not_credentials(text):
+    """保留正常中文及仅包含认证标识片段的普通英文词语。"""
+    assert diagnostics().sanitize_message(text, ()) == text
+
+
 @pytest.mark.parametrize('text', [
     '\x1b[31m请先绑定手机号\x1b[0m',
     '\x1b]0;hidden title\x07请先绑定手机号',
