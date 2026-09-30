@@ -248,13 +248,15 @@ def test_write_failure_returns_one_without_details(
     assert code == 1
     out = capsys.readouterr().out
     assert '失败' in out
+    assert '无法写入输出路径' in out
+    assert '目标文件已存在' not in out
     assert 'secret-token' not in out
     assert created_pngs(program_dir / 'screenshot') == []
 
 
 def test_existing_explicit_file_is_not_overwritten(
         monkeypatch, tmp_path, capsys):
-    """显式文件已存在时报错返回 1，且不覆盖既有内容。"""
+    """显式文件已存在时报错返回 1，使用未覆盖专用提示且不覆盖既有内容。"""
     work = tmp_path / 'work'
     work.mkdir()
     monkeypatch.chdir(work)
@@ -265,7 +267,10 @@ def test_existing_explicit_file_is_not_overwritten(
 
     assert code == 1
     assert target.read_bytes() == b'user-data'
-    assert '失败' in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert '失败' in out
+    assert '目标文件已存在' in out
+    assert '无法写入输出路径' not in out
 
 
 def test_consecutive_calls_do_not_overwrite(monkeypatch, tmp_path):
