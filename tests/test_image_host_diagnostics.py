@@ -99,6 +99,44 @@ def test_jwt_boundaries_reject_credentials(prefix, separator, entrypoint):
     assert result is None
 
 
+@pytest.mark.parametrize('head, tail', [
+    ('Bea', 'rer FAKE_VALUE'), ('to', 'ken=FAKE_VALUE'),
+    ('Autho', 'rization: Basic FAKE_VALUE'),
+    (SYNTHETIC_JWT[:2], SYNTHETIC_JWT[2:]),
+])
+@pytest.mark.parametrize('whitespace', ['\n', '\t', '\r\n'])
+@pytest.mark.parametrize('control', ['', '\u200b', '\x1b[31m'])
+@pytest.mark.parametrize('entrypoint', ['sanitize', 'core_after_sanitize'])
+def test_separator_boundary_survives_credential_reassembly(
+        head, tail, whitespace, control, entrypoint):
+    """在英文前缀与重建凭证之间保留检测所需的原始空白边界。"""
+    text = 'failed' + whitespace + head + control + tail
+    result = diagnostics().sanitize_message(text, ())
+    if entrypoint == 'core_after_sanitize':
+        module = import_module('modules.image_host.core')
+        result = module.ImageHostError(
+            'upload_failed', '', diagnostic=result).diagnostic
+    assert result is None
+    assert text == 'failed' + whitespace + head + control + tail
+
+
+@pytest.mark.parametrize('text', [
+    '普通中文', 'mytoken=ready', 'tokenization=complete',
+    'BearerCount=2', 'release.v1.ready', 'preauthorization pending',
+])
+@pytest.mark.parametrize('whitespace', ['\n', '\t', '\r\n'])
+@pytest.mark.parametrize('control', ['', '\u200b', '\x1b[31m'])
+def test_separator_boundary_preserves_cleaned_ordinary_words(
+        text, whitespace, control):
+    """检测视图不误拒普通词语，展示结果仍按原规则删除控制空白。"""
+    message = 'failed' + whitespace + text[:4] + control + text[4:]
+    result = diagnostics().sanitize_message(message, ())
+    assert result == 'failed' + text
+    module = import_module('modules.image_host.core')
+    error = module.ImageHostError('upload_failed', '', diagnostic=result)
+    assert error.diagnostic == result
+
+
 @pytest.mark.parametrize('text', [
     '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
     'mytoken=ready', 'token_count=3', 'preauthorization pending',

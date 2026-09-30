@@ -57,8 +57,8 @@ def _replace_secrets(message, secrets):
     return message
 
 
-def _clean_controls(message):
-    """移除完整终端指令和控制字符，舍弃无法可靠解析的残留。"""
+def _clean_controls(message, *, preserve_whitespace=False):
+    """移除终端指令和控制字符，可为危险结构检测保留空白边界。"""
     for pattern in (_OSC, _CONTROL_STRING, _CSI, _OTHER_ESCAPE):
         message = pattern.sub('', message)
     if _UNFINISHED_ESCAPE.search(message) is not None:
@@ -66,6 +66,7 @@ def _clean_controls(message):
     return ''.join(
         char for char in message
         if unicodedata.category(char) not in _CONTROL_CATEGORIES
+        or (preserve_whitespace and char.isspace())
     )
 
 
@@ -78,6 +79,10 @@ def sanitize_message(message, secrets) -> str | None:
     if type(message) is not str or len(message) > _INPUT_LIMIT:
         return None
     if _UNSAFE_CONTENT.search(_URL.sub(_REDACTED, message)) is not None:
+        return None
+    detection_view = _clean_controls(message, preserve_whitespace=True)
+    if (detection_view is None or _UNSAFE_CONTENT.search(
+            _URL.sub(_REDACTED, detection_view)) is not None):
         return None
     known_secrets = _secret_snapshot(secrets)
     cleaned = _clean_controls(message)

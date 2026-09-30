@@ -726,6 +726,22 @@ def test_error_rejects_jwt_boundaries(prefix, separator):
     assert error.diagnostic is None
 
 
+@pytest.mark.parametrize('head, tail', [
+    ('Bea', 'rer FAKE_VALUE'), ('to', 'ken=FAKE_VALUE'),
+    ('Autho', 'rization: Basic FAKE_VALUE'),
+    (SYNTHETIC_JWT[:2], SYNTHETIC_JWT[2:]),
+])
+@pytest.mark.parametrize('control', ['\u200b', '\x1b[31m'])
+def test_error_rejects_original_separator_boundary(head, tail, control):
+    """核心继续拒绝收到的控制原文，不推测已丢失的历史分隔符。"""
+    text = 'failed\n' + head + control + tail
+    error = core().ImageHostError('upload_failed', '', diagnostic=text)
+    assert error.diagnostic is None
+    plain = 'failed' + head + tail
+    error = core().ImageHostError('upload_failed', '', diagnostic=plain)
+    assert error.diagnostic == plain
+
+
 @pytest.mark.parametrize('diagnostic', [
     '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
     'mytoken=ready', 'token_count=3', 'preauthorization pending',
