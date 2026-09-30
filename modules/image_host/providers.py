@@ -21,6 +21,7 @@ WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
 BEEIMG_ENDPOINT = 'https://beeimg.com/api/upload/file/json/'
 SUPERBED_ENDPOINT = 'https://api.superbed.cn/upload'
 BEEIMG_CN_ENDPOINT = 'https://www.beeimg.cn/api/v2/upload'
+BOLTP_ENDPOINT = 'https://www.boltp.com/api/v2/upload'
 V2_SUCCESS_STATUS = 'success'
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 15
@@ -307,3 +308,15 @@ def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
     """
     return _upload_v2_storage(
         BEEIMG_CN_ENDPOINT, 'BeeIMG.cn', image_bytes, filename, token, options)
+
+
+def upload_boltp(image_bytes, filename, token, options) -> str:
+    """依据 Boltp 官方文档上传内存 PNG。
+
+    契约来源：https://www.boltp.com/api/v2/pages/api-docs，核对日期
+    2026-09-30；仅核验文档，未做真实上传，也未使用真实令牌。文档字段表
+    与请求示例对存储 ID 的取值互相冲突，因此不采用任何文档示例值，改由
+    用户在 options 显式提供。
+    """
+    return _upload_v2_storage(
+        BOLTP_ENDPOINT, 'Boltp', image_bytes, filename, token, options)

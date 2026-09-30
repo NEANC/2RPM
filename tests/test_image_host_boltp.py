@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""依据 BeeIMG.cn 官方接口文档构造合成响应，绝不代表线上上传结果。
+"""依据 Boltp（闪电图床）官方接口文档构造合成响应，绝不代表线上结果。
 
-契约来源：https://www.beeimg.cn/api/v2/pages/api-docs（站点自带文档页面
+契约来源：https://www.boltp.com/api/v2/pages/api-docs（站点自带文档页面
 数据，核对日期 2026-09-30）；未做真实上传，也未使用真实令牌。
+文档存储 ID 字段表与请求示例互相冲突，因此测试只使用自选合成值。
 仅替换 HTTP 边界，通过真实注册表验证上传与顺序故障转移。
 """
 
@@ -20,12 +21,12 @@ import requests
 
 IMAGE = b'\x89PNG\r\n\x1a\nlocal-synthetic-image'
 FILENAME = '本地截图.png'
-SECRET = 'FAKE_BEEIMG_CN_SECRET_7319'
-ENV_NAME = 'BEEIMG_CN_LOCAL_TEST_TOKEN'
-URL = 'https://www.beeimg.cn/20260930/synthetic.png?signature=a%2Fb%3D&x=1+2'
-ENDPOINT = 'https://www.beeimg.cn/api/v2/upload'
-WARNING = 'BeeIMG.cn 存在不支持的其他选项，已忽略'
-STORAGE_ID = 7
+SECRET = 'FAKE_BOLTP_SECRET_7319'
+ENV_NAME = 'BOLTP_LOCAL_TEST_TOKEN'
+URL = 'https://www.boltp.com/20260930/synthetic.png?signature=a%2Fb%3D&x=1+2'
+ENDPOINT = 'https://www.boltp.com/api/v2/upload'
+WARNING = 'Boltp 存在不支持的其他选项，已忽略'
+STORAGE_ID = 5
 OPTIONS = {'storage_id': STORAGE_ID}
 UNSUPPORTED = {'tags': ['本地标签'], 'expired_at': '2030-01-01 00:00:00',
                'intro': '本地描述', 'is_remove_exif': True}
@@ -38,15 +39,15 @@ def registry():
 
 def payload(url=URL):
     """按官方成功示例构造本地合成正文，未做任何真实上传。"""
-    return {'status': 'success', 'message': 'success', 'time': 1790774556,
-            'data': {'id': 23, 'public_url': url, 'is_public': True}}
+    return {'status': 'success', 'message': '上传成功', 'time': 1735689600,
+            'data': {'id': 1, 'public_url': url, 'is_public': True}}
 
 
 def upload(token=SECRET, options=None, extra_hosts=()):
     """通过实际入口处理凭证、参数副本及后续站点。"""
     if options is None:
         options = dict(OPTIONS)
-    hosts = [{'provider': 'beeimg_cn', 'token': token, 'options': options}]
+    hosts = [{'provider': 'boltp', 'token': token, 'options': options}]
     return registry().upload_with_fallback(
         IMAGE, FILENAME, hosts + list(extra_hosts))
 
@@ -139,17 +140,17 @@ def client(monkeypatch):
 
 
 def test_registration_and_four_argument_signature():
-    """静态注册新增 BeeIMG.cn 四参数适配器且不注册未实现站点。"""
+    """静态注册新增 Boltp 四参数适配器，并保留既有两个 v2 站点。"""
     providers = import_module('modules.image_host.providers')
-    adapter = getattr(providers, 'upload_beeimg_cn', None)
+    adapter = getattr(providers, 'upload_boltp', None)
     assert callable(adapter)
     assert registry().UPLOADERS == {
         'catbox': providers.upload_catbox,
         'wmimg': providers.upload_wmimg,
         'beeimg': providers.upload_beeimg,
+        'beeimg_cn': providers.upload_beeimg_cn,
+        'boltp': adapter,
         'superbed': providers.upload_superbed,
-        'beeimg_cn': adapter,
-        'boltp': providers.upload_boltp,
     }
     assert list(signature(adapter).parameters) == [
         'image_bytes', 'filename', 'token', 'options',
@@ -234,7 +235,7 @@ def test_direct_is_public_cannot_override_permission(client, value):
     assert client.calls == []
 
 
-@pytest.mark.parametrize('storage_id', [None, True, False, 0, -1, '7', 7.0,
+@pytest.mark.parametrize('storage_id', [None, True, False, 0, -1, '5', 5.0,
                                         [], {}])
 def test_invalid_storage_id_fails_before_request(client, storage_id):
     """存储 ID 必填且仅接受非布尔正整数，缺失或非法值不发请求。"""
@@ -246,9 +247,9 @@ def test_invalid_storage_id_fails_before_request(client, storage_id):
     assert client.calls == []
 
 
-@pytest.mark.parametrize('storage_id', [1, 2, 99, 1000])
+@pytest.mark.parametrize('storage_id', [2, 3, 1, 99])
 def test_explicit_positive_storage_id_is_forwarded(client, storage_id):
-    """显式正整数存储 ID 原样发送，不套用文档示例或自动选择。"""
+    """显式正整数存储 ID 原样发送，不套用文档冲突的示例或套餐值。"""
     options = {'storage_id': storage_id}
     original = deepcopy(options)
     assert upload(options=options).success
@@ -429,7 +430,7 @@ def test_control_signal_identity_cleanup_and_no_fallback(
     else:
         client.response.error = signal
     with pytest.raises(signal_type) as caught:
-        upload(extra_hosts=[{'provider': 'beeimg_cn'}])
+        upload(extra_hosts=[{'provider': 'boltp'}])
     assert caught.value is signal
     assert client.closed == 1
     assert client.response.closed == (stage == 'json')
@@ -450,7 +451,7 @@ def test_adapter_exception_has_no_original_chain(client, caplog, kind):
     providers = import_module('modules.image_host.providers')
     error_class = import_module('modules.image_host.core').ImageHostError
     with pytest.raises(error_class) as caught:
-        providers.upload_beeimg_cn(
+        providers.upload_boltp(
             IMAGE, FILENAME, SECRET, {'storage_id': STORAGE_ID})
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
@@ -466,7 +467,7 @@ def test_signed_url_and_input_are_preserved_without_diagnostic_leaks(
     """保留完整签名直链且不修改源配置，结果 repr 隐藏 URL。"""
     signed = URL + '&token=' + SECRET
     client.response.body = json.dumps(payload(signed))
-    hosts = [{'provider': ' BEEIMG_CN ', 'token': SECRET,
+    hosts = [{'provider': ' BOLTP ', 'token': SECRET,
               'options': {'storage_id': STORAGE_ID, 'permission': 1,
                           'album_id': 23}}]
     original = deepcopy(hosts)
@@ -503,18 +504,18 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
     client.responses = [second] if failure == 'options' else [first, second]
     result = upload(SECRET, options, [
         {'provider': 'wmimg', 'token': 'FAKE_WMIMG_ONLY'},
-        {'provider': 'beeimg_cn', 'token': '${UNREAD_TEST_ENV}'},
+        {'provider': 'boltp', 'token': '${UNREAD_TEST_ENV}'},
     ])
     assert result.success
     if failure is None:
-        assert result.provider == 'beeimg_cn'
-        assert result.attempts == ('beeimg_cn',)
+        assert result.provider == 'boltp'
+        assert result.attempts == ('boltp',)
         assert result.failures == ()
         assert len(client.calls) == 1
         assert second.closed == 0
     else:
         assert result.provider == 'wmimg'
-        assert result.attempts == ('beeimg_cn', 'wmimg')
+        assert result.attempts == ('boltp', 'wmimg')
         assert len(result.failures) == 1
         endpoint, request = client.calls[-1]
         assert endpoint == 'https://wmimg.com/api/v1/upload'
