@@ -11,8 +11,10 @@ import sys
 from argparse import Namespace
 from importlib import import_module
 from importlib.util import find_spec
+from io import BytesIO
 from unittest.mock import MagicMock, Mock
 
+from PIL import Image
 import pytest
 
 from modules.screenshot.models import CaptureError, CaptureResult
@@ -49,6 +51,13 @@ def _spies(monkeypatch):
     config_spy = Mock()
     monkeypatch.setattr(config, 'load_config', config_spy)
     return capture, config_spy
+
+
+def _png_bytes(size=(4, 3)):
+    """用真实 Pillow 生成可解码的 PNG 字节。"""
+    buffer = BytesIO()
+    Image.new('RGB', size, (12, 34, 56)).save(buffer, format='PNG')
+    return buffer.getvalue()
 
 
 @pytest.mark.parametrize(('argv', 'expected'), [
@@ -200,10 +209,11 @@ def test_argument_error_creates_no_config_file(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_run_prints_source_target_and_size(monkeypatch, capsys):
-    """run_screenshot_cli 成功时返回 0 并输出来源、目标与尺寸。"""
+def test_run_prints_source_target_and_size(monkeypatch, capsys, tmp_path):
+    """run_screenshot_cli 成功时返回 0 并输出来源、目标与尺寸，同时落盘。"""
     cli = cli_module()
-    expected = CaptureResult(b'png-bytes', 'window', 'MuMu模拟器 1', 320, 240)
+    expected = CaptureResult(
+        _png_bytes(), 'window', 'MuMu模拟器 1', 320, 240)
     capture = patch_capture(monkeypatch, Mock(return_value=expected))
     config = import_module('modules.config')
     load_spy = Mock()
@@ -211,13 +221,16 @@ def test_run_prints_source_target_and_size(monkeypatch, capsys):
 
     args = parse(['--source', 'window:MuMu模拟器 1'])
 
-    assert cli.run_screenshot_cli(args, 'C:\\program') == 0
+    assert cli.run_screenshot_cli(args, str(tmp_path)) == 0
     capture.assert_called_once_with('window', 'MuMu模拟器 1')
     load_spy.assert_not_called()
     out = capsys.readouterr().out
     assert 'window' in out
     assert 'MuMu模拟器 1' in out
     assert '320' in out and '240' in out
+    saved = list((tmp_path / 'screenshot').glob('*.png'))
+    assert len(saved) == 1
+    assert str(saved[0]) in out
 
 
 def test_run_returns_one_on_capture_failure(monkeypatch, capsys):
@@ -328,10 +341,10 @@ def test_entry_propagates_screenshot_exit_code(monkeypatch, tmp_path):
 
 
 def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
-    """入口分流使用真实解析与真实分派，全程不读取配置、不落盘。"""
+    """入口分流使用真实解析与真实分派，不读取配置，仅写出截图产物。"""
     entry, spies = _capture_entry_environment(monkeypatch, tmp_path)
     config_spy = _patch_entry_config(monkeypatch, entry)
-    result = CaptureResult(b'png', 'window', 'MuMu模拟器 1', 8, 6)
+    result = CaptureResult(_png_bytes((8, 6)), 'window', 'MuMu模拟器 1', 8, 6)
     capture = patch_capture(monkeypatch, Mock(return_value=result))
     monkeypatch.setattr(
         sys, 'argv', ['2RPM.py', 'screenshot', '--source', 'MuMu模拟器 1'])
@@ -344,7 +357,11 @@ def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
     config_spy.assert_not_called()
     for spy in spies.values():
         spy.assert_not_called()
-    assert list(tmp_path.iterdir()) == []
+    assert [item.name for item in tmp_path.iterdir()] == ['screenshot']
+    saved = list((tmp_path / 'screenshot').glob('*.png'))
+    assert len(saved) == 1
+    with Image.open(saved[0]) as image:
+        assert image.format == 'PNG'
 
 
 def test_entry_keeps_legacy_parsing_without_screenshot_command(

@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""解析截图调试参数并执行单次截图，不读写配置或图床设置。"""
+"""解析截图调试参数并执行单次截图并保存，不读写配置或图床设置。"""
 
 import argparse
+import os
+from datetime import datetime
+from io import BytesIO
+
+from PIL import Image
 
 from .models import CaptureError
 from .service import capture
@@ -14,6 +19,24 @@ SOURCE_PROVIDERS = ('adb', 'window')
 # 进程退出码：参数错误与截图失败分别对应固定分类
 ARGUMENT_ERROR_CODE = 2
 CAPTURE_FAILURE_CODE = 1
+
+# 默认输出子目录名，始终相对程序根目录
+DEFAULT_OUTPUT_DIRNAME = 'screenshot'
+
+# 视为显式文件的后缀，比较时不区分大小写
+IMAGE_FILE_SUFFIXES = ('.png', '.jpg', '.jpeg')
+
+# 尾随这些分隔符即表示目录
+DIRECTORY_SEPARATORS = ('\\', '/')
+
+# 自动命名冲突时的最大尝试次数
+UNIQUE_NAME_ATTEMPTS = 100
+
+# JPEG 编码质量
+JPEG_QUALITY = 90
+
+# 保存失败时的固定安全提示，不携带底层异常内容
+SAVE_FAILURE_MESSAGE = '截图保存失败：无法写入输出路径'
 
 
 def _build_parser():
@@ -191,17 +214,174 @@ def _safe_code(error):
     return error.code if isinstance(error.code, str) else 'unknown'
 
 
-def run_screenshot_cli(args, program_dir):
-    """执行一次截图并输出来源、目标与尺寸，返回进程退出码。
+def _timestamp_token():
+    """返回带微秒精度的时间戳令牌，用于生成唯一文件名。
 
-    本步不保存文件也不上传图床，成功时只输出截图基本信息。
+    Returns:
+        str: 形如 20260101_000000_123456 的时间戳令牌。
+    """
+    return datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+
+
+def _resolve_output(output, program_dir):
+    """把 --output 归一为绝对路径并判定目标是文件还是目录。
+
+    未提供或为空白时使用程序根目录下的 screenshot 子目录；显式相对路径
+    相对当前工作目录解析；已存在目录与尾随分隔符优先按目录处理。
+
+    Args:
+        output: --output 的原始取值。
+        program_dir (str): 程序根目录。
+
+    Returns:
+        tuple: (绝对路径, 是否输出到单个文件)。
+    """
+    if output is None or not isinstance(output, str) or not output.strip():
+        default_dir = os.path.join(program_dir, DEFAULT_OUTPUT_DIRNAME)
+        return os.path.abspath(default_dir), False
+
+    raw = output.strip()
+    source_path = raw if os.path.isabs(raw) else os.path.abspath(raw)
+    absolute = os.path.normpath(source_path)
+    if raw.endswith(DIRECTORY_SEPARATORS) or os.path.isdir(absolute):
+        return absolute, False
+    if os.path.splitext(absolute)[1].lower() in IMAGE_FILE_SUFFIXES:
+        return absolute, True
+    return absolute, False
+
+
+def _discard_partial(path):
+    """尽力删除本次写入的半成品文件，忽略清理失败。
+
+    Args:
+        path (str): 本次创建的半成品文件路径。
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _write_exclusive_file(path, data):
+    """以排他方式创建文件并写入字节，失败时只清理本次创建的半成品。
+
+    Args:
+        path (str): 目标文件绝对路径。
+        data (bytes): 待写入的完整字节内容。
+
+    Raises:
+        FileExistsError: 目标文件已存在，不覆盖。
+        OSError: 创建或写入失败。
+    """
+    created = False
+    try:
+        with open(path, 'xb') as handle:
+            created = True
+            handle.write(data)
+    except BaseException:
+        if created:
+            _discard_partial(path)
+        raise
+
+
+def _encode_jpeg(png_bytes):
+    """把 PNG 字节转码为真实 JPEG 字节并去除 alpha 通道。
+
+    Args:
+        png_bytes (bytes): 原始 PNG 字节。
+
+    Returns:
+        bytes: JPEG 编码后的字节。
+    """
+    with Image.open(BytesIO(png_bytes)) as image:
+        image.load()
+        rgba = image.convert('RGBA')
+        background = Image.new('RGB', rgba.size, (0, 0, 0))
+        background.paste(rgba, mask=rgba.getchannel('A'))
+        buffer = BytesIO()
+        background.save(buffer, format='JPEG', quality=JPEG_QUALITY)
+    return buffer.getvalue()
+
+
+def _encode_image(png_bytes, path):
+    """按目标扩展名选择编码方式，PNG 原样写入，其余转码为 JPEG。
+
+    Args:
+        png_bytes (bytes): 原始 PNG 字节。
+        path (str): 目标文件路径。
+
+    Returns:
+        bytes: 实际写入文件的字节内容。
+    """
+    if os.path.splitext(path)[1].lower() == '.png':
+        return png_bytes
+    return _encode_jpeg(png_bytes)
+
+
+def _save_to_directory(png_bytes, directory):
+    """在目录内以带时间戳的唯一名称排他保存 PNG。
+
+    Args:
+        png_bytes (bytes): 原始 PNG 字节。
+        directory (str): 输出目录绝对路径。
+
+    Returns:
+        str: 实际保存的完整文件路径。
+
+    Raises:
+        OSError: 目录创建或文件写入失败。
+        FileExistsError: 无法生成未占用的文件名。
+    """
+    os.makedirs(directory, exist_ok=True)
+    token = _timestamp_token()
+    for sequence in range(UNIQUE_NAME_ATTEMPTS):
+        suffix = '' if sequence == 0 else f'_{sequence}'
+        candidate = os.path.join(
+            directory, f'screenshot_{token}{suffix}.png')
+        try:
+            _write_exclusive_file(candidate, png_bytes)
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError('无法生成唯一截图文件名')
+
+
+def _save_capture(result, output, program_dir):
+    """把截图写入目标路径，返回实际保存的完整路径。
+
+    Args:
+        result (CaptureResult): 截图结果。
+        output: --output 的原始取值。
+        program_dir (str): 程序根目录。
+
+    Returns:
+        str: 实际保存的完整文件路径。
+
+    Raises:
+        OSError: 目录创建或文件写入失败。
+    """
+    target, is_file = _resolve_output(output, program_dir)
+    if not is_file:
+        return _save_to_directory(result.png_bytes, target)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    _write_exclusive_file(target, _encode_image(result.png_bytes, target))
+    return target
+
+
+def run_screenshot_cli(args, program_dir):
+    """执行一次截图并保存，输出来源、目标、尺寸与保存路径，返回退出码。
+
+    本步不读取配置也不上传图床；--upload、--image-host 与 --config/-c
+    仍被接受但保持无行为。
 
     Args:
         args (argparse.Namespace): parse_screenshot_args 的解析结果。
-        program_dir (str): 程序根目录；预留给后续输出路径解析，本步未使用。
+        program_dir (str): 程序根目录，默认输出目录相对该目录解析。
 
     Returns:
-        int: 全部请求操作成功为 0，参数错误为 2，截图失败为 1。
+        int: 全部请求操作成功为 0，参数错误为 2，截图或保存失败为 1。
     """
     source = getattr(args, 'source', None)
     target = getattr(args, 'target', None)
@@ -219,7 +399,17 @@ def run_screenshot_cli(args, program_dir):
         print('截图失败：未知错误')
         return CAPTURE_FAILURE_CODE
 
+    try:
+        saved_path = _save_capture(result, getattr(args, 'output', None),
+                                   program_dir)
+    except OSError:
+        print(SAVE_FAILURE_MESSAGE)
+        return CAPTURE_FAILURE_CODE
+
     print(
         f'截图成功：来源 {result.source}，目标 {result.target}，'
         f'尺寸 {result.width}x{result.height}')
+    print(f'已保存：{saved_path}')
+    for warning in result.warnings or ():
+        print(f'提示：{warning}')
     return 0
