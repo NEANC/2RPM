@@ -42,6 +42,8 @@ _RESERVED_VARIABLES = frozenset({
 })
 # 引用未配置编号的截图变量时给出的固定中文提示
 _UNCONFIGURED_SCREENSHOT = '截图失败：未配置该截图目标'
+# 截图编排出现未知异常降级时给出的固定中文提示
+_INTERNAL_SCREENSHOT = '截图失败：内部错误'
 
 
 def _parse_response_body(response):
@@ -265,7 +267,8 @@ def _configured_screenshot_names(section, reserved_names):
 def _prepare_screenshot_batch(section, enabled, reserved_names):
     """调用一次截图编排，未知普通异常时安全降级为空批次
 
-    控制信号保持原对象向上传播，不被吞掉或包装。
+    控制信号保持原对象向上传播，不被吞掉或包装。降级时一并返回内部错误
+    标记，供上层区分“未配置目标”与“截图内部错误”两种占位提示。
 
     Args:
         section: screenshot 配置映射
@@ -273,15 +276,15 @@ def _prepare_screenshot_batch(section, enabled, reserved_names):
         reserved_names: 调用方保留的普通变量名集合
 
     Returns:
-        ScreenshotBatch: 可跨通道复用的截图批次
+        tuple[ScreenshotBatch, bool]: 可跨通道复用的截图批次与内部错误标记
     """
     try:
-        return prepare_screenshots(section, enabled, reserved_names)
+        return prepare_screenshots(section, enabled, reserved_names), False
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception:
         LOGGER.error("截图编排出现未知异常，已跳过本次截图结果")
-        return ScreenshotBatch({}, (), ())
+        return ScreenshotBatch({}, (), ()), True
 
 
 def _log_rendered_notification(template_key, title, content, batch):
@@ -395,12 +398,14 @@ def send_notification(config, template_key, **kwargs):
 
     # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
     enabled = _resolve_capture_flag(template)
-    batch = _prepare_screenshot_batch(
+    batch, internal_error = _prepare_screenshot_batch(
         screenshot_section, enabled, reserved_names)
 
     values = dict(batch.values)
     values.update(kwargs)
-    fallback = _UNCONFIGURED_SCREENSHOT if enabled else ''
+    # 未配置目标与截图内部错误使用各自固定提示，避免提示误导
+    hint = _INTERNAL_SCREENSHOT if internal_error else _UNCONFIGURED_SCREENSHOT
+    fallback = hint if enabled else ''
     for name in placeholders:
         values.setdefault(name, fallback)
 
