@@ -99,13 +99,31 @@ def test_jwt_boundaries_reject_credentials(prefix, separator, entrypoint):
     assert result is None
 
 
+@pytest.mark.parametrize('text', [
+    'failed\nBea\trer FAKE_VALUE',
+    'failed\nto\nken=FAKE_VALUE',
+    'failed\nBea\u200b\trer FAKE_VALUE',
+])
+@pytest.mark.parametrize('entrypoint', ['sanitize', 'core_after_sanitize'])
+def test_internal_control_whitespace_regressions(text, entrypoint):
+    """精确复现内外控制空白同时存在时的认证字段泄漏。"""
+    result = diagnostics().sanitize_message(text, ())
+    if entrypoint == 'core_after_sanitize':
+        module = import_module('modules.image_host.core')
+        result = module.ImageHostError(
+            'upload_failed', '', diagnostic=result).diagnostic
+    assert result is None
+
+
 @pytest.mark.parametrize('head, tail', [
     ('Bea', 'rer FAKE_VALUE'), ('to', 'ken=FAKE_VALUE'),
     ('Autho', 'rization: Basic FAKE_VALUE'),
     (SYNTHETIC_JWT[:2], SYNTHETIC_JWT[2:]),
 ])
 @pytest.mark.parametrize('whitespace', ['\n', '\t', '\r\n'])
-@pytest.mark.parametrize('control', ['', '\u200b', '\x1b[31m'])
+@pytest.mark.parametrize('control', [
+    '', '\u200b', '\x1b[31m', '\n', '\t', '\u200b\t',
+])
 @pytest.mark.parametrize('entrypoint', ['sanitize', 'core_after_sanitize'])
 def test_separator_boundary_survives_credential_reassembly(
         head, tail, whitespace, control, entrypoint):
@@ -125,7 +143,9 @@ def test_separator_boundary_survives_credential_reassembly(
     'BearerCount=2', 'release.v1.ready', 'preauthorization pending',
 ])
 @pytest.mark.parametrize('whitespace', ['\n', '\t', '\r\n'])
-@pytest.mark.parametrize('control', ['', '\u200b', '\x1b[31m'])
+@pytest.mark.parametrize('control', [
+    '', '\u200b', '\x1b[31m', '\n', '\t', '\u200b\t',
+])
 def test_separator_boundary_preserves_cleaned_ordinary_words(
         text, whitespace, control):
     """检测视图不误拒普通词语，展示结果仍按原规则删除控制空白。"""
@@ -203,18 +223,19 @@ def test_multiple_overlapping_secrets_and_inputs_are_preserved():
 @pytest.mark.parametrize('separator', [
     '\x00', '\u200b', '\u202e', '\ud800', '\x1b[31m', '\x9b31m',
     '\x1b]0;hidden title\x07', '\x9d0;hidden title\x9c',
-    '\x1bPhidden payload\x1b\\', '\x1b(B',
+    '\x1bPhidden payload\x1b\\', '\x1b(B', '\n', '\t', '\u200b\t',
 ])
 @pytest.mark.parametrize('prefix', ['', '上传失败 ', '甲' * 190])
 @pytest.mark.parametrize('secret_has_controls', [False, True])
+@pytest.mark.parametrize('long_first', [False, True])
 def test_overlapping_secrets_split_by_controls_are_fully_redacted(
-        separator, prefix, secret_has_controls):
+        separator, prefix, secret_has_controls, long_first):
     """包含关系与控制清理组合时完整脱敏，截断前不残留秘密后缀。"""
     short = 'FAKE_PREFIX'
     suffix = '_PRIVATE_SUFFIX'
     split_secret = short + separator + suffix
     long = split_secret if secret_has_controls else short + suffix
-    secrets = [short, long]
+    secrets = [long, short] if long_first else [short, long]
     before = secrets.copy()
     text = prefix + split_secret
     result = diagnostics().sanitize_message(text, secrets)
