@@ -361,6 +361,25 @@ def test_internal_error_hint_differs_from_unconfigured(monkeypatch, caplog):
     assert SECRET not in body and SECRET not in caplog.text
 
 
+@pytest.mark.parametrize('exc_type', [RuntimeError, ValueError, KeyError])
+def test_internal_degrade_logs_safe_exception_type(
+        monkeypatch, caplog, exc_type):
+    """内部降级日志带安全异常类型名，不泄露异常原文，提示仍为固定文案。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    monkeypatch.setattr(
+        notif, 'prepare_screenshots', Mock(side_effect=exc_type(SECRET)))
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '结果 {screenshot}'
+    with caplog.at_level(logging.ERROR, logger='modules.notification'):
+        results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert results == [('serverchan', True)]
+    assert exc_type.__name__ in caplog.text
+    assert SECRET not in caplog.text
+    assert '内部错误' in sent[0][1]
+    assert SECRET not in sent[0][1]
+
+
 def test_configured_empty_target_keeps_original_hint(monkeypatch):
     """已配置截图但目标为空时仍使用既有未配置提示，不退化为内部错误。"""
     capture, upload = _install_boundaries(monkeypatch)
