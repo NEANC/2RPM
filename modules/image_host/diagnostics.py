@@ -80,9 +80,11 @@ def sanitize_message(message, secrets) -> str | None:
     if _UNSAFE_CONTENT.search(_URL.sub(_REDACTED, message)) is not None:
         return None
     known_secrets = _secret_snapshot(secrets)
-    cleaned = _clean_controls(_replace_secrets(message, known_secrets))
+    cleaned = _clean_controls(message)
     if cleaned is None:
         return None
+    known_secrets = _secret_snapshot(
+        _clean_controls(secret) for secret in known_secrets)
     cleaned = _replace_secrets(cleaned, known_secrets)
     cleaned = _URL.sub(_REDACTED, cleaned)
     if _UNSAFE_CONTENT.search(cleaned) is not None:
