@@ -18,7 +18,7 @@ from ruamel.yaml import YAML
 from modules.image_host.registry import upload_with_fallback
 
 from .models import CaptureError
-from .pipeline import _markdown_image
+from .pipeline import markdown_image
 from .service import capture
 
 
@@ -567,7 +567,7 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
     if not uploaded.success:
         print(_upload_failure_message(uploaded))
         return CAPTURE_FAILURE_CODE
-    markdown = _markdown_image(os.path.splitext(filename)[0], uploaded.url)
+    markdown = markdown_image(os.path.splitext(filename)[0], uploaded.url)
     print(f'上传成功：图床 {uploaded.provider}')
     print(f'图片地址：{uploaded.url}')
     print(f'Markdown：{markdown}')
