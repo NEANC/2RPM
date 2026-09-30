@@ -170,6 +170,21 @@ def test_invalid_capture_type_disables_without_upload(monkeypatch, caplog):
     assert URL not in caplog.text
 
 
+def test_capture_flag_reads_template_not_kwarg(monkeypatch):
+    """截图开关只取模板配置，同名 kwarg 仅作普通变量不改变是否截图。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = (
+        '开关 {capture_screenshot}\n\n{screenshot}')
+    results = notif.send_notification(
+        config, 'on_end', process_name='demo.exe', capture_screenshot=False)
+    assert results == [('serverchan', True)]
+    assert capture.call_count == upload.call_count == 1
+    assert '开关 False' in sent[0][1]
+    assert URL in sent[0][1]
+
+
 @pytest.mark.parametrize('mode', ['disabled', 'no_channels'])
 def test_disabled_notification_or_no_channels_zero_screenshot(monkeypatch, mode):
     """通知禁用或无有效通道时不调用截图编排、后端与发送。"""
