@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 from string import Formatter
 from urllib.parse import quote
+from urllib.parse import urlsplit
 
 from modules.image_host.registry import upload_with_fallback
 
@@ -54,11 +55,15 @@ class ScreenshotBatch:
 
 
 def _markdown_image(name, url):
-    """仅转义链接结构字符，保留完整查询及已有百分号转义。"""
+    """保留主机方括号，仅转义结构字符，不重组查询或已有百分号转义。"""
+    authority_start = url.index('://') + 3
+    authority_end = authority_start + len(urlsplit(url).netloc)
     destination = ''.join(
         quote(char, safe='')
-        if char in _MARKDOWN_DELIMITERS or char.isspace() else char
-        for char in url
+        if (char in _MARKDOWN_DELIMITERS or char.isspace())
+        and not (char in '[]' and authority_start <= index < authority_end)
+        else char
+        for index, char in enumerate(url)
     )
     return f'![{name}]({destination})'
 
