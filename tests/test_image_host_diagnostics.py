@@ -10,6 +10,7 @@ import pytest
 
 SECRET = 'FAKE_OTHER_HOST_TOKEN_7319'
 SECOND_SECRET = 'FAKE_PRIMARY_TOKEN_8420'
+SYNTHETIC_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature'
 
 
 def diagnostics():
@@ -84,10 +85,24 @@ def test_chinese_adjacent_credentials_are_discarded(credential, separator):
     assert diagnostics().sanitize_message(text, ()) is None
 
 
+@pytest.mark.parametrize('prefix', ['错误', '错误 ', 'failed '])
+@pytest.mark.parametrize('separator', ['', '\u200b', '\x00', '\x1b[31m'])
+@pytest.mark.parametrize('entrypoint', ['sanitize', 'core_after_sanitize'])
+def test_jwt_boundaries_reject_credentials(prefix, separator, entrypoint):
+    """中文紧邻或控制拆分的合成 JWT 不得经诊断链路展示。"""
+    text = prefix + SYNTHETIC_JWT[:2] + separator + SYNTHETIC_JWT[2:]
+    result = diagnostics().sanitize_message(text, ())
+    if entrypoint == 'core_after_sanitize':
+        module = import_module('modules.image_host.core')
+        result = module.ImageHostError(
+            'upload_failed', '', diagnostic=result).diagnostic
+    assert result is None
+
+
 @pytest.mark.parametrize('text', [
     '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
     'mytoken=ready', 'token_count=3', 'preauthorization pending',
-    'BearerCount=2',
+    'BearerCount=2', 'release.v1.ready', 'keyJoint.status.ready',
 ])
 def test_ordinary_words_are_not_credentials(text):
     """保留正常中文及仅包含认证标识片段的普通英文词语。"""

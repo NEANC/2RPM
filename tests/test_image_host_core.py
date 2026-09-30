@@ -20,6 +20,7 @@ URL = 'https://cdn.example.com/image?id=1&signature=a%2Fb%3D'
 SECRET = 'FAKE_DIRECT_SECRET_7319'
 ENV_SECRET = 'FAKE_ENV_SECRET_8420'
 ENV_NAME = 'IMAGE_HOST_TEST_TOKEN'
+SYNTHETIC_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature'
 
 
 def core():
@@ -716,10 +717,19 @@ def test_error_rejects_chinese_adjacent_credentials(credential, separator):
     assert error.diagnostic is None
 
 
+@pytest.mark.parametrize('prefix', ['错误', '错误 ', 'failed '])
+@pytest.mark.parametrize('separator', ['', '\u200b', '\x00', '\x1b[31m'])
+def test_error_rejects_jwt_boundaries(prefix, separator):
+    """核心直接拒绝中文紧邻及控制拆分的合成 JWT 诊断。"""
+    text = prefix + SYNTHETIC_JWT[:2] + separator + SYNTHETIC_JWT[2:]
+    error = core().ImageHostError('upload_failed', '', diagnostic=text)
+    assert error.diagnostic is None
+
+
 @pytest.mark.parametrize('diagnostic', [
     '请先绑定手机号', '不存在的储存驱动', 'tokenization=complete',
     'mytoken=ready', 'token_count=3', 'preauthorization pending',
-    'BearerCount=2',
+    'BearerCount=2', 'release.v1.ready', 'keyJoint.status.ready',
 ])
 def test_error_preserves_ordinary_words(diagnostic):
     """核心保留正常中文及仅包含认证标识片段的普通英文词语。"""
