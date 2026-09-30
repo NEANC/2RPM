@@ -215,8 +215,16 @@ COMMENTS = {
             ),
             'image_host': (
                 "\n图床按列表顺序尝试，成功后停止\n"
+                "- 支持的 provider: catbox / wmimg / beeimg / beeimg_cn / "
+                "superbed / boltp\n"
                 "- token 可引用环境变量，配置加载时保留字面量，不展开\n"
                 "- options 保留各图床专属参数，由图床实现解释\n"
+                "- beeimg_cn 与 boltp 必须提供 options.storage_id，"
+                "缺失时该图床项失败并继续下一项\n"
+                "- storage_id 取值: beeimg_cn 通常为 1；boltp 免费用户为 2、"
+                "付费用户为 3，以站点实际可用存储为准\n"
+                "- 示例: {provider: boltp, token: '${BOLTP_TOKEN}', "
+                "options: {storage_id: 2, permission: 1}}\n"
                 "- 示例: {provider: wmimg, token: '${WMIMG_TOKEN}', "
                 "options: {strategy_id: 1, album_id: 12}}\n"
             ),
