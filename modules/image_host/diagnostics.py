@@ -36,6 +36,27 @@ _CSI = re.compile(r'(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]')
 _OTHER_ESCAPE = re.compile(r'\x1b(?![\[\]PX^_])[ -/]*[@-~]')
 _UNFINISHED_ESCAPE = re.compile(r'[\x1b\x90\x98\x9b\x9d\x9e\x9f]')
 _CONTROL_CATEGORIES = frozenset({'Cc', 'Cf', 'Cs'})
+# 检测视图仅留下这些可删除控制空白；只在凭证内部跨越它们。
+_CONTROL_GAP = r'[\x09-\x0d\x1c-\x1f\x85]*'
+_SPLIT_CREDENTIAL = re.compile(
+    r'(?a:\b)(?:'
+    + '|'.join(_CONTROL_GAP.join(map(re.escape, name)) for name in (
+        'authorization', 'proxy-authorization', 'bearer',
+    ))
+    + r')(?a:\b)|(?a:\b)(?:'
+    + '|'.join(_CONTROL_GAP.join(map(re.escape, name)) for name in (
+        'token', 'access_token', 'refresh_token', 'apikey', 'api_key',
+        'api-key', 'secret', 'password', 'passwd', 'cookie', 'set-cookie',
+    ))
+    + r')(?a:\b)' + _CONTROL_GAP + r'[\"\']?\s*[:=]'
+    + r'|(?a:\b)e' + _CONTROL_GAP + 'y' + _CONTROL_GAP + 'J'
+    + '(?:' + _CONTROL_GAP + r'[A-Za-z0-9_-])*'
+    + _CONTROL_GAP + r'\.'
+    + '(?:' + _CONTROL_GAP + r'[A-Za-z0-9_-])+'
+    + _CONTROL_GAP + r'\.'
+    + '(?:' + _CONTROL_GAP + r'[A-Za-z0-9_-])+',
+    re.IGNORECASE,
+)
 
 
 def _secret_snapshot(secrets):
@@ -81,8 +102,11 @@ def sanitize_message(message, secrets) -> str | None:
     if _UNSAFE_CONTENT.search(_URL.sub(_REDACTED, message)) is not None:
         return None
     detection_view = _clean_controls(message, preserve_whitespace=True)
-    if (detection_view is None or _UNSAFE_CONTENT.search(
-            _URL.sub(_REDACTED, detection_view)) is not None):
+    if detection_view is None:
+        return None
+    detection_view = _URL.sub(_REDACTED, detection_view)
+    if (_UNSAFE_CONTENT.search(detection_view) is not None
+            or _SPLIT_CREDENTIAL.search(detection_view) is not None):
         return None
     known_secrets = _secret_snapshot(secrets)
     cleaned = _clean_controls(message)
