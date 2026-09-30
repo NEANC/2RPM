@@ -139,6 +139,7 @@ def test_registration_and_four_argument_signature():
         'catbox': providers.upload_catbox,
         'wmimg': providers.upload_wmimg,
         'beeimg': adapter,
+        'beeimg_cn': providers.upload_beeimg_cn,
         'superbed': providers.upload_superbed,
     }
     assert list(signature(adapter).parameters) == [
@@ -482,9 +483,9 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
 
 
 def test_distinct_unverified_site_remains_unregistered(client):
-    """beeimg_cn 不注册假支持，也不向另一域名发送请求。"""
+    """未核验且不实现的站点不注册假支持，也不向其他域名发送请求。"""
     result = registry().upload_with_fallback(
-        IMAGE, FILENAME, [{'provider': 'beeimg_cn', 'token': SECRET}])
+        IMAGE, FILENAME, [{'provider': 'smms', 'token': SECRET}])
     assert not result.success
     assert result.failures[0].code == 'unknown_provider'
     assert client.created == 0
