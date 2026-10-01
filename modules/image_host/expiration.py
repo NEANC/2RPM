@@ -63,7 +63,8 @@ def parse_expiration(value) -> int:
 
 def compute_expiration(seconds, started_at, retention_seconds,
                        previous_deadline, now,
-                       formatter=None) -> ExpirationDecision:
+                       formatter=None, *,
+                       previous_shortened=None) -> ExpirationDecision:
     """以调用方绝对起点计算期限，不读当前时钟或重新启动倒计时。
 
     seconds 为 None 时直接省略期限，否则须为解析跨度内的正整数。
@@ -71,12 +72,22 @@ def compute_expiration(seconds, started_at, retention_seconds,
     时间戳接受非布尔、有限且非负的 int 或 float；最终期限还须能被
     本机 datetime.fromtimestamp 表示。策略及历史期限取最早值，
     向下取整后须严格晚于 now；仅丢弃亚秒不计为策略缩短。
+    previous_shortened 为 None 时保留旧历史推断，不能消除历史取整
+    歧义；显式值仅接受 bool，True 须同时提供 previous_deadline。
+    受控重传须同时传入上一决策的 deadline 和 shortened；显式标志
+    只保留历史缩短事实，不改变实际期限，也不覆盖当前组策略缩短
+    或早于请求期限向下取整值的历史限制。同秒亚秒历史缩短由上一
+    决策的 True 保留，不重新猜测。seconds 为 None 时仍直接省略。
     formatter 只影响显示，接收取整后的绝对期限且须返回字符串。
     默认使用本机本地时间，不保证服务端采用该显示值或据此删除。
     """
     if seconds is None:
         return ExpirationDecision(None, None, False)
     if type(seconds) is not int or not 0 < seconds <= _MAX_SECONDS:
+        raise ImageHostError('config_error', '', stage='expiration')
+    if previous_shortened is not None and type(previous_shortened) is not bool:
+        raise ImageHostError('config_error', '', stage='expiration')
+    if previous_shortened is True and previous_deadline is None:
         raise ImageHostError('config_error', '', stage='expiration')
     if (retention_seconds is not None
             and (type(retention_seconds) is not int
@@ -96,9 +107,16 @@ def compute_expiration(seconds, started_at, retention_seconds,
             if retention_seconds:
                 effective_seconds = min(seconds, retention_seconds)
             deadline = started_at + effective_seconds
+            shortened = deadline < requested_deadline
             if previous_deadline is not None:
                 deadline = min(deadline, previous_deadline)
-            shortened = deadline < requested_deadline
+                if previous_shortened is None:
+                    shortened = deadline < requested_deadline
+                else:
+                    shortened = (
+                        shortened or previous_shortened
+                        or previous_deadline < math.floor(requested_deadline)
+                    )
             deadline = float(math.floor(deadline))
             if deadline > now:
                 local_deadline = datetime.fromtimestamp(deadline)

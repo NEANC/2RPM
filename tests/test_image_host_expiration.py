@@ -102,9 +102,14 @@ def test_public_function_signatures():
     parameters = signature(module.compute_expiration).parameters
     assert list(parameters) == [
         'seconds', 'started_at', 'retention_seconds', 'previous_deadline',
-        'now', 'formatter',
+        'now', 'formatter', 'previous_shortened',
     ]
     assert parameters['formatter'].default is None
+    assert parameters['previous_shortened'].default is None
+    assert (parameters['previous_shortened'].kind
+            is parameters['previous_shortened'].KEYWORD_ONLY)
+    for name in list(parameters)[:6]:
+        assert parameters[name].kind is parameters[name].POSITIONAL_OR_KEYWORD
     assert (signature(module.compute_expiration).return_annotation
             is module.ExpirationDecision)
 
@@ -343,3 +348,155 @@ def test_formatter_control_signals_propagate_same_object(signal_type):
         expiration().compute_expiration(
             10, START, None, None, START, formatter=formatter)
     assert caught.value is signal
+
+
+def test_explicit_history_avoids_rounding_only_shortening():
+    """亚秒起点的连续重传携带历史事实，不把取整损失视为缩短。"""
+    compute = expiration().compute_expiration
+    start = START + 0.75
+    first = compute(10, start, None, None, start, formatter=str)
+    second = compute(
+        10, start, None, first.deadline, start, formatter=str,
+        previous_shortened=first.shortened)
+    third = compute(
+        10, start, None, second.deadline, start, formatter=str,
+        previous_shortened=second.shortened)
+    assert first == expiration().ExpirationDecision(
+        float(START + 10), str(float(START + 10)), False)
+    assert second == first
+    assert third == first
+
+
+def test_none_history_flag_preserves_legacy_inference():
+    """旧调用和显式 None 均保留无法消除历史取整歧义的推断。"""
+    compute = expiration().compute_expiration
+    start = START + 0.75
+    first = compute(10, start, None, None, start, str)
+    legacy = compute(10, start, None, first.deadline, start, str)
+    explicit_none = compute(
+        10, start, None, first.deadline, start, str,
+        previous_shortened=None)
+    assert first.shortened is False
+    assert legacy.shortened is True
+    assert explicit_none == legacy
+    assert legacy.deadline == first.deadline
+    assert legacy.expired_at == first.expired_at
+
+
+@pytest.mark.parametrize('retention', [None, 0, 10, 20])
+def test_same_second_real_shortening_survives_relaxed_policy(retention):
+    """同秒亚秒历史限制即使取整后相同，也通过 True 保留事实。"""
+    compute = expiration().compute_expiration
+    start = START + 0.75
+    unrestricted = compute(10, start, None, None, start, str)
+    first = compute(10, start, None, start + 9.5, start, str)
+    assert start + 9.5 < start + 10
+    assert first.deadline == unrestricted.deadline == START + 10
+    assert first.shortened is True
+    assert unrestricted.shortened is False
+    second = compute(
+        10, start, retention, first.deadline, start, str,
+        previous_shortened=first.shortened)
+    third = compute(
+        10, start, retention, second.deadline, start, str,
+        previous_shortened=second.shortened)
+    assert second == first
+    assert third == first
+
+
+@pytest.mark.parametrize(
+    'retention, previous_offset, flag, expected_offset, shortened', [
+        (None, None, False, 10, False),
+        (None, 10, False, 10, False),
+        (None, 10.25, False, 10, False),
+        (None, 10.75, False, 10, False),
+        (None, 20, False, 10, False),
+        (None, 9, False, 9, True),
+        (None, 9.75, False, 9, True),
+        (9, None, False, 9, True),
+        (9, 10, False, 9, True),
+        (9, 20, False, 9, True),
+        (9, 8, False, 8, True),
+        (20, 9, False, 9, True),
+        (None, 10, True, 10, True),
+        (None, 20, True, 10, True),
+        (0, 10, True, 10, True),
+        (20, 10, True, 10, True),
+        (9, 10, True, 9, True),
+    ])
+def test_explicit_history_preserves_limits_and_policy_facts(
+        retention, previous_offset, flag, expected_offset, shortened):
+    """标志不改变实际期限，False 不掩盖组策略和可确定历史限制。"""
+    compute = expiration().compute_expiration
+    start = START + 0.75
+    previous = None if previous_offset is None else START + previous_offset
+    legacy = compute(10, start, retention, previous, start, str)
+    result = compute(
+        10, start, retention, previous, start, str,
+        previous_shortened=flag)
+    assert result.deadline == legacy.deadline == START + expected_offset
+    assert result.expired_at == legacy.expired_at
+    assert result.shortened is shortened
+
+
+@pytest.mark.parametrize('retention', [None, 0, 10, 20])
+def test_group_shortening_survives_policy_relaxation(retention):
+    """首次组策略缩短在后续放宽或取消上限时仍被继承。"""
+    compute = expiration().compute_expiration
+    start = START + 0.75
+    first = compute(
+        10, start, 9, None, start, str, previous_shortened=False)
+    assert first.shortened is True
+    result = compute(
+        10, start, retention, first.deadline, start, str,
+        previous_shortened=first.shortened)
+    assert result == first
+
+
+@pytest.mark.parametrize('flag', [
+    0, 1, -1, 0.0, 1.0, float('nan'), float('inf'),
+    '', 'False', SECRET, [], {}, object(),
+], ids=lambda value: type(value).__name__)
+def test_invalid_history_flag_fails_safely(flag):
+    """历史标志只接受真正布尔或 None，错误不包含输入或异常链。"""
+    error_type = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_type) as caught:
+        expiration().compute_expiration(
+            10, START, None, START + 10, START, str,
+            previous_shortened=flag)
+    assert_safe_error(caught.value)
+
+
+def test_true_history_flag_requires_previous_deadline():
+    """有限期限中 True 缺少历史期限属于固定参数错误。"""
+    error_type = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_type) as caught:
+        expiration().compute_expiration(
+            10, START, None, None, START, str, previous_shortened=True)
+    assert_safe_error(caught.value)
+
+
+@pytest.mark.parametrize('flag', [None, False, True, 0, SECRET, object()])
+def test_omitted_seconds_skips_history_and_other_validation(flag):
+    """省略期限直接返回，不校验历史标志或计算其他无效参数。"""
+    def unexpected(value):
+        """省略期限时禁止调用显示格式化。"""
+        pytest.fail('省略期限不应格式化')
+
+    module = expiration()
+    result = module.compute_expiration(
+        None, object(), SECRET, None, object(), unexpected,
+        previous_shortened=flag)
+    assert result == module.ExpirationDecision(None, None, False)
+
+
+def test_history_flag_is_keyword_only():
+    """第七个位置参数被拒绝，原有六个位置参数仍可调用。"""
+    compute = expiration().compute_expiration
+    expected = compute(10, START, None, None, START, formatter=str)
+    assert compute(10, START, None, None, START, str) == expected
+    assert compute(
+        10, START, None, None, START, str,
+        previous_shortened=False) == expected
+    with pytest.raises(TypeError):
+        compute(10, START, None, None, START, str, False)
