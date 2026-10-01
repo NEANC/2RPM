@@ -6,7 +6,10 @@
 配置写入临时目录，绝不执行真实截图、ADB、窗口、网络或真实上传。
 """
 
+import json
+import netrc
 import os
+import socket
 from argparse import Namespace
 from importlib import import_module
 from importlib.util import find_spec
@@ -15,6 +18,7 @@ from unittest.mock import Mock
 
 from PIL import Image
 import pytest
+import requests
 
 from modules.screenshot.models import CaptureResult
 
@@ -22,6 +26,24 @@ from modules.screenshot.models import CaptureResult
 URL = 'https://cdn.example.com/image.png'
 SECRET = 'FAKE_UPLOAD_SECRET_6120'
 ENV_NAME = 'SCREENSHOT_UPLOAD_TEST_TOKEN'
+FINAL_FAILURE = '上传失败：所有图床尝试均未成功'
+
+
+@pytest.fixture(autouse=True)
+def isolate_cli_uploads(monkeypatch, tmp_path):
+    """所有上传测试仅使用临时缓存，禁止真实网络及本机凭证读取。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+
+    def forbidden(*args, **kwargs):
+        """任何未替换的网络或 netrc 边界均立即使测试失败。"""
+        pytest.fail('禁止真实网络或 netrc 访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(requests.utils, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
 
 
 def cli_module():
@@ -580,3 +602,118 @@ def test_existing_target_skips_upload_and_returns_one(
     assert target.read_bytes() == b'user-data'
     uploader.assert_not_called()
     assert '目标文件已存在' in capsys.readouterr().out
+
+
+class CliRaw(BytesIO):
+    """为真实 Requests 响应提供可关闭的合成正文流。"""
+
+    def release_conn(self):
+        """释放合成连接，不访问任何外部资源。"""
+        self.close()
+
+
+@pytest.fixture
+def cli_http(monkeypatch, tmp_path):
+    """保留真实上传内部组件，仅观察生命周期并替换 HTTP 边界。"""
+    context_type = import_module('modules.image_host.context').UploadContext
+    initialize = context_type.__init__
+    close = context_type.close
+    state = {'requests': [], 'replies': [], 'responses': [],
+             'contexts': [], 'closed': [], 'saved_before_request': []}
+
+    def observed_init(self, **kwargs):
+        """调用真实构造方法并记录每次 CLI 操作的诊断上下文。"""
+        assert kwargs == {'diagnostics': True}
+        initialize(self, **kwargs)
+        state['contexts'].append(self)
+
+    def observed_close(self):
+        """执行真实状态释放，不以观察器替代关闭流程。"""
+        close(self)
+        state['closed'].append(self)
+
+    def send(adapter, request, **kwargs):
+        """返回队列中的合成响应，保留最终 PreparedRequest 供断言。"""
+        assert isinstance(request, requests.PreparedRequest)
+        assert kwargs['stream'] is True
+        assert kwargs['verify'] is True
+        saved = list((tmp_path / 'program' / 'screenshot').glob('*.png'))
+        state['saved_before_request'].append(saved)
+        state['requests'].append(request)
+        assert state['replies'], '发生未批准的额外 HTTP 请求'
+        reply = state['replies'].pop(0)
+        if callable(reply):
+            reply = reply()
+        if isinstance(reply, BaseException):
+            raise reply
+        status, payload = reply
+        response = requests.Response()
+        response.status_code = status
+        response.url = request.url
+        response.request = request
+        body = (payload if isinstance(payload, bytes)
+                else json.dumps(payload).encode('utf-8'))
+        response.raw = CliRaw(body)
+        state['responses'].append(response)
+        return response
+
+    monkeypatch.setattr(context_type, '__init__', observed_init)
+    monkeypatch.setattr(context_type, 'close', observed_close)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    yield state
+    assert all(response.raw.closed for response in state['responses'])
+    assert state['closed'] == state['contexts']
+    assert all(context._closed for context in state['contexts'])
+    assert not state['replies']
+
+
+def group_reply(ids=(13, 14), retention=None):
+    """提供合成用户组存储列表及可选期限，不包含真实账号信息。"""
+    return 200, {'status': 'success', 'data': {
+        'group': {'options': {'file_expire_seconds': retention}},
+        'storages': [{'id': value} for value in ids],
+    }}
+
+
+def profile_reply(default=14):
+    """提供合成默认存储编号。"""
+    return 200, {'status': 'success', 'data': {
+        'options': {'default_storage_id': default},
+    }}
+
+
+def upload_reply(url=URL):
+    """提供完整业务成功链接，响应提示不参与成功输出。"""
+    return 200, {'status': 'success', 'message': SECRET,
+                 'data': {'public_url': url}}
+
+
+def test_real_business_rejection_prints_history_then_final_conclusion(
+        cli_http, monkeypatch, tmp_path, capsys):
+    """真实业务拒绝先展示安全历史，再恰好输出一次固定失败结论。"""
+    cli_http['replies'] = [
+        group_reply(), profile_reply(),
+        (200, {'status': 'error', 'message': '请先绑定手机号'}),
+    ]
+    config = write_config(tmp_path, config_with_hosts(
+        "{provider: boltp, token: '%s'}" % SECRET))
+
+    code, png, program_dir = run_cli(monkeypatch, tmp_path, config=config)
+
+    assert code == 1
+    saved, = saved_pngs(program_dir)
+    assert saved.read_bytes() == png
+    assert all(paths == [saved]
+               for paths in cli_http['saved_before_request'])
+    assert [request.method for request in cli_http['requests']] == [
+        'GET', 'GET', 'POST']
+    captured = capsys.readouterr()
+    history = ('上传尝试：boltp：图床拒绝上传（阶段 upload，HTTP 200）'
+               '；诊断：请先绑定手机号')
+    assert captured.out.count(history) == 1
+    assert captured.out.count('上传尝试：') == 1
+    assert captured.out.count(FINAL_FAILURE) == 1
+    assert captured.out.index(history) < captured.out.index(FINAL_FAILURE)
+    assert captured.out.rstrip().endswith(FINAL_FAILURE)
+    assert '上传成功：' not in captured.out
+    assert SECRET not in captured.out + captured.err
