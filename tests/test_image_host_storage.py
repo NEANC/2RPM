@@ -5,7 +5,10 @@
 Boltp 的精确存储错误是批准的合成兼容策略，并非官方或实测结论。
 """
 
+from collections import UserDict
 from copy import deepcopy
+from dataclasses import fields
+from dataclasses import FrozenInstanceError
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
@@ -677,3 +680,424 @@ def test_optional_storage_does_not_relax_other_options(client, caplog, options):
     assert caught.value.code == 'invalid_options'
     assert not client.sessions
     assert not caplog.records
+
+
+def storage_module():
+    """将尚未实现的存储入口表现为明确的功能缺失断言。"""
+    name = 'modules.image_host.storage'
+    assert find_spec(name) is not None, '缺少存储元数据查询与纯选择实现'
+    return import_module(name)
+
+
+def storage_payload(stage):
+    """构造包含无关账号字段的合成成功响应，不使用真实凭证。"""
+    if stage == 'group':
+        data = {
+            'group': {'options': {'file_expire_seconds': 0},
+                      'is_guest': True, 'name': SECRET},
+            'storages': [{'id': 14, 'intro': SECRET}, {'id': 13}, {'id': 14}],
+        }
+    else:
+        data = {'options': {'default_storage_id': 13},
+                'name': SECRET, 'payments': [SECRET], 'url': SIGNED_URL}
+    return {'status': 'success', 'data': data}
+
+
+@pytest.fixture
+def storage_http(real_http, monkeypatch):
+    """只替换适配器返回队列，保留真实传输、认证隔离和释放观察。"""
+    real_http.update(replies=[], raws=[], responses=[])
+
+    def send(adapter, prepared, **kwargs):
+        """按调用顺序创建独立内存响应，额外请求立即失败。"""
+        index = len(real_http['calls'])
+        real_http['calls'].append((prepared, kwargs, adapter.max_retries.total))
+        assert index < len(real_http['replies']), '不允许额外重试或匿名降级'
+        reply = real_http['replies'][index]
+        if 'request_error' in reply:
+            raise reply['request_error']
+        response = requests.Response()
+        response.status_code = reply.get('status', 200)
+        response.url = prepared.url
+        response.request = prepared
+        body = reply.get('body')
+        if body is None:
+            body = json.dumps(reply['payload'], ensure_ascii=False).encode('utf-8')
+        raw = RecordingRaw(body, real_http['events'], reply.get('read_error'))
+        response.raw = raw
+        real_http['raws'].append(raw)
+        real_http['responses'].append(response)
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    return real_http
+
+
+def queue_storage_success(state, token=SECRET):
+    """安排组信息及可选账号资料，返回可局部修改的合成载荷。"""
+    group = storage_payload('group')
+    profile = storage_payload('profile')
+    state['replies'].append({'payload': group})
+    if token:
+        state['replies'].append({'payload': profile})
+    return group, profile
+
+
+def assert_storage_requests(state, provider, token, stages):
+    """验证实际请求及释放次数，确认没有隐式凭证读取或重试。"""
+    assert len(state['calls']) == len(stages)
+    for (prepared, kwargs, retries), stage in zip(state['calls'], stages):
+        assert prepared.method == 'GET'
+        assert prepared.url == BASES[provider] + PATHS[stage]
+        assert prepared.body is None
+        assert prepared.headers.get('Authorization') == (
+            'Bearer ' + token if token else None)
+        assert prepared.headers['Accept'] == 'application/json'
+        assert kwargs['stream'] is True
+        assert kwargs['verify'] is True
+        assert kwargs['timeout'] == (5, 15)
+        assert retries == 0
+    assert state['netrc'] == []
+    assert state['events'].count('session_close') == len(stages)
+    assert state['events'].count('response_close') == len(state['responses'])
+    assert all(raw.releases == 1 for raw in state['raws'])
+    lifecycle = [event for event in state['events']
+                 if event in ('response_close', 'session_close')]
+    assert lifecycle == ['response_close', 'session_close'] * len(stages)
+
+
+def test_storage_public_contract(client):
+    """锁定冻结数据结构、字段顺序、固定签名及实际返回类型。"""
+    module = storage_module()
+    metadata = module.StorageMetadata((13, 14), 14, 0, 1000)
+    selection = module.StorageSelection(13, False)
+    assert [field.name for field in fields(metadata)] == [
+        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at']
+    assert [field.name for field in fields(selection)] == [
+        'storage_id', 'replaced_manual']
+    assert [field.type for field in fields(metadata)] == [
+        tuple[int, ...], int | None, int | None, float]
+    assert [field.type for field in fields(selection)] == [int, bool]
+    for instance in (metadata, selection):
+        for field in fields(instance):
+            with pytest.raises(FrozenInstanceError):
+                setattr(instance, field.name, None)
+    fetch = signature(module.fetch_storage_metadata)
+    assert list(fetch.parameters) == ['provider', 'token', 'now']
+    assert fetch.parameters['now'].kind is fetch.parameters['now'].KEYWORD_ONLY
+    assert fetch.parameters['now'].default is fetch.parameters['now'].empty
+    assert fetch.return_annotation is module.StorageMetadata
+    choose = signature(module.select_storage)
+    assert list(choose.parameters) == ['metadata', 'manual_present', 'manual_value']
+    assert choose.return_annotation is module.StorageSelection
+    assert module.select_storage(metadata, True, 13) == selection
+    assert not client.sessions
+
+
+@pytest.mark.parametrize('ids, default', [
+    ((13, 14), 14), ((13, 14), None), ((13, 14), 99), ((14, 13), None),
+])
+@pytest.mark.parametrize('present', [False, True])
+@pytest.mark.parametrize('manual', [13, 14, 99, None, True, False, 0, -1,
+                                    '13', '', 13.0, [], [13], {'bad': 'value'}])
+def test_storage_selection_table(client, caplog, ids, default, present, manual):
+    """纯选择优先合法手填，否则按默认或首项回退且不修改输入。"""
+    module = storage_module()
+    metadata = module.StorageMetadata(ids, default, 0, 1000)
+    original = deepcopy((metadata, manual))
+    valid_manual = type(manual) is int and manual > 0 and manual in ids
+    expected = manual if present and valid_manual else (
+        default if default in ids else ids[0])
+    result = module.select_storage(metadata, present, manual)
+    assert type(result) is module.StorageSelection
+    assert result == module.StorageSelection(
+        expected, present and not valid_manual)
+    assert (metadata, manual) == original
+    assert not client.sessions
+    assert not client.calls
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('present', [False, True])
+def test_storage_selection_empty(client, present):
+    """空存储无论是否手填都报固定错误，绝不猜测存储编号。"""
+    module = storage_module()
+    with pytest.raises(ImageHostError) as caught:
+        module.select_storage(module.StorageMetadata((), 13, None, 0), present, 13)
+    assert_safe(caught.value, 'storage_unavailable', 'storage')
+    assert not client.calls
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('token', ['', SECRET, '  ' + SECRET + '  ',
+                                   '${NOT_EXPANDED}'])
+def test_storage_fetch_real_transport(storage_http, caplog, provider, token):
+    """真实查询保持原凭证、请求顺序、保序去重和最小元数据快照。"""
+    module = storage_module()
+    payloads = queue_storage_success(storage_http, token)
+    original = deepcopy(payloads)
+    result = module.fetch_storage_metadata(provider, token, now=1000)
+    assert type(result) is module.StorageMetadata
+    assert result == module.StorageMetadata((14, 13), 13 if token else None, 0, 1000)
+    assert type(result.fetched_at) is float
+    assert payloads == original
+    assert set(vars(result)) == {
+        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at'}
+    assert SECRET not in repr(result) + repr(vars(result))
+    assert SIGNED_URL not in repr(result) + repr(vars(result))
+    assert_storage_requests(storage_http, provider, token,
+                            ['group', 'profile'] if token else ['group'])
+    assert all(response.next is None for response in storage_http['responses'])
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('now', [
+    None, True, False, -1, -0.1, '1000', [], {},
+    float('nan'), float('inf'), float('-inf'),
+    pytest.param(10 ** 10000, id='overflowing-integer'),
+])
+def test_storage_invalid_now_precedes_network(storage_http, now):
+    """非法时刻及巨大整数转换失败在请求前安全拒绝。"""
+    with pytest.raises(ImageHostError) as caught:
+        storage_module().fetch_storage_metadata('boltp', SECRET, now=now)
+    assert_safe(caught.value, 'config_error', 'storage')
+    assert not storage_http['calls']
+    assert not storage_http['netrc']
+
+
+@pytest.mark.parametrize('now', [0, -0.0, 0.5, 1000, 10 ** 100, 1e308])
+def test_storage_valid_now_has_no_business_upper_limit(storage_http, now):
+    """直接记录调用方提供的有限非负时刻，不读取当前时钟。"""
+    queue_storage_success(storage_http, '')
+    result = storage_module().fetch_storage_metadata('boltp', '', now=now)
+    assert result.fetched_at == float(now)
+    assert type(result.fetched_at) is float
+
+
+@pytest.mark.parametrize('stage, path', [
+    ('group', ('data',)), ('group', ('data', 'group')),
+    ('group', ('data', 'group', 'options')), ('group', ('data', 'storages')),
+    ('profile', ('data',)), ('profile', ('data', 'options')),
+])
+@pytest.mark.parametrize('value', [None, False, 7, 'bad', [], {}])
+@pytest.mark.parametrize('missing', [False, True])
+def test_storage_required_shapes(storage_http, stage, path, value, missing):
+    """必要映射或列表缺失与错误类型不得被当成未设置。"""
+    module = storage_module()
+    group, profile = queue_storage_success(storage_http)
+    payload = group if stage == 'group' else profile
+    parent = payload
+    for key in path[:-1]:
+        parent = parent[key]
+    if missing:
+        del parent[path[-1]]
+    else:
+        parent[path[-1]] = value
+    is_list = path[-1] == 'storages'
+    valid_empty_options = not missing and value == {} and path[-1] == 'options'
+    if valid_empty_options:
+        result = module.fetch_storage_metadata('boltp', SECRET, now=1000)
+        assert (result.file_expire_seconds if stage == 'group'
+                else result.default_storage_id) is None
+        expected_stages = ['group', 'profile']
+    else:
+        with pytest.raises(ImageHostError) as caught:
+            module.fetch_storage_metadata('boltp', SECRET, now=1000)
+        empty_list = not missing and is_list and isinstance(value, list)
+        assert_safe(caught.value,
+                    'storage_unavailable' if empty_list else 'storage_lookup_failed',
+                    'storage' if empty_list else stage)
+        expected_stages = ['group'] if stage == 'group' else ['group', 'profile']
+    assert_storage_requests(storage_http, 'boltp', SECRET, expected_stages)
+
+
+@pytest.mark.parametrize('entry', [
+    None, True, 13, '13', [], {}, {'id': None}, {'id': True}, {'id': False},
+    {'id': 0}, {'id': -1}, {'id': '13'}, {'id': 13.0}, {'id': []}, {'id': {}},
+])
+def test_storage_rejects_any_bad_entry(storage_http, entry):
+    """有效条目夹杂任何非法条目都使整份查询失败，不跳过坏项。"""
+    group, _ = queue_storage_success(storage_http)
+    group['data']['storages'] = [{'id': 13}, entry, {'id': 14}]
+    with pytest.raises(ImageHostError) as caught:
+        storage_module().fetch_storage_metadata('beeimg_cn', SECRET, now=1000)
+    assert_safe(caught.value, 'storage_lookup_failed', 'group')
+    assert_storage_requests(storage_http, 'beeimg_cn', SECRET, ['group'])
+
+
+@pytest.mark.parametrize('stage, key', [
+    ('group', 'file_expire_seconds'), ('profile', 'default_storage_id'),
+])
+@pytest.mark.parametrize('value', [None, 0, 1, 99, 10 ** 100, True, False, -1,
+                                   '13', 1.0, [], {}])
+def test_storage_optional_numeric_fields(storage_http, stage, key, value):
+    """可选期限与默认编号严格区分 null、零、正整数及非法类型。"""
+    group, profile = queue_storage_success(storage_http)
+    options = (group['data']['group']['options'] if stage == 'group'
+               else profile['data']['options'])
+    options[key] = value
+    valid = value is None or (type(value) is int and (
+        value >= 0 if stage == 'group' else value > 0))
+    if valid:
+        result = storage_module().fetch_storage_metadata('boltp', SECRET, now=1000)
+        assert getattr(result, key) == value
+        assert not hasattr(result, 'expired_at')
+        expected_stages = ['group', 'profile']
+    else:
+        with pytest.raises(ImageHostError) as caught:
+            storage_module().fetch_storage_metadata('boltp', SECRET, now=1000)
+        assert_safe(caught.value, 'storage_lookup_failed', stage)
+        expected_stages = ['group'] if stage == 'group' else ['group', 'profile']
+    assert_storage_requests(storage_http, 'boltp', SECRET, expected_stages)
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+@pytest.mark.parametrize('failure, code, status', [
+    *[({'status': status, 'body': b'not read'}, 'http_failed', status)
+      for status in (401, 403, 423, 429, 500)],
+    ({'payload': {'status': 'error', 'message': STORAGE_MESSAGE}},
+     'business_rejected', 200),
+    ({'body': b'{bad-json'}, 'invalid_response', 200),
+    ({'read_error': requests.exceptions.ReadTimeout(SECRET), 'body': b''},
+     'transport_failed', 200),
+])
+def test_storage_preserves_transport_failures(
+        storage_http, caplog, provider, stage, failure, code, status):
+    """传输层分类、状态和实际阶段不被覆盖，不返回部分资料或降级。"""
+    queue_storage_success(storage_http)
+    index = 0 if stage == 'group' else 1
+    storage_http['replies'][index] = failure
+    with pytest.raises(ImageHostError) as caught:
+        storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
+    assert_safe(caught.value, code, stage, status)
+    assert_storage_requests(storage_http, provider, SECRET,
+                            ['group'] if stage == 'group' else ['group', 'profile'])
+    if code == 'http_failed':
+        assert storage_http['raws'][-1].reads == 0
+        assert storage_http['raws'][-1].closed
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_storage_control_signal_real_path(storage_http, stage, signal_type):
+    """真实传输读取中的控制信号原对象传播并释放全部已取得资源。"""
+    signal = signal_type(SECRET)
+    queue_storage_success(storage_http)
+    index = 0 if stage == 'group' else 1
+    storage_http['replies'][index] = {'body': b'', 'read_error': signal}
+    with pytest.raises(signal_type) as caught:
+        storage_module().fetch_storage_metadata('boltp', SECRET, now=1000)
+    assert caught.value is signal
+    assert storage_http['raws'][-1].closed
+    assert_storage_requests(storage_http, 'boltp', SECRET,
+                            ['group'] if stage == 'group' else ['group', 'profile'])
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+@pytest.mark.parametrize('enabled', [False, True])
+@pytest.mark.parametrize('message, expected', [
+    ('请先绑定手机号', '请先绑定手机号'),
+    (SECRET + ' ' + SIGNED_URL, '[已隐藏] [已隐藏]'),
+    ('Authorization: Bearer ' + SECRET, None),
+])
+def test_storage_diagnostic_passthrough(
+        storage_http, caplog, capsys, stage, enabled, message, expected):
+    """诊断仍由既有通道控制，错误展示及日志不包含账号或秘密。"""
+    queue_storage_success(storage_http)
+    index = 0 if stage == 'group' else 1
+    payload = storage_payload(stage)
+    payload.update(status='error', message=message)
+    storage_http['replies'][index] = {'payload': payload}
+    with diagnostic_scope([SECRET] if enabled else None):
+        with pytest.raises(ImageHostError) as caught:
+            storage_module().fetch_storage_metadata('boltp', SECRET, now=1000)
+    assert_safe(caught.value, 'business_rejected', stage, 200)
+    assert caught.value.diagnostic == (expected if enabled else None)
+    assert message not in str(caught.value) + repr(caught.value.args)
+    assert not caplog.records
+    assert capsys.readouterr() == ('', '')
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+@pytest.mark.parametrize('error_type', [RuntimeError, ValueError,
+                                       KeyboardInterrupt, SystemExit])
+def test_storage_unknown_boundary_errors(monkeypatch, client, caplog,
+                                         stage, error_type):
+    """普通未知异常在处理器外安全映射，控制信号保留对象身份。"""
+    module = storage_module()
+    error = error_type(SECRET + SIGNED_URL)
+    calls = []
+
+    def request(provider, current_stage, token):
+        """只对指定阶段注入异常，其他阶段返回合法数据。"""
+        calls.append(current_stage)
+        if current_stage == stage:
+            raise error
+        return storage_payload(current_stage)
+
+    monkeypatch.setattr(http(), 'request_json', request)
+    expected = ImageHostError if isinstance(error, Exception) else error_type
+    with pytest.raises(expected) as caught:
+        module.fetch_storage_metadata('boltp', SECRET, now=1000)
+    if expected is ImageHostError:
+        assert_safe(caught.value, 'storage_lookup_failed', stage)
+    else:
+        assert caught.value is error
+    assert calls == (['group'] if stage == 'group' else ['group', 'profile'])
+    assert not client.calls
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+def test_storage_safe_error_identity(monkeypatch, stage):
+    """既有安全错误的对象和诊断原样透传，不重新分类或包装。"""
+    module = storage_module()
+    error = ImageHostError('http_failed', '', stage=stage, http_status=403,
+                           diagnostic='请先绑定手机号')
+
+    def request(provider, current_stage, token):
+        """在指定阶段抛出已经过安全处理的错误对象。"""
+        if current_stage == stage:
+            raise error
+        return storage_payload(current_stage)
+
+    monkeypatch.setattr(http(), 'request_json', request)
+    with pytest.raises(ImageHostError) as caught:
+        module.fetch_storage_metadata('boltp', SECRET, now=1000)
+    assert caught.value is error
+    assert_safe(error, 'http_failed', stage, 403)
+    assert error.diagnostic == '请先绑定手机号'
+
+
+def test_storage_accepts_mapping_without_retaining_payload(monkeypatch):
+    """结构允许一般映射，返回对象不保留或修改完整响应引用。"""
+    module = storage_module()
+    group = UserDict({'data': UserDict({
+        'group': UserDict({'options': UserDict()}),
+        'storages': [UserDict({'id': 14}), UserDict({'id': 13}),
+                     UserDict({'id': 14})],
+    })})
+    profile = UserDict({'data': UserDict({'options': UserDict()})})
+    original = deepcopy((group, profile))
+
+    def request(provider, stage, token):
+        """返回一般映射以验证解析层不局限于普通字典。"""
+        return group if stage == 'group' else profile
+
+    monkeypatch.setattr(http(), 'request_json', request)
+    result = module.fetch_storage_metadata('boltp', SECRET, now=1000)
+    assert result == module.StorageMetadata((14, 13), None, None, 1000)
+    assert (group, profile) == original
+    group['data']['storages'].clear()
+    assert result.storage_ids == (14, 13)
+
+
+@pytest.mark.parametrize('provider', ['other', 'BOLTP', None, []])
+def test_storage_unsupported_provider(storage_http, provider):
+    """不支持的站点沿用既有固定路由错误且不创建网络请求。"""
+    with pytest.raises(ImageHostError) as caught:
+        storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
+    assert_safe(caught.value, 'invalid_provider', 'group')
+    assert not storage_http['calls']
