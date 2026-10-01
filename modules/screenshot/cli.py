@@ -15,6 +15,8 @@ import os
 from PIL import Image
 from ruamel.yaml import YAML
 
+from modules.image_host.context import UploadContext
+from modules.image_host.core import ImageHostError
 from modules.image_host.registry import upload_with_fallback
 
 from .models import CaptureError
@@ -532,8 +534,34 @@ def _upload_failure_message(result):
         str: 形如 "上传失败：图床：固定分类" 的安全提示。
     """
     details = '；'.join(
-        f'{item.provider}：{item.message}' for item in result.failures)
+        f'{item.provider}：{ImageHostError(item.code, "").message}'
+        for item in result.failures)
     return f'上传失败：{details}' if details else '上传失败：图床未返回有效链接'
+
+
+def _print_upload_warnings(warnings):
+    """按上传结果顺序输出去重后的固定告警。"""
+    seen = set()
+    for warning in warnings or ():
+        if warning in seen:
+            continue
+        seen.add(warning)
+        print(f'提示：{warning}')
+
+
+def _print_upload_failures(result):
+    """按尝试顺序输出固定失败分类及已有安全诊断。"""
+    for failure in result.failures:
+        message = ImageHostError(failure.code, '').message
+        details = f'上传尝试：{failure.provider}：{message}'
+        if failure.stage:
+            details += f'（阶段 {failure.stage}'
+            if failure.http_status is not None:
+                details += f'，HTTP {failure.http_status}'
+            details += '）'
+        if failure.diagnostic:
+            details += f'；诊断：{failure.diagnostic}'
+        print(details)
 
 
 def _upload_debug_image(args, png_bytes, saved_path, program_dir):
@@ -563,10 +591,18 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
             print(message)
             return CAPTURE_FAILURE_CODE
     filename = os.path.splitext(os.path.basename(saved_path))[0] + '.png'
-    uploaded = upload_with_fallback(png_bytes, filename, hosts)
+    with UploadContext(diagnostics=True) as context:
+        context.collect_secrets(hosts)
+        uploaded = upload_with_fallback(
+            png_bytes, filename, hosts, context=context)
+    _print_upload_warnings(uploaded.warnings)
     if not uploaded.success:
-        print(_upload_failure_message(uploaded))
+        _print_upload_failures(uploaded)
+        if not uploaded.failures:
+            print(_upload_failure_message(uploaded))
         return CAPTURE_FAILURE_CODE
+    if uploaded.failures:
+        _print_upload_failures(uploaded)
     markdown = markdown_image(os.path.splitext(filename)[0], uploaded.url)
     print(f'上传成功：图床 {uploaded.provider}')
     print(f'图片地址：{uploaded.url}')

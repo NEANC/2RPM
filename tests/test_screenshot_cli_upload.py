@@ -108,6 +108,49 @@ def test_upload_reuses_shared_fallback_entry():
         registry_module().upload_with_fallback
 
 
+def test_upload_creates_diagnostic_context_and_closes_it(
+        monkeypatch, tmp_path):
+    """上传链使用诊断上下文，并在调用结束后关闭上下文。"""
+    cli = cli_module()
+    config = write_config(tmp_path, config_with_hosts('{provider: local}'))
+    events = []
+
+    class Context:
+        """记录 CLI 创建、传递及关闭上下文的测试替身。"""
+
+        def __init__(self, *, diagnostics):
+            """记录诊断开关。"""
+            events.append(('init', diagnostics))
+
+        def __enter__(self):
+            """记录上下文进入。"""
+            events.append('enter')
+            return self
+
+        def collect_secrets(self, hosts):
+            """记录整条链秘密收集。"""
+            events.append(('collect', hosts is not None))
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            """记录上下文退出。"""
+            events.append(('exit', exc_type))
+            return False
+
+    def uploader(png_bytes, filename, hosts, *, context=None):
+        """记录外部上下文并返回成功结果。"""
+        from modules.image_host.core import UploadResult
+        events.append(('upload', context is not None))
+        return UploadResult(True, 'local', URL, ('local',), ())
+
+    monkeypatch.setattr(cli, 'UploadContext', Context)
+    monkeypatch.setattr(cli, 'upload_with_fallback', uploader)
+    run_cli(monkeypatch, tmp_path, config=config)
+
+    assert events == [
+        ('init', True), 'enter', ('collect', True),
+        ('upload', True), ('exit', None)]
+
+
 def test_cli_markdown_helper_is_pipeline_public_function():
     """CLI 使用的链接生成函数与 pipeline 公开接口是同一对象。"""
     module = import_module('modules.screenshot.pipeline')
