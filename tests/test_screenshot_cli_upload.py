@@ -169,8 +169,7 @@ def test_upload_creates_diagnostic_context_and_closes_it(
     run_cli(monkeypatch, tmp_path, config=config)
 
     assert events == [
-        ('init', True), 'enter', ('collect', True),
-        ('upload', True), ('exit', None)]
+        ('init', True), 'enter', ('upload', True), ('exit', None)]
 
 
 def test_cli_markdown_helper_is_pipeline_public_function():
@@ -717,3 +716,83 @@ def test_real_business_rejection_prints_history_then_final_conclusion(
     assert captured.out.rstrip().endswith(FINAL_FAILURE)
     assert '上传成功：' not in captured.out
     assert SECRET not in captured.out + captured.err
+
+
+def test_real_registry_alone_collects_once_and_freezes_chain_credentials(
+        cli_http, monkeypatch, tmp_path, capsys, caplog):
+    """真实编排独占一次凭证收集，冻结备用凭证并保护整链诊断。"""
+    cli = cli_module()
+    context_module = import_module('modules.image_host.context')
+    collect = context_module.UploadContext.collect_secrets
+    resolve = context_module.resolve_token
+    upload = registry_module().upload_with_fallback
+    backup = 'FAKE_CLI_BACKUP_9347'
+    changed = 'FAKE_CLI_CHANGED_2851'
+    backup_env = ENV_NAME + '_BACKUP'
+    monkeypatch.setenv(ENV_NAME, SECRET)
+    monkeypatch.setenv(backup_env, backup)
+    calls = {'collect': [], 'resolve': [], 'upload': []}
+    uploading = [False]
+    caplog.set_level('DEBUG')
+
+    def observed_collect(self, hosts):
+        """记录调用是否来自上传编排，继续执行真实秘密收集。"""
+        calls['collect'].append((self, uploading[0]))
+        return collect(self, hosts)
+
+    def observed_resolve(value):
+        """观察解析次数，不替代凭证解析及其错误处理。"""
+        calls['resolve'].append(value)
+        return resolve(value)
+
+    def observed_upload(png_bytes, filename, hosts, *, context=None):
+        """透传原始编排调用并界定其执行区间。"""
+        calls['upload'].append(context)
+        uploading[0] = True
+        try:
+            return upload(png_bytes, filename, hosts, context=context)
+        finally:
+            uploading[0] = False
+
+    def change_environment_after_collection():
+        """在首次请求边界变更合成环境，验证后续仍使用旧快照。"""
+        monkeypatch.setenv(ENV_NAME, changed)
+        monkeypatch.setenv(backup_env, changed)
+        return group_reply()
+
+    monkeypatch.setattr(context_module.UploadContext, 'collect_secrets',
+                        observed_collect)
+    monkeypatch.setattr(context_module, 'resolve_token', observed_resolve)
+    monkeypatch.setattr(cli, 'upload_with_fallback', observed_upload)
+    cli_http['replies'] = [
+        change_environment_after_collection, profile_reply(),
+        (200, {'status': 'error', 'message':
+               f'拒绝 {SECRET} {backup} ${{{backup_env}}}'}),
+        group_reply(), profile_reply(), upload_reply(),
+    ]
+    config = write_config(tmp_path, config_with_hosts(
+        "{provider: beeimg_cn, token: '${%s}'}" % ENV_NAME,
+        "{provider: boltp, token: '${%s}'}" % backup_env))
+
+    code, png, program_dir = run_cli(monkeypatch, tmp_path, config=config)
+
+    assert code == 0
+    context, = cli_http['contexts']
+    assert calls['upload'] == [context]
+    assert calls['resolve'] == [f'${{{ENV_NAME}}}', f'${{{backup_env}}}']
+    assert [request.method for request in cli_http['requests']] == [
+        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+    assert [request.headers.get('Authorization')
+            for request in cli_http['requests']] == (
+                ['Bearer ' + SECRET] * 3 + ['Bearer ' + backup] * 3)
+    saved, = saved_pngs(program_dir)
+    assert saved.read_bytes() == png
+    captured = capsys.readouterr()
+    text = captured.out + captured.err + caplog.text
+    for secret in (SECRET, backup, changed, ENV_NAME, backup_env):
+        assert secret not in text
+    assert captured.out.index('上传尝试：') < captured.out.index('上传成功：')
+    assert FINAL_FAILURE not in captured.out
+    assert URL in captured.out
+    assert context._closed
+    assert calls['collect'] == [(context, True)]
