@@ -592,7 +592,6 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
             return CAPTURE_FAILURE_CODE
     filename = os.path.splitext(os.path.basename(saved_path))[0] + '.png'
     with UploadContext(diagnostics=True) as context:
-        context.collect_secrets(hosts)
         uploaded = upload_with_fallback(
             png_bytes, filename, hosts, context=context)
     _print_upload_warnings(uploaded.warnings)
