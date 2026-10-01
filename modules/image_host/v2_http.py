@@ -29,6 +29,14 @@ class _ExplicitAuth(requests.auth.AuthBase):
         return request
 
 
+class _V2Session(requests.sessions.Session):
+    """两站专用会话，不跟随或预先准备任何重定向请求。"""
+
+    def resolve_redirects(self, response, request, **kwargs):
+        """返回空迭代器，避免 Requests 为准备下一请求预读正文。"""
+        return iter(())
+
+
 def is_storage_rejection(provider, status_code, payload) -> bool:
     """精确匹配存储拒绝；Boltp 仅采用批准的合成兼容策略。
 
@@ -84,7 +92,7 @@ def request_json(provider, stage, token, *, data=None, files=None) -> dict:
     payload = None
     code = 'transport_failed'
     try:
-        with requests.Session() as session:
+        with _V2Session() as session:
             session.auth = _ExplicitAuth()
             request = session.post if stage == 'upload' else session.get
             with request(_BASES[provider] + _PATHS[stage], **kwargs) as response:
