@@ -113,6 +113,170 @@ def test_constructor_contract_has_no_io(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_now_reads_current_clock_once_without_io(monkeypatch, tmp_path):
+    """公开读钟逐次返回浮点值，不初始化状态或访问外部资源。"""
+    module = context_module()
+    current = [0]
+    calls = []
+
+    def clock():
+        """记录每次注入时钟读取并返回可变时刻。"""
+        calls.append(current[0])
+        return current[0]
+
+    def forbidden(*args, **kwargs):
+        """禁止公开读钟触发缓存、查询、随机源或目录操作。"""
+        pytest.fail('公开读钟发生外部操作')
+
+    class RejectCache:
+        """拒绝任何缓存接口访问。"""
+
+        def __getattr__(self, name):
+            """将意外缓存访问直接呈现为测试失败。"""
+            forbidden()
+
+    cache = RejectCache()
+    ctx = module.UploadContext(cache=cache, clock=clock)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, 'fetch_storage_metadata', forbidden)
+        patch.setattr(module, 'resolve_token', forbidden)
+        patch.setattr(time, 'time', forbidden)
+        patch.setattr(os, 'urandom', forbidden)
+        patch.setattr(os, 'mkdir', forbidden)
+        patch.setattr(os, 'makedirs', forbidden)
+        patch.setattr(os, 'listdir', forbidden)
+        patch.setattr(os, 'scandir', forbidden)
+        patch.setattr(Path, 'mkdir', forbidden)
+        patch.setattr(Path, 'open', forbidden)
+        patch.setattr(Path, 'stat', forbidden)
+        patch.setattr(Path, 'iterdir', forbidden)
+        for index, value in enumerate((0, 1000, 1001.25), start=1):
+            current[0] = value
+            result = ctx.now()
+            assert type(result) is float
+            assert result == value
+            assert len(calls) == index
+            assert calls[-1] == value
+            assert ctx._images == ctx._entries == ctx._credentials == {}
+            assert ctx._corrected == set()
+            assert ctx._key is None
+            assert ctx._secrets == ()
+            assert ctx._warnings == []
+            assert ctx._collected is False
+            assert ctx._closed is False
+            assert ctx._cache is cache
+            assert ctx._clock is clock
+    assert list(tmp_path.iterdir()) == []
+    ctx.close()
+
+
+def test_now_shares_image_clock_without_changing_existing_state(rig):
+    """读钟与图片起点同源，且不改变已有元数据、纠错及期限状态。"""
+    _, ctx, _, calls, _, now = rig
+    started_at = ctx.now()
+    assert ctx._images == {}
+    image = ctx.start_image()
+    assert image.started_at == started_at == now[0]
+    ctx.prepare_storage(image, 0, PROVIDER, SECRET,
+                        manual_present=True, manual_value=99)
+    ctx.record_expiration(image, 0, PROVIDER, SECRET,
+                          ExpirationDecision(1100, '合成显示', True))
+    images = {key: dict(value) for key, value in ctx._images.items()}
+    entries = deepcopy(ctx._entries)
+    corrected = ctx._corrected.copy()
+    key = ctx._key
+    query_calls = list(calls)
+    now[0] = 1020.5
+    assert ctx.now() == now[0]
+    assert image.started_at == started_at
+    assert ctx._images == images
+    assert ctx._entries == entries
+    assert ctx._corrected == corrected
+    assert ctx._key is key
+    assert calls == query_calls
+    assert ctx._closed is False
+
+
+@pytest.mark.parametrize('value', [
+    None, False, True, -1, float('nan'), float('inf'), float('-inf'), SECRET,
+])
+def test_now_rejects_invalid_clock_values_safely(rig, value):
+    """非法时刻复用固定存储阶段错误，不泄漏假秘密或异常链。"""
+    module, _, cache, calls, _, _ = rig
+    ctx = module.UploadContext(cache=cache, clock=lambda: value)
+    with pytest.raises(ImageHostError) as caught:
+        ctx.now()
+    assert_safe(caught.value, 'config_error')
+    assert caught.value.stage == 'storage'
+    assert caught.value.diagnostic is None
+    assert caught.value.http_status is None
+    assert ctx._images == ctx._entries == {}
+    assert calls == []
+
+
+@pytest.mark.parametrize('error_type', [RuntimeError, OSError])
+def test_now_converts_clock_exceptions_without_leaking(rig, error_type):
+    """普通时钟异常在处理器外转换，不保留底层异常链。"""
+    module, _, cache, calls, _, _ = rig
+    original = error_type(SECRET + BACKUP)
+
+    def clock():
+        """抛出包含合成秘密的普通时钟故障。"""
+        raise original
+
+    ctx = module.UploadContext(cache=cache, clock=clock)
+    with pytest.raises(ImageHostError) as caught:
+        ctx.now()
+    assert_safe(caught.value, 'config_error')
+    assert caught.value.stage == 'storage'
+    assert caught.value.diagnostic is None
+    assert caught.value.http_status is None
+    assert calls == []
+
+
+def test_now_rejects_closed_context_before_reading_clock(rig):
+    """正常读钟不关闭事件，关闭后固定拒绝且不再读取注入时钟。"""
+    module, _, cache, _, _, _ = rig
+    calls = []
+
+    def clock():
+        """记录关闭前后实际发生的时钟读取。"""
+        calls.append(1000)
+        return 1000
+
+    ctx = module.UploadContext(cache=cache, clock=clock)
+    assert ctx.now() == 1000.0
+    assert ctx._closed is False
+    ctx.close()
+    expected = ImageHostError('config_error', '')
+    for _ in range(2):
+        with pytest.raises(ImageHostError) as caught:
+            ctx.now()
+        assert_safe(caught.value, 'config_error')
+        assert caught.value.stage == expected.stage
+        assert str(caught.value) == str(expected)
+    assert calls == [1000]
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_now_propagates_clock_control_signals_unchanged(rig, signal_type):
+    """公开读钟保留控制信号原对象，不转换为业务错误。"""
+    module, _, cache, calls, _, _ = rig
+    signal = signal_type(SECRET)
+
+    def clock():
+        """从真实注入时钟边界抛出控制信号。"""
+        raise signal
+
+    ctx = module.UploadContext(cache=cache, clock=clock)
+    with pytest.raises(signal_type) as caught:
+        ctx.now()
+    assert caught.value is signal
+    assert ctx._closed is False
+    assert ctx._images == ctx._entries == {}
+    assert calls == []
+
+
 def test_event_success_reused_and_identity_isolated(rig, caplog, capsys):
     """同身份跨图片复用，站点、匿名及不同凭证分别查询。"""
     _, ctx, _, calls, _, _ = rig
