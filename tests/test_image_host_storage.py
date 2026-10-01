@@ -153,16 +153,95 @@ class Factory:
 
 
 @pytest.fixture(autouse=True)
-def client(monkeypatch):
+def client(monkeypatch, request):
     """替换会话构造且独立拒绝任何意外真实请求。"""
     def forbidden(*args, **kwargs):
         """意外访问真实网络时立即使测试失败。"""
         pytest.fail('测试禁止访问真实网络')
 
     factory = Factory()
-    monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
-    monkeypatch.setattr(requests, 'Session', factory.create)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    if 'real_http' not in request.fixturenames:
+        monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
+        monkeypatch.setattr(requests, 'Session', factory.create)
     return factory
+
+
+@pytest.fixture
+def real_http(monkeypatch, client):
+    """保留真实请求准备流程，仅在适配器边界返回内存响应。"""
+    state = {'calls': [], 'netrc': [], 'error': None}
+    monkeypatch.setattr(requests.sessions.os, 'environ', {
+        'HTTPS_PROXY': 'http://synthetic-proxy.invalid:8080',
+        'HTTP_PROXY': 'http://synthetic-proxy.invalid:8080',
+        'NO_PROXY': '',
+    })
+
+    def synthetic_netrc(url, *args, **kwargs):
+        """记录隐式认证查询，绝不读取真实 netrc 文件。"""
+        state['netrc'].append(url)
+        return ('SYNTHETIC_USER', 'SYNTHETIC_PASSWORD')
+
+    def send(adapter, prepared, **kwargs):
+        """截获最终请求并返回真实响应，不调用任何网络连接。"""
+        state['calls'].append((prepared, kwargs, adapter.max_retries.total))
+        if state['error'] is not None:
+            raise state['error']
+        response = requests.Response()
+        response.status_code = 200
+        response.url = prepared.url
+        response.request = prepared
+        response._content = b'{"status":"success","data":{}}'
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', synthetic_netrc)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    return state
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('stage', PATHS)
+@pytest.mark.parametrize('token', ['', '  ' + SECRET + '  '])
+@pytest.mark.parametrize('ca_variable', [None, 'REQUESTS_CA_BUNDLE',
+                                       'CURL_CA_BUNDLE'])
+@pytest.mark.parametrize('fails', [False, True])
+def test_real_prepared_auth_and_environment(
+        real_http, monkeypatch, caplog, provider, stage, token,
+        ca_variable, fails):
+    """最终请求只使用显式认证，且保留合成代理及环境证书语义。"""
+    if ca_variable:
+        monkeypatch.setenv(ca_variable, 'synthetic-ca.pem')
+    data = {'storage_id': 7}
+    files = {'file': ('synthetic.png', b'PNG', 'image/png')}
+    before = deepcopy((data, files))
+    if fails:
+        real_http['error'] = requests.exceptions.ConnectTimeout(SECRET)
+        with pytest.raises(ImageHostError) as caught:
+            http().request_json(provider, stage, token, data=data, files=files)
+        assert_safe(caught.value, 'transport_failed', stage)
+    else:
+        result = http().request_json(provider, stage, token,
+                                     data=data, files=files)
+        assert result == {'status': 'success', 'data': {}}
+    assert len(real_http['calls']) == 1
+    prepared, kwargs, retries = real_http['calls'][0]
+    assert isinstance(prepared, requests.PreparedRequest)
+    assert prepared.headers.get('Authorization') == (
+        'Bearer ' + token if token else None)
+    assert real_http['netrc'] == []
+    assert prepared.headers['Accept'] == 'application/json'
+    assert prepared.url == BASES[provider] + PATHS[stage]
+    assert prepared.method == ('POST' if stage == 'upload' else 'GET')
+    assert SECRET not in prepared.url
+    assert SECRET not in str(prepared.body)
+    assert kwargs['proxies']['https'] == 'http://synthetic-proxy.invalid:8080'
+    assert kwargs['verify'] == ('synthetic-ca.pem' if ca_variable else True)
+    assert kwargs['timeout'] == (5, 15)
+    assert kwargs['stream'] is True
+    assert retries == 0
+    assert (data, files) == before
+    assert not caplog.records
 
 
 def assert_safe(error, code, stage, status=None):

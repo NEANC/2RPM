@@ -21,6 +21,14 @@ _CHUNK_SIZE = 64 * 1024
 _TIMEOUT = (5, 15)
 
 
+class _ExplicitAuth(requests.auth.AuthBase):
+    """仅保留调用方认证头，阻止隐式读取其他账号凭证。"""
+
+    def __call__(self, request):
+        """原样返回已准备的请求，不添加或覆盖认证信息。"""
+        return request
+
+
 def is_storage_rejection(provider, status_code, payload) -> bool:
     """精确匹配存储拒绝；Boltp 仅采用批准的合成兼容策略。
 
@@ -77,6 +85,7 @@ def request_json(provider, stage, token, *, data=None, files=None) -> dict:
     code = 'transport_failed'
     try:
         with requests.Session() as session:
+            session.auth = _ExplicitAuth()
             request = session.post if stage == 'upload' else session.get
             with request(_BASES[provider] + _PATHS[stage], **kwargs) as response:
                 status_code = response.status_code
