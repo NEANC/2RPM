@@ -130,3 +130,12 @@ def compute_expiration(seconds, started_at, retention_seconds,
         pass
     # 在处理器之外抛出固定错误，不保留底层敏感异常链。
     raise ImageHostError('config_error', '', stage='expiration')
+
+
+class PreparedV2Options(dict):
+    """内部期限传值容器，不构成安全授权或第二种用户期限入口。"""
+
+    def __init__(self, options, *, expired_at=None):
+        """浅复制选项，并独立保存后续编排计算的期限属性。"""
+        super().__init__(options)
+        self.expired_at = expired_at

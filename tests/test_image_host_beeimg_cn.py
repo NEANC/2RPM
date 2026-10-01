@@ -73,8 +73,17 @@ class Response:
         self.active = False
         self.closed += 1
 
+    def iter_content(self, chunk_size):
+        """在响应作用域内提供有界读取块，保留异常和释放断言。"""
+        assert self.active
+        assert 0 < chunk_size <= 1024 * 1024
+        self.reads += 1
+        if self.error is not None:
+            raise self.error
+        yield self.body.encode('utf-8')
+
     def json(self):
-        """要求在响应作用域内使用 requests 的实际 JSON 解码器。"""
+        """仅供旧站点备用适配器使用实际 JSON 解码器。"""
         assert self.active
         self.reads += 1
         if self.error is not None:
@@ -317,8 +326,8 @@ def test_only_exact_official_success_status_is_accepted(client, caplog, status):
     client.response.body = json.dumps(body)
     result = upload()
     assert not result.success
-    assert result.failures[0].code == 'upload_failed'
-    assert result.failures[0].message == '图床上传失败'
+    assert result.failures[0].code == 'invalid_response'
+    assert result.failures[0].message == '图床响应无效'
     assert client.closed == client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
@@ -334,7 +343,7 @@ def test_invalid_containers_fail_safely(client, body):
     client.response.body = json.dumps(body)
     result = upload()
     assert not result.success
-    assert result.failures[0].code in {'upload_failed', 'invalid_url'}
+    assert result.failures[0].code == 'invalid_response'
     assert client.closed == client.response.closed == 1
 
 
@@ -345,7 +354,7 @@ def test_missing_direct_url_never_uses_other_link_fields(client):
     }})
     result = upload()
     assert not result.success
-    assert result.failures[0].code == 'invalid_url'
+    assert result.failures[0].code == 'invalid_response'
     assert client.closed == client.response.closed == 1
 
 
@@ -354,12 +363,12 @@ def test_missing_direct_url_never_uses_other_link_fields(client):
     'https://user:' + SECRET + '@example.com/a',
     'https://example.com:' + SECRET,
 ])
-def test_invalid_urls_use_core_error_code(client, caplog, url):
-    """直链经过核心校验，固定错误码不暴露响应或凭证。"""
+def test_invalid_urls_use_v2_response_error_code(client, caplog, url):
+    """直链仍经过核心校验，v2 分类不暴露无效候选或凭证。"""
     client.response.body = json.dumps(payload(url))
     result = upload()
     assert not result.success
-    assert result.failures[0].code == 'invalid_url'
+    assert result.failures[0].code == 'invalid_response'
     assert client.closed == client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
@@ -371,7 +380,7 @@ def test_malformed_json_is_safe_and_resources_close(client, caplog, body):
     client.response.body = body
     result = upload(SECRET)
     assert not result.success
-    assert result.failures[0].code == 'upload_failed'
+    assert result.failures[0].code == 'invalid_response'
     assert client.closed == client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
     assert not caplog.records
@@ -385,7 +394,7 @@ def test_non_2xx_never_parses_body_or_follows_redirects(client, caplog, status):
     client.response.body = SECRET
     result = upload()
     assert not result.success
-    assert result.failures[0].code == 'upload_failed'
+    assert result.failures[0].code == 'http_failed'
     assert client.response.reads == 0
     assert client.closed == client.response.closed == 1
     assert len(client.calls) == 1
@@ -408,8 +417,8 @@ def test_transport_and_ordinary_errors_release_owned_resources(
         client.response.error = error
     result = upload()
     assert not result.success
-    assert result.failures[0].code == 'upload_failed'
-    assert result.failures[0].message == '图床上传失败'
+    assert result.failures[0].code == 'transport_failed'
+    assert result.failures[0].message == '图床网络传输失败'
     assert client.closed == 1
     assert client.response.closed == (stage == 'json')
     assert len(client.calls) == 1
@@ -446,7 +455,8 @@ def test_adapter_exception_has_no_original_chain(client, caplog, kind):
     else:
         client.response.error = RuntimeError(SECRET + URL)
     result = upload(SECRET)
-    assert result.failures[0].code == 'upload_failed'
+    assert result.failures[0].code == (
+        'invalid_response' if kind == 'decode' else 'transport_failed')
     providers = import_module('modules.image_host.providers')
     error_class = import_module('modules.image_host.core').ImageHostError
     with pytest.raises(error_class) as caught:
@@ -524,3 +534,66 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
         assert len(client.calls) == (1 if failure == 'options' else 2)
     assert client.closed == client.created == len(client.calls)
     assert first.closed == (failure != 'options')
+
+
+@pytest.mark.parametrize('expired_at', [None, '2030-01-02 03:04:05'])
+def test_prepared_expiration_is_forwarded_only_from_attribute(client, expired_at):
+    """真实注册表保留内部期限属性，原生选项仍忽略且源输入不变。"""
+    prepared_type = getattr(import_module('modules.image_host.expiration'),
+                            'PreparedV2Options', None)
+    assert prepared_type is not None
+    options = prepared_type({'storage_id': STORAGE_ID}, expired_at=expired_at)
+    original = deepcopy(options)
+    assert upload(options=options).success
+    data = client.calls[0][1]['data']
+    assert ('expired_at' in data) is (expired_at is not None)
+    if expired_at is not None:
+        assert data['expired_at'] == expired_at
+    assert options == original
+    assert options.expired_at == original.expired_at
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize('expired_at', [
+    True, 123, [], {}, '', SECRET, '2030-1-02 03:04:05',
+    '2030-01-02T03:04:05', '2030-01-02 03:04:05\n',
+    '2030-13-02 03:04:05', '2030-02-30 03:04:05',
+])
+def test_invalid_prepared_expiration_fails_before_http(client, expired_at):
+    """内部期限仍须符合日期契约，无效值不得发送或回显。"""
+    prepared_type = getattr(import_module('modules.image_host.expiration'),
+                            'PreparedV2Options', None)
+    assert prepared_type is not None
+    result = upload(options=prepared_type(OPTIONS, expired_at=expired_at))
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert SECRET not in repr(result)
+    assert not client.calls
+    assert client.created == 0
+
+
+@pytest.mark.parametrize('body, status, code', [
+    ({'status': 'error', 'message': '不存在的储存驱动'}, 200,
+     'storage_unavailable'),
+    ({'status': 'error', 'message': '普通业务拒绝'}, 200,
+     'business_rejected'),
+    ({'status': 'error', 'message': '不存在的储存驱动'}, 423, 'http_failed'),
+    ({'status': 'success', 'data': {}}, 200, 'invalid_response'),
+])
+def test_precise_failures_reach_real_registry_fallback(client, body, status, code):
+    """单次上传失败分类进入真实注册表，本地备用接管且成功即停。"""
+    client.response.status_code = status
+    client.response.body = json.dumps(body)
+    backup = Response()
+    backup.body = json.dumps({'status': True, 'data': {'links': {'url': URL}}})
+    client.responses = [client.response, backup]
+    result = upload(extra_hosts=[{'provider': 'wmimg'},
+                                 {'provider': 'beeimg_cn', 'options': OPTIONS}])
+    assert result.success
+    assert result.provider == 'wmimg'
+    assert result.attempts == ('beeimg_cn', 'wmimg')
+    assert result.failures[0].code == code
+    assert len(client.calls) == 2
+    assert client.calls[0][0] == ENDPOINT
+    assert client.closed == client.created == 2
+    assert backup.closed == 1
