@@ -598,8 +598,8 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
     _print_upload_warnings(uploaded.warnings)
     if not uploaded.success:
         _print_upload_failures(uploaded)
-        if not uploaded.failures:
-            print(_upload_failure_message(uploaded))
+        print('上传失败：所有图床尝试均未成功' if uploaded.failures
+              else _upload_failure_message(uploaded))
         return CAPTURE_FAILURE_CODE
     if uploaded.failures:
         _print_upload_failures(uploaded)
