@@ -280,6 +280,11 @@ class UploadContext:
             raise entry.failure.error()
         return entry.metadata
 
+    def now(self) -> float:
+        """用于请求前期限检查，只读注入时钟，不创建图片或元数据状态。"""
+        self._ensure_open()
+        return self._now()
+
     def start_image(self) -> ImageState:
         """创建独立图片链句柄并固定起始时刻，不初始化缓存身份。"""
         self._ensure_open()
