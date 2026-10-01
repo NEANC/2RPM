@@ -3,9 +3,11 @@
 """验证事件内协调合同，仅使用合成凭证、临时缓存和查询边界替身。"""
 
 from copy import deepcopy
+from datetime import datetime
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
+import json
 import os
 from pathlib import Path
 import socket
@@ -840,3 +842,668 @@ def test_invalid_injected_clock_fails_safely(rig, value):
         ctx.get_metadata(PROVIDER, SECRET)
     assert_safe(caught.value, 'config_error')
     assert calls == []
+
+
+@pytest.fixture
+def integration(monkeypatch, tmp_path):
+    """仅替换 HTTP 会话边界，保留真实注册表及完整协调链路。"""
+    registry = import_module('modules.image_host.registry')
+    clock = [1700000000.75]
+    cache = StorageCache(tmp_path / 'integration', clock=lambda: clock[0])
+    state = {'calls': [], 'replies': [], 'sessions': [], 'responses': [],
+             'clock': clock, 'cache': cache, 'registry': registry}
+
+    class Response:
+        """按队列提供合成字节响应并记录真实所有权顺序。"""
+
+        def __init__(self, status, body):
+            """初始化响应状态及有界字节正文。"""
+            self.status_code = status
+            self.body = json.dumps(body).encode('utf-8')
+            self.active = False
+            self.closed = 0
+
+        def __enter__(self):
+            """标记响应开始被持有。"""
+            self.active = True
+            return self
+
+        def __exit__(self, *args):
+            """释放响应，不吞掉任何异常。"""
+            self.active = False
+            self.closed += 1
+
+        def iter_content(self, chunk_size):
+            """模拟传输分块，不替代 JSON 解码或错误分类。"""
+            assert self.active
+            assert chunk_size > 0
+            yield self.body
+
+    class Session:
+        """模拟单次 HTTP 会话，禁止队列外请求。"""
+
+        def __init__(self):
+            """为每次真实传输记录独立会话。"""
+            self.closed = 0
+            self.response = None
+            state['sessions'].append(self)
+
+        def __enter__(self):
+            """返回本次会话。"""
+            return self
+
+        def __exit__(self, *args):
+            """确保响应先于会话释放。"""
+            if self.response is not None:
+                assert not self.response.active
+            self.closed += 1
+
+        def get(self, url, **kwargs):
+            """记录 GET 并消费指定响应。"""
+            return self.send('GET', url, kwargs)
+
+        def post(self, url, **kwargs):
+            """记录 POST 并消费指定响应。"""
+            return self.send('POST', url, kwargs)
+
+        def send(self, method, url, kwargs):
+            """只在 HTTP 边界注入响应、故障或可控时钟推进。"""
+            state['calls'].append((method, url, deepcopy(kwargs)))
+            assert state['replies'], '发生队列外请求'
+            reply = state['replies'].pop(0)
+            if callable(reply):
+                reply = reply()
+            if isinstance(reply, BaseException):
+                raise reply
+            status, body = reply
+            self.response = Response(status, body)
+            state['responses'].append(self.response)
+            return self.response
+
+    monkeypatch.setattr('modules.image_host.v2_http._V2Session', Session)
+    state['context'] = context_module().UploadContext(
+        cache=cache, clock=lambda: clock[0])
+    yield state
+    assert all(session.closed == 1 for session in state['sessions'])
+    assert all(response.closed == 1 for response in state['responses'])
+    state['context'].close()
+
+
+def group_reply(ids=(13, 14), retention=None):
+    """构造最小合法组响应，包含明确可用列表和上限。"""
+    return 200, {'status': 'success', 'data': {
+        'group': {'options': {'file_expire_seconds': retention}},
+        'storages': [{'id': value} for value in ids],
+    }}
+
+
+def profile_reply(default=14):
+    """构造账号默认存储响应。"""
+    return 200, {'status': 'success', 'data': {
+        'options': {'default_storage_id': default},
+    }}
+
+
+def upload_reply():
+    """构造带不可改写签名的上传直链。"""
+    return 200, {'status': 'success', 'data': {
+        'public_url': 'https://example.test/i?sig=a%2Fb%3D&x=1+2',
+    }}
+
+
+def rejection_reply():
+    """构造传输层批准的精确存储拒绝白名单样本。"""
+    return 200, {'status': 'error', 'message': '不存在的储存驱动'}
+
+
+def registry_upload(state, hosts=None, *, owned=False):
+    """执行真实入口，缺少公开上下文接口时产生明确行为断言。"""
+    if hosts is None:
+        hosts = [{'provider': PROVIDER, 'token': SECRET}]
+    function = state['registry'].upload_with_fallback
+    if owned:
+        return function(b'image', 'image.png', hosts)
+    assert 'context' in signature(function).parameters, '缺少公开 context 接入'
+    return function(b'image', 'image.png', hosts, context=state['context'])
+
+
+def post_data(state):
+    """只提取实际 POST 表单以检查期限和存储选择。"""
+    return [kwargs['data'] for method, _, kwargs in state['calls']
+            if method == 'POST']
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('token', ['', SECRET])
+def test_registry_cold_lookup_order_and_auth(integration, provider, token):
+    """冷缓存按组、可选账号、上传顺序执行且保持认证与直链。"""
+    state = integration
+    state['replies'] = [group_reply()]
+    if token:
+        state['replies'].append(profile_reply())
+    state['replies'].append(upload_reply())
+    result = registry_upload(state, [{'provider': provider, 'token': token}],
+                             owned=True)
+    assert result.success
+    assert result.url == upload_reply()[1]['data']['public_url']
+    assert result.attempts == (provider,)
+    assert result.failures == ()
+    expected = ['/group', '/user/profile', '/upload'] if token else [
+        '/group', '/upload']
+    assert [url.split('/api/v2')[1] for _, url, _ in state['calls']] == expected
+    assert [method for method, _, _ in state['calls']] == (
+        ['GET'] * (len(expected) - 1) + ['POST'])
+    for _, _, kwargs in state['calls']:
+        assert kwargs['headers'] == ({'Accept': 'application/json',
+                                     'Authorization': 'Bearer ' + token}
+                                    if token else {'Accept': 'application/json'})
+        assert kwargs['allow_redirects'] is False
+        assert kwargs['verify'] is True
+    assert post_data(state) == [{'storage_id': 14 if token else 13,
+                                 'is_public': '1'}]
+
+
+def test_registry_context_signature_and_hot_cache(integration):
+    """公开参数仅追加关键字 context，热缓存不再 GET。"""
+    state = integration
+    params = signature(state['registry'].upload_with_fallback).parameters
+    assert list(params) == ['png_bytes', 'filename', 'hosts', 'context']
+    assert params['context'].kind is params['context'].KEYWORD_ONLY
+    assert params['context'].default is None
+    cache = state['cache']
+    assert cache.save(cache.identity(PROVIDER, SECRET), StorageMetadata(
+        (13, 14), 14, None, state['clock'][0]))
+    state['replies'] = [upload_reply()]
+    assert registry_upload(state).success
+    assert [call[0] for call in state['calls']] == ['POST']
+
+
+def test_registry_event_reuses_queries_across_images(integration):
+    """外部事件跨图复用查询但每图只创建一次起点。"""
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), upload_reply(),
+                        upload_reply()]
+    first = registry_upload(state)
+    state['clock'][0] += 10
+    second = registry_upload(state)
+    assert first.success and second.success
+    assert [call[0] for call in state['calls']] == ['GET', 'GET', 'POST', 'POST']
+    assert len(state['context']._images) == 2
+    assert state['context'].now() == state['clock'][0]
+
+
+@pytest.mark.parametrize('value', [None, True, 10, '', '0s', '1h1d', SECRET])
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp', 'catbox', 'wmimg',
+                                      'beeimg', 'superbed'])
+def test_registry_invalid_expiration_has_no_io(integration, value, provider):
+    """所有站点在请求和缓存前拒绝显式非法期限。"""
+    state = integration
+    result = registry_upload(state, [{'provider': provider, 'token': SECRET,
+                                      'expiration': value}])
+    assert not result.success
+    assert result.failures[0].code == 'config_error'
+    assert result.failures[0].stage == 'expiration'
+    assert state['calls'] == []
+    assert state['cache']._root is None
+    assert SECRET not in repr(result)
+
+
+@pytest.mark.parametrize('options', [
+    {'permission': True}, {'permission': 2}, {'is_public': False},
+    {'album_id': '1'}, {'album_id': True},
+])
+def test_registry_invalid_options_precede_lookup(integration, options):
+    """不放宽权限和相册校验，错误发生在首次 GET 前。"""
+    state = integration
+    result = registry_upload(state, [{'provider': PROVIDER, 'options': options}])
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert state['calls'] == []
+    assert state['cache']._root is None
+
+
+def test_registry_expiration_conflict_precedes_lookup(integration):
+    """顶层期限与原生到期字段冲突时零查询。"""
+    state = integration
+    result = registry_upload(state, [{'provider': PROVIDER, 'expiration': '1h',
+                                      'options': {'expired_at': None}}])
+    assert not result.success
+    assert result.failures[0].code == 'config_error'
+    assert state['calls'] == []
+    assert state['cache']._root is None
+
+
+@pytest.mark.parametrize('manual', [None, True, 0, -1, '13', [], {}, 99])
+def test_registry_manual_correction_refreshes_disk_once(integration, manual):
+    """无效手填不沿用旧缓存，新列表选默认且不修改输入。"""
+    state = integration
+    cache = state['cache']
+    assert cache.save(cache.identity(PROVIDER, SECRET), StorageMetadata(
+        (13,), 13, None, state['clock'][0]))
+    hosts = [{'provider': PROVIDER, 'token': SECRET,
+              'options': {'storage_id': manual}}]
+    before = deepcopy(hosts)
+    state['replies'] = [group_reply((21, 22)), profile_reply(22), upload_reply(),
+                        upload_reply()]
+    first = registry_upload(state, hosts)
+    second = registry_upload(state, hosts)
+    assert first.success and second.success
+    assert hosts == before
+    assert [data['storage_id'] for data in post_data(state)] == [22, 22]
+    assert [call[0] for call in state['calls']] == ['GET', 'GET', 'POST', 'POST']
+    assert first.warnings == second.warnings == ('手填储存驱动不可用，已自动替代',)
+    assert all(state['context'].storage_state(
+        image, 0, PROVIDER, SECRET).correction_used
+        for image in state['context']._images)
+
+
+@pytest.mark.parametrize('reply', [(500, {}), group_reply(())])
+def test_registry_manual_refresh_failure_never_uses_old_cache(
+        integration, reply):
+    """纠错查询失败或空列表后不得发送旧编号或重复查询。"""
+    state = integration
+    cache = state['cache']
+    identity = cache.identity(PROVIDER, SECRET)
+    assert cache.save(identity, StorageMetadata(
+        (13,), 13, None, state['clock'][0]))
+    state['replies'] = [reply]
+    hosts = [{'provider': PROVIDER, 'token': SECRET,
+              'options': {'storage_id': 99}}]
+    assert not registry_upload(state, hosts).success
+    assert not registry_upload(state, hosts).success
+    assert len(state['calls']) == 1
+    assert not post_data(state)
+    assert cache.load(identity) is None
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+def test_registry_precise_rejection_refreshes_and_reposts_once(
+        integration, provider):
+    """精确拒绝只允许一次刷新重传且不增加配置槽位。"""
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
+                        group_reply((21,)), profile_reply(21), upload_reply()]
+    result = registry_upload(state, [{'provider': provider, 'token': SECRET}])
+    assert result.success
+    assert result.attempts == (provider,)
+    assert [data['storage_id'] for data in post_data(state)] == [14, 21]
+    assert [call[0] for call in state['calls']] == [
+        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+    assert not state['replies']
+    assert all(failure.code == 'storage_unavailable' for failure in result.failures)
+
+
+@pytest.mark.parametrize('second', ['reject', 'query_fail', 'empty'])
+def test_registry_recovery_stops_on_second_failure(integration, second):
+    """刷新失败或第二次拒绝终止本站，不遍历存储也不无限重试。"""
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
+    if second == 'reject':
+        state['replies'] += [group_reply(), profile_reply(), rejection_reply()]
+    else:
+        state['replies'] += [(500, {}) if second == 'query_fail'
+                             else group_reply(())]
+    result = registry_upload(state)
+    assert not result.success
+    assert result.attempts == (PROVIDER,)
+    assert len(post_data(state)) == (2 if second == 'reject' else 1)
+    assert not state['replies']
+
+
+def test_registry_manual_correction_consumes_recovery_budget(integration):
+    """上传前纠正后即使精确拒绝也不能再次 GET 或 POST。"""
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'options': {'storage_id': 0}}])
+    assert not result.success
+    assert len(state['calls']) == 3
+    assert len(post_data(state)) == 1
+    assert result.failures[-1].code == 'storage_unavailable'
+
+
+@pytest.mark.parametrize('reply, code', [
+    ((200, {'status': 'error', 'message': '不存在的储存驱动 '}), 'business_rejected'),
+    ((200, {'status': 'error', 'message': '请先绑定手机号'}), 'business_rejected'),
+    ((200, {'status': 'error', 'message': '审核失败'}), 'business_rejected'),
+    ((401, {}), 'http_failed'), ((429, {}), 'http_failed'),
+    ((500, {}), 'http_failed'), ((200, {}), 'invalid_response'),
+    (requests.exceptions.ReadTimeout(SECRET), 'transport_failed'),
+])
+def test_registry_other_failures_are_never_retried(integration, reply, code):
+    """非白名单拒绝、鉴权、限流、超时和解析失败均单 POST。"""
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), reply]
+    result = registry_upload(state)
+    assert not result.success
+    assert result.failures[-1].code == code
+    assert len(post_data(state)) == 1
+    assert len(state['calls']) == 3
+
+
+@pytest.mark.parametrize('first_limit, second_limit, duration, shortened', [
+    (None, None, 10, False), (0, 0, 10, False), (5, 20, 5, True),
+    (20, 5, 5, True), (5, None, 5, True),
+])
+def test_registry_retry_preserves_deadline_and_shortening_pair(
+        integration, first_limit, second_limit, duration, shortened):
+    """重传成对继承历史，亚秒取整不误报且刷新只能缩短。"""
+    state = integration
+    start = state['clock'][0]
+    state['replies'] = [group_reply(retention=first_limit), profile_reply(),
+                        rejection_reply(), group_reply(retention=second_limit),
+                        profile_reply(), upload_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'expiration': '10s'}])
+    assert result.success
+    data = post_data(state)
+    expected = datetime.fromtimestamp(int(start + duration)).strftime(
+        '%Y-%m-%d %H:%M:%S')
+    assert data[-1]['expired_at'] == expected
+    image, = state['context']._images
+    history = state['context'].storage_state(image, 0, PROVIDER, SECRET)
+    assert history.previous_deadline == int(start + duration)
+    assert history.previous_shortened is shortened
+    assert result.warnings == (('保存期限已按图床上限缩短',) if shortened else ())
+
+
+def test_registry_elapsed_deadline_prevents_second_post(integration):
+    """查询耗时跨越原始期限时不以重传时刻重新起算。"""
+    state = integration
+
+    def advance():
+        """在恢复组查询响应时推进唯一注入时钟。"""
+        state['clock'][0] += 20
+        return group_reply()
+
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
+                        advance, profile_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'expiration': '10s'}])
+    assert not result.success
+    assert result.failures[-1].code == 'config_error'
+    assert result.failures[-1].stage == 'expiration'
+    assert len(post_data(state)) == 1
+
+
+def test_registry_untrusted_prepared_attribute_is_discarded(integration):
+    """用户伪造内部容器属性不能进入实际上传表单。"""
+    state = integration
+    prepared = import_module('modules.image_host.expiration').PreparedV2Options
+    options = prepared({}, expired_at='2030-01-02 03:04:05')
+    state['replies'] = [group_reply(), upload_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'options': options}])
+    assert result.success
+    assert 'expired_at' not in post_data(state)[0]
+    assert options.expired_at == '2030-01-02 03:04:05'
+
+
+@pytest.mark.parametrize('enabled', [False, True])
+def test_registry_diagnostic_scope_revalidates_adapter_fields(
+        integration, monkeypatch, enabled):
+    """当前作用域再次处理不可信适配器字段，关闭时强制无诊断。"""
+    state = integration
+    state['context'] = context_module().UploadContext(
+        diagnostics=enabled, cache=state['cache'], clock=lambda: state['clock'][0])
+
+    def adapter(*args):
+        """抛出被恶意修改的合成错误，不发送网络请求。"""
+        error = ImageHostError('business_rejected', '')
+        error.message = SECRET
+        error.stage = SECRET
+        error.http_status = True
+        error.diagnostic = '失败 ' + SECRET + ' ' + BACKUP
+        raise error
+
+    monkeypatch.setitem(state['registry'].UPLOADERS, 'local', adapter)
+    result = registry_upload(state, [{'provider': 'local', 'token': SECRET},
+                                      {'provider': 'local', 'token': BACKUP}])
+    assert not result.success
+    for failure in result.failures:
+        assert failure.message == '图床拒绝上传'
+        assert failure.stage == ''
+        assert failure.http_status is None
+        assert failure.diagnostic == (
+            '失败 [已隐藏] [已隐藏]' if enabled else None)
+    assert safe_current_message('普通内容') is None
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'interrupt', 'exit'])
+def test_registry_owned_context_closes_after_scope(
+        integration, monkeypatch, outcome):
+    """自有事件在成功、失败及控制信号后关闭，且先恢复外层作用域。"""
+    state = integration
+    module = context_module()
+    instances = []
+    signal = KeyboardInterrupt('stop') if outcome == 'interrupt' else SystemExit(2)
+
+    class ObservedContext(module.UploadContext):
+        """仅观察真实事件的释放，不替代生命周期逻辑。"""
+
+        def __init__(self, **kwargs):
+            """保留默认构造行为并记录实例。"""
+            super().__init__(**kwargs)
+            instances.append(self)
+
+        def close(self):
+            """关闭前确认注册表已经退出内层诊断作用域。"""
+            assert safe_current_message(BACKUP) == '[已隐藏]'
+            super().close()
+
+    def adapter(*args):
+        """按指定结局返回或抛出原始控制对象。"""
+        assert safe_current_message(BACKUP) is None
+        if outcome in ('interrupt', 'exit'):
+            raise signal
+        if outcome == 'failure':
+            raise RuntimeError(SECRET)
+        return upload_reply()[1]['data']['public_url']
+
+    assert hasattr(state['registry'], 'UploadContext'), '缺少自有事件生命周期'
+    monkeypatch.setattr(state['registry'], 'UploadContext', ObservedContext)
+    monkeypatch.setitem(state['registry'].UPLOADERS, 'local', adapter)
+    diagnostics = import_module('modules.image_host.diagnostics')
+    with diagnostics.diagnostic_scope((BACKUP,)):
+        if outcome in ('interrupt', 'exit'):
+            with pytest.raises(type(signal)) as caught:
+                registry_upload(state, [{'provider': 'local'}], owned=True)
+            assert caught.value is signal
+        else:
+            result = registry_upload(state, [{'provider': 'local'}], owned=True)
+            assert result.success is (outcome == 'success')
+    assert len(instances) == 1
+    with pytest.raises(ImageHostError):
+        instances[0].now()
+    assert safe_current_message('普通内容') is None
+
+
+@pytest.mark.parametrize('provider', ['catbox', 'wmimg', 'beeimg', 'superbed'])
+def test_registry_other_sites_ignore_valid_expiration_without_cache(
+        integration, monkeypatch, provider):
+    """四站期限仅告警，仍按原四参数单次调用且不触碰缓存。"""
+    state = integration
+    calls = []
+
+    def adapter(*args):
+        """记录旧适配器边界，不改变原始输入。"""
+        calls.append(args)
+        return upload_reply()[1]['data']['public_url']
+
+    monkeypatch.setitem(state['registry'].UPLOADERS, provider, adapter)
+    hosts = [{'provider': provider, 'token': SECRET, 'expiration': '1h',
+              'options': {'permission': 1}}]
+    before = deepcopy(hosts)
+    result = registry_upload(state, hosts)
+    assert result.success
+    assert calls == [(b'image', 'image.png', SECRET, {'permission': 1})]
+    assert result.warnings == ('该图床不支持保存期限，已忽略',)
+    assert hosts == before
+    assert state['cache']._root is None
+    assert state['calls'] == []
+
+
+@pytest.mark.parametrize('image, filename, hosts, code', [
+    (b'', 'image.png', [{}], 'invalid_input'),
+    (b'image', '../image.png', [{}], 'invalid_input'),
+    (b'image', 'image.png', None, 'not_configured'),
+    (b'image', 'image.png', [], 'not_configured'),
+    (b'image', 'image.png', {}, 'invalid_hosts'),
+])
+def test_registry_early_failure_never_starts_image_or_cache(
+        integration, image, filename, hosts, code):
+    """共享输入提前失败不创建图片、不解析凭证且零缓存网络 IO。"""
+    state = integration
+    function = state['registry'].upload_with_fallback
+    assert 'context' in signature(function).parameters
+    result = function(image, filename, hosts, context=state['context'])
+    assert not result.success
+    assert result.failures[0].code == code
+    assert result.attempts == ()
+    assert state['context']._images == {}
+    assert state['context']._credentials == {}
+    assert state['cache']._root is None
+    assert state['calls'] == []
+
+
+def test_registry_same_identity_slots_have_independent_budgets(integration):
+    """相同身份配置项共享版本但不共享预算，失败保留且备用可成功。"""
+    state = integration
+    state['replies'] = [
+        group_reply(), profile_reply(), rejection_reply(),
+        group_reply((21,)), profile_reply(21), rejection_reply(),
+        rejection_reply(), group_reply((22,)), profile_reply(22), upload_reply(),
+    ]
+    hosts = [{'provider': PROVIDER, 'token': SECRET}] * 2
+    result = registry_upload(state, hosts)
+    assert result.success
+    assert result.attempts == (PROVIDER, PROVIDER)
+    assert result.failures
+    assert all(f.code == 'storage_unavailable' for f in result.failures)
+    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 21, 22]
+    assert len(state['calls']) == 10
+    image, = state['context']._images
+    first = state['context'].storage_state(image, 0, PROVIDER, SECRET)
+    second = state['context'].storage_state(image, 1, PROVIDER, SECRET)
+    assert first.correction_used and second.correction_used
+    assert first.metadata_version < second.metadata_version
+    assert not state['replies']
+
+
+@pytest.mark.parametrize('second_provider, second_token', [
+    (PROVIDER, BACKUP), ('beeimg_cn', SECRET), (PROVIDER, ''),
+])
+def test_registry_metadata_identity_isolated_and_reused(
+        integration, second_provider, second_token):
+    """不同站点、凭证和匿名身份独立查询，后续图片各自复用。"""
+    state = integration
+    failure = (200, {'status': 'error', 'message': '普通业务拒绝'})
+    state['replies'] = [group_reply(), profile_reply(), failure,
+                        group_reply((21,), retention=30)]
+    if second_token:
+        state['replies'].append(profile_reply(21))
+    state['replies'] += [upload_reply(), failure, upload_reply()]
+    hosts = [{'provider': PROVIDER, 'token': SECRET},
+             {'provider': second_provider, 'token': second_token}]
+    for _ in range(2):
+        result = registry_upload(state, hosts)
+        assert result.success and result.provider == second_provider
+        assert result.attempts == (PROVIDER, second_provider)
+        assert len(result.failures) == 1
+    assert len(state['calls']) == (8 if second_token else 7)
+    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 14, 21]
+    assert not state['replies']
+
+
+def test_registry_sites_share_start_not_duration(integration):
+    """同图两站使用共同起点，但分别应用配置期限及组上限。"""
+    state = integration
+    start = state['clock'][0]
+
+    def delayed_rejection():
+        """首站响应耗时不能延长后站期限。"""
+        state['clock'][0] += 5
+        return 200, {'status': 'error', 'message': '普通拒绝'}
+
+    state['replies'] = [group_reply(retention=30), delayed_rejection,
+                        group_reply(retention=15), upload_reply()]
+    result = registry_upload(state, [
+        {'provider': PROVIDER, 'expiration': '10s'},
+        {'provider': 'beeimg_cn', 'expiration': '20s'},
+    ])
+    assert result.success
+    assert len(state['context']._images) == 1
+    assert [d['expired_at'] for d in post_data(state)] == [
+        datetime.fromtimestamp(int(start + seconds)).strftime(
+            '%Y-%m-%d %H:%M:%S') for seconds in (10, 15)]
+    assert result.warnings == ('保存期限已按图床上限缩短',)
+
+
+@pytest.mark.parametrize('backup_attempted', [False, True])
+def test_registry_diagnostics_freeze_full_chain_and_defer_errors(
+        integration, monkeypatch, backup_attempted):
+    """整链秘密包含未尝试站点，凭证预解析失败只在实际槽位呈现。"""
+    state = integration
+    state['context'] = context_module().UploadContext(
+        diagnostics=True, cache=state['cache'], clock=lambda: state['clock'][0])
+    monkeypatch.setenv(ENV_NAME, BACKUP)
+    missing = 'SYNTHETIC_REGISTRY_MISSING'
+    monkeypatch.delenv(missing, raising=False)
+    seen = []
+
+    def adapter(image, filename, token, options):
+        """改变环境后验证后续发送仍使用预收集快照。"""
+        seen.append(token)
+        assert safe_current_message(BACKUP) == '[已隐藏]'
+        monkeypatch.setenv(ENV_NAME, 'FAKE_CHANGED_LATER')
+        monkeypatch.setenv(missing, 'FAKE_CREATED_LATER')
+        if backup_attempted and token == SECRET:
+            raise ImageHostError('business_rejected', '', stage='upload',
+                                 http_status=200, diagnostic='失败 ' + BACKUP)
+        return upload_reply()[1]['data']['public_url']
+
+    monkeypatch.setitem(state['registry'].UPLOADERS, 'local', adapter)
+    result = registry_upload(state, [
+        {'provider': 'local', 'token': SECRET},
+        {'provider': 'local', 'token': '${' + missing + '}'},
+        {'provider': 'local', 'token': '${' + ENV_NAME + '}'},
+    ])
+    assert result.success
+    assert seen == ([SECRET, BACKUP] if backup_attempted else [SECRET])
+    if backup_attempted:
+        assert result.attempts == ('local', 'local', 'local')
+        assert [f.code for f in result.failures] == [
+            'business_rejected', 'missing_environment']
+        assert result.failures[0].diagnostic == '失败 [已隐藏]'
+    else:
+        assert result.attempts == ('local',)
+        assert result.failures == ()
+    assert state['context'].now() == state['clock'][0]
+    assert safe_current_message('普通内容') is None
+
+
+def test_registry_cache_warnings_drained_without_loss(integration, monkeypatch):
+    """已有和新增缓存告警保序去重，恢复时的新告警不得丢失。"""
+    state = integration
+    cache = state['cache']
+
+    def save_failure(*args):
+        """仅模拟真实缓存原子写入边界失败。"""
+        raise OSError(SECRET)
+
+    def delete_failure(*args):
+        """模拟缓存失效操作失败，不影响网络恢复决策。"""
+        raise OSError(BACKUP)
+
+    monkeypatch.setattr(cache, '_write_atomic', save_failure)
+    monkeypatch.setattr(cache, 'invalidate', delete_failure)
+    state['replies'] = [group_reply(retention=5), profile_reply(),
+                        rejection_reply(), group_reply(retention=10),
+                        profile_reply(), upload_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'expiration': '20s'}])
+    assert result.success
+    assert result.warnings == (
+        '存储元数据缓存保存失败', '保存期限已按图床上限缩短',
+        '存储元数据缓存失效失败')
+    assert state['context'].take_warnings() == ()
+    assert SECRET not in repr(result) and BACKUP not in repr(result)

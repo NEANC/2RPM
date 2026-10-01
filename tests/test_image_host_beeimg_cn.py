@@ -101,6 +101,8 @@ class Session:
         """初始化会话、请求和合成响应队列。"""
         self.response = Response()
         self.responses = []
+        self.get_calls = []
+        self.get_responses = []
         self.error = None
         self.calls = []
         self.created = 0
@@ -123,6 +125,24 @@ class Session:
         self.active = False
         self.closed += 1
 
+    def get(self, endpoint, **kwargs):
+        """提供明确组和账号响应，独立记录查询与资源释放。"""
+        assert self.active
+        self.get_calls.append((endpoint, kwargs))
+        response = Response()
+        if endpoint == ENDPOINT.rsplit('/', 1)[0] + '/group':
+            data = {
+                'group': {'options': {'file_expire_seconds': None}},
+                'storages': [{'id': value} for value in
+                             (STORAGE_ID, 1, 2, 99, 1000)],
+            }
+        else:
+            assert endpoint == ENDPOINT.rsplit('/', 1)[0] + '/user/profile'
+            data = {'options': {'default_storage_id': STORAGE_ID}}
+        response.body = json.dumps({'status': 'success', 'data': data})
+        self.get_responses.append(response)
+        return response
+
     def post(self, endpoint, **kwargs):
         """记录参数并返回当前合成响应或抛出指定异常。"""
         assert self.active
@@ -135,8 +155,9 @@ class Session:
 
 
 @pytest.fixture(autouse=True)
-def client(monkeypatch):
-    """仅替换 HTTP，并独立阻断任何意外真实网络访问。"""
+def client(monkeypatch, tmp_path):
+    """隔离默认缓存，仅替换 HTTP 并阻断真实网络访问。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     def forbidden(*args, **kwargs):
         """拒绝逃逸出替身的真实请求。"""
         raise AssertionError('测试禁止访问真实网络')
@@ -145,7 +166,10 @@ def client(monkeypatch):
     monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
     monkeypatch.setattr(requests, 'Session', fake.create)
     monkeypatch.setattr('modules.image_host.v2_http._V2Session', fake.create)
-    return fake
+    yield fake
+    assert all(response.closed == 1 and response.reads == 1
+               for response in fake.get_responses)
+    assert fake.created == fake.closed == len(fake.calls) + len(fake.get_calls)
 
 
 def test_registration_and_four_argument_signature():
@@ -182,8 +206,16 @@ def test_exact_multipart_authentication_and_anonymous_contract(client, token):
         'headers': headers, 'timeout': (5, 15), 'verify': True,
         'stream': True, 'allow_redirects': False,
     })]
-    assert client.created == client.closed == client.response.closed == 1
-    assert client.response.reads == 1
+    expected_gets = 2 if token else 1
+    assert len(client.get_calls) == expected_gets
+    assert client.created == client.closed == expected_gets + 1
+    assert client.response.closed == client.response.reads == 1
+    base = ENDPOINT.rsplit('/', 1)[0]
+    paths = ['/group', '/user/profile'] if token else ['/group']
+    assert client.get_calls == [(base + path, {
+        'headers': headers, 'timeout': (5, 15), 'verify': True,
+        'stream': True, 'allow_redirects': False,
+    }) for path in paths]
 
 
 @pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
@@ -246,14 +278,20 @@ def test_direct_is_public_cannot_override_permission(client, value):
 
 @pytest.mark.parametrize('storage_id', [None, True, False, 0, -1, '7', 7.0,
                                         [], {}])
-def test_invalid_storage_id_fails_before_request(client, storage_id):
-    """存储 ID 必填且仅接受非布尔正整数，缺失或非法值不发请求。"""
+def test_invalid_storage_id_is_selected_from_fresh_metadata(client, storage_id):
+    """缺省自动选择，非法手填经新查询替代且不修改输入。"""
     options = {} if storage_id is None else {'storage_id': storage_id}
+    original = deepcopy(options)
     result = upload(options=options)
-    assert not result.success
-    assert result.failures[0].code == 'invalid_options'
-    assert client.created == 0
-    assert client.calls == []
+    assert result.success
+    assert result.failures == ()
+    assert result.warnings == (() if storage_id is None else (
+        '手填储存驱动不可用，已自动替代',))
+    assert options == original
+    assert len(client.get_calls) == 2
+    assert len(client.calls) == 1
+    assert client.calls[0][1]['data']['storage_id'] == STORAGE_ID
+    assert client.created == client.closed == 3
 
 
 @pytest.mark.parametrize('storage_id', [1, 2, 99, 1000])
@@ -329,7 +367,9 @@ def test_only_exact_official_success_status_is_accepted(client, caplog, status):
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
     assert result.failures[0].message == '图床响应无效'
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
 
@@ -345,7 +385,9 @@ def test_invalid_containers_fail_safely(client, body):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
 
 
 def test_missing_direct_url_never_uses_other_link_fields(client):
@@ -356,7 +398,9 @@ def test_missing_direct_url_never_uses_other_link_fields(client):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
 
 
 @pytest.mark.parametrize('url', [
@@ -370,7 +414,9 @@ def test_invalid_urls_use_v2_response_error_code(client, caplog, url):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
 
@@ -382,7 +428,9 @@ def test_malformed_json_is_safe_and_resources_close(client, caplog, body):
     result = upload(SECRET)
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
     assert not caplog.records
 
@@ -397,7 +445,9 @@ def test_non_2xx_never_parses_body_or_follows_redirects(client, caplog, status):
     assert not result.success
     assert result.failures[0].code == 'http_failed'
     assert client.response.reads == 0
-    assert client.closed == client.response.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
+    assert client.response.closed == 1
     assert len(client.calls) == 1
     assert SECRET not in repr(result) + caplog.text
 
@@ -420,7 +470,8 @@ def test_transport_and_ordinary_errors_release_owned_resources(
     assert not result.success
     assert result.failures[0].code == 'transport_failed'
     assert result.failures[0].message == '图床网络传输失败'
-    assert client.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
     assert client.response.closed == (stage == 'json')
     assert len(client.calls) == 1
     assert SECRET not in repr(result) + caplog.text
@@ -441,7 +492,8 @@ def test_control_signal_identity_cleanup_and_no_fallback(
     with pytest.raises(signal_type) as caught:
         upload(extra_hosts=[{'provider': 'beeimg_cn'}])
     assert caught.value is signal
-    assert client.closed == 1
+    assert len(client.get_calls) == 2
+    assert client.closed == 3
     assert client.response.closed == (stage == 'json')
     assert len(client.calls) == 1
 
@@ -468,7 +520,8 @@ def test_adapter_exception_has_no_original_chain(client, caplog, kind):
     text = ''.join(traceback.format_exception(caught.value))
     assert SECRET not in text + repr(result) + caplog.text
     assert URL not in text + repr(result) + caplog.text
-    assert client.closed == 2
+    assert len(client.get_calls) == 2
+    assert client.closed == 4
     assert client.response.closed == (0 if kind == 'request' else 2)
 
 
@@ -508,7 +561,7 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
     elif failure == 'url':
         first.body = json.dumps(payload('invalid'))
     elif failure == 'options':
-        options = {'storage_id': 0, 'permission': 0}
+        options = {'storage_id': STORAGE_ID, 'permission': 2}
     second = Response()
     second.body = json.dumps({'status': True, 'data': {'links': {'url': URL}}})
     client.responses = [second] if failure == 'options' else [first, second]
@@ -533,19 +586,22 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
         assert SECRET not in repr(request)
         assert second.closed == 1
         assert len(client.calls) == (1 if failure == 'options' else 2)
-    assert client.closed == client.created == len(client.calls)
+    assert len(client.get_calls) == (0 if failure == 'options' else 2)
+    assert client.closed == client.created == (
+        len(client.calls) + len(client.get_calls))
     assert first.closed == (failure != 'options')
 
 
 @pytest.mark.parametrize('expired_at', [None, '2030-01-02 03:04:05'])
 def test_prepared_expiration_is_forwarded_only_from_attribute(client, expired_at):
-    """真实注册表保留内部期限属性，原生选项仍忽略且源输入不变。"""
+    """适配器接收内部计算期限；注册表另行验证用户属性不可透传。"""
     prepared_type = getattr(import_module('modules.image_host.expiration'),
                             'PreparedV2Options', None)
     assert prepared_type is not None
     options = prepared_type({'storage_id': STORAGE_ID}, expired_at=expired_at)
     original = deepcopy(options)
-    assert upload(options=options).success
+    providers = import_module('modules.image_host.providers')
+    assert providers.upload_beeimg_cn(IMAGE, FILENAME, SECRET, options) == URL
     data = client.calls[0][1]['data']
     assert ('expired_at' in data) is (expired_at is not None)
     if expired_at is not None:
@@ -565,11 +621,16 @@ def test_invalid_prepared_expiration_fails_before_http(client, expired_at):
     prepared_type = getattr(import_module('modules.image_host.expiration'),
                             'PreparedV2Options', None)
     assert prepared_type is not None
-    result = upload(options=prepared_type(OPTIONS, expired_at=expired_at))
-    assert not result.success
-    assert result.failures[0].code == 'invalid_options'
-    assert SECRET not in repr(result)
+    providers = import_module('modules.image_host.providers')
+    error_type = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_type) as caught:
+        providers.upload_beeimg_cn(
+            IMAGE, FILENAME, SECRET,
+            prepared_type(OPTIONS, expired_at=expired_at))
+    assert caught.value.code == 'invalid_options'
+    assert SECRET not in repr(caught.value)
     assert not client.calls
+    assert not client.get_calls
     assert client.created == 0
 
 
@@ -587,14 +648,22 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     client.response.body = json.dumps(body)
     backup = Response()
     backup.body = json.dumps({'status': True, 'data': {'links': {'url': URL}}})
-    client.responses = [client.response, backup]
+    recovering = code == 'storage_unavailable'
+    first = client.response
+    client.responses = [first] * (2 if recovering else 1) + [backup]
     result = upload(extra_hosts=[{'provider': 'wmimg'},
                                  {'provider': 'beeimg_cn', 'options': OPTIONS}])
     assert result.success
     assert result.provider == 'wmimg'
     assert result.attempts == ('beeimg_cn', 'wmimg')
     assert result.failures[0].code == code
-    assert len(client.calls) == 2
+    assert len(result.failures) == (2 if recovering else 1)
+    assert all(failure.code == code for failure in result.failures)
+    assert len(client.calls) == (3 if recovering else 2)
+    assert len(client.get_calls) == (4 if recovering else 2)
     assert client.calls[0][0] == ENDPOINT
-    assert client.closed == client.created == 2
+    if recovering:
+        assert client.calls[1][0] == ENDPOINT
+    assert client.closed == client.created == (7 if recovering else 4)
+    assert first.closed == (2 if recovering else 1)
     assert backup.closed == 1
