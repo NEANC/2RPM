@@ -8,11 +8,16 @@ from dataclasses import FrozenInstanceError
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
+import netrc
 import os
+import socket
 from unittest.mock import Mock
 
 import pytest
+import requests
 
+from modules.image_host.context import UploadContext
+from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.core import UploadResult
 from modules.screenshot.models import CaptureError
@@ -22,6 +27,23 @@ from modules.screenshot.models import CaptureResult
 URL = 'https://cdn.example.com/image?signature=a%2Fb%3D&token=FAKE_URL_KEY'
 SECRET = 'FAKE_EXCEPTION_KEY_7319'
 SAFE_WARNING = '图像为纯色或低方差，可能未正确渲染或未更新'
+
+
+@pytest.fixture(autouse=True)
+def isolate_upload_environment(monkeypatch, tmp_path):
+    """隔离缓存目录，独立阻断真实网络和隐式账号文件读取。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+
+    def forbidden(*args, **kwargs):
+        """任何越过合成边界的访问都立即终止测试。"""
+        pytest.fail('禁止真实网络或 netrc 访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(requests.utils, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
 
 
 def pipeline():
@@ -87,8 +109,9 @@ def test_two_targets_serial_success_and_aggregate(monkeypatch, caplog):
         events.append(('capture', source, name))
         return captured(source, name)
 
-    def send(image, filename, hosts):
+    def send(image, filename, hosts, *, context):
         """记录同张图片的唯一完整上传调用。"""
+        assert isinstance(context, UploadContext)
         events.append(('upload', image, filename))
         assert hosts == [{'provider': 'catbox'}]
         return uploaded()
@@ -135,9 +158,11 @@ def test_capture_failure_keeps_slot_and_continues(monkeypatch, caplog, failure):
     assert batch.values['screenshot'] == (
         first + '\n\n' + batch.values['screenshot_2'])
     assert capture.call_count == 2
+    context = upload.call_args.kwargs['context']
+    assert isinstance(context, UploadContext)
     upload.assert_called_once_with(
         captured('adb', '第二').png_bytes, 'screenshot_2.png',
-        [{'provider': 'catbox'}])
+        [{'provider': 'catbox'}], context=context)
     assert SECRET not in str(batch.values) + caplog.text
     assert URL not in caplog.text
     assert not any(record.exc_info for record in caplog.records)
@@ -530,3 +555,126 @@ def test_markdown_url_escapes_only_structure_and_preserves_signature(
                             'screenshot': f'![custom]({safe})'}
     assert 'FAKE_URL_KEY' not in caplog.text
     assert not caplog.records
+
+
+@pytest.mark.parametrize('code', [
+    'transport_failed', 'http_failed', 'business_rejected', 'invalid_response',
+    'storage_lookup_failed', 'storage_unavailable', 'config_error',
+    'not_configured', 'invalid_options',
+])
+def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
+    """失败仅按核心认可代码重建摘要，不信任标签、消息或诊断。"""
+    module, _, upload = boundaries(monkeypatch)
+    upload.return_value = UploadResult(False, None, None, (SECRET,), (
+        UploadFailure(SECRET, code, SECRET, diagnostic=SECRET),
+        UploadFailure(SECRET, code, SECRET, diagnostic=SECRET),
+    ))
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    expected = '截图上传失败：' + ImageHostError(code, '').message
+    assert batch.values['screenshot_1'] == expected
+    assert batch.values['screenshot'] == expected
+    assert SECRET not in repr(batch) + caplog.text
+    assert len(caplog.records) == 1
+    assert caplog.records[0].getMessage().count(expected) == 1
+
+
+@pytest.mark.parametrize('code', [SECRET, None, [], 'upload_failed'])
+def test_unknown_upload_failure_keeps_fixed_fallback(monkeypatch, caplog, code):
+    """未知、非法或无具体类别仍返回固定上传失败兜底。"""
+    module, _, upload = boundaries(monkeypatch)
+    upload.return_value = UploadResult(False, None, None, (), (
+        UploadFailure(SECRET, code, SECRET, diagnostic=SECRET),))
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    assert batch.values['screenshot'] == '截图上传失败'
+    assert SECRET not in repr(batch) + caplog.text
+
+
+def test_upload_warnings_survive_success_and_failure(monkeypatch, caplog):
+    """两种上传结局的告警与分配、截图告警一起保序去重。"""
+    module, capture, upload = boundaries(monkeypatch)
+    capture.side_effect = [captured(warnings=(SAFE_WARNING,)), captured()]
+    first = '手填储存驱动不可用，已自动替代'
+    second = '保存期限已按图床上限缩短'
+    upload.side_effect = [
+        UploadResult(True, 'catbox', URL, (), (
+            UploadFailure(SECRET, 'http_failed', SECRET, diagnostic=SECRET),
+        ), (first, SAFE_WARNING)),
+        UploadResult(False, None, None, (), (), (first, second)),
+    ]
+    batch = module.prepare_screenshots(section([
+        target(out='same'), target(out='same')]), True, ())
+    assert len(batch.warnings) == 4
+    assert batch.warnings[1:] == (SAFE_WARNING, first, second)
+    assert batch.values['same'] == f'![same]({URL})'
+    assert batch.values['screenshot_2'] == '截图上传失败'
+    body = module.append_screenshot_notices(
+        batch.values['screenshot'], '{screenshot}', batch)
+    assert body.count('截图配置提示') == 1
+    assert len(caplog.records) == 1
+    for warning in batch.warnings:
+        assert body.count(warning) == caplog.text.count(warning) == 1
+    assert SECRET not in body + caplog.text
+    assert URL not in caplog.text
+
+
+@pytest.mark.parametrize('stage', ['capture', 'upload'])
+@pytest.mark.parametrize('outcome', ['success', 'ordinary', 'interrupt', 'exit'])
+def test_batch_context_owns_lifecycle(monkeypatch, stage, outcome):
+    """批次在所有退出路径释放唯一自有事件并保留控制信号原对象。"""
+    module, capture, upload = boundaries(monkeypatch)
+    instances = []
+    closed = []
+    initialize = UploadContext.__init__
+    close = UploadContext.close
+
+    def observed_init(self, **kwargs):
+        """观察真实事件初始化，不改变默认诊断语义。"""
+        assert kwargs.get('diagnostics') is False
+        initialize(self, **kwargs)
+        instances.append(self)
+
+    def observed_close(self):
+        """记录真实关闭次数并释放全部事件状态。"""
+        closed.append(self)
+        close(self)
+
+    monkeypatch.setattr(UploadContext, '__init__', observed_init)
+    monkeypatch.setattr(UploadContext, 'close', observed_close)
+    signal = (KeyboardInterrupt(SECRET) if outcome == 'interrupt'
+              else SystemExit(SECRET))
+    error = RuntimeError(SECRET) if outcome == 'ordinary' else signal
+    if outcome != 'success':
+        boundary = capture if stage == 'capture' else upload
+        boundary.side_effect = ([captured(), error] if stage == 'capture'
+                                else [uploaded(), error])
+    config = section([target(), target()])
+    if outcome in ('interrupt', 'exit'):
+        with pytest.raises(type(signal)) as caught:
+            module.prepare_screenshots(config, True, ())
+        assert caught.value is signal
+    else:
+        batch = module.prepare_screenshots(config, True, ())
+        assert batch.values['screenshot_1'].startswith('![')
+    assert len(instances) == 1
+    assert closed == instances
+    assert instances[0]._closed
+    assert instances[0]._cache is instances[0]._clock is None
+    assert all(call.kwargs['context'] is instances[0]
+               for call in upload.call_args_list)
+
+
+@pytest.mark.parametrize('enabled, targets', [
+    (False, [target()]), (True, []), (True, [None]),
+])
+def test_inactive_batch_never_constructs_context(monkeypatch, enabled, targets):
+    """禁用、空目标及全无效目标不创建事件或读取缓存凭证。"""
+    module, capture, upload = boundaries(monkeypatch)
+
+    def forbidden(*args, **kwargs):
+        """无有效上传工作时不允许初始化上传事件。"""
+        pytest.fail('无有效目标却创建了上传上下文')
+
+    monkeypatch.setattr(UploadContext, '__init__', forbidden)
+    module.prepare_screenshots(section(targets), enabled, ())
+    capture.assert_not_called()
+    upload.assert_not_called()

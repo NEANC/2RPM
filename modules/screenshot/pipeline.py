@@ -3,12 +3,16 @@
 """串行编排独立截图上传，并向已渲染正文追加必要提示。"""
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 import logging
 from string import Formatter
 from urllib.parse import quote
 from urllib.parse import urlsplit
 
+from modules.image_host.context import UploadContext
+from modules.image_host.core import ImageHostError
+from modules.image_host.core import UploadFailure
 from modules.image_host.registry import upload_with_fallback
 
 from .models import CaptureError
@@ -68,7 +72,20 @@ def markdown_image(name, url):
     return f'![{name}]({destination})'
 
 
-def _prepare_target(item, hosts, warnings, diagnostics):
+def _upload_failure_summary(failures):
+    """只按核心认可的代码重建固定摘要，不展示动态标签或诊断。"""
+    messages = []
+    for failure in failures:
+        if not isinstance(failure, UploadFailure):
+            continue
+        safe = ImageHostError(failure.code, '')
+        if safe.code != 'upload_failed':
+            messages.append(safe.message)
+    summary = '；'.join(dict.fromkeys(messages))
+    return '截图上传失败：' + summary if summary else '截图上传失败'
+
+
+def _prepare_target(item, hosts, warnings, diagnostics, *, context):
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。"""
     if item['error'] is not None:
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
@@ -89,15 +106,18 @@ def _prepare_target(item, hosts, warnings, diagnostics):
         return '截图失败'
 
     warnings.extend(result.warnings)
+    failure = '截图上传失败'
     try:
         uploaded = upload_with_fallback(
-            result.png_bytes, item['out'] + '.png', hosts)
+            result.png_bytes, item['out'] + '.png', hosts, context=context)
+        warnings.extend(uploaded.warnings)
         if uploaded.success:
             return markdown_image(item['out'], uploaded.url)
+        failure = _upload_failure_summary(uploaded.failures)
     except Exception:
         pass
-    diagnostics.append(f'截图目标 {item["index"]}：截图上传失败')
-    return '截图上传失败'
+    diagnostics.append(f'截图目标 {item["index"]}：{failure}')
+    return failure
 
 
 def prepare_screenshots(section, enabled, reserved_names) -> ScreenshotBatch:
@@ -127,9 +147,14 @@ def prepare_screenshots(section, enabled, reserved_names) -> ScreenshotBatch:
     )
     if targets:
         hosts = section.get('image_host')
-        for item in targets:
-            values[item['out']] = _prepare_target(
-                item, hosts, warnings, diagnostics)
+        with ExitStack() as stack:
+            context = None
+            for item in targets:
+                if context is None and item['error'] is None:
+                    context = stack.enter_context(
+                        UploadContext(diagnostics=False))
+                values[item['out']] = _prepare_target(
+                    item, hosts, warnings, diagnostics, context=context)
         values['screenshot'] = '\n\n'.join(values.values())
     else:
         values['screenshot'] = _CONFIG_FAILURE
