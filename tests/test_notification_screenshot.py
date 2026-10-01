@@ -2,20 +2,30 @@
 # -*- coding: utf-8 -*-
 """notification 公共链路接入截图的端到端测试，全部边界由本地替身实现。"""
 
+import json
 import logging
+import netrc
 import os
+import socket
 import sys
+from collections import Counter
 from copy import deepcopy
 from importlib import import_module
+from io import BytesIO
 from unittest.mock import MagicMock, Mock
 
 import pytest
+import requests
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules import config as config_module
 from modules import notification as notif
+from modules.image_host.context import UploadContext
+from modules.image_host.core import UploadFailure
 from modules.image_host.core import UploadResult
+from modules.image_host.diagnostics import safe_current_message
+from modules.image_host.storage_cache import StorageCache
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
 
@@ -30,6 +40,23 @@ THREE_CHANNELS = [
     {'provider': 'lark', 'webhook': 'w1'},
 ]
 WINDOW_TARGET = {'provider': 'window', 'target': '窗口'}
+
+
+@pytest.fixture(autouse=True)
+def isolate_notification_uploads(monkeypatch, tmp_path):
+    """将全部截图通知测试限制在临时缓存与本地合成边界内。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+
+    def forbidden(*args, **kwargs):
+        """禁止真实网络及 netrc 访问，避免测试误读本机凭证。"""
+        pytest.fail('禁止真实网络或 netrc 访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(requests.utils, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
 
 
 def _pipeline():
@@ -637,3 +664,453 @@ def test_success_log_unchanged_without_screenshot(monkeypatch, caplog):
         results = notif.send_notification(config, 'on_end', process_name='demo.exe')
     assert results == [('serverchan', True)]
     assert '通知发送成功 [serverchan]: 标题 demo.exe' in caplog.text
+
+
+class NotificationRaw(BytesIO):
+    """提供真实响应所需的内存流与连接释放接口。"""
+
+    def release_conn(self):
+        """响应消费完成后释放合成连接对应的内存流。"""
+        self.close()
+
+
+@pytest.fixture
+def notification_http(monkeypatch):
+    """仅替换截图和 HTTP 适配器，观察真实事件、查询和通知链路。"""
+    state = {'requests': [], 'contexts': [], 'closed': [], 'images': [],
+             'replies': [], 'responses': [], 'clock': [1700000000.0]}
+    initialize = UploadContext.__init__
+    close = UploadContext.close
+    start_image = UploadContext.start_image
+
+    def observed_init(self, **kwargs):
+        """保留真实缓存，仅注入可控时钟并记录事件实例。"""
+        assert kwargs.get('diagnostics') is False
+        initialize(self, **kwargs, clock=lambda: state['clock'][0])
+        state['contexts'].append(self)
+
+    def observed_close(self):
+        """退出真实事件时记录实例，不替代其状态释放。"""
+        state['closed'].append(self)
+        close(self)
+
+    def observed_start(self):
+        """记录每图独立句柄与期限起点，不改变注册表行为。"""
+        image = start_image(self)
+        state['images'].append((self, image))
+        return image
+
+    def send(adapter, request, **kwargs):
+        """向真实 Requests 会话返回有界合成响应，禁止队列外调用。"""
+        assert safe_current_message(SECRET) is None
+        assert kwargs['stream'] is True
+        assert kwargs['verify'] is True
+        state['requests'].append(request)
+        assert state['replies'], '发生未批准的额外 HTTP 请求'
+        reply = state['replies'].pop(0)
+        if callable(reply):
+            reply = reply()
+        if isinstance(reply, BaseException):
+            raise reply
+        status, payload = reply
+        response = requests.Response()
+        response.status_code = status
+        response.url = request.url
+        response.request = request
+        response.raw = NotificationRaw(json.dumps(payload).encode('utf-8'))
+        state['responses'].append(response)
+        return response
+
+    capture = Mock(side_effect=lambda source, name: CaptureResult(
+        b'png-' + name.encode(), source, name, 2, 3))
+    monkeypatch.setattr(_pipeline(), 'capture', capture)
+    monkeypatch.setattr(UploadContext, '__init__', observed_init)
+    monkeypatch.setattr(UploadContext, 'close', observed_close)
+    monkeypatch.setattr(UploadContext, 'start_image', observed_start)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    state['capture'] = capture
+    yield state
+    assert all(response.raw.closed for response in state['responses'])
+    assert state['closed'] == state['contexts']
+    assert all(context._closed for context in state['contexts'])
+
+
+def _group_response(ids=(13, 14), retention=None):
+    """构造组元数据合成响应，不包含真实账号数据。"""
+    return 200, {'status': 'success', 'data': {
+        'group': {'options': {'file_expire_seconds': retention}},
+        'storages': [{'id': value} for value in ids],
+    }}
+
+
+def _profile_response(default=14):
+    """构造账号默认存储合成响应。"""
+    return 200, {'status': 'success', 'data': {
+        'options': {'default_storage_id': default},
+    }}
+
+
+def _upload_response(url=URL):
+    """提供包含完整签名链接的业务成功响应。"""
+    return 200, {'status': 'success', 'message': SECRET, 'data': {
+        'public_url': url,
+    }}
+
+
+def _http_config(**kwargs):
+    """构造经真实 v2 注册表处理的双目标通知配置。"""
+    return _base_config(
+        targets=[WINDOW_TARGET, {'provider': 'adb', 'target': '第二'}],
+        image_host=[{'provider': 'boltp', 'token': SECRET}], **kwargs)
+
+
+@pytest.mark.parametrize('persist', [True, False])
+def test_http_batch_reuses_context_queries_and_channel_retries(
+        notification_http, monkeypatch, caplog, persist):
+    """冷缓存双图三通道重试只查询一次，写缓存失败也能事件内复用。"""
+    state = notification_http
+    if not persist:
+        def denied(*args, **kwargs):
+            """模拟临时缓存原子写入失败而不替代查询流程。"""
+            raise OSError(SECRET)
+
+        monkeypatch.setattr(StorageCache, '_write_atomic', denied)
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    seen = Counter()
+
+    def notify(title=None, content=None, **params):
+        """每通道第一次失败，第二次成功，保持真实并发重试规则。"""
+        key = params.get('sckey') or params.get('token') or params.get('webhook')
+        seen[key] += 1
+        return _response(500 if seen[key] == 1 else 200)
+
+    sent, notifier, _ = _install_onepush(monkeypatch, notify)
+    config = _http_config(channels=THREE_CHANNELS,
+                          retry={'interval': '0s', 'max_count': 3})
+    before = deepcopy(config)
+    with caplog.at_level(logging.DEBUG):
+        result = notif.send_notification(config, 'on_end', process_name='demo')
+    assert result == [('serverchan', True), ('dingtalk', True), ('lark', True)]
+    assert state['capture'].call_count == 2
+    assert notifier.notify.call_count == 6
+    assert len(state['contexts']) == 1
+    assert [request.method for request in state['requests']] == [
+        'GET', 'GET', 'POST', 'POST']
+    assert [request.url.split('/api/v2')[1]
+            for request in state['requests']] == [
+                '/group', '/user/profile', '/upload', '/upload']
+    assert len(state['images']) == 2
+    assert all(context is state['contexts'][0]
+               for context, _ in state['images'])
+    assert state['images'][0][1] is not state['images'][1][1]
+    assert len({body for _, body in sent}) == 1
+    assert sent[0][1].count(URL) == 2
+    assert config == before
+    assert SECRET not in str(sent) + caplog.text
+    assert URL not in caplog.text
+    if not persist:
+        warning = '存储元数据缓存保存失败'
+        assert sent[0][1].count(warning) == 1
+        assert sent[0][1].count('截图配置提示') == 1
+        assert caplog.text.count(warning) == 1
+    assert not state['replies']
+
+
+def test_http_next_event_uses_new_context_and_only_metadata_disk_cache(
+        notification_http, monkeypatch):
+    """新事件重新截图上传，允许复用有效磁盘元数据而不复用图片结果。"""
+    state = notification_http
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _http_config()
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    assert notif.send_notification(config, 'on_end', process_name='demo')
+    state['clock'][0] += 10
+    next_url = URL + '&event=2'
+    state['replies'] = [_upload_response(next_url), _upload_response(next_url)]
+    assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert state['capture'].call_count == 4
+    assert len(state['contexts']) == 2
+    assert state['contexts'][0] is not state['contexts'][1]
+    assert [request.method for request in state['requests']] == [
+        'GET', 'GET', 'POST', 'POST', 'POST', 'POST']
+    assert next_url not in sent[0][1]
+    assert sent[1][1].count(next_url) == 2
+    assert [image.started_at for _, image in state['images']] == [
+        1700000000.0, 1700000000.0, 1700000010.0, 1700000010.0]
+
+
+@pytest.mark.parametrize('success', [True, False])
+def test_http_registry_warnings_reach_notification_once(
+        notification_http, monkeypatch, caplog, success):
+    """无效手填与期限缩短由真实注册表产生，两种结局均集中提示一次。"""
+    state = notification_http
+    reply = (_upload_response() if success else
+             (200, {'status': 'error', 'message': SECRET}))
+    state['replies'] = [_group_response(retention=5), _profile_response(),
+                        reply, reply]
+    config = _http_config()
+    config['push']['screenshot']['image_host'][0].update(
+        expiration='20s', options={'storage_id': 99})
+    sent, _, _ = _install_onepush(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        assert notif.send_notification(config, 'on_end', process_name='demo')
+    body = sent[0][1]
+    warnings = ('手填储存驱动不可用，已自动替代', '保存期限已按图床上限缩短')
+    assert body.count('截图配置提示') == 1
+    assert body.index(warnings[0]) < body.index(warnings[1])
+    for warning in warnings:
+        assert body.count(warning) == caplog.text.count(warning) == 1
+    assert ('截图上传失败：图床拒绝上传' in body) is not success
+    assert (URL in body) is success
+    assert len(state['requests']) == 4
+    assert SECRET not in str(sent) + caplog.text
+    assert URL not in caplog.text
+
+
+@pytest.mark.parametrize('provider, token', [
+    ('beeimg_cn', SECRET), ('boltp', 'FAKE_OTHER_CREDENTIAL'),
+])
+def test_http_fallback_isolates_identity_and_preserves_success(
+        notification_http, monkeypatch, caplog, provider, token):
+    """前站失败后备用成功，各身份只查询一次且历史失败不污染图片。"""
+    state = notification_http
+    rejected = (200, {'status': 'error', 'message': SECRET})
+    state['replies'] = [
+        _group_response(), _profile_response(), rejected,
+        _group_response((21,)), _profile_response(21), _upload_response(),
+        rejected, _upload_response(),
+    ]
+    config = _http_config()
+    config['push']['screenshot']['image_host'].append(
+        {'provider': provider, 'token': token})
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+    before = deepcopy(config)
+    sent, _, _ = _install_onepush(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert config == before
+    assert len(state['contexts']) == 1
+    requests_seen = state['requests']
+    assert [request.method for request in requests_seen] == [
+        'GET', 'GET', 'POST', 'GET', 'GET', 'POST', 'POST', 'POST']
+    assert requests_seen[0].headers['Authorization'] == 'Bearer ' + SECRET
+    assert requests_seen[3].headers['Authorization'] == 'Bearer ' + token
+    assert ('beeimg.cn' in requests_seen[3].url) is (provider == 'beeimg_cn')
+    for title, body in sent:
+        assert title.count(URL) == body.count(URL) == 2
+        assert '截图上传失败' not in title + body
+        assert SECRET not in title + body
+    assert SECRET not in caplog.text and token not in caplog.text
+    assert URL not in caplog.text
+    assert not state['replies']
+
+
+def test_http_recovery_budget_and_deadline_are_per_image(
+        notification_http, monkeypatch, caplog):
+    """两张图各允许一次恢复，期限各自起算而同图重传不延长。"""
+    state = notification_http
+    rejected = (200, {'status': 'error', 'message': '不存在的储存驱动'})
+
+    def next_image():
+        """在第一图成功响应时推进时钟，区分后续图片的独立起点。"""
+        state['clock'][0] += 10
+        return _upload_response()
+
+    state['replies'] = [
+        _group_response(), _profile_response(), rejected,
+        _group_response((21,)), _profile_response(21), next_image,
+        rejected, _group_response((22,)), _profile_response(22),
+        _upload_response(),
+    ]
+    config = _http_config()
+    config['push']['screenshot']['image_host'][0]['expiration'] = '30s'
+    sent, _, _ = _install_onepush(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        assert notif.send_notification(config, 'on_end', process_name='demo')
+    posts = [request for request in state['requests'] if request.method == 'POST']
+    assert len(posts) == 4
+    assert len(state['requests']) == 10
+    assert len(state['contexts']) == 1
+    assert [image.started_at for _, image in state['images']] == [
+        1700000000.0, 1700000010.0]
+    deadlines = []
+    for request in posts:
+        part = request.body.split(b'name="expired_at"\r\n\r\n')[1]
+        deadlines.append(part.split(b'\r\n')[0])
+    assert deadlines[0] == deadlines[1]
+    assert deadlines[2] == deadlines[3]
+    assert deadlines[0] != deadlines[2]
+    assert sent[0][1].count(URL) == 2
+    assert '截图上传失败' not in sent[0][1]
+    assert '不存在的储存驱动' not in str(sent) + caplog.text
+    assert SECRET not in str(sent) + caplog.text
+    assert URL not in caplog.text
+    assert not state['replies']
+
+
+@pytest.mark.parametrize('case, expected, posts', [
+    ('transport', '图床网络传输失败', 2),
+    ('http', '图床 HTTP 请求失败', 2),
+    ('business', '图床拒绝上传', 2),
+    ('response', '图床响应无效', 2),
+    ('lookup', '储存驱动查询失败', 0),
+    ('unavailable', '储存驱动不可用', 0),
+    ('config', '图床配置无效', 0),
+])
+def test_http_failure_categories_visible_without_server_diagnostics(
+        notification_http, monkeypatch, caplog, case, expected, posts):
+    """真实 HTTP 分类进入通知固定摘要，失败查询事件内复用且不泄露原文。"""
+    state = notification_http
+    config = _http_config()
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+    if case == 'lookup':
+        state['replies'] = [(200, {'status': 'success', 'data': SECRET})]
+    elif case == 'unavailable':
+        state['replies'] = [_group_response(())]
+    elif case == 'config':
+        config['push']['screenshot']['image_host'][0]['expiration'] = SECRET
+    else:
+        replies = {
+            'transport': requests.exceptions.ReadTimeout(SECRET),
+            'http': (503, {'message': SECRET}),
+            'business': (200, {'status': 'error', 'message': SECRET}),
+            'response': (200, {'message': SECRET}),
+        }
+        state['replies'] = [_group_response(), _profile_response(),
+                            replies[case], replies[case]]
+    sent, _, _ = _install_onepush(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        result = notif.send_notification(config, 'on_end', process_name='demo')
+    assert result == [('serverchan', True)]
+    assert state['capture'].call_count == 2
+    assert len(state['contexts']) == 1
+    assert sum(request.method == 'POST' for request in state['requests']) == posts
+    if case in ('lookup', 'unavailable'):
+        assert len(state['requests']) == 1
+    if case == 'config':
+        assert state['requests'] == []
+    summary = '截图上传失败：' + expected
+    assert sent[0][0].count(summary) == sent[0][1].count(summary) == 2
+    assert SECRET not in str(sent) + caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+    assert not state['replies']
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['capture', 'http'])
+def test_http_control_signal_closes_after_diagnostic_scope(
+        notification_http, monkeypatch, signal_type, stage):
+    """真实通知中控制信号原对象传播，批次关闭晚于内层诊断作用域退出。"""
+    state = notification_http
+    signal = signal_type(SECRET)
+    state['replies'] = [_group_response(), _profile_response(), _upload_response()]
+    if stage == 'capture':
+        state['capture'].side_effect = [
+            CaptureResult(b'png-first', 'window', '窗口', 2, 3), signal]
+    else:
+        state['replies'].append(signal)
+    close = UploadContext.close
+    observed = []
+
+    def closing(self):
+        """关闭时应已恢复调用方外层作用域，不再持有通知内层诊断状态。"""
+        assert safe_current_message(SECRET) == '[已隐藏]'
+        observed.append(self)
+        close(self)
+
+    monkeypatch.setattr(UploadContext, 'close', closing)
+    sent, _, getter = _install_onepush(monkeypatch)
+    diagnostics = import_module('modules.image_host.diagnostics')
+    with diagnostics.diagnostic_scope((SECRET,)):
+        with pytest.raises(signal_type) as caught:
+            notif.send_notification(_http_config(), 'on_end', process_name='demo')
+        assert caught.value is signal
+    assert len(observed) == 1
+    assert observed == state['contexts']
+    assert safe_current_message(SECRET) is None
+    assert sent == []
+    getter.assert_not_called()
+
+
+@pytest.mark.parametrize('mode', [
+    'disabled', 'capture_disabled', 'no_channels', 'bad_template',
+    'empty', 'invalid',
+])
+def test_notification_early_paths_have_no_context_or_cache(
+        notification_http, monkeypatch, tmp_path, mode):
+    """真实通知提前返回或无有效目标时，不触发上下文、凭证及缓存查询。"""
+    state = notification_http
+    config = _http_config()
+    template = config['push']['templates']['on_end']
+    if mode == 'disabled':
+        template['enable'] = False
+    elif mode == 'capture_disabled':
+        template['capture_screenshot'] = False
+    elif mode == 'no_channels':
+        config['push']['push_channel_settings']['channels'] = []
+    elif mode == 'bad_template':
+        template['content'] = '{unknown_variable}'
+    else:
+        config['push']['screenshot']['targets'] = [] if mode == 'empty' else [None]
+
+    def forbidden(*args, **kwargs):
+        """所有上传前置副作用都必须保持未调用。"""
+        pytest.fail('提前返回路径触发上传副作用')
+
+    context_module = import_module('modules.image_host.context')
+    monkeypatch.setattr(context_module, 'resolve_token', forbidden)
+    monkeypatch.setattr(StorageCache, 'identity', forbidden)
+    monkeypatch.setattr(StorageCache, 'load', forbidden)
+    monkeypatch.setattr(StorageCache, 'save', forbidden)
+    _install_onepush(monkeypatch)
+    notif.send_notification(config, 'on_end', process_name='demo')
+    assert state['contexts'] == state['requests'] == []
+    state['capture'].assert_not_called()
+    assert not (tmp_path / 'local').exists()
+
+
+def test_notification_keeps_backup_credentials_lazy(notification_http, monkeypatch):
+    """首站成功时不提前解析备用项凭证，双图复用首站凭证快照。"""
+    state = notification_http
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    config = _http_config()
+    config['push']['screenshot']['image_host'].append({
+        'provider': 'beeimg_cn', 'token': '${UNUSED_SYNTHETIC_BACKUP}'})
+    module = import_module('modules.image_host.context')
+    resolve = module.resolve_token
+    values = []
+
+    def observed(value):
+        """记录实际凭证解析并拒绝任何未尝试项的访问。"""
+        assert value == SECRET
+        values.append(value)
+        return resolve(value)
+
+    monkeypatch.setattr(module, 'resolve_token', observed)
+    _install_onepush(monkeypatch)
+    assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert values == [SECRET]
+    assert len(state['requests']) == 4
+
+
+@pytest.mark.parametrize('ordinary', [False, True])
+def test_notification_untrusted_failure_fields_and_unknown_exception(
+        monkeypatch, caplog, ordinary):
+    """真实通知入口仅展示重建摘要，伪造原文和普通异常都不可进入日志。"""
+    failure = UploadResult(False, None, None, (SECRET,), (
+        UploadFailure(SECRET, 'http_failed', SECRET, diagnostic=SECRET),))
+    capture, upload = _install_boundaries(monkeypatch, upload_result=failure)
+    if ordinary:
+        upload.side_effect = RuntimeError(SECRET)
+    config = _base_config()
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+    sent, _, _ = _install_onepush(monkeypatch)
+    with caplog.at_level(logging.DEBUG):
+        assert notif.send_notification(config, 'on_end', process_name='demo')
+    expected = '截图上传失败' if ordinary else '截图上传失败：图床 HTTP 请求失败'
+    assert sent == [('标题 ' + expected, '正文 demo\n\n' + expected)]
+    assert SECRET not in str(sent) + caplog.text
+    assert capture.call_count == upload.call_count == 1
