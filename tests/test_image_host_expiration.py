@@ -500,3 +500,27 @@ def test_history_flag_is_keyword_only():
         previous_shortened=False) == expected
     with pytest.raises(TypeError):
         compute(10, START, None, None, START, str, False)
+
+
+@pytest.mark.parametrize('expired_at', [None, '2030-01-02 03:04:05'])
+def test_prepared_options_preserve_mapping_and_separate_expiration(expired_at):
+    """内部容器浅复制选项，期限属性独立且不承担安全授权职责。"""
+    prepared_type = getattr(expiration(), 'PreparedV2Options', None)
+    assert prepared_type is not None
+    options = {'storage_id': 7, 'nested': {'items': [1, 2]},
+               'expired_at': '仍是不支持的原生选项'}
+    original = deepcopy(options)
+    prepared = prepared_type(options, expired_at=expired_at)
+    assert isinstance(prepared, dict)
+    assert prepared == options == original
+    assert prepared is not options
+    assert prepared['nested'] is options['nested']
+    assert prepared.expired_at == expired_at
+    copied = deepcopy(prepared)
+    assert copied.expired_at == expired_at
+    assert copied == prepared
+    assert copied['nested'] is not prepared['nested']
+    assert prepared_type(options).expired_at is None
+    parameters = signature(prepared_type).parameters
+    assert list(parameters) == ['options', 'expired_at']
+    assert parameters['expired_at'].kind is parameters['expired_at'].KEYWORD_ONLY

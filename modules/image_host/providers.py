@@ -7,12 +7,16 @@ https://catbox.moe/sharexcode.txt；只核验官方文档，未做真实上传�
 """
 
 from collections.abc import Mapping
+from datetime import datetime
 import logging
+import re
 
 import requests
 
 from .core import ImageHostError
 from .core import validate_image_url
+from .expiration import PreparedV2Options
+from .v2_http import request_json
 
 
 LOGGER = logging.getLogger(__name__)
@@ -234,7 +238,41 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     raise ImageHostError('upload_failed', '')
 
 
-def _upload_v2_storage(endpoint, label, image_bytes, filename, token,
+def validate_v2_options(options, *, require_storage=True):
+    """无日志校验两站通用选项，恢复用途仅可跳过存储字段检查。"""
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission not in (0, 1) or 'is_public' in options):
+        raise ImageHostError('invalid_options', '')
+    if require_storage:
+        storage_id = options.get('storage_id')
+        if (not isinstance(storage_id, int) or isinstance(storage_id, bool)
+                or storage_id <= 0):
+            raise ImageHostError('invalid_options', '')
+    if 'album_id' in options:
+        album_id = options['album_id']
+        if not isinstance(album_id, int) or isinstance(album_id, bool):
+            raise ImageHostError('invalid_options', '')
+
+
+def _prepared_expiration(options):
+    """只读取内部容器属性，拒绝非字符串和不符合契约的日期。"""
+    if not isinstance(options, PreparedV2Options) or options.expired_at is None:
+        return None
+    value = options.expired_at
+    if (not isinstance(value, str)
+            or re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2} '
+                            r'[0-9]{2}:[0-9]{2}:[0-9]{2}', value) is None):
+        raise ImageHostError('invalid_options', '')
+    try:
+        datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+        return value
+    except ValueError:
+        pass
+    raise ImageHostError('invalid_options', '')
+
+
+def _upload_v2_storage(provider, label, image_bytes, filename, token,
                        options) -> str:
     """按 v2 图床契约上传内存 PNG，返回经核心校验的完整直链。
 
@@ -258,55 +296,29 @@ def _upload_v2_storage(endpoint, label, image_bytes, filename, token,
     每次最多发送一次请求；连接和读取超时不是整个操作的硬总时限，超时
     也不能保证服务端尚未保存图片。
     """
-    permission = options.get('permission', 1)
-    if (not isinstance(permission, int) or isinstance(permission, bool)
-            or permission not in (0, 1) or 'is_public' in options):
-        raise ImageHostError('invalid_options', '')
-    storage_id = options.get('storage_id')
-    if (not isinstance(storage_id, int) or isinstance(storage_id, bool)
-            or storage_id <= 0):
-        raise ImageHostError('invalid_options', '')
-
-    data = {'storage_id': storage_id, 'is_public': str(permission)}
+    validate_v2_options(options)
+    expired_at = _prepared_expiration(options)
+    data = {'storage_id': options['storage_id'],
+            'is_public': str(options.get('permission', 1))}
     if 'album_id' in options:
-        album_id = options['album_id']
-        if not isinstance(album_id, int) or isinstance(album_id, bool):
-            raise ImageHostError('invalid_options', '')
-        data['album_id'] = album_id
+        data['album_id'] = options['album_id']
+    if expired_at is not None:
+        data['expired_at'] = expired_at
     if any(name not in {'permission', 'storage_id', 'album_id'}
            for name in options):
         LOGGER.warning('%s 存在不支持的其他选项，已忽略', label)
 
-    headers = {'Accept': 'application/json'}
-    if token:
-        headers['Authorization'] = 'Bearer ' + token
-    try:
-        with requests.Session() as session:
-            with session.post(
-                    endpoint,
-                    data=data,
-                    files={'file': (filename, image_bytes, 'image/png')},
-                    headers=headers,
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    verify=True,
-                    stream=True,
-                    allow_redirects=False) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '')
-                payload = response.json()
-                if (not isinstance(payload, Mapping)
-                        or payload.get('status') != V2_SUCCESS_STATUS):
-                    raise ImageHostError('upload_failed', '')
-                result = payload.get('data')
-                if not isinstance(result, Mapping):
-                    raise ImageHostError('upload_failed', '')
-                return validate_image_url(result.get('public_url'))
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
-    raise ImageHostError('upload_failed', '')
+    payload = request_json(
+        provider, 'upload', token, data=data,
+        files={'file': (filename, image_bytes, 'image/png')})
+    result = payload.get('data')
+    if isinstance(result, Mapping):
+        try:
+            return validate_image_url(result.get('public_url'))
+        except ImageHostError:
+            pass
+    # 保留核心校验，仅将两站无效直链映射为响应错误。
+    raise ImageHostError('invalid_response', '', stage='upload')
 
 
 def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
@@ -318,7 +330,7 @@ def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
     文档示例编号在该账号上会返回“不存在的储存驱动”。
     """
     return _upload_v2_storage(
-        BEEIMG_CN_ENDPOINT, 'BeeIMG.cn', image_bytes, filename, token, options)
+        'beeimg_cn', 'BeeIMG.cn', image_bytes, filename, token, options)
 
 
 def upload_boltp(image_bytes, filename, token, options) -> str:
@@ -331,4 +343,4 @@ def upload_boltp(image_bytes, filename, token, options) -> str:
     options 显式提供账号实际可用存储编号。
     """
     return _upload_v2_storage(
-        BOLTP_ENDPOINT, 'Boltp', image_bytes, filename, token, options)
+        'boltp', 'Boltp', image_bytes, filename, token, options)
