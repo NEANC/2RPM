@@ -9,6 +9,7 @@ from copy import deepcopy
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
+from io import BytesIO
 import json
 
 import pytest
@@ -163,14 +164,71 @@ def client(monkeypatch, request):
     monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
     if 'real_http' not in request.fixturenames:
         monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
-        monkeypatch.setattr(requests, 'Session', factory.create)
+        monkeypatch.setattr(http(), '_V2Session', factory.create)
     return factory
+
+
+class RecordingRaw(BytesIO):
+    """用真实内存流记录读取和资源释放，不访问网络。"""
+
+    def __init__(self, body, events, error=None):
+        """保存合成正文、读取异常及共享事件记录。"""
+        super().__init__(body)
+        self.events = events
+        self.error = error
+        self.reads = 0
+        self.bytes_read = 0
+        self.releases = 0
+
+    def read(self, size=-1):
+        """记录实际读取量，或原样抛出合成异常。"""
+        self.reads += 1
+        if self.error is not None:
+            raise self.error
+        chunk = super().read(size)
+        self.bytes_read += len(chunk)
+        return chunk
+
+    def close(self):
+        """执行真实内存流关闭并记录先后顺序。"""
+        super().close()
+        self.events.append('raw_close')
+
+    def release_conn(self):
+        """记录真实 Response.close 发起的连接释放调用。"""
+        self.releases += 1
+        self.events.append('raw_release')
 
 
 @pytest.fixture
 def real_http(monkeypatch, client):
     """保留真实请求准备流程，仅在适配器边界返回内存响应。"""
-    state = {'calls': [], 'netrc': [], 'error': None}
+    state = {'calls': [], 'netrc': [], 'error': None, 'raw': None,
+             'status': 200, 'location': None, 'events': [],
+             'response': None, 'reads_at_enter': None}
+    original_enter = requests.Response.__enter__
+    original_response_close = requests.Response.close
+    original_session_close = requests.sessions.Session.close
+
+    def enter(response):
+        """观察调用方取得响应时的读取次数，保留原上下文行为。"""
+        if response.raw is not None:
+            state['reads_at_enter'] = response.raw.reads
+        return original_enter(response)
+
+    def response_close(response):
+        """执行真实响应关闭后记录，不用空替身伪造释放。"""
+        original_response_close(response)
+        state['events'].append('response_close')
+
+    def session_close(session):
+        """执行真实适配器关闭后记录会话释放。"""
+        original_session_close(session)
+        state['events'].append('session_close')
+
+    monkeypatch.setattr(requests.Response, '__enter__', enter)
+    monkeypatch.setattr(requests.Response, 'close', response_close)
+    monkeypatch.setattr(requests.sessions.Session, 'close', session_close)
     monkeypatch.setattr(requests.sessions.os, 'environ', {
         'HTTPS_PROXY': 'http://synthetic-proxy.invalid:8080',
         'HTTP_PROXY': 'http://synthetic-proxy.invalid:8080',
@@ -188,11 +246,17 @@ def real_http(monkeypatch, client):
         if state['error'] is not None:
             raise state['error']
         response = requests.Response()
-        response.status_code = 200
+        response.status_code = state['status']
         response.url = prepared.url
         response.request = prepared
-        response._content = b'{"status":"success","data":{}}'
-        response._content_consumed = True
+        if state['location'] is not None:
+            response.headers['Location'] = state['location']
+        if state['raw'] is None:
+            response._content = b'{"status":"success","data":{}}'
+            response._content_consumed = True
+        else:
+            response.raw = state['raw']
+        state['response'] = response
         return response
 
     monkeypatch.setattr(requests.sessions, 'get_netrc_auth', synthetic_netrc)
@@ -241,6 +305,80 @@ def test_real_prepared_auth_and_environment(
     assert kwargs['stream'] is True
     assert retries == 0
     assert (data, files) == before
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('stage', PATHS)
+@pytest.mark.parametrize('token', ['', SECRET])
+@pytest.mark.parametrize('status', [301, 302, 303, 307, 308, 400, 401, 500])
+@pytest.mark.parametrize('read_error', [False, True])
+def test_real_non_success_never_prereads(
+        real_http, caplog, provider, stage, token, status, read_error):
+    """非成功响应在任何正文读取前分类，并实际先释放响应资源。"""
+    error = requests.exceptions.ReadTimeout(SECRET) if read_error else None
+    raw = RecordingRaw(b'x' * (LIMIT + 1), real_http['events'], error)
+    real_http.update(status=status, location='/not-followed', raw=raw)
+    with pytest.raises(ImageHostError) as caught:
+        http().request_json(provider, stage, token)
+    assert (caught.value.code, caught.value.http_status,
+            raw.reads, raw.bytes_read) == ('http_failed', status, 0, 0)
+    assert_safe(caught.value, 'http_failed', stage, status)
+    assert real_http['reads_at_enter'] == 0
+    assert len(real_http['calls']) == 1
+    prepared, kwargs, retries = real_http['calls'][0]
+    assert prepared.headers.get('Authorization') == (
+        'Bearer ' + token if token else None)
+    assert real_http['netrc'] == []
+    assert prepared.url == BASES[provider] + PATHS[stage]
+    assert prepared.method == ('POST' if stage == 'upload' else 'GET')
+    assert SECRET not in prepared.url + str(prepared.body)
+    assert kwargs['stream'] is True
+    assert kwargs['verify'] is True
+    assert kwargs['timeout'] == (5, 15)
+    assert retries == 0
+    assert real_http['response'].next is None
+    assert raw.closed
+    assert raw.releases == 1
+    assert real_http['events'] == [
+        'raw_close', 'raw_release', 'response_close', 'session_close']
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('stage', PATHS)
+@pytest.mark.parametrize('phase', ['request', 'read'])
+@pytest.mark.parametrize('error_type', [requests.exceptions.ReadTimeout,
+                                       KeyboardInterrupt, SystemExit])
+def test_real_transport_and_control_cleanup(
+        real_http, caplog, provider, stage, phase, error_type):
+    """真实会话保留安全传输分类及控制信号身份和确定性释放。"""
+    error = error_type(SECRET)
+    raw = RecordingRaw(b'', real_http['events'], error)
+    if phase == 'request':
+        real_http['error'] = error
+    else:
+        real_http['raw'] = raw
+    expected = ImageHostError if isinstance(error, Exception) else error_type
+    with pytest.raises(expected) as caught:
+        http().request_json(provider, stage, SECRET)
+    if expected is ImageHostError:
+        assert_safe(caught.value, 'transport_failed', stage,
+                    200 if phase == 'read' else None)
+    else:
+        assert caught.value is error
+    assert len(real_http['calls']) == 1
+    assert real_http['netrc'] == []
+    if phase == 'read':
+        assert raw.reads == 1
+        assert raw.closed
+        assert raw.releases == 1
+        assert real_http['events'] == [
+            'raw_close', 'raw_release', 'response_close', 'session_close']
+    else:
+        assert real_http['response'] is None
+        assert real_http['events'] == ['session_close']
+        raw.close()
     assert not caplog.records
 
 

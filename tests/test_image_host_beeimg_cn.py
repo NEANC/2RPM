@@ -144,6 +144,7 @@ def client(monkeypatch):
     fake = Session()
     monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
     monkeypatch.setattr(requests, 'Session', fake.create)
+    monkeypatch.setattr('modules.image_host.v2_http._V2Session', fake.create)
     return fake
 
 
