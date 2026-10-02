@@ -91,6 +91,89 @@ def test_comments_explain_independent_targets_and_template_variables():
         assert '全部目标' in comments['templates'][name]
 
 
+def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
+    """实际生成的配置注释说明自动存储、期限入口及服务端限制。"""
+    path = tmp_path / 'default.yaml'
+    config_module.create_default_config(str(path))
+    text = path.read_text(encoding='utf-8')
+    for fragment in (
+            '未填 options.storage_id 时自动获取账号可用存储',
+            '优先有效账号默认存储，否则取列表第一项；匿名只查 group',
+            '手填合法可用 ID 优先；非法或离表时取得新元数据后选择可用 ID',
+            '替代仅用于本次操作，不写回用户配置',
+            '查询失败或无可用存储转下一图床，不猜值',
+            'expiration 位于图床项顶层，不放入 options',
+            '小写 w/d/h/m/s 正整数降序组合，每单位一次；1d 为 24 小时',
+            '未配置沿用站点策略；不支持期限的图床忽略合法 expiration 并固定告警',
+            '两站将期限转换为本机本地时区的 expired_at 字符串',
+            '正数组期限仅作保守客户端缩短依据；0 不缩短，但不保证永久保存',
+            '服务端时区、优先级和实际删除时间无保证',
+            'expiration 与 options.expired_at 同时填写为冲突'):
+        assert fragment in text
+    hosts = config_module.COMMENTS['push']['screenshot']['image_host']
+    assert '必须提供 options.storage_id' not in hosts
+    assert '必须显式填写' not in hosts
+    examples = [YAML().load(line.split('示例: ', 1)[1])
+                for line in hosts.splitlines() if '示例: ' in line]
+    for provider, token, expiration in (
+            ('beeimg_cn', '${BEEIMG_CN_TOKEN}', '7d'),
+            ('boltp', '${BOLTP_TOKEN}', '1d12h')):
+        example = next(item for item in examples
+                       if item['provider'] == provider)
+        assert example['token'] == token
+        assert example['expiration'] == expiration
+        assert 'expiration' not in example.get('options', {})
+        assert 'expired_at' not in example.get('options', {})
+        assert 'storage_id' not in example.get('options', {})
+
+
+@pytest.mark.parametrize('provider, variable, expiration', [
+    ('beeimg_cn', 'BEEIMG_CN_TOKEN', '7d'),
+    ('boltp', 'BOLTP_TOKEN', '1d12h'),
+])
+@pytest.mark.parametrize('storage_id', [-1, 'invalid-id', False])
+def test_expiration_and_invalid_storage_survive_yaml_round_trip(
+        tmp_path, monkeypatch, provider, variable, expiration, storage_id):
+    """真实加载写回保留期限原串、环境引用及运行时才替代的非法编号。"""
+    monkeypatch.setenv(variable, 'synthetic-expanded-token-must-not-appear')
+    token = '${' + variable + '}'
+    screenshot = {
+        'targets': [{'provider': 'window', 'target': 'Synthetic Window'}],
+        'image_host': [{
+            'provider': provider, 'token': token, 'expiration': expiration,
+            'options': {
+                'storage_id': storage_id,
+                'nested': {'flag': False, 'values': ['keep', 0]},
+            },
+        }],
+    }
+    expected = copy.deepcopy(screenshot)
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    saved = None
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        persisted = _read_config(path)['push']['screenshot']
+        assert result['push']['screenshot'] == expected
+        assert persisted == expected
+        host = persisted['image_host'][0]
+        assert isinstance(host['expiration'], str)
+        assert host['expiration'] == expiration
+        assert host['token'] == token
+        assert type(host['options']['storage_id']) is type(storage_id)
+        for key in ('targets', 'image_host'):
+            assert persisted[key].fa.flow_style() is False
+            assert all(item.fa.flow_style() is True for item in persisted[key])
+        assert host['options'].fa.flow_style() is True
+        assert host['options']['nested'].fa.flow_style() is True
+        assert host['options']['nested']['values'].fa.flow_style() is True
+        text = path.read_text(encoding='utf-8')
+        assert f'- {{provider: {provider}, token: \'{token}\'' in text
+        assert 'synthetic-expanded-token-must-not-appear' not in text
+        if saved is not None:
+            assert path.read_bytes() == saved
+        saved = path.read_bytes()
+
+
 def test_missing_fields_are_completed_without_logging_host_values(
         tmp_path, caplog):
     """真实加载补齐缺省开关且不把截图默认映射写入日志。"""
