@@ -12,7 +12,7 @@ from collections import Counter
 from copy import deepcopy
 from importlib import import_module
 from io import BytesIO
-from unittest.mock import MagicMock, Mock
+from unittest.mock import MagicMock, Mock, PropertyMock
 
 import pytest
 import requests
@@ -40,6 +40,8 @@ THREE_CHANNELS = [
     {'provider': 'lark', 'webhook': 'w1'},
 ]
 WINDOW_TARGET = {'provider': 'window', 'target': '窗口'}
+PUSH_BUSINESS_TEXT = '合成服务端业务原文_8421'
+PUSH_FAILURE_TEXT = f'{SECRET} {URL} {PUSH_BUSINESS_TEXT}'
 
 
 @pytest.fixture(autouse=True)
@@ -1114,3 +1116,339 @@ def test_notification_untrusted_failure_fields_and_unknown_exception(
     assert sent == [('标题 ' + expected, '正文 demo\n\n' + expected)]
     assert SECRET not in str(sent) + caplog.text
     assert capture.call_count == upload.call_count == 1
+
+
+def _push_response(status=200, body=None):
+    """构造仅在内存中解析的真实响应，所有业务原文均为合成数据。"""
+    response = requests.Response()
+    response.status_code = status
+    response.encoding = 'utf-8'
+    response._content = json.dumps(body, ensure_ascii=False).encode('utf-8')
+    return response
+
+
+def _assert_push_logs_safe(caplog):
+    """检查项目日志的消息、原始参数及异常附件均不携带合成秘密。"""
+    records = [record for record in caplog.records
+               if record.name.startswith('modules.')]
+    assert records
+    for record in records:
+        assert record.exc_info is None
+        assert not record.exc_text
+        text = record.getMessage() + str(record.msg) + repr(record.args)
+        for secret in (SECRET, URL, 'FAKE_SIGNED_KEY', PUSH_BUSINESS_TEXT):
+            assert secret not in text
+
+
+@pytest.mark.parametrize('case, category', [
+    ('exception', '客户端发送失败'),
+    ('http', 'HTTP 请求失败（HTTP 503）'),
+    ('business', '业务拒绝'),
+])
+def test_screenshot_send_failure_redacts_original_diagnostics(
+        monkeypatch, caplog, case, category):
+    """独立复现异常、HTTP 正文和业务消息泄露，要求固定失败摘要。"""
+    _, notifier, _ = _install_onepush(monkeypatch)
+    if case == 'exception':
+        notifier.notify.side_effect = RuntimeError(PUSH_FAILURE_TEXT)
+    else:
+        notifier.notify.side_effect = None
+        notifier.notify.return_value = _push_response(
+            503 if case == 'http' else 200,
+            {'code': 1, 'message': PUSH_FAILURE_TEXT})
+    channel = {'provider': 'serverchan', 'sckey': SECRET}
+    before = deepcopy(channel)
+    with caplog.at_level(logging.DEBUG):
+        result = notif._notify_single_channel(
+            channel, PUSH_FAILURE_TEXT, PUSH_FAILURE_TEXT, 0, 1,
+            screenshot_count=1)
+    assert result is False
+    assert channel == before
+    assert notifier.notify.call_count == 1
+    _assert_push_logs_safe(caplog)
+    assert category in caplog.text
+
+
+@pytest.mark.parametrize('body', [
+    {'errcode': 1, 'errmsg': PUSH_FAILURE_TEXT},
+    {'errcode': PUSH_FAILURE_TEXT, 'errmsg': PUSH_FAILURE_TEXT},
+    {'code': 1, 'message': PUSH_FAILURE_TEXT},
+    {'code': 1, 'reason': PUSH_FAILURE_TEXT},
+    {'code': 1, 'info': PUSH_FAILURE_TEXT},
+    {'code': PUSH_FAILURE_TEXT, 'message': PUSH_FAILURE_TEXT},
+    {'success': False, 'message': PUSH_FAILURE_TEXT},
+    {'success': False, 'reason': PUSH_FAILURE_TEXT},
+    {'success': False, 'info': PUSH_FAILURE_TEXT},
+])
+def test_screenshot_business_rejection_has_fixed_summary(
+        monkeypatch, caplog, body):
+    """所有旧业务拒绝分支只记录固定类别，不输出消息或动态业务码。"""
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = _push_response(body=body)
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    _assert_push_logs_safe(caplog)
+    failures = [record.getMessage() for record in caplog.records
+                if record.levelno == logging.ERROR]
+    assert failures == [
+        '通道 [serverchan] 通知发送失败 (尝试 1/1): 业务拒绝']
+
+
+@pytest.mark.parametrize('stage', ['get_notifier', 'notify'])
+def test_screenshot_client_failure_never_formats_exception(
+        monkeypatch, caplog, stage):
+    """截图路径不得为失败日志调用异常的 str 或 repr。"""
+    formatted = []
+
+    class SensitiveError(RuntimeError):
+        """记录任何异常格式化尝试。"""
+
+        def __str__(self):
+            """记录字符串转换并提供合成敏感原文。"""
+            formatted.append('str')
+            return PUSH_FAILURE_TEXT
+
+        def __repr__(self):
+            """记录表示转换并提供合成敏感原文。"""
+            formatted.append('repr')
+            return PUSH_FAILURE_TEXT
+
+    _, notifier, getter = _install_onepush(monkeypatch)
+    boundary = getter if stage == 'get_notifier' else notifier.notify
+    boundary.side_effect = SensitiveError()
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    assert formatted == []
+    _assert_push_logs_safe(caplog)
+    assert '客户端发送失败' in caplog.text
+
+
+def test_screenshot_http_failure_does_not_read_text(monkeypatch, caplog):
+    """非 2xx 安全判定不读取响应正文，正文属性异常不能影响重试结果。"""
+    reads = []
+
+    class GuardedResponse(requests.Response):
+        """禁止读取正文的合成 HTTP 失败响应。"""
+
+        @property
+        def text(self):
+            """任何正文访问都记录并抛出含合成秘密的普通异常。"""
+            reads.append('text')
+            raise RuntimeError(PUSH_FAILURE_TEXT)
+
+    response = GuardedResponse()
+    response.status_code = 503
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = response
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    assert reads == []
+    _assert_push_logs_safe(caplog)
+    assert 'HTTP 请求失败（HTTP 503）' in caplog.text
+
+
+@pytest.mark.parametrize('status', [None, '503', SECRET, True, 503.0, 99, 600])
+def test_screenshot_invalid_http_status_fails_safely(
+        monkeypatch, caplog, status):
+    """只接受范围内的原生整数状态码，非法状态安全失败且不动态回显。"""
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = _push_response(status, {'code': 0})
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    _assert_push_logs_safe(caplog)
+    assert '响应判定失败' in caplog.text
+
+
+@pytest.mark.parametrize('status', [100, 199, 300, 503, 599])
+def test_screenshot_valid_http_failure_status_is_visible(
+        monkeypatch, caplog, status):
+    """有效非 2xx 状态码保留诊断价值，但响应正文不可进入日志。"""
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = _push_response(status, PUSH_FAILURE_TEXT)
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    _assert_push_logs_safe(caplog)
+    assert f'HTTP 请求失败（HTTP {status}）' in caplog.text
+
+
+@pytest.mark.parametrize('case', ['none', 'unknown', 'status_error', 'json_error'])
+def test_screenshot_unknown_response_fails_safely(monkeypatch, caplog, case):
+    """未知对象和响应判定普通异常必须在通道内安全失败，不能上抛泄密。"""
+    response = _response()
+    if case == 'none':
+        response = None
+    elif case == 'unknown':
+        response = object()
+    elif case == 'status_error':
+        type(response).status_code = PropertyMock(
+            side_effect=RuntimeError(PUSH_FAILURE_TEXT))
+    else:
+        response.json.side_effect = RuntimeError(PUSH_FAILURE_TEXT)
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = response
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is False
+    _assert_push_logs_safe(caplog)
+    assert ('未收到响应' if case == 'none' else '响应判定失败') in caplog.text
+
+
+@pytest.mark.parametrize('status, body', [
+    (200, {'errcode': 0}), (200, {'code': 0}), (200, {'code': 200}),
+    (200, {'success': True}), (200, {'success': 0}),
+    (204, None), (299, []),
+])
+def test_screenshot_success_retains_legacy_response_semantics(
+        monkeypatch, caplog, status, body):
+    """合法 2xx 及原业务成功规则保持不变，成功日志继续省略标题。"""
+    response = _push_response(status, body)
+    assert notif._is_push_successful(response) == (True, '')
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = response
+    with caplog.at_level(logging.INFO):
+        assert notif._notify_single_channel(
+            CHANNELS[0], URL, URL, 0, 1, screenshot_count=1) is True
+    _assert_push_logs_safe(caplog)
+    assert '通知发送成功 [serverchan]（含截图结果，截图项 1）' in caplog.text
+
+
+def test_screenshot_non_json_2xx_retains_success(monkeypatch):
+    """合法 2xx 的非 JSON 响应仍按旧规则成功，不混同判定内部错误。"""
+    response = _push_response()
+    response._content = b'not-json'
+    assert notif._is_push_successful(response) == (True, '')
+    _, notifier, _ = _install_onepush(monkeypatch)
+    notifier.notify.side_effect = None
+    notifier.notify.return_value = response
+    assert notif._notify_single_channel(
+        CHANNELS[0], '标题', URL, 0, 1, screenshot_count=1) is True
+
+
+@pytest.mark.parametrize('case, expected', [
+    ('exception', PUSH_FAILURE_TEXT),
+    ('http', 'HTTP 503: ' + json.dumps(PUSH_FAILURE_TEXT, ensure_ascii=False)),
+    ('errcode', 'errcode=1: ' + PUSH_FAILURE_TEXT),
+    ('code', 'code=1: ' + PUSH_FAILURE_TEXT),
+    ('success', 'success=false: ' + PUSH_FAILURE_TEXT),
+])
+def test_non_screenshot_failure_preserves_legacy_reason_and_log(
+        monkeypatch, caplog, case, expected):
+    """无截图调用保留旧原因和逐字失败日志，不扩展本次安全行为边界。"""
+    bodies = {
+        'errcode': {'errcode': 1, 'errmsg': PUSH_FAILURE_TEXT},
+        'code': {'code': 1, 'message': PUSH_FAILURE_TEXT},
+        'success': {'success': False, 'reason': PUSH_FAILURE_TEXT},
+    }
+    _, notifier, _ = _install_onepush(monkeypatch)
+    if case == 'exception':
+        notifier.notify.side_effect = RuntimeError(PUSH_FAILURE_TEXT)
+    else:
+        response = _push_response(
+            503 if case == 'http' else 200,
+            bodies.get(case, PUSH_FAILURE_TEXT))
+        assert notif._is_push_successful(response) == (False, expected)
+        notifier.notify.side_effect = None
+        notifier.notify.return_value = response
+    assert notif._notify_single_channel(
+        CHANNELS[0], '普通标题', '普通正文', 0, 1) is False
+    assert [record.getMessage() for record in caplog.records] == [
+        '通道 [serverchan] 通知发送失败 (尝试 1/1): ' + expected,
+        '通道 [serverchan] 通知发送失败，已超过最大重试次数',
+    ]
+
+
+@pytest.mark.parametrize('recover', [True, False])
+@pytest.mark.parametrize('case', ['exception', 'http', 'business', 'response'])
+def test_http_screenshot_notification_failures_reuse_batch_safely(
+        notification_http, monkeypatch, caplog, recover, case):
+    """真实编排与 HTTP 上传后发送失败，重试复用批次且不泄露业务原文。"""
+    state = notification_http
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    attempts = Counter()
+
+    def notify(title=None, content=None, **params):
+        """仅替换 OnePush 边界，各通道首次失败后恢复或持续失败。"""
+        key = params.get('sckey') or params.get('token') or params.get('webhook')
+        attempts[key] += 1
+        assert URL in title and URL in content
+        if recover and attempts[key] == 2:
+            return _push_response(body={'code': 0})
+        if case == 'exception':
+            raise RuntimeError(PUSH_FAILURE_TEXT)
+        if case == 'response':
+            response = _response()
+            type(response).status_code = PropertyMock(
+                side_effect=RuntimeError(PUSH_FAILURE_TEXT))
+            return response
+        return _push_response(503 if case == 'http' else 200,
+                              {'code': 1, 'message': PUSH_FAILURE_TEXT})
+
+    sent, notifier, _ = _install_onepush(monkeypatch, notify)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+    config = _http_config(channels=deepcopy(THREE_CHANNELS),
+                          retry={'interval': '2s', 'max_count': 3})
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+    before = deepcopy(config)
+    with caplog.at_level(logging.DEBUG):
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+    assert results == [(item['provider'], recover) for item in THREE_CHANNELS]
+    count = 2 if recover else 3
+    assert dict(attempts) == {'s1': count, 't1': count, 'w1': count}
+    assert notifier.notify.call_count == 3 * count
+    assert sleep.call_count == 3 * (count - 1)
+    assert all(call.args == (2,) for call in sleep.call_args_list)
+    assert state['capture'].call_count == 2
+    assert [request.method for request in state['requests']] == [
+        'GET', 'GET', 'POST', 'POST']
+    assert len(state['contexts']) == 1
+    assert not state['replies']
+    assert len(set(sent)) == 1
+    assert all(title.count(URL) == content.count(URL) == 2
+               for title, content in sent)
+    assert config == before
+    _assert_push_logs_safe(caplog)
+    category = {
+        'exception': '客户端发送失败', 'http': 'HTTP 请求失败（HTTP 503）',
+        'business': '业务拒绝', 'response': '响应判定失败',
+    }[case]
+    assert category in caplog.text
+    assert ('已超过最大重试次数' in caplog.text) is not recover
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['get_notifier', 'notify', 'status', 'json'])
+def test_screenshot_send_control_signals_propagate_identically(
+        monkeypatch, caplog, signal_type, stage):
+    """真实通知线程中客户端和响应判定的控制信号均原对象传播。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    _, notifier, getter = _install_onepush(monkeypatch)
+    signal = signal_type(PUSH_FAILURE_TEXT)
+    if stage in ('get_notifier', 'notify'):
+        boundary = getter if stage == 'get_notifier' else notifier.notify
+        boundary.side_effect = signal
+    else:
+        response = _response()
+        if stage == 'status':
+            type(response).status_code = PropertyMock(side_effect=signal)
+        else:
+            response.json.side_effect = signal
+        notifier.notify.side_effect = None
+        notifier.notify.return_value = response
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(signal_type) as caught:
+            notif.send_notification(_base_config(), 'on_end', process_name='demo')
+    assert caught.value is signal
+    assert capture.call_count == upload.call_count == 1
+    assert getter.call_count == 1
+    assert notifier.notify.call_count == (stage != 'get_notifier')
+    sleep.assert_not_called()
+    _assert_push_logs_safe(caplog)
