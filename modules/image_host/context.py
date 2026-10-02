@@ -104,9 +104,13 @@ class _Credential:
 class UploadContext:
     """一次通知或 CLI 操作的协调器，串行使用并在事件结束后关闭。
 
-    构造不执行 IO。CLI 须在进入诊断作用域前 collect_secrets(hosts)，
-    后续通过 resolve_credential 使用同一份凭证快照。通知默认关闭
-    诊断，仅在实际尝试配置项时惰性解析。配置位置不可在事件中重排。
+    构造不执行 IO。CLI 仅创建并传入诊断 context；
+    registry.upload_with_fallback 统一调用 collect_secrets(hosts)，
+    在诊断开启时收集整链凭证，再进入诊断作用域；后续通过
+    resolve_credential 使用同一份凭证快照。直接使用 context 的调用方
+    须在进入诊断作用域前调用 collect_secrets(hosts) 准备凭证快照。
+    通知默认关闭诊断，仅在实际尝试配置项时惰性解析。
+    配置位置不可在事件中重排。
     不保存图片、上传 URL、完整响应，也不修改调用方配置或环境。
     """
 
