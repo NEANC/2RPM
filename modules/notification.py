@@ -8,6 +8,7 @@ import time
 import logging
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from json import JSONDecodeError
 from string import Formatter
 
 from onepush import get_notifier
@@ -46,18 +47,22 @@ _UNCONFIGURED_SCREENSHOT = '截图失败：未配置该截图目标'
 _INTERNAL_SCREENSHOT = '截图失败：内部错误'
 
 
-def _parse_response_body(response):
+def _parse_response_body(response, *, safe=False):
     """尝试将响应体解析为 JSON 字典
 
     Args:
         response: requests.Response 对象
+        safe (bool): 安全模式仅将 JSON 解码失败视为非 JSON 响应，
+            其他普通异常交由通道边界安全判失败。
 
     Returns:
         dict | None: 解析成功返回字典；无法解析或非字典返回 None
     """
     try:
         body = response.json()
-    except Exception:
+    except Exception as exc:
+        if safe and not isinstance(exc, JSONDecodeError):
+            raise
         return None
     # 守卫：仅字典型响应体可参与业务字段判定
     if not isinstance(body, dict):
@@ -65,7 +70,7 @@ def _parse_response_body(response):
     return body
 
 
-def _is_push_successful(response):
+def _is_push_successful(response, *, safe=False):
     """判定 onepush 返回的响应是否代表推送成功
 
     onepush 的 notify() 即便服务端返回业务错误（如 HTTP 400、错误码、限流），
@@ -75,6 +80,8 @@ def _is_push_successful(response):
     Args:
         response: onepush notify() 的返回值，通常为 requests.Response，
             请求异常时为 None
+        safe (bool): 截图通知仅返回固定失败分类及验证后的 HTTP 状态码，
+            不将响应正文、业务消息或业务码拼入原因。
 
     Returns:
         tuple[bool, str]: (是否成功, 失败原因描述)；成功时原因为空字符串
@@ -85,28 +92,38 @@ def _is_push_successful(response):
 
     # HTTP 状态码非 2xx 直接判失败
     status_code = getattr(response, 'status_code', None)
+    if safe and (type(status_code) is not int or not 100 <= status_code <= 599):
+        return False, "响应判定失败"
     if status_code is not None and not 200 <= status_code < 300:
+        if safe:
+            return False, f"HTTP 请求失败（HTTP {status_code}）"
         text = (getattr(response, 'text', '') or '').strip()
         return False, f"HTTP {status_code}: {text}"
 
     # 无法解析响应体时，仅凭 2xx 状态码判为成功
-    body = _parse_response_body(response)
+    body = _parse_response_body(response, safe=safe)
     if body is None:
         return True, ""
 
     # errcode 字段（钉钉、企业微信等）：非 0 即失败
     errcode = body.get('errcode')
     if errcode is not None and errcode != 0:
+        if safe:
+            return False, "业务拒绝"
         return False, f"errcode={errcode}: {body.get('errmsg', '')}"
 
     # code 字段（Server酱、Qmsg 等）：非 0 / 200 即失败
     code = body.get('code')
     if code is not None and code not in (0, 200):
+        if safe:
+            return False, "业务拒绝"
         reason = body.get('message') or body.get('reason') or body.get('info') or ''
         return False, f"code={code}: {reason}"
 
     # success 字段（Qmsg 等）：显式 False 即失败
     if body.get('success') is False:
+        if safe:
+            return False, "业务拒绝"
         reason = body.get('reason') or body.get('message') or ''
         return False, f"success=false: {reason}"
 
@@ -150,7 +167,8 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
         retry_interval (int): 重试间隔（秒）
         max_count (int): 最大重试次数
         screenshot_count (int): 标题或正文实际引用的截图项数量；大于 0 时
-            成功日志改用不含标题的安全摘要，避免签名直链进入日志
+            成功与失败日志均使用安全摘要，避免签名直链或凭证进入
+            本项目通知日志，不控制第三方库自身的日志。
 
     Returns:
         bool: 是否发送成功
@@ -168,14 +186,21 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
             notifier = get_notifier(provider)
             response = notifier.notify(title=title, content=content, **params)
         except Exception as e:
-            # 客户端层面异常（参数缺失、网络错误等）
+            # 截图路径不格式化客户端异常，也不向日志 helper 传递原文
+            reason = "客户端发送失败" if screenshot_count > 0 else str(e)
             if not _handle_attempt_failure(
-                    provider, attempt, max_count, str(e), retry_interval):
+                    provider, attempt, max_count, reason, retry_interval):
                 return False
             continue
 
-        # 请求未抛异常，仍需依据响应判定真实成败
-        success, reason = _is_push_successful(response)
+        # 截图响应判定异常在通道内安全失败，避免外层重新记录敏感异常
+        if screenshot_count > 0:
+            try:
+                success, reason = _is_push_successful(response, safe=True)
+            except Exception:
+                success, reason = False, "响应判定失败"
+        else:
+            success, reason = _is_push_successful(response)
         if success:
             # 标题可能引用含签名直链的截图结果，此时只记录安全摘要
             if screenshot_count:
