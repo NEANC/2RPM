@@ -19,6 +19,7 @@ import math
 import os
 import time
 
+from . import storage
 from .core import ImageHostError
 from .core import resolve_token
 from .diagnostics import diagnostic_scope as _diagnostic_scope
@@ -121,6 +122,7 @@ class UploadContext:
         self._clock = clock
         self._key = None
         self._entries = {}
+        self._retentions = {}
         self._images = {}
         self._corrected = set()
         self._credentials = {}
@@ -284,6 +286,22 @@ class UploadContext:
             raise entry.failure.error()
         return entry.metadata
 
+    def get_boltp_retention(self, token):
+        """按事件内 HMAC 身份缓存 Boltp 期限或安全失败快照。"""
+        identity = self._identity('boltp', token)
+        if identity not in self._retentions:
+            try:
+                value = storage.fetch_boltp_retention(token)
+            except Exception as error:
+                self._retentions[identity] = self._failure(
+                    error, fallback='storage_lookup_failed', secrets=(token,))
+            else:
+                self._retentions[identity] = value
+        result = self._retentions[identity]
+        if isinstance(result, _Failure):
+            raise result.error()
+        return result
+
     def now(self) -> float:
         """用于请求前期限检查，只读注入时钟，不创建图片或元数据状态。"""
         self._ensure_open()
@@ -434,6 +452,7 @@ class UploadContext:
         """
         self._closed = True
         self._entries.clear()
+        self._retentions.clear()
         self._images.clear()
         self._corrected.clear()
         self._credentials.clear()
