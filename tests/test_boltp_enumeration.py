@@ -114,6 +114,48 @@ def test_boltp_fetch_retention_accepts_optional_nonnegative_integer(
     assert storage.fetch_boltp_retention('') == retention
 
 
+@pytest.mark.parametrize(('scenario', 'code', 'status'), [
+    ('forbidden', 'http_failed', 403),
+    ('server_error', 'http_failed', 500),
+    ('business_rejected', 'business_rejected', 200),
+    ('invalid_json', 'invalid_response', 200),
+    ('timeout', 'transport_failed', None),
+])
+def test_boltp_fetch_retention_classifies_real_http_transport(
+        monkeypatch, scenario, code, status):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    sent = []
+
+    def send(adapter, request, **kwargs):
+        sent.append(request)
+        if scenario == 'timeout':
+            raise requests.exceptions.Timeout
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = status
+        response._content = {
+            'business_rejected': b'{"status":"error","message":"denied"}',
+            'invalid_json': b'{',
+        }.get(scenario, b'')
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert len(sent) == 1
+    assert sent[0].url == 'https://www.boltp.com/api/v2/group'
+    assert sent[0].method == 'GET'
+    assert caught.value.code == code
+    assert caught.value.http_status == status
+    assert caught.value.stage == 'group'
+
+
 @pytest.mark.parametrize('payload', [
     {'data': {'group': {'options': {'file_expire_seconds': 60}}}},
     {'data': {'storages': 'malformed',
@@ -223,6 +265,7 @@ def test_boltp_fetch_retention_maps_unclassified_error_with_cause(monkeypatch):
     assert caught.value.code == 'storage_lookup_failed'
     assert caught.value.stage == 'group'
     assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
 
 
 def test_boltp_fetch_retention_does_not_expose_token(monkeypatch):
