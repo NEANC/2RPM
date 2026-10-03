@@ -394,6 +394,87 @@ def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypa
     assert calls == []
 
 
+def test_boltp_enumerates_storage_candidates_and_stops_on_success(monkeypatch):
+    from modules.image_host.registry import upload_with_fallback
+
+    sent = []
+    responses = [
+        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
+        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
+    ]
+
+    def send(adapter, request, **kwargs):
+        sent.append(request)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 200
+        response._content = responses.pop(0)
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    result = upload_with_fallback(
+        b'image', 'image.png', [{'provider': 'boltp', 'token': '',
+                                'options': {'storage_id': 2}}])
+
+    assert result.success
+    assert result.url == URL
+    assert len(sent) == 2
+    assert all(request.method == 'POST' for request in sent)
+    assert result.attempts == ('boltp',)
+    assert [request.body for request in sent][0] != [request.body for request in sent][1]
+
+
+def test_boltp_invalid_storage_id_stops_before_http(monkeypatch):
+    from modules.image_host.registry import upload_with_fallback
+
+    sent = []
+    monkeypatch.setattr(
+        requests.adapters.HTTPAdapter, 'send',
+        lambda adapter, request, **kwargs: sent.append(request))
+    result = upload_with_fallback(
+        b'image', 'image.png', [{'provider': 'boltp', 'token': '',
+                                'options': {'storage_id': True},
+                                'expiration': 60}])
+
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert sent == []
+
+
+def test_boltp_candidate_exhaustion_falls_back_to_next_host(monkeypatch):
+    from modules.image_host.registry import upload_with_fallback
+
+    sent = []
+    payloads = [
+        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
+        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
+        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
+    ]
+
+    def send(adapter, request, **kwargs):
+        sent.append(request)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 200
+        response._content = payloads.pop(0)
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    result = upload_with_fallback(
+        b'image', 'image.png', [
+            {'provider': 'boltp', 'token': '', 'options': {'storage_id': 2}},
+            {'provider': 'boltp', 'token': '', 'options': {'storage_id': 3}},
+        ])
+
+    assert result.success
+    assert result.attempts == ('boltp', 'boltp')
+    assert len(sent) == 3
+
+
 @pytest.mark.parametrize(('provider_name', 'adapter_name', 'storage_id'), [
     ('boltp', 'upload_boltp', 0),
     ('beeimg_cn', 'upload_beeimg_cn', 5),
