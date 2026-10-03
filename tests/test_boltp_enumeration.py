@@ -2,6 +2,8 @@
 # -_- coding: utf-8 -_-
 """验证 v2 上传适配器的显式存储编号契约。"""
 
+from email.parser import BytesParser
+from email.policy import default
 from importlib import import_module
 import json
 
@@ -53,7 +55,16 @@ def test_boltp_storage_zero_reaches_real_http_adapter(upload_adapter, monkeypatc
     assert result == URL
     assert len(calls) == 1
     assert calls[0].url.endswith('/api/v2/upload')
-    assert b'name="storage_id"\r\n\r\n0\r\n' in calls[0].body
+    assert calls[0].method == 'POST'
+    content_type = calls[0].headers['Content-Type']
+    assert content_type.startswith('multipart/form-data;')
+    message = BytesParser(policy=default).parsebytes(
+        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()
+        + calls[0].body)
+    storage_id = next(
+        part for part in message.iter_parts()
+        if part.get_param('name', header='content-disposition') == 'storage_id')
+    assert storage_id.get_payload(decode=True) == b'0'
 
 
 def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):
