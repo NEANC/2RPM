@@ -97,7 +97,7 @@ def _parse_profile(payload):
 
 
 def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
-    """顺序查询组和可选账号资料，仅全部成功后返回最小快照。
+    """顺序查询组和可选账号资料，Boltp 资料无权限时保留组内存储。
 
     凭证由调用方解析，本入口不展开或修剪。零期限不代表永久保存，
     此处不计算过期时间；普通边界异常不保留敏感底层异常链。
@@ -110,8 +110,14 @@ def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
         default = None
         if token:
             stage = 'profile'
-            default = _parse_profile(
-                v2_http.request_json(provider, stage, token))
+            try:
+                default = _parse_profile(
+                    v2_http.request_json(provider, stage, token))
+            except ImageHostError as error:
+                # Boltp 上传令牌可无资料读取权限，默认项缺失不阻断上传。
+                if not (provider == 'boltp' and error.code == 'http_failed'
+                        and error.http_status == 403):
+                    raise
         return StorageMetadata(storage_ids, default, expire, fetched_at)
     except ImageHostError:
         raise

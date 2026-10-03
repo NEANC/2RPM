@@ -964,13 +964,19 @@ def test_storage_optional_numeric_fields(storage_http, stage, key, value):
 ])
 def test_storage_preserves_transport_failures(
         storage_http, caplog, provider, stage, failure, code, status):
-    """传输层分类、状态和实际阶段不被覆盖，不返回部分资料或降级。"""
+    """除 Boltp 资料权限不足外，保留传输层分类、状态和实际阶段。"""
     queue_storage_success(storage_http)
     index = 0 if stage == 'group' else 1
     storage_http['replies'][index] = failure
-    with pytest.raises(ImageHostError) as caught:
-        storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
-    assert_safe(caught.value, code, stage, status)
+    if provider == 'boltp' and stage == 'profile' and status == 403:
+        metadata = storage_module().fetch_storage_metadata(
+            provider, SECRET, now=1000)
+        assert metadata.storage_ids
+        assert metadata.default_storage_id is None
+    else:
+        with pytest.raises(ImageHostError) as caught:
+            storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
+        assert_safe(caught.value, code, stage, status)
     assert_storage_requests(storage_http, provider, SECRET,
                             ['group'] if stage == 'group' else ['group', 'profile'])
     if code == 'http_failed':
@@ -1054,7 +1060,7 @@ def test_storage_unknown_boundary_errors(monkeypatch, client, caplog,
 def test_storage_safe_error_identity(monkeypatch, stage):
     """既有安全错误的对象和诊断原样透传，不重新分类或包装。"""
     module = storage_module()
-    error = ImageHostError('http_failed', '', stage=stage, http_status=403,
+    error = ImageHostError('http_failed', '', stage=stage, http_status=401,
                            diagnostic='请先绑定手机号')
 
     def request(provider, current_stage, token):
@@ -1067,7 +1073,7 @@ def test_storage_safe_error_identity(monkeypatch, stage):
     with pytest.raises(ImageHostError) as caught:
         module.fetch_storage_metadata('boltp', SECRET, now=1000)
     assert caught.value is error
-    assert_safe(error, 'http_failed', stage, 403)
+    assert_safe(error, 'http_failed', stage, 401)
     assert error.diagnostic == '请先绑定手机号'
 
 
