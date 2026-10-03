@@ -67,6 +67,92 @@ def test_boltp_storage_zero_reaches_real_http_adapter(upload_adapter, monkeypatc
     assert storage_id.get_payload(decode=True) == b'0'
 
 
+def test_context_retention_caches_success_and_none_by_hmac_identity(monkeypatch):
+    from modules.image_host import context
+
+    calls = []
+    monkeypatch.setattr(context.storage, 'fetch_boltp_retention',
+                        lambda token: calls.append(token) or None)
+    ctx = context.UploadContext()
+
+    assert ctx.get_boltp_retention('secret-a') is None
+    assert ctx.get_boltp_retention('secret-a') is None
+    assert ctx.get_boltp_retention('secret-b') is None
+    assert ctx.get_boltp_retention('') is None
+    assert calls == ['secret-a', 'secret-b', '']
+    ctx.close()
+
+
+def test_context_retention_failure_is_safe_cached_snapshot(monkeypatch):
+    from modules.image_host import context
+    from modules.image_host.core import ImageHostError
+
+    token = 'RETENTION_SECRET_7319'
+    calls = []
+    original = ValueError(token)
+
+    def fail(value):
+        calls.append(value)
+        raise original
+
+    monkeypatch.setattr(context.storage, 'fetch_boltp_retention', fail)
+    ctx = context.UploadContext()
+    errors = []
+    for _ in range(2):
+        with pytest.raises(ImageHostError) as caught:
+            ctx.get_boltp_retention(token)
+        errors.append(caught.value)
+
+    assert calls == [token]
+    assert errors[0] is not errors[1]
+    assert token not in str(errors[0]) + repr(errors[0].args)
+    assert errors[0].__cause__ is None
+    assert errors[0].__context__ is None
+    ctx.close()
+
+
+def test_context_retention_close_clears_cache_and_closed_rejects(monkeypatch):
+    from modules.image_host import context
+    from modules.image_host.core import ImageHostError
+
+    calls = []
+    monkeypatch.setattr(context.storage, 'fetch_boltp_retention',
+                        lambda token: calls.append(token) or 60)
+    ctx = context.UploadContext()
+    assert ctx.get_boltp_retention('secret') == 60
+    ctx.close()
+    assert ctx._retentions == {}
+    with pytest.raises(ImageHostError):
+        ctx.get_boltp_retention('secret')
+
+    fresh = context.UploadContext()
+    assert fresh.get_boltp_retention('secret') == 60
+    assert calls == ['secret', 'secret']
+    fresh.close()
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_context_retention_control_signal_propagates_without_caching(
+        monkeypatch, signal_type):
+    from modules.image_host import context, storage
+
+    signal = signal_type()
+    calls = []
+
+    def fail(token):
+        calls.append(token)
+        raise signal
+
+    monkeypatch.setattr(context.storage, 'fetch_boltp_retention', fail)
+    ctx = context.UploadContext()
+    for _ in range(2):
+        with pytest.raises(signal_type) as caught:
+            ctx.get_boltp_retention('secret')
+        assert caught.value is signal
+    assert calls == ['secret', 'secret']
+    ctx.close()
+
+
 def test_boltp_fetch_retention_only_requests_group(monkeypatch):
     from modules.image_host import storage, v2_http
 
@@ -264,8 +350,8 @@ def test_boltp_fetch_retention_maps_unclassified_error_with_cause(monkeypatch):
 
     assert caught.value.code == 'storage_lookup_failed'
     assert caught.value.stage == 'group'
-    assert caught.value.__context__ is None
     assert caught.value.__cause__ is None
+    assert errors[0].__context__ is None
 
 
 def test_boltp_fetch_retention_does_not_expose_token(monkeypatch):
