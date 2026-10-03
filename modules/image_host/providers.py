@@ -276,14 +276,12 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
                        options) -> str:
     """按 v2 图床契约上传内存 PNG，返回经核心校验的完整直链。
 
-    契约来源：官方接口文档页面 /api/v2/upload。BeeIMG.cn 已于 2026-09-30
-    用账号令牌完成真实上传验证；Boltp 因账号需先绑定手机号，仅验证到鉴权被
-    接受与业务拒绝提示，未取得成功响应。
-    multipart 必填 file 与 storage_id，可选整数 album_id；官方文档未给出可
-    确定的默认存储，且示例编号并不适用于所有账号，因此 storage_id 必须由用户
-    在 options 显式提供非布尔正整数（取账号实际可用存储，即官方
-    GET /api/v2/group 返回的 data.storages 项编号，或站点界面所示存储），
-    缺失或非法一律在请求前安全失败且不猜测示例值。
+    契约来源：官方接口文档页面 /api/v2/upload。BeeIMG.cn 与 Boltp 分别于
+    2026-09-30、2026-10-03 用账号令牌完成真实上传验证。
+    multipart 必填 file 与 storage_id，可选整数 album_id；存储编号由注册表
+    根据组信息和可选账号默认值选择后注入 options，不猜测文档示例编号。
+    直接调用适配器时，调用方仍须提供非布尔正整数 storage_id；本层仅校验
+    参数并上传，不负责查询存储、缓存或重传。
     项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
     字符串 "1"/"0" 显式表达该布尔表单字段，不省略该字段；原生 is_public
     不作为可覆盖权限语义的选项，显式传入即安全拒绝。
@@ -336,11 +334,14 @@ def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
 def upload_boltp(image_bytes, filename, token, options) -> str:
     """依据 Boltp 官方文档上传内存 PNG。
 
-    契约来源：https://www.boltp.com/api/v2/pages/api-docs，核对日期
-    2026-09-30。同日实测：Bearer 令牌被服务端接受，但在账号未绑定手机号时
-    返回业务错误“请先绑定手机号”，因此尚未取得成功响应。文档字段表与请求
-    示例对存储 ID 的取值互相冲突，故不采用任何文档示例值，改由用户在
-    options 显式提供账号实际可用存储编号。
+    契约来源：https://www.boltp.com/api/v2/pages/api-docs，文档核对日期
+    2026-09-30。2026-10-03 已用 Bearer 令牌完成真实上传验证：组接口返回
+    可用存储编号 2，上传返回 status 为 success 及 data.public_url。
+    同次验证中资料接口返回 HTTP 403，提示令牌无权访问；存储查询层仅对
+    Boltp 的该状态忽略默认存储资料，仍使用组接口返回的可用存储。
+    经注册表调用时，存储按有效手填值、可用默认值、组内首项的顺序选择；
+    本适配器不查询存储，直接调用仍须在 options 中提供有效 storage_id。
+    不硬编码本次实测编号，也不采用文档中互相冲突的示例编号。
     """
     return _upload_v2_storage(
         'boltp', 'Boltp', image_bytes, filename, token, options)
