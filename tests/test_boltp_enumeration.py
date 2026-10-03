@@ -3,8 +3,10 @@
 """验证 v2 上传适配器的显式存储编号契约。"""
 
 from importlib import import_module
+import json
 
 import pytest
+import requests
 
 
 URL = 'https://images.example/synthetic.png'
@@ -22,6 +24,59 @@ def upload_adapter(monkeypatch):
 
     monkeypatch.setattr(providers, 'request_json', request_json)
     return providers, calls
+
+
+def test_boltp_storage_zero_reaches_real_http_adapter(upload_adapter, monkeypatch):
+    providers, _ = upload_adapter
+    monkeypatch.setattr(
+        providers, 'request_json',
+        import_module('modules.image_host.v2_http').request_json)
+    calls = []
+
+    def send(adapter, request, **kwargs):
+        calls.append(request)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 200
+        response._content = json.dumps({
+            'status': 'success',
+            'data': {'public_url': URL},
+        }).encode('utf-8')
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+
+    result = providers.upload_boltp(b'image', 'image.png', '', {'storage_id': 0})
+
+    assert result == URL
+    assert len(calls) == 1
+    assert calls[0].url.endswith('/api/v2/upload')
+    assert b'name="storage_id"\r\n\r\n0\r\n' in calls[0].body
+
+
+def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):
+    from modules.image_host.core import ImageHostError
+
+    providers, _ = upload_adapter
+    calls = []
+
+    def send(adapter, request, **kwargs):
+        calls.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b'{}'
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_beeimg_cn(b'image', 'image.png', '', {'storage_id': 0})
+
+    assert caught.value.code == 'invalid_options'
+    assert calls == []
 
 
 @pytest.mark.parametrize(('provider_name', 'adapter_name', 'storage_id'), [
