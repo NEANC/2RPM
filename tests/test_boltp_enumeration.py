@@ -67,6 +67,40 @@ def test_boltp_storage_zero_reaches_real_http_adapter(upload_adapter, monkeypatc
     assert storage_id.get_payload(decode=True) == b'0'
 
 
+def test_boltp_fetch_retention_only_requests_group(monkeypatch):
+    from modules.image_host import storage, v2_http
+
+    calls = []
+    token = 'RETENTION_SECRET_7319'
+
+    def request_json(provider, stage, request_token):
+        calls.append((provider, stage, request_token))
+        return {'data': {'group': {'options': {'file_expire_seconds': 0}}}}
+
+    monkeypatch.setattr(v2_http, 'request_json', request_json)
+
+    assert storage.fetch_boltp_retention(token) == 0
+    assert calls == [('boltp', 'group', token)]
+
+
+def test_boltp_fetch_retention_maps_malformed_data_without_token(monkeypatch):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    token = 'RETENTION_SECRET_7319'
+    monkeypatch.setattr(
+        v2_http, 'request_json',
+        lambda provider, stage, request_token: {
+            'data': {'group': {'options': {'file_expire_seconds': True}}}})
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention(token)
+
+    assert caught.value.code == 'storage_lookup_failed'
+    assert caught.value.stage == 'group'
+    assert token not in str(caught.value) + repr(caught.value.args)
+
+
 def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):
     from modules.image_host.core import ImageHostError
 

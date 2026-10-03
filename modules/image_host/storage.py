@@ -96,6 +96,32 @@ def _parse_profile(payload):
     return default
 
 
+def fetch_boltp_retention(token):
+    """只查询 Boltp 组期限，安全映射响应结构错误。"""
+    try:
+        payload = v2_http.request_json('boltp', 'group', token)
+        data = payload.get('data')
+        if not isinstance(data, Mapping):
+            raise ValueError
+        group = data.get('group')
+        if not isinstance(group, Mapping):
+            raise ValueError
+        options = group.get('options')
+        if not isinstance(options, Mapping):
+            raise ValueError
+        expire = options.get('file_expire_seconds')
+        if expire is not None and (
+                not isinstance(expire, int) or isinstance(expire, bool)
+                or expire < 0):
+            raise ValueError
+        return expire
+    except ImageHostError:
+        raise
+    except Exception:
+        pass
+    raise ImageHostError('storage_lookup_failed', '', stage='group')
+
+
 def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
     """顺序查询组和可选账号资料，Boltp 资料无权限时保留组内存储。
 
