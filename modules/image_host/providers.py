@@ -238,7 +238,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     raise ImageHostError('upload_failed', '')
 
 
-def validate_v2_options(options, *, require_storage=True):
+def validate_v2_options(options, *, provider='beeimg_cn', require_storage=True):
     """无日志校验两站通用选项，恢复用途仅可跳过存储字段检查。"""
     permission = options.get('permission', 1)
     if (not isinstance(permission, int) or isinstance(permission, bool)
@@ -247,7 +247,7 @@ def validate_v2_options(options, *, require_storage=True):
     if require_storage:
         storage_id = options.get('storage_id')
         if (not isinstance(storage_id, int) or isinstance(storage_id, bool)
-                or storage_id <= 0):
+                or storage_id < (0 if provider == 'boltp' else 1)):
             raise ImageHostError('invalid_options', '')
     if 'album_id' in options:
         album_id = options['album_id']
@@ -280,8 +280,8 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
     2026-09-30、2026-10-03 用账号令牌完成真实上传验证。
     multipart 必填 file 与 storage_id，可选整数 album_id；存储编号由注册表
     根据组信息和可选账号默认值选择后注入 options，不猜测文档示例编号。
-    直接调用适配器时，调用方仍须提供非布尔正整数 storage_id；本层仅校验
-    参数并上传，不负责查询存储、缓存或重传。
+    直接调用适配器时，BeeIMG.cn 要求非布尔正整数，Boltp 接受非布尔非负整数；
+    本层仅校验参数并上传，不负责查询存储、缓存或重传。
     项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
     字符串 "1"/"0" 显式表达该布尔表单字段，不省略该字段；原生 is_public
     不作为可覆盖权限语义的选项，显式传入即安全拒绝。
@@ -294,7 +294,7 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
     每次最多发送一次请求；连接和读取超时不是整个操作的硬总时限，超时
     也不能保证服务端尚未保存图片。
     """
-    validate_v2_options(options)
+    validate_v2_options(options, provider=provider)
     expired_at = _prepared_expiration(options)
     data = {'storage_id': options['storage_id'],
             'is_public': str(options.get('permission', 1))}
