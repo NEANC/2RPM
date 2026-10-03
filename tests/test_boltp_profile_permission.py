@@ -15,8 +15,8 @@ from modules.image_host.storage_cache import StorageCache
 
 @pytest.mark.parametrize('provider,status,expected_success', [
     ('boltp', 403, True),
-    ('boltp', 401, False),
-    ('boltp', 500, False),
+    ('boltp', 401, True),
+    ('boltp', 500, True),
     ('beeimg_cn', 403, False),
 ])
 def test_profile_permission_does_not_block_boltp_upload(
@@ -31,7 +31,12 @@ def test_profile_permission_does_not_block_boltp_upload(
         response.request = request
         response.url = request.url
         response.status_code = 200
-        if request.url.endswith('/group'):
+        if provider == 'boltp':
+            assert request.url.endswith('/upload')
+            assert b'name="storage_id"\r\n\r\n2\r\n' in request.body
+            payload = {'status': 'success', 'data': {
+                'public_url': 'https://example.com/synthetic.png'}}
+        elif request.url.endswith('/group'):
             payload = {'status': 'success', 'data': {
                 'group': {'options': {'file_expire_seconds': 0}},
                 'storages': [{'id': 2}],
@@ -41,7 +46,6 @@ def test_profile_permission_does_not_block_boltp_upload(
             payload = {'status': 'error', 'message': '您的令牌没有权限访问此API'}
         else:
             assert request.url.endswith('/upload')
-            assert b'name="storage_id"\r\n\r\n2\r\n' in request.body
             payload = {'status': 'success', 'data': {
                 'public_url': 'https://example.com/synthetic.png'}}
         response._content = json.dumps(payload).encode('utf-8')
@@ -61,15 +65,17 @@ def test_profile_permission_does_not_block_boltp_upload(
             [{'provider': provider, 'token': 'SYNTHETIC_TOKEN'}],
             context=context)
         assert result.success is expected_success
-        assert len(calls) == (3 if expected_success else 2)
+        if provider == 'boltp':
+            assert len(calls) == 1
+            assert calls[0].url.endswith('/upload')
+        else:
+            assert len(calls) == 2
+            assert calls[0].url.endswith('/group')
+            assert calls[1].url.endswith('/user/profile')
+            assert result.failures[0].stage == 'profile'
+            assert result.failures[0].http_status == status
         if expected_success:
             assert result.url == 'https://example.com/synthetic.png'
             assert not result.failures
-            metadata = context.get_metadata(provider, 'SYNTHETIC_TOKEN')
-            assert metadata.storage_ids == (2,)
-            assert metadata.default_storage_id is None
-        else:
-            assert result.failures[0].stage == 'profile'
-            assert result.failures[0].http_status == status
     finally:
         context.close()

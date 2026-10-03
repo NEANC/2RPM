@@ -763,7 +763,7 @@ def _http_config(**kwargs):
     """构造经真实 v2 注册表处理的双目标通知配置。"""
     return _base_config(
         targets=[WINDOW_TARGET, {'provider': 'adb', 'target': '第二'}],
-        image_host=[{'provider': 'boltp', 'token': SECRET}], **kwargs)
+        image_host=[{'provider': 'beeimg_cn', 'token': SECRET}], **kwargs)
 
 
 @pytest.mark.parametrize('persist', [True, False])
@@ -777,8 +777,10 @@ def test_http_batch_reuses_context_queries_and_channel_retries(
             raise OSError(SECRET)
 
         monkeypatch.setattr(StorageCache, '_write_atomic', denied)
-    state['replies'] = [_group_response(), _profile_response(),
-                        _upload_response(), _upload_response()]
+    state['replies'] = [
+        _group_response(), _profile_response(),
+        _upload_response(), _upload_response(),
+    ]
     seen = Counter()
 
     def notify(title=None, content=None, **params):
@@ -850,8 +852,9 @@ def test_http_registry_warnings_reach_notification_once(
     state = notification_http
     reply = (_upload_response() if success else
              (200, {'status': 'error', 'message': SECRET}))
-    state['replies'] = [_group_response(retention=5), _profile_response(),
-                        reply, reply]
+    state['replies'] = [
+        _group_response(retention=5), _profile_response(), reply, reply,
+    ]
     config = _http_config()
     config['push']['screenshot']['image_host'][0].update(
         expiration='20s', options={'storage_id': 99})
@@ -881,8 +884,7 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     rejected = (200, {'status': 'error', 'message': SECRET})
     state['replies'] = [
         _group_response(), _profile_response(), rejected,
-        _group_response((21,)), _profile_response(21), _upload_response(),
-        rejected, _upload_response(),
+        _upload_response(), rejected, _upload_response(),
     ]
     config = _http_config()
     config['push']['screenshot']['image_host'].append(
@@ -896,7 +898,7 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     assert len(state['contexts']) == 1
     requests_seen = state['requests']
     assert [request.method for request in requests_seen] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST', 'POST', 'POST']
+        'GET', 'GET', 'POST', 'POST', 'POST', 'POST']
     assert requests_seen[0].headers['Authorization'] == 'Bearer ' + SECRET
     assert requests_seen[3].headers['Authorization'] == 'Bearer ' + token
     assert ('beeimg.cn' in requests_seen[3].url) is (provider == 'beeimg_cn')
@@ -906,6 +908,27 @@ def test_http_fallback_isolates_identity_and_preserves_success(
         assert SECRET not in title + body
     assert SECRET not in caplog.text and token not in caplog.text
     assert URL not in caplog.text
+    assert not state['replies']
+
+
+def test_http_boltp_each_image_restarts_enumeration(
+        notification_http, monkeypatch):
+    """Boltp 双图各从 0 开始且无元数据查询。"""
+    state = notification_http
+    reject = (200, {'status': 'error', 'message': '不存在的储存驱动'})
+    state['replies'] = [reject, reject, _upload_response(),
+                        reject, _upload_response()]
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _http_config()
+    config['push']['screenshot']['image_host'] = [
+        {'provider': 'boltp', 'token': SECRET, 'options': {'storage_id': 0}}]
+    assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert [request.method for request in state['requests']] == ['POST'] * 5
+    for request, storage_id in zip(state['requests'], (0, 2, 3, 0, 2)):
+        assert ('name="storage_id"\r\n\r\n' + str(storage_id)
+                + '\r\n').encode() in request.body
+    assert len(state['contexts']) == 1
+    assert sent[0][1].count(URL) == 2
     assert not state['replies']
 
 

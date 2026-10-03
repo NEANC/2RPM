@@ -207,16 +207,9 @@ def test_exact_multipart_authentication_and_anonymous_contract(client, token):
         'headers': headers, 'timeout': (5, 15), 'verify': True,
         'stream': True, 'allow_redirects': False,
     })]
-    expected_gets = 2 if token else 1
-    assert len(client.get_calls) == expected_gets
-    assert client.created == client.closed == expected_gets + 1
+    assert client.get_calls == []
+    assert client.created == client.closed == 1
     assert client.response.closed == client.response.reads == 1
-    base = ENDPOINT.rsplit('/', 1)[0]
-    paths = ['/group', '/user/profile'] if token else ['/group']
-    assert client.get_calls == [(base + path, {
-        'headers': headers, 'timeout': (5, 15), 'verify': True,
-        'stream': True, 'allow_redirects': False,
-    }) for path in paths]
 
 
 @pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
@@ -277,27 +270,29 @@ def test_direct_is_public_cannot_override_permission(client, value):
     assert client.calls == []
 
 
-@pytest.mark.parametrize('storage_id', [None, True, False, 0, -1, '5', 5.0,
-                                        [], {}])
-def test_invalid_storage_id_is_selected_from_fresh_metadata(client, storage_id):
-    """缺省自动选择，非法手填经新查询替代且不修改输入。"""
-    options = {} if storage_id is None else {'storage_id': storage_id}
+@pytest.mark.parametrize('storage_id', [None, True, False, -1, '5', 5.0, [], {}])
+def test_invalid_storage_id_fails_before_request(client, storage_id):
+    """非法显式编号不查询也不纠正。"""
+    options = {'storage_id': storage_id}
     original = deepcopy(options)
     result = upload(options=options)
-    assert result.success
-    assert result.failures == ()
-    assert result.warnings == (() if storage_id is None else (
-        '手填储存驱动不可用，已自动替代',))
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
     assert options == original
-    assert len(client.get_calls) == 2
-    assert len(client.calls) == 1
-    assert client.calls[0][1]['data']['storage_id'] == STORAGE_ID
-    assert client.created == client.closed == 3
+    assert client.calls == client.get_calls == []
+    assert client.created == 0
 
 
-@pytest.mark.parametrize('storage_id', [2, 3, 1, 99])
-def test_explicit_positive_storage_id_is_forwarded(client, storage_id):
-    """显式正整数存储 ID 原样发送，不套用文档冲突的示例或套餐值。"""
+def test_missing_storage_id_uses_first_candidate(client):
+    """缺省编号从 2 开始，而不是采用组默认编号。"""
+    assert upload(options={}).success
+    assert client.calls[0][1]['data']['storage_id'] == 2
+    assert client.get_calls == []
+
+
+@pytest.mark.parametrize('storage_id', [0, 2, 3, 1, 99])
+def test_explicit_nonnegative_storage_id_is_forwarded(client, storage_id):
+    """合法非负编号原样提交服务端。"""
     options = {'storage_id': storage_id}
     original = deepcopy(options)
     assert upload(options=options).success
@@ -368,8 +363,8 @@ def test_only_exact_official_success_status_is_accepted(client, caplog, status):
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
     assert result.failures[0].message == '图床响应无效'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == 1
     assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
@@ -386,8 +381,8 @@ def test_invalid_containers_fail_safely(client, body):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == 1
 
 
@@ -399,8 +394,8 @@ def test_missing_direct_url_never_uses_other_link_fields(client):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == 1
 
 
@@ -415,8 +410,8 @@ def test_invalid_urls_use_v2_response_error_code(client, caplog, url):
     result = upload()
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
 
@@ -429,8 +424,8 @@ def test_malformed_json_is_safe_and_resources_close(client, caplog, body):
     result = upload(SECRET)
     assert not result.success
     assert result.failures[0].code == 'invalid_response'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == 1
     assert SECRET not in repr(result) + caplog.text
     assert not caplog.records
@@ -446,8 +441,8 @@ def test_non_2xx_never_parses_body_or_follows_redirects(client, caplog, status):
     assert not result.success
     assert result.failures[0].code == 'http_failed'
     assert client.response.reads == 0
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == 1
     assert len(client.calls) == 1
     assert SECRET not in repr(result) + caplog.text
@@ -471,8 +466,8 @@ def test_transport_and_ordinary_errors_release_owned_resources(
     assert not result.success
     assert result.failures[0].code == 'transport_failed'
     assert result.failures[0].message == '图床网络传输失败'
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == (stage == 'json')
     assert len(client.calls) == 1
     assert SECRET not in repr(result) + caplog.text
@@ -493,8 +488,8 @@ def test_control_signal_identity_cleanup_and_no_fallback(
     with pytest.raises(signal_type) as caught:
         upload(extra_hosts=[{'provider': 'boltp'}])
     assert caught.value is signal
-    assert len(client.get_calls) == 2
-    assert client.closed == 3
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 1
     assert client.response.closed == (stage == 'json')
     assert len(client.calls) == 1
 
@@ -521,8 +516,8 @@ def test_adapter_exception_has_no_original_chain(client, caplog, kind):
     text = ''.join(traceback.format_exception(caught.value))
     assert SECRET not in text + repr(result) + caplog.text
     assert URL not in text + repr(result) + caplog.text
-    assert len(client.get_calls) == 2
-    assert client.closed == 4
+    assert client.get_calls == []
+    assert client.closed == len(client.calls) == 2
     assert client.response.closed == (0 if kind == 'request' else 2)
 
 
@@ -587,9 +582,8 @@ def test_real_registry_fallback_isolated_credentials_and_first_success_stop(
         assert SECRET not in repr(request)
         assert second.closed == 1
         assert len(client.calls) == (1 if failure == 'options' else 2)
-    assert len(client.get_calls) == (0 if failure == 'options' else 2)
-    assert client.closed == client.created == (
-        len(client.calls) + len(client.get_calls))
+    assert client.get_calls == []
+    assert client.closed == client.created == len(client.calls)
     assert first.closed == (failure != 'options')
 
 
@@ -651,20 +645,23 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     backup.body = json.dumps({'status': True, 'data': {'links': {'url': URL}}})
     recovering = code == 'storage_unavailable'
     first = client.response
-    client.responses = [first] * (2 if recovering else 1) + [backup]
-    result = upload(extra_hosts=[{'provider': 'wmimg'},
-                                 {'provider': 'boltp', 'options': OPTIONS}])
+    client.responses = [first] * (3 if recovering else 1) + [backup]
+    result = upload(options={'storage_id': STORAGE_ID}, extra_hosts=[
+        {'provider': 'wmimg'},
+        {'provider': 'boltp', 'options': {'storage_id': 2}},
+        {'provider': 'boltp', 'options': {'storage_id': 3}},
+    ])
     assert result.success
     assert result.provider == 'wmimg'
     assert result.attempts == ('boltp', 'wmimg')
     assert result.failures[0].code == code
-    assert len(result.failures) == (2 if recovering else 1)
+    assert len(result.failures) == 1
     assert all(failure.code == code for failure in result.failures)
-    assert len(client.calls) == (3 if recovering else 2)
-    assert len(client.get_calls) == (4 if recovering else 2)
-    assert client.calls[0][0] == ENDPOINT
-    if recovering:
-        assert client.calls[1][0] == ENDPOINT
-    assert client.closed == client.created == (7 if recovering else 4)
-    assert first.closed == (2 if recovering else 1)
+    assert len(client.calls) == (4 if recovering else 2)
+    assert [call[1]['data']['storage_id'] for call in client.calls
+            if call[0] == ENDPOINT] == ([5, 2, 3] if recovering else [5])
+    assert client.calls[-1][0] == 'https://wmimg.com/api/v1/upload'
+    assert client.get_calls == []
+    assert client.closed == client.created == len(client.calls)
+    assert first.closed == (3 if recovering else 1)
     assert backup.closed == 1

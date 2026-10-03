@@ -712,7 +712,6 @@ def test_real_business_rejection_prints_history_then_final_conclusion(
         cli_http, monkeypatch, tmp_path, capsys):
     """真实业务拒绝先展示安全历史，再恰好输出一次固定失败结论。"""
     cli_http['replies'] = [
-        group_reply(), profile_reply(),
         (200, {'status': 'error', 'message': '请先绑定手机号'}),
     ]
     config = write_config(tmp_path, config_with_hosts(
@@ -725,8 +724,7 @@ def test_real_business_rejection_prints_history_then_final_conclusion(
     assert saved.read_bytes() == png
     assert all(paths == [saved]
                for paths in cli_http['saved_before_request'])
-    assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST']
+    assert [request.method for request in cli_http['requests']] == ['POST']
     captured = capsys.readouterr()
     history = ('上传尝试：boltp：图床拒绝上传（阶段 upload，HTTP 200）'
                '；诊断：请先绑定手机号')
@@ -789,7 +787,7 @@ def test_real_registry_alone_collects_once_and_freezes_chain_credentials(
         change_environment_after_collection, profile_reply(),
         (200, {'status': 'error', 'message':
                f'拒绝 {SECRET} {backup} ${{{backup_env}}}'}),
-        group_reply(), profile_reply(), upload_reply(),
+        upload_reply(),
     ]
     config = write_config(tmp_path, config_with_hosts(
         "{provider: beeimg_cn, token: '${%s}'}" % ENV_NAME,
@@ -802,10 +800,10 @@ def test_real_registry_alone_collects_once_and_freezes_chain_credentials(
     assert calls['upload'] == [context]
     assert calls['resolve'] == [f'${{{ENV_NAME}}}', f'${{{backup_env}}}']
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+        'GET', 'GET', 'POST', 'POST']
     assert [request.headers.get('Authorization')
             for request in cli_http['requests']] == (
-                ['Bearer ' + SECRET] * 3 + ['Bearer ' + backup] * 3)
+                ['Bearer ' + SECRET] * 3 + ['Bearer ' + backup])
     saved, = saved_pngs(program_dir)
     assert saved.read_bytes() == png
     captured = capsys.readouterr()
@@ -845,9 +843,11 @@ def test_real_cold_upload_preserves_request_image_and_signed_url(
     original_environment = dict(os.environ)
     target = tmp_path / ('capture' + suffix)
     cli_http['saved_paths'] = [target]
-    cli_http['replies'] = [group_reply()]
-    if token:
-        cli_http['replies'].append(profile_reply())
+    cli_http['replies'] = []
+    if provider == 'beeimg_cn':
+        cli_http['replies'].append(group_reply())
+        if token:
+            cli_http['replies'].append(profile_reply())
     cli_http['replies'].append(upload_reply(signed_url))
 
     code, png, _ = run_cli(
@@ -855,14 +855,14 @@ def test_real_cold_upload_preserves_request_image_and_signed_url(
 
     assert code == 0
     requests_seen = cli_http['requests']
-    expected_paths = ['/group', '/user/profile', '/upload'] if token else [
-        '/group', '/upload']
+    expected_paths = (['/group', '/user/profile', '/upload'] if token
+                      else ['/group', '/upload']) if provider == 'beeimg_cn' else ['/upload']
     base = ('https://www.beeimg.cn/api/v2' if provider == 'beeimg_cn'
             else 'https://www.boltp.com/api/v2')
     assert [request.url for request in requests_seen] == [
         base + path for path in expected_paths]
     assert [request.method for request in requests_seen] == (
-        ['GET', 'GET', 'POST'] if token else ['GET', 'POST'])
+        ['GET'] * (len(expected_paths) - 1) + ['POST'])
     for request in requests_seen:
         assert request.headers.get('Authorization') == (
             'Bearer ' + token if token else None)
@@ -873,7 +873,7 @@ def test_real_cold_upload_preserves_request_image_and_signed_url(
     assert parts['file'].get_content_type() == 'image/png'
     assert parts['file'].get_payload(decode=True) == png
     assert parts['storage_id'].get_payload(decode=True) == (
-        b'14' if token else b'13')
+        (b'14' if token else b'13') if provider == 'beeimg_cn' else b'2')
     assert parts['is_public'].get_payload(decode=True) == b'1'
     with Image.open(target) as image:
         image.load()
@@ -917,7 +917,7 @@ def test_real_transport_failures_only_display_safe_summaries(
         'read': (200, CliReadFailure(b'')),
         'malformed': (200, ('RAW_MALFORMED_' + SECRET).encode()),
     }
-    cli_http['replies'] = [group_reply(), profile_reply(), replies[case]]
+    cli_http['replies'] = [replies[case]]
     config = write_config(tmp_path, config_with_hosts(
         "{provider: boltp, token: '%s'}" % SECRET))
     caplog.set_level('DEBUG')
@@ -935,36 +935,41 @@ def test_real_transport_failures_only_display_safe_summaries(
     assert 'RAW_' not in out + err + caplog.text
     assert SECRET not in out + err + caplog.text
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST']
+        'POST']
 
 
 @pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
 def test_real_exact_storage_rejection_recovers_once_before_success(
         cli_http, monkeypatch, tmp_path, capsys, provider):
     """精确拒绝刷新一次；Boltp 仅验证合成兼容策略而非真实站点行为。"""
-    cli_http['replies'] = [
-        group_reply(), profile_reply(),
-        (200, {'status': 'error', 'message': '不存在的储存驱动'}),
-        group_reply((21,)), profile_reply(21), upload_reply(),
-    ]
+    cli_http['replies'] = (
+        [group_reply(), profile_reply(),
+         (200, {'status': 'error', 'message': '不存在的储存驱动'}),
+         group_reply((21,)), profile_reply(21), upload_reply()]
+        if provider == 'beeimg_cn' else [
+            (200, {'status': 'error', 'message': '不存在的储存驱动'}),
+            upload_reply()])
     config = write_config(tmp_path, config_with_hosts(
         "{provider: %s, token: '%s'}" % (provider, SECRET)))
 
     code, png, program_dir = run_cli(monkeypatch, tmp_path, config=config)
 
     assert code == 0
-    assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
-    posts = [request for request in cli_http['requests']
-             if request.method == 'POST']
+    expected_methods = (['GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+                        if provider == 'beeimg_cn' else ['POST', 'POST'])
+    assert [request.method for request in cli_http['requests']] == expected_methods
+    posts = [request for request in cli_http['requests'] if request.method == 'POST']
+    expected_storage_ids = ([b'14', b'21'] if provider == 'beeimg_cn'
+                            else [b'2', b'3'])
     assert [multipart_parts(request)['storage_id'].get_payload(decode=True)
-            for request in posts] == [b'14', b'21']
+            for request in posts] == expected_storage_ids
     assert all(multipart_parts(request)['file'].get_payload(decode=True) == png
                for request in posts)
     out = capsys.readouterr().out
-    assert out.count('上传尝试：') == 1
-    assert '储存驱动不可用（阶段 upload，HTTP 200）' in out
-    assert out.index('上传尝试：') < out.index('上传成功：')
+    assert out.count('上传尝试：') == (1 if provider == 'beeimg_cn' else 0)
+    if provider == 'beeimg_cn':
+        assert '储存驱动不可用（阶段 upload，HTTP 200）' in out
+        assert out.index('上传尝试：') < out.index('上传成功：')
     assert FINAL_FAILURE not in out and URL in out
     assert saved_pngs(program_dir)[0].read_bytes() == png
 
@@ -990,7 +995,7 @@ def test_real_registry_warnings_remain_ordered_and_unique(
     install(monkeypatch, 'catbox', other_site)
     reject = (200, {'status': 'error', 'message': '请先绑定手机号'})
     cli_http['replies'] = [group_reply(retention=60), profile_reply(), reject,
-                           group_reply(retention=60), profile_reply(), reject]
+                           group_reply(retention=60), reject]
     config = write_config(tmp_path, config_with_hosts(
         "{provider: beeimg_cn, token: '%s', expiration: 2m, "
         "options: {storage_id: 99}}" % SECRET,
@@ -1014,12 +1019,13 @@ def test_real_registry_warnings_remain_ordered_and_unique(
     assert 'RAW_' not in out + err + caplog.text
     assert SECRET not in out + err + caplog.text
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+        'GET', 'GET', 'POST', 'GET', 'POST']
     for request in cli_http['requests']:
         if request.method == 'POST':
             parts = multipart_parts(request)
             assert 'expired_at' in parts
-            assert parts['storage_id'].get_payload(decode=True) == b'14'
+            assert parts['storage_id'].get_payload(decode=True) == (
+                b'14' if 'www.beeimg.cn' in request.url else b'99')
     assert saved_pngs(program_dir)[0].read_bytes() == png
 
 
@@ -1041,7 +1047,6 @@ def test_real_diagnostics_hide_unused_backup_and_untrusted_messages(
         'oversized': '请稍后重试' * 1000 + backup,
     }
     cli_http['replies'] = [
-        group_reply(), profile_reply(),
         (200, {'status': 'error', 'message': messages[case]}),
         group_reply(), profile_reply(), upload_reply(),
     ]
@@ -1071,7 +1076,7 @@ def test_real_diagnostics_hide_unused_backup_and_untrusted_messages(
         if '；诊断：' in line:
             assert len(line.split('；诊断：', 1)[1]) <= 200
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+        'POST', 'GET', 'GET', 'POST']
     assert all(request.headers.get('Authorization') != 'Bearer ' + backup
                for request in cli_http['requests'])
 
@@ -1082,9 +1087,8 @@ def test_real_invalid_backup_credential_is_deferred_until_attempted(
     """备用项凭证错误预收集但延迟呈现，首站成功不受影响。"""
     missing = ENV_NAME + '_ABSENT'
     monkeypatch.delenv(missing, raising=False)
-    final_reply = upload_reply() if first_success else (
-        200, {'status': 'error', 'message': '请先绑定手机号'})
-    cli_http['replies'] = [group_reply(), profile_reply(), final_reply]
+    cli_http['replies'] = [upload_reply() if first_success else
+                           (200, {'status': 'error', 'message': '请先绑定手机号'})]
     config = write_config(tmp_path, config_with_hosts(
         "{provider: boltp, token: '%s'}" % SECRET,
         "{provider: beeimg_cn, token: '${%s}'}" % missing))
@@ -1098,7 +1102,7 @@ def test_real_invalid_backup_credential_is_deferred_until_attempted(
     assert out.count(FINAL_FAILURE) == (0 if first_success else 1)
     assert missing not in out + err and SECRET not in out + err
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST']
+        'POST']
 
 
 @pytest.mark.parametrize('case, expected', [
@@ -1174,7 +1178,7 @@ def test_real_context_closes_after_scope_exit_and_preserves_signals(
         response = upload_reply()
     elif outcome in ('keyboard', 'system_exit'):
         response = signal
-    cli_http['replies'] = [group_reply(), profile_reply(), response]
+    cli_http['replies'] = [response]
     config = write_config(tmp_path, config_with_hosts(
         "{provider: boltp, token: '%s'}" % SECRET))
     if outcome == 'display_error':
@@ -1200,14 +1204,14 @@ def test_real_context_closes_after_scope_exit_and_preserves_signals(
     assert diagnostics._CURRENT_SECRETS.get() == before
     assert len(saved_pngs(tmp_path / 'program')) == 1
     assert [request.method for request in cli_http['requests']] == [
-        'GET', 'GET', 'POST']
+        'POST']
 
 
 def test_real_consecutive_operations_only_reuse_disk_metadata(
         cli_http, monkeypatch, tmp_path, capsys):
     """连续操作重新截图、上传、建上下文，仅复用有效磁盘元数据。"""
     config = write_config(tmp_path, config_with_hosts(
-        "{provider: boltp, token: '%s'}" % SECRET))
+        "{provider: beeimg_cn, token: '%s'}" % SECRET))
     cli_http['replies'] = [group_reply(), profile_reply(), upload_reply(),
                            upload_reply(URL + '?second=1')]
     captured_sizes = []
@@ -1292,7 +1296,6 @@ def test_real_safe_yaml_filter_and_nested_options_remain_unchanged(
     config_before = Path(config).read_bytes()
     environment_before = dict(os.environ)
     cli_http['replies'] = [
-        group_reply(), profile_reply(),
         (200, {'status': 'error', 'message': '请先绑定手机号'}),
         group_reply(), profile_reply(), upload_reply(),
     ]
@@ -1307,7 +1310,7 @@ def test_real_safe_yaml_filter_and_nested_options_remain_unchanged(
     assert Path(config).read_bytes() == config_before
     assert dict(os.environ) == environment_before
     assert [request.url.split('/api/v2')[0] for request in cli_http['requests']] == (
-        ['https://www.boltp.com'] * 3 + ['https://www.beeimg.cn'] * 3)
+        ['https://www.boltp.com'] + ['https://www.beeimg.cn'] * 3)
     assert multipart_parts(cli_http['requests'][-1])['album_id'].get_payload(
         decode=True) == b'7'
 
