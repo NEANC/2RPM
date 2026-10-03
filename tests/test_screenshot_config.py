@@ -97,9 +97,11 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
     config_module.create_default_config(str(path))
     text = path.read_text(encoding='utf-8')
     for fragment in (
-            '未填 options.storage_id 时自动获取账号可用存储',
-            '优先有效账号默认存储，否则取列表第一项；匿名只查 group',
-            '手填合法可用 ID 优先；非法或离表时取得新元数据后选择可用 ID',
+            'Boltp (boltp) 未填 options.storage_id 时按 2、3 顺序尝试，'
+            '手填非负整数优先，精确拒绝时继续下一个编号；'
+            '不查询存储元数据或使用磁盘存储缓存',
+            'BeeIMG.cn (beeimg_cn) 未填 options.storage_id 时自动获取账号可用存储',
+            'BeeIMG.cn 手填合法可用 ID 优先；非法或离表时取得新元数据后选择可用 ID',
             '替代仅用于本次操作，不写回用户配置',
             '查询失败或无可用存储转下一图床，不猜值',
             'expiration 位于图床项顶层，不放入 options',
