@@ -101,6 +101,147 @@ def test_boltp_fetch_retention_maps_malformed_data_without_token(monkeypatch):
     assert token not in str(caught.value) + repr(caught.value.args)
 
 
+@pytest.mark.parametrize('retention', [None, 0, 86400])
+def test_boltp_fetch_retention_accepts_optional_nonnegative_integer(
+        monkeypatch, retention):
+    from modules.image_host import storage, v2_http
+
+    monkeypatch.setattr(
+        v2_http, 'request_json',
+        lambda provider, stage, token: {
+            'data': {'group': {'options': {'file_expire_seconds': retention}}}})
+
+    assert storage.fetch_boltp_retention('') == retention
+
+
+@pytest.mark.parametrize('payload', [
+    {'data': {'group': {'options': {'file_expire_seconds': 60}}}},
+    {'data': {'storages': 'malformed',
+              'group': {'options': {'file_expire_seconds': 60}}}},
+])
+def test_boltp_fetch_retention_ignores_storages_field(monkeypatch, payload):
+    from modules.image_host import storage, v2_http
+
+    monkeypatch.setattr(v2_http, 'request_json', lambda *args: payload)
+
+    assert storage.fetch_boltp_retention('') == 60
+
+
+@pytest.mark.parametrize('payload', [
+    {}, {'data': None}, {'data': {'group': []}},
+    {'data': {'group': {'options': []}}},
+])
+def test_boltp_fetch_retention_rejects_malformed_structure(
+        monkeypatch, payload):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    monkeypatch.setattr(v2_http, 'request_json', lambda *args: payload)
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert (caught.value.code, caught.value.stage) == (
+        'storage_lookup_failed', 'group')
+
+
+@pytest.mark.parametrize('retention', [-1, 1.5, '60', True, [], {}])
+def test_boltp_fetch_retention_rejects_invalid_expiration_type(
+        monkeypatch, retention):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    monkeypatch.setattr(
+        v2_http, 'request_json',
+        lambda *args: {'data': {'group': {'options': {
+            'file_expire_seconds': retention}}}})
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert (caught.value.code, caught.value.stage) == (
+        'storage_lookup_failed', 'group')
+
+
+@pytest.mark.parametrize(('failure_code', 'code', 'status'), [
+    ('forbidden', 'http_failed', 403),
+    ('server_error', 'http_failed', 500),
+    ('invalid_json', 'invalid_response', None),
+    ('timeout', 'transport_failed', None),
+])
+def test_boltp_fetch_retention_preserves_http_classification_and_chain(
+        monkeypatch, failure_code, code, status):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    def fail(*args):
+        if failure_code == 'forbidden':
+            raise ImageHostError(
+                'http_failed', '', stage='group', http_status=403)
+        if failure_code == 'server_error':
+            raise ImageHostError(
+                'http_failed', '', stage='group', http_status=500)
+        if failure_code == 'invalid_json':
+            raise ImageHostError('invalid_response', '', stage='group')
+        raise ImageHostError('transport_failed', '', stage='group')
+
+    monkeypatch.setattr(v2_http, 'request_json', fail)
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert caught.value.code == code
+    assert caught.value.http_status == status
+    assert caught.value.__cause__ is None
+
+
+def test_boltp_fetch_retention_preserves_exact_business_rejection(monkeypatch):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    rejection = ImageHostError('business_rejected', '', stage='group')
+    monkeypatch.setattr(v2_http, 'request_json', lambda *args: (_ for _ in ()).throw(rejection))
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert caught.value is rejection
+    assert caught.value.code == 'business_rejected'
+    assert caught.value.__cause__ is None
+
+
+def test_boltp_fetch_retention_maps_unclassified_error_with_cause(monkeypatch):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    monkeypatch.setattr(
+        v2_http, 'request_json',
+        lambda *args: (_ for _ in ()).throw(ValueError('malformed payload')))
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention('')
+
+    assert caught.value.code == 'storage_lookup_failed'
+    assert caught.value.stage == 'group'
+    assert caught.value.__context__ is None
+
+
+def test_boltp_fetch_retention_does_not_expose_token(monkeypatch):
+    from modules.image_host import storage, v2_http
+    from modules.image_host.core import ImageHostError
+
+    token = 'RETENTION_SECRET_7319'
+    monkeypatch.setattr(
+        v2_http, 'request_json',
+        lambda *args: {'data': {'group': {'options': {
+            'file_expire_seconds': True}}}})
+
+    with pytest.raises(ImageHostError) as caught:
+        storage.fetch_boltp_retention(token)
+
+    assert caught.value.stage == 'group'
+    assert token not in str(caught.value) + repr(caught.value.args)
+
+
 def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):
     from modules.image_host.core import ImageHostError
 
