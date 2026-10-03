@@ -26,7 +26,7 @@ from modules.image_host.storage_cache import StorageCache
 SECRET = 'FAKE_EVENT_PRIMARY_7319'
 BACKUP = 'FAKE_EVENT_BACKUP_8420'
 ENV_NAME = 'SYNTHETIC_EVENT_CREDENTIAL'
-PROVIDER = 'boltp'
+PROVIDER = 'beeimg_cn'
 
 
 def context_module():
@@ -283,7 +283,7 @@ def test_event_success_reused_and_identity_isolated(rig, caplog, capsys):
     """同身份跨图片复用，站点、匿名及不同凭证分别查询。"""
     _, ctx, _, calls, _, _ = rig
     identities = [(PROVIDER, SECRET), (PROVIDER, BACKUP),
-                  (PROVIDER, ''), ('beeimg_cn', SECRET)]
+                  (PROVIDER, ''), ('boltp', SECRET)]
     for provider, token in identities:
         first = ctx.get_metadata(provider, token)
         assert ctx.get_metadata(provider, token) is first
@@ -973,7 +973,7 @@ def post_data(state):
             if method == 'POST']
 
 
-@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('provider', ['beeimg_cn'])
 @pytest.mark.parametrize('token', ['', SECRET])
 def test_registry_cold_lookup_order_and_auth(integration, provider, token):
     """冷缓存按组、可选账号、上传顺序执行且保持认证与直链。"""
@@ -1116,7 +1116,7 @@ def test_registry_manual_refresh_failure_never_uses_old_cache(
     assert cache.load(identity) is None
 
 
-@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('provider', ['beeimg_cn'])
 def test_registry_precise_rejection_refreshes_and_reposts_once(
         integration, provider):
     """精确拒绝只允许一次刷新重传且不增加配置槽位。"""
@@ -1390,11 +1390,11 @@ def test_registry_same_identity_slots_have_independent_budgets(integration):
 
 
 @pytest.mark.parametrize('second_provider, second_token', [
-    (PROVIDER, BACKUP), ('beeimg_cn', SECRET), (PROVIDER, ''),
+    (PROVIDER, BACKUP), (PROVIDER, ''),
 ])
 def test_registry_metadata_identity_isolated_and_reused(
         integration, second_provider, second_token):
-    """不同站点、凭证和匿名身份独立查询，后续图片各自复用。"""
+    """BeeIMG.cn 不同凭证和匿名身份独立查询，后续图片各自复用。"""
     state = integration
     failure = (200, {'status': 'error', 'message': '普通业务拒绝'})
     state['replies'] = [group_reply(), profile_reply(), failure,
@@ -1427,7 +1427,7 @@ def test_registry_sites_share_start_not_duration(integration):
     state['replies'] = [group_reply(retention=30), delayed_rejection,
                         group_reply(retention=15), upload_reply()]
     result = registry_upload(state, [
-        {'provider': PROVIDER, 'expiration': '10s'},
+        {'provider': 'boltp', 'expiration': '10s'},
         {'provider': 'beeimg_cn', 'expiration': '20s'},
     ])
     assert result.success
