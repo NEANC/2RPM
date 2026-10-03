@@ -351,7 +351,7 @@ def test_boltp_fetch_retention_maps_unclassified_error_with_cause(monkeypatch):
     assert caught.value.code == 'storage_lookup_failed'
     assert caught.value.stage == 'group'
     assert caught.value.__cause__ is None
-    assert errors[0].__context__ is None
+    assert caught.value.__context__ is None
 
 
 def test_boltp_fetch_retention_does_not_expose_token(monkeypatch):
