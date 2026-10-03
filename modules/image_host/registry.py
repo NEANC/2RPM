@@ -90,8 +90,34 @@ def _copy_options(host):
 
 
 def _prepare_v2(context, image, index, provider, token, options, seconds,
-                warnings):
-    """复用版本化存储选择，并在每次上传前成对继承期限历史。"""
+                warnings, png_bytes=None, filename=None):
+    """复用版本化存储选择；Boltp 按候选独立上传并重算期限。"""
+    if provider == 'boltp':
+        retention = (context.get_boltp_retention(token)
+                     if seconds is not None else None)
+        candidates = ([options['storage_id']] if 'storage_id' in options else [])
+        candidates.extend(value for value in (2, 3) if value not in candidates)
+        failure = None
+        for storage_id in candidates:
+            decision = compute_expiration(
+                seconds, image.started_at, retention, None, context.now())
+            if decision.shortened:
+                _add_warnings(warnings, (_WARN_SHORTENED,))
+            prepared = PreparedV2Options(
+                deepcopy(options), expired_at=decision.expired_at)
+            prepared['storage_id'] = storage_id
+            try:
+                result = UPLOADERS[provider](png_bytes, filename, token, prepared)
+                return validate_image_url(result), None
+            except ImageHostError as error:
+                failure = _failure(provider, error.code, error=error)
+            except Exception:
+                failure = _failure(provider, 'upload_failed')
+            if not (failure.code == 'storage_unavailable'
+                    and failure.stage == 'upload'
+                    and failure.http_status == 200):
+                break
+        return None, failure
     try:
         selected = context.prepare_storage(
             image, index, provider, token,
@@ -139,6 +165,10 @@ def _upload_chain(png_bytes, filename, hosts, context, image):
                 raise ImageHostError('unknown_provider', '')
             token = context.resolve_credential(index, host)
             options = _copy_options(host)
+            if provider == 'boltp' and 'storage_id' in options:
+                storage_id = options['storage_id']
+                if type(storage_id) is not int or storage_id < 0:
+                    raise ImageHostError('invalid_options', '')
             seconds = None
             if 'expiration' in host:
                 if 'expired_at' in options:
@@ -146,10 +176,29 @@ def _upload_chain(png_bytes, filename, hosts, context, image):
                 seconds = parse_expiration(host['expiration'])
             is_v2 = provider in _V2_PROVIDERS
             if is_v2:
-                validate_v2_options(options, require_storage=False)
+                if provider == 'boltp' and 'storage_id' in options:
+                    storage_id = options['storage_id']
+                    if (type(storage_id) is not int or storage_id < 0):
+                        raise ImageHostError('invalid_options', '')
+                    validate_v2_options({key: value for key, value in options.items()
+                                         if key != 'storage_id'},
+                                        provider=provider, require_storage=False)
+                elif provider == 'boltp':
+                    validate_v2_options(options, provider=provider,
+                                        require_storage=False)
+                else:
+                    validate_v2_options(options, provider=provider,
+                                        require_storage=False)
             elif seconds is not None:
                 _add_warnings(warnings, (_WARN_UNSUPPORTED,))
             for transmission in range(2 if is_v2 else 1):
+                if provider == 'boltp':
+                    url, candidate_failure = _prepare_v2(
+                        context, image, index, provider, token, options,
+                        seconds, warnings, png_bytes, filename)
+                    if candidate_failure is not None:
+                        failures.append(candidate_failure)
+                    break
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
                     seconds, warnings) if is_v2 else deepcopy(options))
