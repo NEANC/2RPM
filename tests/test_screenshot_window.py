@@ -619,6 +619,72 @@ def test_candidate_visibility_exception_is_sanitized(monkeypatch):
     env.user32.GetWindowDC.assert_not_called()
 
 
+
+
+@pytest.mark.parametrize(('operation', 'code'), [
+    ('GetWindowPlacement', 'window_state_failed'),
+    ('ShowWindow', 'window_state_failed'),
+    ('GetWindowDC', 'gdi_failed'),
+    ('PrintWindow', 'print_failed'),
+])
+@pytest.mark.parametrize('signal', [KeyboardInterrupt, SystemExit])
+def test_control_signals_at_capture_checkpoints_stop_without_result(
+        monkeypatch, operation, code, signal):
+    """捕获各检查点收到控制信号时不返回图像且不重选句柄。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = operation == 'ShowWindow'
+    owner = env.gui if operation in ('GetWindowPlacement', 'ShowWindow') else env.user32
+    getattr(owner, operation).side_effect = signal()
+    with pytest.raises(signal):
+        backend.capture_window(TITLE)
+    assert env.user32.PrintWindow.call_count == (1 if operation == 'PrintWindow' else 0)
+    assert env.gui.EnumWindows.call_count == 1
+    assert env.selected_hwnd in (None, HWND)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+    if operation == 'PrintWindow':
+        env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+        env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+        env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    if operation == 'GetWindowDC':
+        env.user32.GetWindowDC.assert_called_once_with(HWND)
+    elif operation != 'PrintWindow':
+        env.user32.GetWindowDC.assert_not_called()
+
+
+def test_hidden_at_final_return_has_no_image_and_keeps_cleanup_contract(monkeypatch):
+    """最终返回前窗口隐藏时报告 window_gone，不重选且完成 GDI/DPI 清理。"""
+    backend, env = environment(monkeypatch)
+
+    def hide_after_encoding(*args):
+        env.visible[HWND] = False
+        return 1
+
+    env.user32.PrintWindow.side_effect = hide_after_encoding
+    assert_error(backend, 'window_gone')
+    assert env.gui.EnumWindows.call_count == 1
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_renamed_minimized_window_skips_restore_and_preserves_error(monkeypatch):
+    """清理时标题改名不调用 placement 或额外 ShowWindow，并保留原错误。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+
+    def rename_during_print(*args):
+        env.windows[HWND] = '改名窗口'
+        return 0
+
+    env.user32.PrintWindow.side_effect = rename_during_print
+    assert_error(backend, 'window_gone')
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
 def test_backend_has_no_fallback_or_global_dpi_calls():
     """静态核对不引入桌面回退、ADB 或全局 DPI 修改。"""
     backend = load_backend()
