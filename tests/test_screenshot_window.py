@@ -41,6 +41,7 @@ class WindowEnvironment:
         self.backend = backend
         self.events = []
         self.windows = {HWND: TITLE}
+        self.visible = {}
         self.alive = True
         self.iconic = False
         self.placement = (0, 1, (-1, -1), (-1, -1), (10, 20, 12, 22))
@@ -57,7 +58,7 @@ class WindowEnvironment:
             SetWindowPlacement=Mock(side_effect=self.set_placement),
             ShowWindow=Mock(side_effect=self.show_window),
             GetWindowRect=Mock(return_value=(10, 20, 12, 22)),
-            IsWindowVisible=Mock(side_effect=AssertionError('不得过滤可见性')),
+            IsWindowVisible=Mock(side_effect=self.is_window_visible),
             SetForegroundWindow=Mock(side_effect=AssertionError('不得抢前台')),
             BringWindowToTop=Mock(side_effect=AssertionError('不得置顶')),
         )
@@ -84,6 +85,10 @@ class WindowEnvironment:
         """仅枚举模拟顶层窗口，包括最小化目标。"""
         for handle in list(self.windows):
             callback(handle, argument)
+
+    def is_window_visible(self, handle):
+        """按模拟句柄返回可见状态，未配置的窗口默认可见。"""
+        return self.visible.get(handle, True)
 
     def show_window(self, handle, command):
         """模拟恢复窗口，返回原可见状态而不是成功标志。"""
@@ -206,6 +211,35 @@ def test_unique_window_encodes_real_png(monkeypatch):
     env.gui.SetWindowPlacement.assert_not_called()
 
 
+def test_visible_duplicate_wins_over_hidden_duplicate(monkeypatch):
+    """同名窗口中只选择可见项。"""
+    backend, env = environment(monkeypatch)
+    visible = HWND + 1
+    hidden = HWND + 2
+    env.windows = {visible: TITLE, hidden: TITLE}
+    env.visible[hidden] = False
+    result = backend.capture_window(TITLE)
+    assert result.target == TITLE
+    env.user32.PrintWindow.assert_called_once()
+    assert env.user32.PrintWindow.call_args.args[0] == visible
+
+
+def test_hidden_only_window_is_not_found(monkeypatch):
+    """仅隐藏的同名窗口不构成可捕获候选。"""
+    backend, env = environment(monkeypatch)
+    env.visible[HWND] = False
+    assert_error(backend, 'window_not_found')
+    env.user32.PrintWindow.assert_not_called()
+
+
+def test_multiple_visible_duplicates_remain_ambiguous(monkeypatch):
+    """多个可见同名窗口仍明确报告歧义。"""
+    backend, env = environment(monkeypatch)
+    env.windows = {HWND: TITLE, HWND + 1: TITLE}
+    assert_error(backend, 'window_ambiguous')
+    env.user32.PrintWindow.assert_not_called()
+
+
 @pytest.mark.parametrize('title', [None, False, 123, '', ' \t ', [], {}])
 def test_invalid_input_fails_before_window_operations(monkeypatch, title):
     """非法标题不进行枚举、DPI 修改或窗口操作。"""
@@ -238,7 +272,7 @@ def test_title_whitespace_is_not_silently_normalized(monkeypatch):
 
 @pytest.mark.parametrize('fails', [False, True])
 def test_minimized_window_restores_original_placement(monkeypatch, fails):
-    """最小化窗口在成功或失败后都恢复原始 placement。"""
+    """可见最小化窗口在成功或失败后都恢复原始 placement。"""
     backend, env = environment(monkeypatch)
     env.iconic = True
     env.placement = (2, 2, (-1, -1), (0, 0), (10, 20, 12, 22))
@@ -254,7 +288,6 @@ def test_minimized_window_restores_original_placement(monkeypatch, fails):
     assert backend.time.sleep.called
     assert all(0 <= call.args[0] <= 1
                for call in backend.time.sleep.call_args_list)
-    env.gui.IsWindowVisible.assert_not_called()
     env.gui.SetForegroundWindow.assert_not_called()
     env.gui.BringWindowToTop.assert_not_called()
 
