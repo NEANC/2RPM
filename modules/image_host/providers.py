@@ -39,7 +39,9 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
     连接和读取超时不是整个操作的硬总时限；发生超时也不能保证
     服务端尚未保存图片。每次调用最多发送一次上传请求。
     """
-    if 'permission' in options and options['permission'] != 1:
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission != 1):
         raise ImageHostError('invalid_options', '')
     for name in ('album_id', 'strategy_id'):
         if name in options:
@@ -65,15 +67,18 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
                     raise ImageHostError('upload_failed', '')
                 return validate_image_url(response.text)
     except requests.exceptions.RequestException:
-        raise ImageHostError('upload_failed', '') from None
+        pass
+    raise ImageHostError('upload_failed', '')
 
 
 def upload_wmimg(image_bytes, filename, token, options) -> str:
     """依据 WMIMG 官方契约上传内存 PNG，返回经校验的完整直链。
 
-    契约来源：https://wmimg.com/page/api-docs.html，未做真实上传。
-    token 已由注册表解析，仅用作 Bearer 账号凭证；空值允许尝试
-    游客上传，是否接受由服务器决定。项目默认显式发送公开权限，
+    契约来源：https://wmimg.com/page/api-docs.html。
+    2026-10-04 已通过独立脚本验证账号 Bearer Token 直连上传成功，
+    无需先生成临时 Token。token 已由注册表解析，仅用作 Bearer
+    账号凭证；空值允许尝试游客上传，但本次匿名实测超时，尚未
+    验证成功，是否接受由服务器决定。项目默认显式发送公开权限，
     私有值不代表直链必然限制访问。每次调用最多发送一次请求。
     文档仅规定相册和策略 ID 为整数，显式值的有效性由服务端判断。
     连接和读取超时不构成总时限，也不能保证超时后服务端未保存。
@@ -122,7 +127,8 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
                     raise ImageHostError('upload_failed', '')
                 return validate_image_url(links.get('url'))
     except requests.exceptions.RequestException:
-        raise ImageHostError('upload_failed', '') from None
+        pass
+    raise ImageHostError('upload_failed', '')
 
 
 def upload_beeimg(image_bytes, filename, token, options) -> str:

@@ -122,6 +122,26 @@ push_settings:
 
 ---
 
+## 图床服务
+
+已验证支持的图床供应商如下
+
+- [无铭图床](https://wmimg.com)
+- [蜜蜂图床](https://www.beeimg.cn/)
+- [闪电图床](https://www.boltp.com/)
+- [BeeIMG.com](https://beeimg.com)
+  - 支持匿名上传，匿名上传有效期未知，登陆后未找到 API Key 配置
+
+已准备，但是未验证支持的图床供应商如下
+
+- [catbox](https://catbox.moe)
+  - 测试上传超时，使用代理也超时
+  - 理论上支持匿名上传，匿名上传有效期2年
+- [Superbed（聚合图床）](https://www.superbed.cn/)
+  - 不付费无法获取 API Key，没有便宜的月付计划
+
+---
+
 ## License
 
 [WTFPL](./LICENSE)
