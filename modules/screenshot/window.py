@@ -30,7 +30,7 @@ _MESSAGES = {
     'window_not_found': '未找到完整标题匹配的窗口',
     'window_ambiguous': '存在多个完整标题匹配的窗口',
     'window_lookup_failed': '无法枚举目标窗口',
-    'window_gone': '目标窗口已失效或标题已变化',
+    'window_gone': '目标窗口已失效、隐藏或标题已变化',
     'window_state_failed': '无法读取或恢复目标窗口状态',
     'invalid_dimensions': '目标窗口尺寸无效',
     'dpi_failed': '无法设置局部线程 DPI 上下文',
@@ -104,9 +104,11 @@ def _error(code):
 
 
 def _ensure_window(hwnd, title):
-    """在操作前校验本次选中的句柄和标题，不重新选择其他窗口。"""
+    """校验句柄有效、窗口可见且标题不变；可见不代表前台、无遮挡或有新帧。"""
     try:
         valid = bool(hwnd) and win32gui.IsWindow(hwnd)
+        if valid:
+            valid = win32gui.IsWindowVisible(hwnd)
         if valid:
             valid = win32gui.GetWindowText(hwnd) == title
     except Exception:
@@ -116,12 +118,14 @@ def _ensure_window(hwnd, title):
 
 
 def _find_window(title):
-    """枚举全部顶层窗口并要求完整标题唯一，不过滤最小化窗口。"""
+    """枚举完整标题匹配且可见的顶层窗口，不因最小化或遮挡而排除。"""
     matches = []
 
     def collect(hwnd, argument):
-        """收集当前仍有效且完整标题相同的顶层窗口。"""
-        if win32gui.IsWindow(hwnd) and win32gui.GetWindowText(hwnd) == title:
+        """收集有效、可见且完整标题相同的顶层窗口。"""
+        if (win32gui.IsWindow(hwnd)
+                and win32gui.IsWindowVisible(hwnd)
+                and win32gui.GetWindowText(hwnd) == title):
             matches.append(hwnd)
         return True
 
