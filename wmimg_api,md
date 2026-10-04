@@ -1,0 +1,289 @@
+# 无铭图床 API 接口文档
+
+## 1. 接口说明
+
+### 1.1 接口 URL
+
+```text
+https://wmimg.com/api/v1
+```
+
+### 1.2 验证方式
+
+接口采用 Bearer Token 认证（不是 HTTP Basic 认证）。获取个人中心的账号 Token 后，直接在请求 Header 中设置：
+
+```http
+Authorization: Bearer <token>
+```
+
+账号 Token 可直接调用 `POST /upload`，无需先调用 `/images/tokens` 生成临时 Token。账号 Token 放在 `Authorization` 请求头；上传表单中的 `token` 字段仅用于临时上传 Token，两者不要混用。
+
+2026-10-04 本地验证：使用账号 Bearer Token 直连上传 PNG，返回 HTTP 200、`status: true` 和 `data.links.url`，确认账号认证上传成功。未验证返回直链的可访问性。
+
+原接口文档说明：未设置 `Authorization` 时调用上传接口，将被视为游客上传。本次匿名上传实测出现读取超时，尚未验证成功；这不能证明服务端不支持匿名上传，也不能排除图片已保存。当前建议配置账号 Token 使用。
+
+不要发送空的 `Authorization: Bearer` 请求头；空 Bearer 不等同于省略认证头，本次实测返回 HTTP 401。匿名调用 `/images/tokens` 同样返回 HTTP 401，因此不能通过该接口匿名获取临时 Token。
+
+### 1.3 公共请求 Headers
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `Authorization` | String | 授权 Token，例如 `Bearer 1\|xxxx` |
+| `Accept` | String | 必填，必须设置为 `application/json` |
+
+### 1.4 公共响应 Headers
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `X-RateLimit-Limit` | Integer | 当前客户端一分钟内的请求配额 |
+| `X-RateLimit-Remaining` | Integer | 当前客户端剩余请求配额 |
+
+### 1.5 HTTP 状态码
+
+| 状态码 | 说明 |
+| --- | --- |
+| `401` | 未登录或授权失败 |
+| `403` | 管理员关闭了接口功能，或没有该接口权限 |
+| `429` | 超出请求配额，请求受限 |
+| `500` | 服务端出现异常 |
+
+> 请求参数名称前的 `*` 表示必填参数。
+
+## 2. 用户相关
+
+### 2.1 用户资料
+
+```http
+GET /profile
+```
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
+| `data.username` | String | 用户名 |
+| `data.name` | String | 昵称 |
+| `data.avatar` | String | 头像地址 |
+| `data.email` | String | 邮箱地址 |
+| `data.capacity` | Float | 总容量 |
+| `data.size` | Float | 已使用容量 |
+| `data.url` | String | 个人主页地址 |
+| `data.image_num` | Integer | 图片数量 |
+| `data.album_num` | Integer | 相册数量 |
+| `data.registered_ip` | String | 注册 IP |
+
+## 3. 策略相关
+
+### 3.1 策略列表
+
+```http
+GET /strategies
+```
+
+#### 请求参数（Query）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `q` | String | 筛选关键字 |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
+| `data.strategies` | Object[] | 策略数据 |
+| `data.strategies[].id` | Integer | 策略 ID |
+| `data.strategies[].name` | String | 策略名称 |
+
+## 4. 图片相关
+
+### 4.1 生成临时上传 Token
+
+```http
+POST /images/tokens
+```
+
+#### 请求参数（Body）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `*num` | Integer | 生成数量，最大 100 |
+| `*seconds` | Integer | 有效期（秒），最大 2626560（一个月） |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
+| `data.tokens` | Object[] | 临时 Token 列表 |
+| `data.tokens[].token` | String | 临时 Token |
+| `data.tokens[].expired_at` | String | 到期时间 |
+
+### 4.2 上传图片
+
+```http
+POST /upload
+```
+
+#### Headers
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `*Content-Type` | String | 必须设置为 `multipart/form-data` |
+
+#### 请求参数（Body）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `*file` | File | 图片文件 |
+| `token` | String | 临时上传 Token |
+| `permission` | Integer | 权限，`1` 表示公开，`0` 表示私有 |
+| `strategy_id` | Integer | 存储策略 ID |
+| `album_id` | Integer | 相册 ID |
+| `expired_at` | String | 图片过期时间，格式为 `yyyy-MM-dd HH:mm:ss` |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
+| `data.key` | String | 图片唯一密钥 |
+| `data.name` | String | 图片名称 |
+| `data.pathname` | String | 图片路径名 |
+| `data.origin_name` | String | 图片原始名称 |
+| `data.size` | Float | 图片大小，单位为 KB |
+| `data.mimetype` | String | 图片类型 |
+| `data.extension` | String | 图片扩展名 |
+| `data.md5` | String | 图片 MD5 值 |
+| `data.sha1` | String | 图片 SHA-1 值 |
+| `data.links` | Object | 图片链接 |
+| `data.links.url` | String | 图片访问 URL |
+| `data.links.html` | String | HTML 链接 |
+| `data.links.bbcode` | String | BBCode 链接 |
+| `data.links.markdown` | String | Markdown 链接 |
+| `data.links.markdown_with_link` | String | 带链接的 Markdown |
+| `data.links.thumbnail_url` | String | 缩略图 URL |
+| `data.links.delete_url` | String | 图片删除 URL |
+
+### 4.3 图片列表
+
+```http
+GET /images
+```
+
+#### 请求参数（Query）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `page` | Integer | 页码 |
+| `order` | String | 排序方式：`newest` 最新、`earliest` 最早、`utmost` 最大、`least` 最小 |
+| `permission` | String | 权限：`public` 公开、`private` 私有 |
+| `album_id` | Integer | 相册 ID |
+| `q` | String | 筛选关键字 |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 分页数据 |
+| `data.current_page` | Integer | 当前页码 |
+| `data.last_page` | Integer | 最后一页页码 |
+| `data.per_page` | Integer | 每页数据数量 |
+| `data.total` | Integer | 图片总数量 |
+| `data.data` | Object[] | 图片列表，字段结构与上传接口返回的图片数据基本一致 |
+| `data.data[].key` | String | 图片唯一密钥 |
+| `data.data[].name` | String | 图片名称 |
+| `data.data[].origin_name` | String | 图片原始名称 |
+| `data.data[].pathname` | String | 图片路径名 |
+| `data.data[].size` | Float | 图片大小，单位为 KB |
+| `data.data[].width` | Integer | 图片宽度 |
+| `data.data[].height` | Integer | 图片高度 |
+| `data.data[].md5` | String | 图片 MD5 值 |
+| `data.data[].sha1` | String | 图片 SHA-1 值 |
+| `data.data[].human_date` | String | 友好格式的上传时间 |
+| `data.data[].date` | String | 上传日期，格式为 `yyyy-MM-dd HH:mm:ss` |
+| `data.data[].links` | Object | 图片链接，与上传接口返回的 `links` 相同 |
+
+### 4.4 删除图片
+
+```http
+DELETE /images/:key
+```
+
+#### 请求参数（Params）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `*key` | String | 图片密钥 |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
+
+## 5. 相册相关
+
+### 5.1 相册列表
+
+```http
+GET /albums
+```
+
+#### 请求参数（Query）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `page` | Integer | 页码 |
+| `order` | String | 排序方式：`newest` 最新、`earliest` 最早、`most` 图片最多、`least` 图片最少 |
+| `q` | String | 筛选关键字 |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 分页数据 |
+| `data.current_page` | Integer | 当前页码 |
+| `data.last_page` | Integer | 最后一页页码 |
+| `data.per_page` | Integer | 每页数据数量 |
+| `data.total` | Integer | 相册总数量 |
+| `data.data` | Object[] | 相册列表 |
+| `data.data[].id` | Integer | 相册自增 ID |
+| `data.data[].name` | String | 相册名称 |
+| `data.data[].intro` | String | 相册简介 |
+| `data.data[].image_num` | Integer | 相册图片数量 |
+
+### 5.2 删除相册
+
+```http
+DELETE /albums/:id
+```
+
+#### 请求参数（Params）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `*id` | String | 相册自增 ID |
+
+#### 返回参数
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | Boolean | 状态，`true` 或 `false` |
+| `message` | String | 描述信息 |
+| `data` | Object | 数据 |
