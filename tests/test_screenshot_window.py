@@ -42,6 +42,7 @@ class WindowEnvironment:
         self.events = []
         self.windows = {HWND: TITLE}
         self.visible = {}
+        self.selected_hwnd = None
         self.alive = True
         self.iconic = False
         self.placement = (0, 1, (-1, -1), (-1, -1), (10, 20, 12, 22))
@@ -92,23 +93,27 @@ class WindowEnvironment:
 
     def show_window(self, handle, command):
         """模拟恢复窗口，返回原可见状态而不是成功标志。"""
-        assert handle == HWND
-        self.events.append('show')
+        assert handle in self.windows
+        self.selected_hwnd = handle
+        self.events.append(('show', handle))
         self.iconic = False
         return 0
 
     def set_placement(self, handle, placement):
         """记录恢复的完整状态，使用 pywin32 的无返回值约定。"""
-        assert handle == HWND
-        self.events.append('restore_window')
+        assert handle in self.windows
+        self.selected_hwnd = handle
+        self.events.append(('restore_window', handle))
         self.restored_placement = placement
         self.iconic = True
         return None
 
     def get_window_dc(self, handle):
-        """只允许获取明确目标的完整窗口 DC。"""
-        assert handle == HWND
-        self.events.append('window_dc')
+        """只允许获取已登记模拟目标的完整窗口 DC。"""
+        assert handle in self.windows
+        self.selected_hwnd = handle
+        assert self.alive
+        self.events.append(('window_dc', handle))
         return WINDOW_DC
 
     def create_dc(self, handle):
@@ -157,8 +162,10 @@ class WindowEnvironment:
 
     def release_dc(self, handle, dc):
         """释放借用窗口 DC，不重复或跨窗口释放。"""
-        assert (handle, dc) == (HWND, WINDOW_DC)
-        self.events.append('release_dc')
+        assert handle in self.windows
+        assert handle == self.selected_hwnd
+        assert dc == WINDOW_DC
+        self.events.append(('release_dc', handle))
         return 1
 
     def set_dpi(self, context):
@@ -205,7 +212,7 @@ def test_unique_window_encodes_real_png(monkeypatch):
             (255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
     env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
     assert env.events[-5:] == [
-        'select_old', 'delete_bitmap', 'delete_dc', 'release_dc',
+        'select_old', 'delete_bitmap', 'delete_dc', ('release_dc', HWND),
         ('dpi', OLD_DPI)]
     env.gui.ShowWindow.assert_not_called()
     env.gui.SetWindowPlacement.assert_not_called()
@@ -220,8 +227,11 @@ def test_visible_duplicate_wins_over_hidden_duplicate(monkeypatch):
     env.visible[hidden] = False
     result = backend.capture_window(TITLE)
     assert result.target == TITLE
-    env.user32.PrintWindow.assert_called_once()
-    assert env.user32.PrintWindow.call_args.args[0] == visible
+    assert env.selected_hwnd == visible
+    assert env.events[env.events.index(('window_dc', visible))] == (
+        'window_dc', visible)
+    env.user32.PrintWindow.assert_called_once_with(visible, MEMORY_DC, 0x2)
+    env.user32.ReleaseDC.assert_called_once_with(visible, WINDOW_DC)
 
 
 def test_hidden_only_window_is_not_found(monkeypatch):
@@ -361,8 +371,11 @@ def test_partial_gdi_allocation_releases_owned_resources(
     function.side_effect = OSError('secret-token') if raises else None
     function.return_value = 0
     assert_error(backend, 'gdi_failed')
-    cleanup = [event for event in env.events if event in (
-        'select_old', 'delete_bitmap', 'delete_dc', 'release_dc')]
+    cleanup = [
+        event[0] if isinstance(event, tuple) else event
+        for event in env.events
+        if (event[0] if isinstance(event, tuple) else event) in (
+            'select_old', 'delete_bitmap', 'delete_dc', 'release_dc')]
     assert cleanup == expected
     env.user32.PrintWindow.assert_not_called()
     assert env.events[-1] == ('dpi', OLD_DPI)
@@ -374,7 +387,7 @@ def test_print_zero_releases_resources_in_order(monkeypatch):
     env.user32.PrintWindow.return_value = 0
     assert_error(backend, 'print_failed')
     assert env.events[-5:] == [
-        'select_old', 'delete_bitmap', 'delete_dc', 'release_dc',
+        'select_old', 'delete_bitmap', 'delete_dc', ('release_dc', HWND),
         ('dpi', OLD_DPI)]
 
 
