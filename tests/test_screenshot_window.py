@@ -512,6 +512,113 @@ def test_capture_performs_no_file_network_or_process_io(monkeypatch):
     forbidden.assert_not_called()
 
 
+def test_selected_window_hidden_during_recheck_is_not_reselected(monkeypatch):
+    """选定后复核发现隐藏时不重选同名窗口或分配 DC。"""
+    backend, env = environment(monkeypatch)
+    other = HWND + 1
+    env.windows[other] = TITLE
+    env.visible[other] = False
+    visible_calls = 0
+
+    def hide_after_selection(handle):
+        nonlocal visible_calls
+        if handle == HWND:
+            visible_calls += 1
+            return visible_calls < 3
+        return False
+
+    env.gui.IsWindowVisible.side_effect = hide_after_selection
+    assert_error(backend, 'window_gone')
+    assert env.gui.EnumWindows.call_count == 1
+    env.user32.GetWindowDC.assert_not_called()
+    env.user32.PrintWindow.assert_not_called()
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_hidden_after_print_releases_resources_and_dpi(monkeypatch):
+    """PrintWindow 后观察到隐藏时保留 window_gone 并执行资源清理。"""
+    backend, env = environment(monkeypatch)
+
+    def hide_after_print(*args):
+        env.visible[HWND] = False
+        return 1
+
+    env.user32.PrintWindow.side_effect = hide_after_print
+    assert_error(backend, 'window_gone')
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_hidden_minimized_window_skips_placement_when_still_hidden(monkeypatch):
+    """捕获时隐藏且清理仍隐藏时不恢复 placement，仅告警一次。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.user32.PrintWindow.side_effect = lambda *args: (
+        env.visible.__setitem__(HWND, False) or 1)
+    assert_error(backend, 'window_gone')
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_hidden_then_visible_minimized_window_restores_but_keeps_error(
+        monkeypatch):
+    """清理复核时重显允许恢复 placement，但不挽救捕获错误。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    visibility_calls = 0
+
+    def hide_then_show(handle):
+        nonlocal visibility_calls
+        visibility_calls += 1
+        if visibility_calls == 8:
+            env.visible[handle] = False
+        elif visibility_calls >= 9:
+            env.visible[handle] = True
+        return env.visible.get(handle, True)
+
+    env.gui.IsWindowVisible.side_effect = hide_then_show
+    with pytest.raises(backend.CaptureError) as caught:
+        backend.capture_window(TITLE)
+    assert caught.value.code == 'window_gone'
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    env.user32.PrintWindow.assert_not_called()
+
+
+def test_non_minimized_hidden_window_adds_no_state_warning(monkeypatch):
+    """非最小化捕获因隐藏失败时不触发状态恢复告警。"""
+    backend, env = environment(monkeypatch)
+    env.user32.PrintWindow.side_effect = lambda *args: (
+        env.visible.__setitem__(HWND, False) or 1)
+    assert_error(backend, 'window_gone')
+    env.gui.SetWindowPlacement.assert_not_called()
+    env.gui.ShowWindow.assert_not_called()
+
+
+@pytest.mark.parametrize('failure', ['title', 'visibility'])
+def test_selected_window_recheck_failures_are_sanitized(monkeypatch, failure):
+    """标题变化和可见性 API 异常映射为安全的 window_gone。"""
+    backend, env = environment(monkeypatch)
+    if failure == 'title':
+        env.gui.GetWindowText.side_effect = [TITLE, TITLE, '改名窗口']
+    else:
+        env.gui.IsWindowVisible.side_effect = [True, True, OSError('secret-token')]
+    error = assert_error(backend, 'window_gone')
+    assert 'secret-token' not in str(error)
+    env.user32.GetWindowDC.assert_not_called()
+
+
+def test_candidate_visibility_exception_is_sanitized(monkeypatch):
+    """候选可见性 API 普通异常映射为安全的查询错误。"""
+    backend, env = environment(monkeypatch)
+    env.gui.IsWindowVisible.side_effect = OSError('secret-token')
+    error = assert_error(backend, 'window_lookup_failed')
+    assert 'secret-token' not in str(error)
+    env.user32.GetWindowDC.assert_not_called()
+
+
 def test_backend_has_no_fallback_or_global_dpi_calls():
     """静态核对不引入桌面回退、ADB 或全局 DPI 修改。"""
     backend = load_backend()
