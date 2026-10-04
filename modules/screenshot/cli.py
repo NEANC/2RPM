@@ -123,26 +123,27 @@ def _clean(parser, value, message):
         message (str): 参数错误提示。
 
     Returns:
-        str: 去掉首尾空白后的非空取值。
+        str: 原始非空取值；仅使用首尾空白进行非空校验。
     """
     if not isinstance(value, str) or not value.strip():
         parser.error(message)
-    return value.strip()
+    return value
 
 
 def _split_prefix(token):
     """识别取值起始的 adb: 或 window: 内联前缀。
 
     Args:
-        token (str): 已去掉首尾空白的 --source 取值。
+        token (str): 待识别的 --source 原始取值。
 
     Returns:
         tuple: (来源, 内联目标)；无内联前缀时为 (None, None)。
     """
+    candidate = token.lstrip()
     for provider in SOURCE_PROVIDERS:
         prefix = f'{provider}:'
-        if token.startswith(prefix):
-            return provider, token[len(prefix):].strip()
+        if candidate.startswith(prefix):
+            return provider, candidate[len(prefix):]
     return None, None
 
 
@@ -178,16 +179,21 @@ def _normalize(parser, parsed):
 
     provider, inline_target = _split_prefix(token)
     if provider is not None:
-        if not inline_target:
+        if not inline_target.strip():
             parser.error('内联目标不能为空')
         if separate is not None:
             parser.error('内联目标与位置目标或 --target 不能重复提供')
+        if provider == 'adb':
+            inline_target = inline_target.strip()
         return provider, inline_target
 
-    if token in SOURCE_PROVIDERS:
+    source_keyword = token.strip()
+    if source_keyword in SOURCE_PROVIDERS:
         if separate is None:
-            parser.error(f'--source {token} 需要另外提供非空目标')
-        return token, separate
+            parser.error(f'--source {source_keyword} 需要另外提供非空目标')
+        if source_keyword == 'adb':
+            separate = separate.strip()
+        return source_keyword, separate
 
     if separate is not None:
         parser.error('窗口标题已包含在 --source 中，不能再提供目标')

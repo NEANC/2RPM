@@ -125,14 +125,45 @@ def test_window_title_named_window(argv):
 
 
 @pytest.mark.parametrize(('argv', 'expected'), [
+    (['--source', 'window:\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', '\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', 'window', '\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', 'window', '--target', '\t标题 \t'],
+     ('window', '\t标题 \t')),
+])
+def test_window_titles_preserve_surrounding_whitespace(argv, expected):
+    """窗口标题四种写法均保留首尾空白，供窗口匹配原样使用。"""
+    args = parse(argv)
+    assert (args.source, args.target) == expected
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'window: \t'], id='inline-prefix-blank'),
+    pytest.param(['--source', ' \t '], id='bare-title-blank'),
+    pytest.param(['--source', 'window', ' \t '], id='positional-blank'),
+    pytest.param(['--source', 'window', '--target', ' \t '],
+                 id='option-target-blank'),
+])
+def test_window_titles_reject_all_whitespace(argv):
+    """窗口标题全为空白时仍然拒绝。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(argv)
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(('argv', 'expected'), [
     (['--source', ' adb: 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
     (['--source', ' adb ', ' 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
-    (['--source', '  MuMu模拟器 1  '], ('window', 'MuMu模拟器 1')),
+    (['--source', '  MuMu模拟器 1  '], ('window', '  MuMu模拟器 1  ')),
+    (['--source', '\twindow: 标题\t '], ('window', ' 标题\t ')),
+    (['--source', ' window\t', ' 标题 '], ('window', ' 标题 ')),
+    (['--source', '\tadb ', '--target', '\tserial '], ('adb', 'serial')),
     (['--source', ' window ', '--target', ' MuMu模拟器 1 '],
-     ('window', 'MuMu模拟器 1')),
+     ('window', ' MuMu模拟器 1 ')),
 ])
-def test_surrounding_whitespace_is_normalized(argv, expected):
-    """来源与目标去掉首尾空白后判定，内联前缀仍被识别。"""
+def test_source_keywords_are_normalized_without_trimming_window_titles(
+        argv, expected):
+    """来源关键字独立去空白，窗口目标保留原始取值。"""
     args = parse(argv)
     assert (args.source, args.target) == expected
 
