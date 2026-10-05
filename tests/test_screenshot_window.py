@@ -391,6 +391,109 @@ def test_print_zero_releases_resources_in_order(monkeypatch):
         ('dpi', OLD_DPI)]
 
 
+@pytest.mark.parametrize('stage', [
+    'GetWindowPlacement', 'ShowWindow', 'GetWindowDC',
+    'CreateCompatibleDC', 'PrintWindow', '_encode_png', 'final_entry',
+])
+def test_hidden_transition_at_real_operation_boundary_stops_capture(
+        monkeypatch, stage):
+    """每个实际操作边界隐藏窗口后停止对应后续捕获步骤并完成清理。"""
+    backend, env = environment(monkeypatch)
+
+    def hide_after(function):
+        """执行真实替身操作后再改变窗口状态。"""
+        def operation(*args, **kwargs):
+            result = function(*args, **kwargs)
+            env.visible[HWND] = False
+            return result
+        return operation
+
+    if stage == 'GetWindowPlacement':
+        env.gui.GetWindowPlacement.side_effect = hide_after(
+            env.gui.GetWindowPlacement.side_effect)
+    elif stage == 'ShowWindow':
+        env.iconic = True
+        env.gui.ShowWindow.side_effect = hide_after(env.show_window)
+    elif stage == 'GetWindowDC':
+        env.user32.GetWindowDC.side_effect = hide_after(env.get_window_dc)
+    elif stage == 'CreateCompatibleDC':
+        env.gdi32.CreateCompatibleDC.side_effect = hide_after(env.create_dc)
+    elif stage == 'PrintWindow':
+        env.user32.PrintWindow.side_effect = hide_after(
+            lambda *args: 1)
+    elif stage == '_encode_png':
+        original = backend._encode_png
+        monkeypatch.setattr(
+            backend, '_encode_png', hide_after(original))
+    else:
+        original = env.user32.SetThreadDpiAwarenessContext.side_effect
+
+        def restore_dpi(*args):
+            result = original(*args)
+            if len(env.user32.SetThreadDpiAwarenessContext.call_args_list) == 2:
+                env.visible[HWND] = False
+            return result
+
+        env.user32.SetThreadDpiAwarenessContext.side_effect = restore_dpi
+
+    assert_error(backend, 'window_gone')
+    assert env.events[-1] == ('dpi', OLD_DPI)
+    if stage in ('GetWindowDC', 'CreateCompatibleDC', 'PrintWindow',
+                 '_encode_png', 'final_entry'):
+        env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+        env.user32.ReleaseDC.assert_called_once()
+    else:
+        env.gdi32.DeleteObject.assert_not_called()
+        env.user32.ReleaseDC.assert_not_called()
+    if stage in ('GetWindowPlacement', 'ShowWindow'):
+        env.user32.GetWindowDC.assert_not_called()
+    if stage in ('GetWindowDC', 'CreateCompatibleDC', 'PrintWindow'):
+        env.user32.PrintWindow.assert_not_called() if stage != 'PrintWindow' \
+            else env.gdi32.GdiFlush.assert_not_called()
+    if stage == '_encode_png':
+        env.gui.IsWindowVisible.assert_called()
+    if stage == 'final_entry':
+        env.gui.SetWindowPlacement.assert_not_called()
+
+
+def test_print_failure_keeps_primary_error_when_cleanup_invalidates_window(
+        monkeypatch):
+    """PrintWindow 失败后仅在清理阶段失效时仍传播 print_failed。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.user32.PrintWindow.return_value = 0
+    original_release = backend._release_gdi
+
+    def invalidate_during_cleanup(*args, **kwargs):
+        """在 GDI 清理入口使窗口失效。"""
+        env.alive = False
+        return original_release(*args, **kwargs)
+
+    monkeypatch.setattr(backend, '_release_gdi', invalidate_during_cleanup)
+    assert_error(backend, 'print_failed')
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_print_failure_keeps_primary_error_when_cleanup_renames_window(
+        monkeypatch):
+    """PrintWindow 失败后仅在清理阶段改名时仍传播 print_failed。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.user32.PrintWindow.return_value = 0
+    original_release = backend._release_gdi
+
+    def rename_during_cleanup(*args, **kwargs):
+        """在 GDI 清理入口改变窗口标题。"""
+        env.windows[HWND] = TITLE + '已改名'
+        return original_release(*args, **kwargs)
+
+    monkeypatch.setattr(backend, '_release_gdi', rename_during_cleanup)
+    assert_error(backend, 'print_failed')
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    assert env.events[-1] == ('dpi', OLD_DPI)
 def test_pillow_conversion_failure_is_classified(monkeypatch):
     """真实图像转换分配失败被归类且 GDI 仍被释放。"""
     backend, env = environment(monkeypatch)
