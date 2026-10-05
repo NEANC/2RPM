@@ -22,6 +22,7 @@ from .models import CaptureResult
 
 
 PW_RENDERFULLCONTENT = 0x2
+_DWMWA_CLOAKED = 14
 _REPAINT_WAIT_SECONDS = 0.2
 _DPI_PER_MONITOR_AWARE = -3
 _CAPTURE_LOCK = threading.Lock()
@@ -71,6 +72,11 @@ class _BitmapInfo(ctypes.Structure):
     ]
 
 
+_dwmapi = ctypes.WinDLL('dwmapi', use_last_error=True)
+_dwmapi.DwmGetWindowAttribute.argtypes = [
+    wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+]
+_dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
 _user32 = ctypes.WinDLL('user32', use_last_error=True)
 _gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
 _user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
@@ -103,14 +109,26 @@ def _error(code):
     return CaptureError(code, _MESSAGES[code])
 
 
+def _is_cloaked(hwnd):
+    """查询 DWM 隐藏状态，不能仅凭 WS_VISIBLE 判断窗口实际可见性。"""
+    cloaked = wintypes.DWORD()
+    result = _dwmapi.DwmGetWindowAttribute(
+        hwnd, _DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+    if result != 0:
+        raise _error('window_lookup_failed')
+    return bool(cloaked.value)
+
+
 def _ensure_window(hwnd, title):
-    """校验句柄有效、窗口可见且标题不变；可见不代表前台、无遮挡或有新帧。"""
+    """校验句柄、可见性、标题和 DWM 状态，不要求前台、无遮挡或有新帧。"""
     try:
         valid = bool(hwnd) and win32gui.IsWindow(hwnd)
         if valid:
             valid = win32gui.IsWindowVisible(hwnd)
         if valid:
             valid = win32gui.GetWindowText(hwnd) == title
+        if valid:
+            valid = not _is_cloaked(hwnd)
     except Exception:
         raise _error('window_gone') from None
     if not valid:
@@ -118,14 +136,15 @@ def _ensure_window(hwnd, title):
 
 
 def _find_window(title):
-    """枚举完整标题匹配且可见的顶层窗口，不因最小化或遮挡而排除。"""
+    """枚举完整标题匹配且未被 DWM 隐藏的可见顶层窗口。"""
     matches = []
 
     def collect(hwnd, argument):
-        """收集有效、可见且完整标题相同的顶层窗口。"""
+        """收集实际可见的精确匹配项，不因最小化或遮挡排除。"""
         if (win32gui.IsWindow(hwnd)
                 and win32gui.IsWindowVisible(hwnd)
-                and win32gui.GetWindowText(hwnd) == title):
+                and win32gui.GetWindowText(hwnd) == title
+                and not _is_cloaked(hwnd)):
             matches.append(hwnd)
         return True
 
