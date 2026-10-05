@@ -2,7 +2,7 @@
 # -_- coding: utf-8 -_-
 """使用同步 PrintWindow 捕获完整窗口，不提供桌面回退或硬超时。
 
-最小化窗口会临时恢复，可能闪烁或影响焦点。图像告警不能识别全部旧帧，
+最小化窗口会以非激活方式临时恢复，仍可能闪烁。图像告警不能识别全部旧帧，
 硬件加速窗口的兼容性需另行实机验证。
 """
 
@@ -293,7 +293,7 @@ def capture_window(title: str) -> CaptureResult:
         CaptureError: 标题、窗口状态、DPI、GDI、绘制或编码失败。
 
     同步 PrintWindow 无可强制终止的线程超时。等待重绘仅为有限延迟，
-    不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复可能影响焦点。
+    不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
     """
     if not isinstance(title, str) or not title.strip():
         raise _error('invalid_title')
@@ -316,7 +316,7 @@ def capture_window(title: str) -> CaptureResult:
             if win32gui.IsIconic(hwnd):
                 restore_needed = True
                 _ensure_window(hwnd, title)
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
                 time.sleep(_REPAINT_WAIT_SECONDS)
                 _ensure_window(hwnd, title)
                 if win32gui.IsIconic(hwnd):
