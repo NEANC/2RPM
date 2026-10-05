@@ -49,6 +49,7 @@ class WindowEnvironment:
         self.selected_hwnd = None
         self.alive = True
         self.iconic = False
+        self.foreground = HWND + 10
         self.placement = (0, 1, (-1, -1), (-1, -1), (10, 20, 12, 22))
         self.restored_placement = None
         self.buffer = ctypes.create_string_buffer(PIXELS)
@@ -108,6 +109,8 @@ class WindowEnvironment:
         assert handle in self.windows
         self.selected_hwnd = handle
         self.events.append(('show', handle))
+        if command == self.backend.win32con.SW_RESTORE:
+            self.foreground = handle
         self.iconic = False
         return 0
 
@@ -363,6 +366,41 @@ def test_minimized_window_restores_original_placement(monkeypatch, fails):
                for call in backend.time.sleep.call_args_list)
     env.gui.SetForegroundWindow.assert_not_called()
     env.gui.BringWindowToTop.assert_not_called()
+
+
+@pytest.mark.parametrize('fails', [False, True])
+@pytest.mark.parametrize('user_switches', [False, True])
+def test_minimized_capture_never_activates_or_overrides_user_focus(
+        monkeypatch, fails, user_switches):
+    """恢复和清理都不抢前台，绘制期间用户切换焦点也保持其选择。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.placement = (2, 2, (-1, -1), (0, 0), (10, 20, 12, 22))
+    original_foreground = env.foreground
+    observed_foreground = []
+    selected_foreground = HWND + 20 if user_switches else original_foreground
+
+    def print_with_user_focus(*args):
+        """记录绘制开始时的前台，并模拟用户在绘制期间切换窗口。"""
+        observed_foreground.append(env.foreground)
+        if user_switches:
+            env.foreground = selected_foreground
+        return 0 if fails else 1
+
+    env.user32.PrintWindow.side_effect = print_with_user_focus
+    if fails:
+        assert_error(backend, 'print_failed')
+    else:
+        backend.capture_window(TITLE)
+    assert observed_foreground == [original_foreground]
+    assert env.foreground == selected_foreground
+    assert env.iconic
+    assert env.restored_placement == env.placement
+    env.gui.ShowWindow.assert_called_once_with(
+        HWND, backend.win32con.SW_SHOWNOACTIVATE)
+    env.gui.SetForegroundWindow.assert_not_called()
+    assert env.events[-1] == ('dpi', OLD_DPI)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
 
 
 @pytest.mark.parametrize('show_command', [1, 3])
