@@ -752,6 +752,140 @@ def test_capture_critical_section_is_serialized(monkeypatch):
     assert not errors and len(results) == 2
 
 
+def test_minimized_window_handle_lost_during_cleanup_keeps_primary_error(
+        monkeypatch):
+    """清理复核句柄失效时跳过 placement 并保留 PrintWindow 错误。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+
+    def fail_print(*args):
+        """先触发主错误，再让清理复核读到失效句柄。"""
+        env.alive = False
+        return 0
+
+    env.user32.PrintWindow.side_effect = fail_print
+    error = assert_error(backend, 'window_gone')
+    assert error.code == 'window_gone'
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_minimized_window_renamed_during_cleanup_keeps_primary_error(
+        monkeypatch):
+    """清理复核标题变化时跳过 placement 且不额外恢复窗口。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+
+    def fail_print(*args):
+        """先触发主错误，再让清理复核读到标题变化。"""
+        env.windows[HWND] = '改名窗口'
+        return 0
+
+    env.user32.PrintWindow.side_effect = fail_print
+    error = assert_error(backend, 'window_gone')
+    assert error.code == 'window_gone'
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.gui.ShowWindow.call_count == 1
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+@pytest.mark.parametrize('checkpoint', [
+    'placement', 'restore_before', 'restore_after', 'gdi_before',
+    'print_before', 'print_after', 'encoded', 'return',
+])
+def test_hidden_at_exact_capture_checkpoint_stops_and_cleans(
+        monkeypatch, checkpoint):
+    """在指定的实际复核点隐藏窗口并验证停止捕获与清理。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = checkpoint.startswith('restore_')
+    visibility_calls = 0
+    target_call = {
+        'placement': 4,
+        'restore_before': 5,
+        'restore_after': 6,
+        'gdi_before': 7 if env.iconic else 5,
+        'print_before': 8 if env.iconic else 6,
+        'print_after': 9 if env.iconic else 7,
+        'encoded': 10 if env.iconic else 8,
+        'return': 11 if env.iconic else 9,
+    }[checkpoint]
+
+    def hide_at_checkpoint(handle):
+        """用确定的 IsWindowVisible 调用序号映射后端检查点。"""
+        nonlocal visibility_calls
+        visibility_calls += 1
+        if visibility_calls == target_call:
+            env.visible[handle] = False
+        return env.visible.get(handle, True)
+
+    if checkpoint == 'placement':
+        env.gui.GetWindowPlacement.side_effect = lambda handle: (
+            env.visible.__setitem__(handle, False) or env.placement)
+    elif checkpoint in ('restore_before', 'restore_after'):
+        env.gui.IsWindowVisible.side_effect = hide_at_checkpoint
+    elif checkpoint == 'gdi_before':
+        original_create_dc = env.gdi32.CreateCompatibleDC.side_effect
+
+        def create_dc_then_hide(dc):
+            """GDI 前复核前隐藏窗口，保证 DC 不被分配。"""
+            result = original_create_dc(dc)
+            env.visible[HWND] = False
+            return result
+
+        env.gdi32.CreateCompatibleDC.side_effect = create_dc_then_hide
+    elif checkpoint == 'print_before':
+        env.gdi32.SelectObject.side_effect = lambda dc, bitmap: (
+            env.visible.__setitem__(HWND, False) or OLD_BITMAP)
+    elif checkpoint == 'print_after':
+        env.user32.PrintWindow.side_effect = lambda *args: (
+            env.visible.__setitem__(HWND, False) or 1)
+    elif checkpoint == 'encoded':
+        original_encode = backend._encode_png
+
+        def encode_then_hide(*args):
+            """完成真实编码后、编码后检查前隐藏目标。"""
+            result = original_encode(*args)
+            env.visible[HWND] = False
+            return result
+
+        monkeypatch.setattr(backend, '_encode_png', encode_then_hide)
+    elif checkpoint == 'return':
+        original_set_dpi = env.user32.SetThreadDpiAwarenessContext.side_effect
+        dpi_calls = 0
+
+        def restore_dpi_then_hide(context):
+            """在最终返回复核前的 DPI 还原调用隐藏窗口。"""
+            nonlocal dpi_calls
+            dpi_calls += 1
+            result = original_set_dpi(context)
+            if dpi_calls == 2:
+                env.visible[HWND] = False
+            return result
+
+        env.user32.SetThreadDpiAwarenessContext.side_effect = restore_dpi_then_hide
+    assert_error(backend, 'window_gone')
+    env.gui.EnumWindows.assert_called_once()
+    if checkpoint in ('print_after', 'encoded', 'return'):
+        env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    else:
+        env.user32.PrintWindow.assert_not_called()
+    if checkpoint in ('gdi_before', 'print_before', 'print_after', 'encoded', 'return'):
+        env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+        env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+        env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    else:
+        env.user32.GetWindowDC.assert_not_called()
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
 def test_window_destroyed_during_cleanup_is_not_success(monkeypatch):
     """释放 DC 期间目标被关闭时不能返回已失效目标的成功结果。"""
     backend, env = environment(monkeypatch)
@@ -764,6 +898,9 @@ def test_window_destroyed_during_cleanup_is_not_success(monkeypatch):
 
     env.user32.ReleaseDC.side_effect = release_then_destroy
     assert_error(backend, 'window_gone')
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
     assert env.events[-1] == ('dpi', OLD_DPI)
 
 
