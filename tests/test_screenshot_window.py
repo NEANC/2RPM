@@ -42,6 +42,10 @@ class WindowEnvironment:
         self.events = []
         self.windows = {HWND: TITLE}
         self.visible = {}
+        self.cloaked = {}
+        self.dwmapi = SimpleNamespace(
+            DwmGetWindowAttribute=Mock(side_effect=self.get_cloaked))
+        monkeypatch.setattr(backend, '_dwmapi', self.dwmapi, raising=False)
         self.selected_hwnd = None
         self.alive = True
         self.iconic = False
@@ -81,6 +85,14 @@ class WindowEnvironment:
         monkeypatch.setattr(backend, '_user32', self.user32)
         monkeypatch.setattr(backend, '_gdi32', self.gdi32)
         monkeypatch.setattr(backend.time, 'sleep', Mock())
+
+    def get_cloaked(self, handle, attribute, value, size):
+        """模拟 DWM 隐藏标志，保留真实 DWORD 输出参数约定。"""
+        assert attribute == 14
+        assert size == ctypes.sizeof(wintypes.DWORD)
+        ctypes.cast(value, ctypes.POINTER(wintypes.DWORD))[0] = (
+            self.cloaked.get(handle, 0))
+        return 0
 
     def enumerate_windows(self, callback, argument):
         """仅枚举模拟顶层窗口，包括最小化目标。"""
@@ -232,6 +244,57 @@ def test_visible_duplicate_wins_over_hidden_duplicate(monkeypatch):
         'window_dc', visible)
     env.user32.PrintWindow.assert_called_once_with(visible, MEMORY_DC, 0x2)
     env.user32.ReleaseDC.assert_called_once_with(visible, WINDOW_DC)
+
+
+@pytest.mark.parametrize('flag', [1, 2, 4, 7])
+def test_cloaked_duplicates_are_excluded(monkeypatch, flag):
+    """DWM 隐藏的同名宿主及内容窗口不构成真实歧义。"""
+    backend, env = environment(monkeypatch)
+    env.windows = {HWND + 1: TITLE, HWND: TITLE, HWND + 2: TITLE}
+    env.cloaked = {HWND + 1: flag, HWND + 2: flag}
+    backend.capture_window(TITLE)
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+
+
+def test_cloaked_only_window_is_not_found(monkeypatch):
+    """仅有 DWM 隐藏窗口时不得捕获不可见内容。"""
+    backend, env = environment(monkeypatch)
+    env.cloaked[HWND] = 2
+    assert_error(backend, 'window_not_found')
+    env.user32.PrintWindow.assert_not_called()
+
+
+def test_cloaked_duplicate_does_not_resolve_real_ambiguity(monkeypatch):
+    """排除隐藏候选后两个实际可见同名窗口仍报歧义。"""
+    backend, env = environment(monkeypatch)
+    env.windows.update({HWND + 1: TITLE, HWND + 2: TITLE})
+    env.cloaked[HWND + 2] = 2
+    assert_error(backend, 'window_ambiguous')
+    env.user32.PrintWindow.assert_not_called()
+
+
+@pytest.mark.parametrize('hresult', [-2147467259, 2147500037])
+def test_cloaked_query_failure_is_lookup_failure(monkeypatch, hresult):
+    """DWM 查询失败不能默认为可见或偷偷选择其他窗口。"""
+    backend, env = environment(monkeypatch)
+    env.dwmapi.DwmGetWindowAttribute.return_value = hresult
+    env.dwmapi.DwmGetWindowAttribute.side_effect = None
+    assert_error(backend, 'window_lookup_failed')
+    env.user32.PrintWindow.assert_not_called()
+
+
+def test_window_cloaked_during_print_is_reported(monkeypatch):
+    """绘制过程中被 DWM 隐藏的目标不返回图像。"""
+    backend, env = environment(monkeypatch)
+
+    def cloak_window(*args):
+        """模拟绘制时目标被 Shell 隐藏。"""
+        env.cloaked[HWND] = 2
+        return 1
+
+    env.user32.PrintWindow.side_effect = cloak_window
+    assert_error(backend, 'window_gone')
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
 
 
 def test_hidden_only_window_is_not_found(monkeypatch):
