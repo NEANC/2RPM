@@ -668,4 +668,4 @@ def run_screenshot_cli(args, program_dir):
     if not upload:
         return 0
     return _upload_debug_image(
-        args, result.png_bytes, saved_path, program_dir)
+        args, result.image_bytes, saved_path, program_dir)
