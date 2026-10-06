@@ -115,7 +115,7 @@ def test_exact_client_upload_contract(client, token, options):
     assert result.url == URL
     client.session.post.assert_called_once_with(
         ENDPOINT, data={'token': token},
-        files={'file': (FILENAME, IMAGE, 'image/png')},
+        files={'file': (FILENAME, IMAGE, import_module('modules.image_host.providers')._image_mime(FILENAME))},
         timeout=(5, 15), verify=True, allow_redirects=False, stream=True)
     assert client.create.call_count == 1
     assert client.session.__exit__.call_count == 1

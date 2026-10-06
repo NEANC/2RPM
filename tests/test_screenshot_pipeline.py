@@ -123,9 +123,9 @@ def test_two_targets_serial_success_and_aggregate(monkeypatch, caplog):
     ]), True, ())
     assert events == [
         ('capture', 'window', '第一'),
-        ('upload', b'png-' + '第一'.encode(), 'screenshot_1.png'),
+        ('upload', b'png-' + '第一'.encode(), 'screenshot_1.jpg'),
         ('capture', 'adb', '第二'),
-        ('upload', b'png-' + '第二'.encode(), 'device.png'),
+        ('upload', b'png-' + '第二'.encode(), 'device.jpg'),
     ]
     assert batch.values == {
         'screenshot_1': f'![screenshot_1]({URL})',
@@ -161,7 +161,7 @@ def test_capture_failure_keeps_slot_and_continues(monkeypatch, caplog, failure):
     context = upload.call_args.kwargs['context']
     assert isinstance(context, UploadContext)
     upload.assert_called_once_with(
-        captured('adb', '第二').png_bytes, 'screenshot_2.png',
+        captured('adb', '第二').image_bytes, 'screenshot_2.jpg',
         [{'provider': 'catbox'}], context=context)
     assert SECRET not in str(batch.values) + caplog.text
     assert URL not in caplog.text
@@ -230,9 +230,9 @@ def test_real_registry_restarts_each_image_and_preserves_inputs(
     reserved = ['screenshot_2']
     before = deepcopy((config, reserved, dict(os.environ)))
     batch = module.prepare_screenshots(config, True, reserved)
-    assert calls == [('first', 'same.png'), ('second', 'same.png'),
-                     ('first', 'screenshot_3.png'),
-                     ('second', 'screenshot_3.png')]
+    assert calls == [('first', 'same.jpg'), ('second', 'same.jpg'),
+                     ('first', 'screenshot_3.jpg'),
+                     ('second', 'screenshot_3.jpg')]
     assert all(value.startswith('![') for value in batch.values.values())
     assert (config, reserved, dict(os.environ)) == before
     assert SECRET not in caplog.text and URL not in caplog.text
@@ -274,7 +274,7 @@ def test_actual_allocation_and_conflict_notices(
     assert list(batch.values) == expected + ['screenshot']
     assert batch.renamed_outputs == renamed
     assert [call.args[1] for call in upload.call_args_list] == [
-        name + '.png' for name in expected]
+        name + '.jpg' for name in expected]
     assert (config, reserved) == before
     assert len(batch.warnings) == len(renamed)
     for warning in batch.warnings:
@@ -520,7 +520,7 @@ def test_real_registry_markdown_preserves_url_structure(
 
     def local_upload(image, filename, token, options):
         """仅返回合成链接，经真实 registry 校验，不发起网络请求。"""
-        assert image == captured().png_bytes
+        assert image == captured().image_bytes
         assert token == '' and options == {}
         calls.append(filename)
         return raw
@@ -536,7 +536,7 @@ def test_real_registry_markdown_preserves_url_structure(
         'screenshot_2': automatic,
         'screenshot': custom + '\n\n' + automatic,
     }
-    assert calls == ['custom.png', 'screenshot_2.png']
+    assert calls == ['custom.jpg', 'screenshot_2.jpg']
     assert capture.call_count == 2
     assert batch.warnings == batch.renamed_outputs == ()
     assert not caplog.records

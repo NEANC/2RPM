@@ -6,6 +6,7 @@
 
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import PurePath
 import logging
 import re
 
@@ -27,6 +28,18 @@ BOLTP_ENDPOINT = 'https://www.boltp.com/api/v2/upload'
 V2_SUCCESS_STATUS = 'success'
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 15
+
+
+def _image_mime(filename):
+    """从与图像载荷匹配的文件名后缀选择固定 MIME。"""
+    suffix = PurePath(filename).suffix.lower()
+    mime = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+    }.get(suffix)
+    if mime is None:
+        raise ImageHostError('invalid_input', '')
+    return mime
 
 
 def upload_catbox(image_bytes, filename, token, options) -> str:
@@ -58,7 +71,7 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
             with session.post(
                     CATBOX_ENDPOINT,
                     data=data,
-                    files={'fileToUpload': (filename, image_bytes, 'image/png')},
+                    files={'fileToUpload': (filename, image_bytes, _image_mime(filename))},
                     timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                     verify=True,
                     stream=True,
@@ -107,7 +120,7 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
             with session.post(
                     WMIMG_ENDPOINT,
                     data=data,
-                    files={'file': (filename, image_bytes, 'image/png')},
+                    files={'file': (filename, image_bytes, _image_mime(filename))},
                     headers=headers,
                     timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                     verify=True,
@@ -166,7 +179,7 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
             with session.post(
                     BEEIMG_ENDPOINT,
                     data=data,
-                    files={'file': (filename, image_bytes, 'image/png')},
+                    files={'file': (filename, image_bytes, _image_mime(filename))},
                     timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                     verify=True,
                     stream=True,
@@ -221,7 +234,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
             with session.post(
                     SUPERBED_ENDPOINT,
                     data=data,
-                    files={'file': (filename, image_bytes, 'image/png')},
+                    files={'file': (filename, image_bytes, _image_mime(filename))},
                     timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
                     verify=True,
                     stream=True,
@@ -314,7 +327,7 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
 
     payload = request_json(
         provider, 'upload', token, data=data,
-        files={'file': (filename, image_bytes, 'image/png')})
+        files={'file': (filename, image_bytes, _image_mime(filename))})
     result = payload.get('data')
     if isinstance(result, Mapping):
         try:
