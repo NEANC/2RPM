@@ -330,8 +330,12 @@ def test_partial_connection_initialization_is_closed(environment, index):
     """已取得 socket 但超时初始化失败时仍关闭全部自有资源。"""
     backend = load_backend()
     environment.setup_failure = index
+    environment.connect_failure = index
+    environment.failure = ConnectionRefusedError('secret-token')
     environment.read_failure = ()
-    assert_capture_error(backend, 'adb_unavailable')
+    assert_capture_error(
+        backend, 'adb_unavailable', purpose='cli', image_format='png')
+    environment.assert_closed()
 
 
 @pytest.mark.parametrize('stage', [
@@ -375,9 +379,8 @@ def test_shell_response_limit_applies_only_to_binary(
     with backend._ServerClient() as client:
         device = client.device(serial=SERIAL)
         if encoding is None:
-            with pytest.raises(backend.CaptureError) as caught:
+            with pytest.raises(backend.ResponseTooLarge):
                 device.shell('echo text', encoding=None, timeout=5.0)
-            assert caught.value.code == 'adb_image_failed'
         else:
             result = device.shell(
                 'echo text', encoding=encoding, timeout=5.0, rstrip=False)
@@ -499,7 +502,6 @@ def test_oversized_response_preserves_primary_error_during_close(
     monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     environment.png = b'x' * 9
     environment.payload_plan = [7, 2]
-    environment.read_failure = ('shell:screencap -p',)
     original_close = FakeSocket.close
 
     def close_with_error(connection):
@@ -514,7 +516,7 @@ def test_oversized_response_preserves_primary_error_during_close(
     connection = environment.sockets[1]
     assert connection.shell_handshake == b'OKAY'
     assert connection.payload_reads == [(9, 7), (2, 2)]
-    assert len(environment.sockets) == 3
+    assert len(environment.sockets) == 6
     environment.assert_closed()
 
 
@@ -616,9 +618,8 @@ def test_version_response_failure_closes_pending_transport(environment, response
     """版本查询失败时清理独立查询连接及已分配但未建立的传输。"""
     backend = load_backend()
     environment.raw_responses['host:version'] = response
-    environment.read_failure = ('host:version',)
     assert_capture_error(backend, 'adb_protocol_failed')
-    assert len(environment.sockets) == 3
+    assert len(environment.sockets) == 9
     assert 'shell:screencap -p' not in environment.commands
 
 
@@ -725,3 +726,40 @@ def test_timeout_policy_uses_png_fallback(monkeypatch, purpose, raw_calls):
     assert result.image_format == ('png' if purpose == 'cli' else 'jpeg')
     if purpose == 'cli':
         assert result.image_bytes == png
+
+
+@pytest.mark.parametrize(('purpose', 'queue'), [
+    ('automatic', ['fail', 'success']),
+    ('cli', ['fail', 'fail', 'png']),
+    ('cli', ['fail', 'timeout', 'png']),
+    ('cli', ['fail', 'large', 'png']),
+])
+def test_raw_failure_queue_follows_retry_policy(
+        monkeypatch, purpose, queue):
+    """普通 raw 错误按固定次数重试或进入 PNG 回退。"""
+    backend = load_backend()
+    png = make_png()
+    outcomes = {
+        'fail': backend._error('adb_raw_invalid'),
+        'timeout': backend._error('adb_timeout'),
+        'large': backend.ResponseTooLarge(),
+        'success': struct.pack('<III', 1, 1, 1) + bytes((1, 2, 3, 255)),
+        'png': png,
+    }
+    read = Mock(side_effect=[outcomes[item] for item in queue])
+    monkeypatch.setattr(backend, '_read_capture', read)
+    result = backend.capture_adb(SERIAL, purpose=purpose)
+    assert read.call_count == len(queue)
+    assert result.image_format == ('jpeg' if purpose == 'automatic'
+                                   else 'png')
+
+
+def test_read_capture_propagates_response_too_large(environment, monkeypatch):
+    """二进制超限信号从采集层原样传递。"""
+    backend = load_backend()
+    limit = 8
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', limit)
+    environment.png = b'x' * 9
+    environment.payload_plan = [9]
+    with pytest.raises(backend.ResponseTooLarge):
+        backend._read_capture(SERIAL, False)

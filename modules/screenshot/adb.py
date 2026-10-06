@@ -50,6 +50,10 @@ class ResponseTooLarge(Exception):
     """单次二进制响应超限。"""
 
 
+class _StateCheckError(CaptureError):
+    """设备状态检查失败，不允许进入采集回退。"""
+
+
 class _ConnectionTimeout(AdbTimeout):
     """建立 ADB socket 时发生的超时。"""
 
@@ -79,11 +83,15 @@ class _SocketConnection(AdbConnection):
             connection.connect((self._AdbConnection__host,
                                 self._AdbConnection__port))
             return connection
-        except BaseException:
+        except BaseException as error:
             try:
                 connection.close()
             except OSError:
                 pass
+            if isinstance(error, TimeoutError):
+                raise _ConnectionTimeout('connection timeout') from None
+            if isinstance(error, OSError):
+                raise _ConnectionUnavailable('connection unavailable') from None
             raise
 
     def close(self):
@@ -111,11 +119,7 @@ class _SocketConnection(AdbConnection):
         return self.read_exact(count)
 
     def read_until_close(self, encoding='utf-8'):
-        """仅限制二进制 PNG 接收，保留文本读取及严格解码行为。
-
-        超限最多额外接收一字节，不代表总内存上限；分片与拼接结果
-        可同时存在，图像解码还需额外内存。
-        """
+        """限制二进制响应并在精确达限后探测 EOF。"""
         chunks = []
         received = 0
         limited = encoding is None and self.command.startswith('shell:')
@@ -128,13 +132,12 @@ class _SocketConnection(AdbConnection):
             if limited and len(chunk) > remaining:
                 try:
                     self.close()
-                finally:
-                    raise _error('adb_image_failed') from None
+                except OSError:
+                    pass
+                raise ResponseTooLarge() from None
             chunks.append(chunk)
             received += len(chunk)
         content = b''.join(chunks)
-        if limited and received > _MAX_RESPONSE_BYTES:
-            raise ResponseTooLarge()
         if encoding is None:
             return content
         return content.decode(encoding)
@@ -226,22 +229,35 @@ def _read_capture(serial, png):
             device = client.device(serial=serial)
             state = device.get_state()
             if state != 'device':
-                raise _error({'offline': 'adb_offline',
-                              'unauthorized': 'adb_unauthorized'}.get(
-                                  state, 'adb_protocol_failed'))
-            return device.shell(['screencap', '-p'] if png else ['screencap'],
-                                encoding=None, timeout=_SOCKET_TIMEOUT)
+                code = {'offline': 'adb_offline',
+                        'unauthorized': 'adb_unauthorized'}.get(
+                            state, 'adb_protocol_failed')
+                raise _StateCheckError(code, _MESSAGES[code])
+            command = ['screencap', '-p'] if png else ['screencap']
+            try:
+                return device.shell(command, encoding=None,
+                                    timeout=_SOCKET_TIMEOUT)
+            except (AdbTimeout, TimeoutError):
+                raise _error('adb_timeout') from None
+            except AdbConnectionError:
+                raise _error('adb_unavailable') from None
+            except AdbError as error:
+                raise _protocol_error(error, serial) from None
     except ResponseTooLarge:
-        raise _error('adb_image_failed') from None
+        raise
+    except _StateCheckError:
+        raise
     except CaptureError:
         raise
     except (AdbTimeout, TimeoutError):
         raise _error('adb_timeout') from None
     except AdbConnectionError:
         raise _error('adb_unavailable') from None
+    except OSError:
+        raise _error('adb_protocol_failed') from None
     except AdbError as error:
         raise _protocol_error(error, serial) from None
-    except (OSError, ValueError, EOFError):
+    except (ValueError, EOFError):
         raise _error('adb_protocol_failed') from None
 
 
@@ -280,8 +296,12 @@ def capture_adb(serial: str, *, image_format='jpeg',
     for _ in range(2):
         try:
             image = _parse_raw(_read_capture(serial, False))
+        except _StateCheckError:
+            raise
         except CaptureError as error:
-            if error.code not in ('adb_timeout', 'adb_raw_invalid'):
+            if error.code not in ('adb_timeout', 'adb_raw_invalid',
+                                  'adb_image_failed', 'adb_protocol_failed',
+                                  'adb_unavailable'):
                 raise
             reason = '超时' if error.code == 'adb_timeout' else '采集或解析失败'
             if not automatic and error.code == 'adb_timeout':
