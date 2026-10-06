@@ -161,7 +161,7 @@ def save_automatic(result, runtime, event, policy, *, today=None):
     """按事件最大序号排他保存自动截图。"""
     if not policy.enabled:
         return SaveOutcome(None, '', policy.warnings)
-    name = 'event_01.png'
+    name = 'event_01.jpg'
     try:
         today = date.today() if today is None else today
         event = sanitize_component(event, 'event')
@@ -171,12 +171,12 @@ def save_automatic(result, runtime, event, policy, *, today=None):
             names = winfs.list_names(folder)
         except FileNotFoundError:
             names = ()
-        pattern = re.compile(re.escape(event) + r'_([0-9]+)\.png', re.I)
+        pattern = re.compile(re.escape(event) + r'_([0-9]+)\.jpg', re.I)
         maximum = max((int(match.group(1)) for item in names
                        if (match := pattern.fullmatch(item))), default=0)
         sequence = maximum + 1
         while True:
-            name = f'{event}_{sequence:02d}.png'
+            name = f'{event}_{sequence:02d}.jpg'
             path = ntpath.join(folder, name)
             try:
                 winfs.write_exclusive(path, result.image_bytes)
