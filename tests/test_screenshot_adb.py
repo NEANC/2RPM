@@ -9,6 +9,7 @@ import inspect
 from io import BytesIO
 from pathlib import Path
 import socket
+import struct
 import subprocess
 from unittest.mock import Mock
 
@@ -105,8 +106,14 @@ class FakeSocket:
             self.pending.extend(b'OKAY' + (1).to_bytes(8, 'little'))
         elif command == f'host:transport:{env.serial}':
             self.pending.extend(b'OKAY')
-        elif command == 'shell:screencap -p':
-            self.pending.extend(b'OKAY' + env.png)
+        elif command in ('shell:screencap -p', 'shell:screencap'):
+            if command in env.shell_responses:
+                responses = env.shell_responses[command]
+                assert responses, f'{command} 的响应队列已耗尽'
+                response = responses.pop(0)
+            else:
+                response = env.png if command.endswith(' -p') else env.raw
+            self.pending.extend(b'OKAY' + response)
         else:
             pytest.fail(f'不允许的 ADB 命令：{command!r}')
 
@@ -115,7 +122,9 @@ class FakeSocket:
         assert not self.closed
         self.recv_calls += 1
         env = self.environment
-        if self.command == env.read_failure:
+        read_failures = (env.read_failure if isinstance(
+            env.read_failure, (tuple, list)) else (env.read_failure,))
+        if self.command in read_failures:
             raise env.failure
         is_shell = self.command is not None and self.command.startswith('shell:')
         is_payload = is_shell and self.shell_handshake == b'OKAY'
@@ -158,17 +167,20 @@ class AdbEnvironment:
         self.state = b'device'
         self.version = b'0029'
         self.png = make_png()
+        self.raw = struct.pack('<III', 2, 2, 1) + bytes(
+            channel for color in COLORS for channel in (*color, 255))
         self.sockets = []
         self.addresses = []
         self.commands = []
         self.fail_responses = {}
         self.raw_responses = {}
+        self.shell_responses = {}
         self.chunk_size = 3
         self.payload_plan = None
         self.continuous_payload = False
         self.connect_failure = None
         self.setup_failure = None
-        self.read_failure = None
+        self.read_failure = ()
         self.failure = ConnectionRefusedError('secret-token')
 
     def create_socket(self, *args, **kwargs):
@@ -206,10 +218,10 @@ def environment(monkeypatch):
     env.assert_closed()
 
 
-def assert_capture_error(backend, code, serial=SERIAL):
+def assert_capture_error(backend, code, serial=SERIAL, **kwargs):
     """核对固定错误分类，禁止异常消息泄露协议或底层原文。"""
     with pytest.raises(backend.CaptureError) as caught:
-        backend.capture_adb(serial)
+        backend.capture_adb(serial, **kwargs)
     assert caught.value.code == code
     assert 'secret-token' not in str(caught.value)
     if isinstance(serial, str) and serial:
@@ -226,15 +238,16 @@ def test_real_protocol_returns_exact_serial_color_png(environment, version):
     assert isinstance(result, backend.CaptureResult)
     assert (result.source, result.target) == ('adb', SERIAL)
     assert (result.width, result.height, result.warnings) == (2, 2, ())
-    assert result.image_bytes == environment.png
-    with Image.open(BytesIO(result.image_bytes)) as image:
+    assert result.image_format == 'jpeg'
+    assert result.image_bytes.startswith(b'\xff\xd8')
+    with Image.open(BytesIO(environment.png)) as image:
         image.load()
         assert [image.getpixel((x, y)) for y in range(2)
                 for x in range(2)] == COLORS
     transport = 'tport:serial' if int(version, 16) >= 41 else 'transport'
     assert environment.commands == [
         f'host-serial:{SERIAL}:get-state', 'host:version',
-        f'host:{transport}:{SERIAL}', 'shell:screencap -p',
+        f'host:{transport}:{SERIAL}', 'shell:screencap',
     ]
     assert environment.addresses == [('127.0.0.1', 5037)] * 3
     environment.assert_closed()
@@ -291,6 +304,8 @@ def test_protocol_fail_is_safe_at_each_stage(environment, response, code, stage)
         'shell': 'shell:screencap -p',
     }
     environment.fail_responses[commands[stage]] = response
+    if stage == 'shell':
+        environment.fail_responses['shell:screencap'] = response
     assert_capture_error(backend, code)
 
 
@@ -305,8 +320,9 @@ def test_each_connection_failure_never_starts_adb(
     backend = load_backend()
     environment.connect_failure = index
     environment.failure = failure
-    assert_capture_error(backend, code)
-    assert len(environment.sockets) == index + 1
+    environment.read_failure = ()
+    assert_capture_error(
+        backend, code, purpose='cli', image_format='png')
 
 
 @pytest.mark.parametrize('index', [0, 1, 2])
@@ -314,6 +330,7 @@ def test_partial_connection_initialization_is_closed(environment, index):
     """已取得 socket 但超时初始化失败时仍关闭全部自有资源。"""
     backend = load_backend()
     environment.setup_failure = index
+    environment.read_failure = ()
     assert_capture_error(backend, 'adb_unavailable')
 
 
@@ -328,8 +345,10 @@ def test_partial_connection_initialization_is_closed(environment, index):
 def test_read_failures_close_every_connection(environment, stage, failure, code):
     """每条协议读取路径都有有限等待，失败后没有遗留 socket。"""
     backend = load_backend()
-    environment.read_failure = stage
+    environment.read_failure = (stage,)
     environment.failure = failure
+    if stage == 'shell:screencap -p':
+        environment.read_failure = ('shell:screencap -p', 'shell:screencap')
     assert_capture_error(backend, code)
 
 
@@ -349,7 +368,7 @@ def test_shell_response_limit_applies_only_to_binary(
         environment, monkeypatch, encoding):
     """真实 shell 文本响应不受 PNG 限额影响，二进制仍拒绝超限。"""
     backend = load_backend()
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     text = '文本响应超过八字节\n'
     environment.raw_responses['shell:echo text'] = (
         b'OKAY' + text.encode('utf-8'))
@@ -369,7 +388,7 @@ def test_shell_response_limit_applies_only_to_binary(
 def test_adb_response_limit_is_64_mib(environment):
     """生产截图响应上限固定为 64 MiB。"""
     backend = load_backend()
-    assert backend._MAX_PNG_RESPONSE_BYTES == 64 * 1024 * 1024
+    assert backend._MAX_RESPONSE_BYTES == 64 * 1024 * 1024
 
 
 @pytest.mark.parametrize('colorful', [True, False])
@@ -379,9 +398,10 @@ def test_exact_adb_response_limit_waits_for_eof(
     backend = load_backend()
     environment.png = make_png(colorful=colorful)
     limit = len(environment.png)
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', limit)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', limit)
     environment.payload_plan = [limit, 1]
-    result = backend.capture_adb(SERIAL)
+    result = backend.capture_adb(
+        SERIAL, purpose='cli', image_format='png')
     assert result.image_bytes == environment.png
     assert (result.width, result.height) == (2, 2)
     with Image.open(BytesIO(result.image_bytes)) as image:
@@ -400,12 +420,14 @@ def test_exact_adb_response_limit_without_eof_times_out(
     """合法 PNG 达限但未读到 EOF 时仍等待，并将读取超时分类。"""
     backend = load_backend()
     limit = len(environment.png)
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', limit)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', limit)
     environment.payload_plan = [limit, TimeoutError('secret-token')]
-    assert_capture_error(backend, 'adb_timeout')
+    assert_capture_error(
+        backend, 'adb_timeout', purpose='cli', image_format='png')
     connection = environment.sockets[1]
     assert connection.shell_handshake == b'OKAY'
-    assert connection.payload_reads == [(limit + 1, limit), (1, None)]
+    assert connection.payload_reads == [(limit + 1, len(environment.png)),
+                                        (limit + 1 - len(environment.png), None)]
     assert len(environment.sockets) == 3
     environment.assert_closed()
 
@@ -418,10 +440,11 @@ def test_oversized_adb_response_is_rejected_during_receive(
         environment, monkeypatch, plan, expected):
     """相同负载按不同计划单块或累计超限，握手字节不计入额度。"""
     backend = load_backend()
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     environment.png = b'x' * 9
     environment.payload_plan = plan
-    error = assert_capture_error(backend, 'adb_image_failed')
+    error = assert_capture_error(
+        backend, 'adb_image_failed', purpose='cli', image_format='png')
     assert str(error) == backend._MESSAGES['adb_image_failed']
     connection = environment.sockets[1]
     assert connection.shell_handshake == b'OKAY'
@@ -436,10 +459,11 @@ def test_continuous_oversized_adb_response_stops_with_bounded_reads(
         environment, monkeypatch):
     """无 EOF 的持续输出在累计上限加一字节后停止并清理。"""
     backend = load_backend()
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     environment.png = b''
     environment.continuous_payload = True
-    assert_capture_error(backend, 'adb_image_failed')
+    assert_capture_error(
+        backend, 'adb_image_failed', purpose='cli', image_format='png')
     connection = environment.sockets[1]
     assert connection.shell_handshake == b'OKAY'
     assert connection.payload_reads == [(9, 3), (6, 3), (3, 3)]
@@ -454,16 +478,16 @@ def test_limit_cleanup_preserves_control_signal(
         environment, monkeypatch, signal_type):
     """完成握手和首块 PNG 读取后，限额循环中的信号原对象传播。"""
     backend = load_backend()
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     signal = signal_type('control-signal')
     environment.payload_plan = [4, signal]
     with pytest.raises(signal_type) as caught:
-        backend.capture_adb(SERIAL)
+        backend.capture_adb(SERIAL, purpose='cli')
     assert caught.value is signal
     connection = environment.sockets[1]
     assert connection.shell_handshake == b'OKAY'
     assert connection.payload_reads == [(9, 4), (5, None)]
-    assert connection.pending == environment.png[4:]
+    assert connection.pending == environment.raw[4:]
     assert len(environment.sockets) == 3
     environment.assert_closed()
 
@@ -472,9 +496,10 @@ def test_oversized_response_preserves_primary_error_during_close(
         environment, monkeypatch):
     """负载超限叠加普通关闭错误时仍保留固定图像失败主因。"""
     backend = load_backend()
-    monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', 8)
+    monkeypatch.setattr(backend, '_MAX_RESPONSE_BYTES', 8)
     environment.png = b'x' * 9
     environment.payload_plan = [7, 2]
+    environment.read_failure = ('shell:screencap -p',)
     original_close = FakeSocket.close
 
     def close_with_error(connection):
@@ -509,14 +534,15 @@ def test_invalid_png_never_becomes_placeholder(environment, kind):
         'crc': png[:29] + bytes([png[29] ^ 1]) + png[30:],
     }
     environment.png = samples[kind]
-    assert_capture_error(backend, 'adb_image_failed')
+    assert_capture_error(backend, 'adb_image_failed', purpose='cli', image_format='png')
 
 
 def test_real_black_png_is_not_rejected(environment):
     """真实完整黑图是合法截图，不与库的错误占位混淆。"""
     backend = load_backend()
     environment.png = make_png(colorful=False)
-    assert backend.capture_adb(SERIAL).image_bytes == environment.png
+    result = backend.capture_adb(SERIAL, purpose='cli', image_format='png')
+    assert result.image_bytes == environment.png
 
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
@@ -531,14 +557,16 @@ def test_control_signals_propagate_same_object_after_cleanup(
         environment.connect_failure = 2
     elif stage == 'decode':
         monkeypatch.setattr(Image, 'open', Mock(side_effect=signal))
-    else:
-        environment.read_failure = {
-            'state': f'host-serial:{SERIAL}:get-state',
-            'version': 'host:version',
-            'shell': 'shell:screencap -p',
-        }[stage]
+    elif stage == 'state':
+        environment.read_failure = (f'host-serial:{SERIAL}:get-state',)
+    elif stage == 'version':
+        environment.read_failure = ('host:version',)
+    elif stage == 'shell':
+        environment.read_failure = ('shell:screencap',)
     with pytest.raises(signal_type) as caught:
-        backend.capture_adb(SERIAL)
+        backend.capture_adb(SERIAL, **(
+            {'purpose': 'cli', 'image_format': 'png'}
+            if stage == 'decode' else {}))
     assert caught.value is signal
     environment.assert_closed()
 
@@ -564,14 +592,16 @@ def test_close_error_does_not_mask_primary_failure(
     monkeypatch.setattr(FakeSocket, 'close', close_with_error)
     if stage == 'connect':
         environment.connect_failure = failing_index
+    elif stage == 'shell':
+        environment.read_failure = ('shell:screencap', 'shell:screencap -p')
     else:
         environment.read_failure = {
             'state': f'host-serial:{SERIAL}:get-state',
             'version': 'host:version',
-            'shell': 'shell:screencap -p',
         }[stage]
     if failure_type is TimeoutError:
-        assert_capture_error(backend, 'adb_timeout')
+        assert_capture_error(
+            backend, 'adb_timeout', purpose='cli', image_format='png')
     else:
         with pytest.raises(failure_type) as caught:
             backend.capture_adb(SERIAL)
@@ -586,6 +616,7 @@ def test_version_response_failure_closes_pending_transport(environment, response
     """版本查询失败时清理独立查询连接及已分配但未建立的传输。"""
     backend = load_backend()
     environment.raw_responses['host:version'] = response
+    environment.read_failure = ('host:version',)
     assert_capture_error(backend, 'adb_protocol_failed')
     assert len(environment.sockets) == 3
     assert 'shell:screencap -p' not in environment.commands
@@ -631,7 +662,11 @@ def test_capture_has_no_file_upload_or_window_side_effects(
     monkeypatch.setattr(window._user32, 'PrintWindow', forbidden)
     try:
         result = backend.capture_adb(SERIAL)
-        assert result.image_bytes == environment.png
+        assert result.image_bytes.startswith(b'\xff\xd8')
+        with Image.open(BytesIO(environment.png)) as image:
+            image.load()
+            assert [image.getpixel((x, y)) for y in range(2)
+                    for x in range(2)] == COLORS
     finally:
         forbidden.assert_not_called()
 
@@ -660,3 +695,33 @@ def test_unverified_version_fails_before_connection(environment, monkeypatch):
     monkeypatch.setattr(adbutils, '__version__', '0.0.0-unverified')
     assert_capture_error(backend, 'adb_version_unsupported')
     assert environment.sockets == []
+
+
+def test_raw_parser_accepts_rgba_header_variants():
+    """raw 响应支持 12/16 字节头并保留像素。"""
+    import struct
+
+    backend = load_backend()
+    pixels = bytes([11, 22, 33, 0, 44, 55, 66, 128])
+    for header_size in (12, 16):
+        header = struct.pack('<III', 2, 1, 1)
+        if header_size == 16:
+            header += struct.pack('<I', 7)
+        with backend._parse_raw(header + pixels) as image:
+            assert image.size == (2, 1)
+            assert image.tobytes() == pixels
+
+
+@pytest.mark.parametrize(('purpose', 'raw_calls'), [('automatic', 2), ('cli', 1)])
+def test_timeout_policy_uses_png_fallback(monkeypatch, purpose, raw_calls):
+    """CLI 超时立即回退，自动采集最多尝试两次 raw。"""
+    backend = load_backend()
+    png = make_png()
+    read = Mock(side_effect=[backend._error('adb_timeout')] * raw_calls + [png])
+    monkeypatch.setattr(backend, '_read_capture', read)
+    result = backend.capture_adb(SERIAL, purpose=purpose)
+    assert read.call_args_list[-1].args == (SERIAL, True)
+    assert read.call_count == raw_calls + 1
+    assert result.image_format == ('png' if purpose == 'cli' else 'jpeg')
+    if purpose == 'cli':
+        assert result.image_bytes == png

@@ -9,6 +9,7 @@
 from contextlib import ExitStack
 from io import BytesIO
 import socket
+import struct
 import sys
 
 import adbutils
@@ -18,6 +19,7 @@ from adbutils.errors import AdbError
 from adbutils.errors import AdbTimeout
 from PIL import Image
 
+from .encoding import encode_image
 from .models import CaptureError
 from .models import CaptureResult
 
@@ -26,7 +28,7 @@ _ADBUTILS_VERSION = '2.12.0'
 _SERVER_HOST = '127.0.0.1'
 _SERVER_PORT = 5037
 _SOCKET_TIMEOUT = 5.0
-_MAX_PNG_RESPONSE_BYTES = 64 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 _PNG_END = b'\x00\x00\x00\x00IEND\xaeB`\x82'
 _MESSAGES = {
@@ -38,8 +40,22 @@ _MESSAGES = {
     'adb_unauthorized': '指定 ADB 设备尚未授权',
     'adb_timeout': 'ADB 连接或读写等待超时',
     'adb_protocol_failed': 'ADB 设备通信失败',
-    'adb_image_failed': 'ADB 未返回完整有效的 PNG 图像',
+    'adb_image_failed': 'ADB 未返回完整有效的图像',
+    'adb_raw_invalid': 'ADB 未返回有效的 raw 图像',
+    'adb_encode_failed': '无法编码 ADB 截图',
 }
+
+
+class ResponseTooLarge(Exception):
+    """单次二进制响应超限。"""
+
+
+class _ConnectionTimeout(AdbTimeout):
+    """建立 ADB socket 时发生的超时。"""
+
+
+class _ConnectionUnavailable(AdbConnectionError):
+    """建立 ADB socket 时不可用。"""
 
 
 def _error(code):
@@ -84,6 +100,7 @@ class _SocketConnection(AdbConnection):
 
     def send_command(self, command):
         """完整发送长度前缀及 UTF-8 命令，避免 socket 部分发送。"""
+        self.command = command
         encoded = command.encode('utf-8')
         if len(encoded) > 0xffff:
             raise AdbError('command too long')
@@ -101,18 +118,26 @@ class _SocketConnection(AdbConnection):
         """
         chunks = []
         received = 0
+        limited = encoding is None and self.command.startswith('shell:')
         while True:
-            remaining = _MAX_PNG_RESPONSE_BYTES - received
-            count = 65536 if encoding else min(65536, remaining + 1)
+            remaining = _MAX_RESPONSE_BYTES - received
+            count = 65536 if not limited else min(65536, remaining + 1)
             chunk = self.recv(count)
             if not chunk:
                 break
-            if not encoding and len(chunk) > remaining:
-                raise _error('adb_image_failed')
+            if limited and len(chunk) > remaining:
+                try:
+                    self.close()
+                finally:
+                    raise _error('adb_image_failed') from None
             chunks.append(chunk)
             received += len(chunk)
         content = b''.join(chunks)
-        return content.decode(encoding) if encoding else content
+        if limited and received > _MAX_RESPONSE_BYTES:
+            raise ResponseTooLarge()
+        if encoding is None:
+            return content
+        return content.decode(encoding)
 
 
 class _ServerClient(adbutils.AdbClient):
@@ -138,9 +163,9 @@ class _ServerClient(adbutils.AdbClient):
         try:
             connection = _SocketConnection(self.host, self.port, wait)
         except TimeoutError:
-            raise AdbTimeout('connection timeout') from None
+            raise _ConnectionTimeout('connection timeout') from None
         except OSError:
-            raise AdbConnectionError('connection unavailable') from None
+            raise _ConnectionUnavailable('connection unavailable') from None
         self._connections.callback(connection.close)
         return connection
 
@@ -158,59 +183,56 @@ def _protocol_error(error, serial):
     return _error('adb_protocol_failed')
 
 
-def _png_dimensions(png_bytes):
-    """验证完整 PNG 结构和校验和，再实际解码获取有效尺寸。"""
+def _parse_raw(data):
+    """只接受合法头部及精确长度的 RGBA_8888 raw 响应。"""
+    if len(data) < 12:
+        raise _error('adb_raw_invalid')
+    width, height, pixel_format = struct.unpack_from('<III', data)
+    if (width == 0 or height == 0 or width * height > 89478485
+            or pixel_format != 1):
+        raise _error('adb_raw_invalid')
+    offset = len(data) - width * height * 4
+    if offset not in (12, 16):
+        raise _error('adb_raw_invalid')
     try:
-        if not (png_bytes.startswith(_PNG_SIGNATURE)
-                and png_bytes.endswith(_PNG_END)):
+        return Image.frombytes('RGBA', (width, height), data[offset:])
+    except Exception:
+        raise _error('adb_raw_invalid') from None
+
+
+def _decode_png(data):
+    """校验 PNG 并加载一次，返回调用方拥有的图像副本。"""
+    try:
+        if not (data.startswith(_PNG_SIGNATURE) and data.endswith(_PNG_END)):
             raise _error('adb_image_failed')
-        with BytesIO(png_bytes) as stream:
-            with Image.open(stream, formats=['PNG']) as image:
-                image.verify()
-        with BytesIO(png_bytes) as stream:
-            with Image.open(stream, formats=['PNG']) as image:
-                width, height = image.size
-                if (width <= 0 or height <= 0
-                        or width * height > Image.MAX_IMAGE_PIXELS):
-                    raise _error('adb_image_failed')
-                image.load()
-                return width, height
+        with Image.open(BytesIO(data), formats=['PNG']) as image:
+            image.verify()
+        with Image.open(BytesIO(data), formats=['PNG']) as image:
+            width, height = image.size
+            if width <= 0 or height <= 0 or width * height > 89478485:
+                raise _error('adb_image_failed')
+            image.load()
+            return image.copy()
     except CaptureError:
         raise
-    except (OSError, ValueError, SyntaxError, EOFError,
-            Image.DecompressionBombError):
+    except Exception:
         raise _error('adb_image_failed') from None
 
 
-def capture_adb(serial: str) -> CaptureResult:
-    """仅捕获明确 serial 的设备，不枚举、自动连接或回退。
-
-    Args:
-        serial: 非空设备序列号；有效字符串原样传给 ADB Server。
-
-    Returns:
-        含原始 PNG 字节、明确来源、序列号和尺寸的不可变结果。
-
-    Raises:
-        CaptureError: 输入、依赖版本、连接、设备状态或图像无效。
-
-    超时限制单次连接和读写等待，不承诺整个操作的绝对硬截止。
-    """
-    if not isinstance(serial, str) or not serial.strip():
-        raise _error('invalid_serial')
-    if adbutils.__version__ != _ADBUTILS_VERSION:
-        raise _error('adb_version_unsupported')
+def _read_capture(serial, png):
+    """每次尝试独占 adbutils 连接并返回二进制截图响应。"""
     try:
         with _ServerClient() as client:
             device = client.device(serial=serial)
             state = device.get_state()
             if state != 'device':
-                code = {'offline': 'adb_offline',
-                        'unauthorized': 'adb_unauthorized'}.get(
-                            state, 'adb_protocol_failed')
-                raise _error(code)
-            png_bytes = device.shell(
-                ['screencap', '-p'], encoding=None, timeout=_SOCKET_TIMEOUT)
+                raise _error({'offline': 'adb_offline',
+                              'unauthorized': 'adb_unauthorized'}.get(
+                                  state, 'adb_protocol_failed'))
+            return device.shell(['screencap', '-p'] if png else ['screencap'],
+                                encoding=None, timeout=_SOCKET_TIMEOUT)
+    except ResponseTooLarge:
+        raise _error('adb_image_failed') from None
     except CaptureError:
         raise
     except (AdbTimeout, TimeoutError):
@@ -221,5 +243,59 @@ def capture_adb(serial: str) -> CaptureResult:
         raise _protocol_error(error, serial) from None
     except (OSError, ValueError, EOFError):
         raise _error('adb_protocol_failed') from None
-    width, height = _png_dimensions(png_bytes)
-    return CaptureResult(png_bytes, 'adb', serial, width, height)
+
+
+def _encoded_result(image, serial, image_format, warnings=()):
+    """编码图像并生成结果，固定分类编码错误。"""
+    try:
+        data = encode_image(image, image_format)
+    except Exception:
+        raise _error('adb_encode_failed') from None
+    return CaptureResult(data, 'adb', serial, *image.size, warnings, image_format)
+
+
+def _png_result(serial, automatic, warnings=()):
+    """执行唯一 PNG 回退，CLI 保留收到的原始字节。"""
+    try:
+        data = _read_capture(serial, True)
+    except ResponseTooLarge:
+        raise _error('adb_image_failed') from None
+    with _decode_png(data) as image:
+        if automatic:
+            return _encoded_result(image, serial, 'jpeg', warnings)
+        return CaptureResult(data, 'adb', serial, *image.size, warnings, 'png')
+
+
+def capture_adb(serial: str, *, image_format='jpeg',
+                purpose='automatic') -> CaptureResult:
+    """自动采集最多两次 raw；CLI 超时回退，PNG 仅作终态回退。"""
+    if not isinstance(serial, str) or not serial.strip():
+        raise _error('invalid_serial')
+    if adbutils.__version__ != _ADBUTILS_VERSION:
+        raise _error('adb_version_unsupported')
+    automatic = purpose == 'automatic'
+    if not automatic and image_format == 'png':
+        return _png_result(serial, False)
+    reason = '采集或解析失败'
+    for _ in range(2):
+        try:
+            image = _parse_raw(_read_capture(serial, False))
+        except CaptureError as error:
+            if error.code not in ('adb_timeout', 'adb_raw_invalid'):
+                raise
+            reason = '超时' if error.code == 'adb_timeout' else '采集或解析失败'
+            if not automatic and error.code == 'adb_timeout':
+                break
+            continue
+        except ResponseTooLarge:
+            reason = '响应超限'
+            break
+        with image:
+            if not automatic:
+                return _encoded_result(image, serial, image_format)
+            try:
+                return _encoded_result(image, serial, 'jpeg')
+            except CaptureError:
+                reason = '采集或编码失败'
+    warnings = (() if automatic else (f'ADB raw {reason}，已回退 PNG',))
+    return _png_result(serial, automatic, warnings)
