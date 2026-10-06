@@ -8,7 +8,6 @@
 
 import ctypes
 from ctypes import wintypes
-from io import BytesIO
 import threading
 import time
 
@@ -16,6 +15,9 @@ from PIL import Image
 from PIL import ImageStat
 import win32con
 import win32gui
+
+from .encoding import encode_image
+from .encoding import window_image
 
 from .models import CaptureError
 from .models import CaptureResult
@@ -38,7 +40,7 @@ _MESSAGES = {
     'gdi_failed': '无法分配或访问窗口图像资源',
     'print_failed': '窗口图像绘制失败',
     'image_failed': '无法构造有效窗口图像',
-    'encode_failed': '窗口图像 PNG 编码或校验失败',
+    'encode_failed': '窗口图像编码失败',
 }
 _GDI_WARNING = '部分截图 GDI 资源未能正常释放'
 _STATE_WARNING = '未能还原目标窗口的原最小化状态'
@@ -194,11 +196,10 @@ def _release_gdi(hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings):
         raise signals[0]
 
 
-def _encode_png(pixels, width, height, warnings):
-    """将顶向下 BGRX 像素编码为内存 PNG，并实际解码校验尺寸。"""
+def _encode_pixels(pixels, width, height, warnings, image_format):
+    """将顶向下 BGRX 像素直接编码为指定格式。"""
     try:
-        image = Image.frombytes(
-            'RGB', (width, height), pixels, 'raw', 'BGRX', width * 4, 1)
+        image = window_image(pixels, width, height)
     except Exception:
         raise _error('image_failed') from None
     with image:
@@ -207,21 +208,14 @@ def _encode_png(pixels, width, height, warnings):
         try:
             if max(ImageStat.Stat(image).var) < 1.0:
                 warnings.append('图像为纯色或低方差，可能未正确渲染或未更新')
-            with BytesIO() as output:
-                image.save(output, format='PNG')
-                encoded = output.getvalue()
-            with Image.open(BytesIO(encoded), formats=['PNG']) as decoded:
-                decoded.load()
-                if decoded.size != (width, height):
-                    raise _error('encode_failed')
-            return encoded
+            return encode_image(image, image_format)
         except CaptureError:
             raise
         except Exception:
             raise _error('encode_failed') from None
 
 
-def _capture_bitmap(hwnd, title, warnings):
+def _capture_bitmap(hwnd, title, warnings, image_format):
     """使用完整窗口 DC 和固定 32 位 DIB 执行唯一 PrintWindow 路径。"""
     window_dc = memory_dc = bitmap = old_bitmap = None
     stage = 'window_state_failed'
@@ -268,7 +262,8 @@ def _capture_bitmap(hwnd, title, warnings):
             raise _error(stage)
         stage = 'image_failed'
         pixels = ctypes.string_at(bits, width * height * 4)
-        encoded = _encode_png(pixels, width, height, warnings)
+        encoded = _encode_pixels(
+            pixels, width, height, warnings, image_format)
         _ensure_window(hwnd, title)
         return encoded, width, height
     except CaptureError:
@@ -280,14 +275,15 @@ def _capture_bitmap(hwnd, title, warnings):
             hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings)
 
 
-def capture_window(title: str) -> CaptureResult:
-    """按唯一完整标题捕获窗口，返回内存 PNG，与监控进程 PID 无关。
+def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
+    """按唯一完整标题捕获窗口，返回指定格式的内存图像。
 
     Args:
         title: 非空完整窗口标题；不剥离有效标题两端的空格。
+        image_format: 输出格式，可选 jpeg、png、webp 或 raw。
 
     Returns:
-        包含 PNG、原始标题、尺寸和安全告警的不可变结果。
+        包含图像字节、原始标题、尺寸和安全告警的不可变结果。
 
     Raises:
         CaptureError: 标题、窗口状态、DPI、GDI、绘制或编码失败。
@@ -321,7 +317,8 @@ def capture_window(title: str) -> CaptureResult:
                 _ensure_window(hwnd, title)
                 if win32gui.IsIconic(hwnd):
                     raise _error('window_state_failed')
-            encoded, width, height = _capture_bitmap(hwnd, title, warnings)
+            encoded, width, height = _capture_bitmap(
+                hwnd, title, warnings, image_format)
         except CaptureError:
             raise
         except Exception:
@@ -345,4 +342,5 @@ def capture_window(title: str) -> CaptureResult:
                     warnings.append(_DPI_WARNING)
         _ensure_window(hwnd, title)
         return CaptureResult(
-            encoded, 'window', title, width, height, tuple(warnings))
+            encoded, 'window', title, width, height, tuple(warnings),
+            image_format)

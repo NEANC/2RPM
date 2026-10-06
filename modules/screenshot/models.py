@@ -17,11 +17,12 @@ class CaptureError(Exception):
 
 @dataclass(frozen=True)
 class CaptureResult:
-    """保存 PNG 数据、来源、目标、尺寸及不可变告警序列。"""
+    """保存一次截图的实际载荷与不可变元数据。"""
 
-    png_bytes: bytes
+    image_bytes: bytes
     source: str
     target: str
     width: int
     height: int
     warnings: tuple[str, ...] = ()
+    image_format: str = 'jpeg'

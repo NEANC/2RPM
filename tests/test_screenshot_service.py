@@ -37,13 +37,42 @@ def test_explicit_source_calls_only_selected_backend(
     service = service_environment(monkeypatch)
     selected = getattr(service, f'capture_{source}')
     other = service.capture_window if source == 'adb' else service.capture_adb
-    expected = service.CaptureResult(b'png', source, target, 2, 3)
+    expected = service.CaptureResult(
+        b'png', source, target, 2, 3, (), 'jpeg')
     selected.return_value = expected
     assert service.capture(source, target) is expected
-    selected.assert_called_once_with(target)
+    selected.assert_called_once_with(
+        target, image_format='jpeg',
+        **({'purpose': 'automatic'} if source == 'adb' else {}))
     other.assert_not_called()
 
 
+def test_custom_format_and_purpose_reach_selected_backend(monkeypatch):
+    """显式格式和调用目的必须原样传给对应后端。"""
+    service = service_environment(monkeypatch)
+    expected = service.CaptureResult(
+        b'webp', 'adb', 'serial', 2, 3, (), 'webp')
+    service.capture_adb.return_value = expected
+
+    assert service.capture(
+        'adb', 'serial', image_format='webp', purpose='manual') is expected
+    service.capture_adb.assert_called_once_with(
+        'serial', image_format='webp', purpose='manual')
+    service.capture_window.assert_not_called()
+
+
+def test_window_capture_uses_explicit_format_without_purpose(monkeypatch):
+    """窗口后端接收格式参数，调用目的不改变其既有接口。"""
+    service = service_environment(monkeypatch)
+    expected = service.CaptureResult(
+        b'png', 'window', '标题', 2, 3, (), 'png')
+    service.capture_window.return_value = expected
+
+    assert service.capture(
+        'window', '标题', image_format='png', purpose='manual') is expected
+    service.capture_window.assert_called_once_with(
+        '标题', image_format='png')
+    service.capture_adb.assert_not_called()
 @pytest.mark.parametrize('source', [
     None, False, 123, [], {}, '', 'auto', 'ADB', ' window ', 'adb:serial',
 ])
@@ -74,7 +103,9 @@ def test_backend_error_propagates_without_fallback(monkeypatch, source, kind):
     with pytest.raises(type(error)) as caught:
         service.capture(source, 'target')
     assert caught.value is error
-    selected.assert_called_once_with('target')
+    selected.assert_called_once_with(
+        'target', image_format='jpeg',
+        **({'purpose': 'automatic'} if source == 'adb' else {}))
     other = service.capture_window if source == 'adb' else service.capture_adb
     other.assert_not_called()
 

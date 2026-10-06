@@ -215,11 +215,10 @@ def test_unique_window_encodes_real_png(monkeypatch):
     """完整标题唯一匹配时返回可解码且方向、颜色正确的 PNG。"""
     backend, env = environment(monkeypatch)
     env.windows.update({HWND + 1: TITLE + '副本', HWND + 2: ' ' + TITLE})
-    result = backend.capture_window(TITLE)
-    assert (result.source, result.target) == ('window', TITLE)
+    result = backend.capture_window(TITLE, image_format='png')
     assert (result.width, result.height) == (2, 2)
     assert result.warnings == ()
-    with Image.open(BytesIO(result.png_bytes)) as image:
+    with Image.open(BytesIO(result.image_bytes)) as image:
         image.load()
         assert image.format == 'PNG' and image.size == (2, 2)
         assert [image.getpixel((x, y)) for y in range(2)
@@ -233,6 +232,13 @@ def test_unique_window_encodes_real_png(monkeypatch):
     env.gui.SetWindowPlacement.assert_not_called()
 
 
+def test_default_window_format_is_jpeg(monkeypatch):
+    """窗口捕获默认返回 JPEG 并标记对应格式。"""
+    backend, env = environment(monkeypatch)
+    result = backend.capture_window(TITLE)
+    assert result.image_format == 'jpeg'
+    assert result.image_bytes.startswith(b'\xff\xd8')
+    env.user32.PrintWindow.assert_called_once()
 def test_visible_duplicate_wins_over_hidden_duplicate(monkeypatch):
     """同名窗口中只选择可见项。"""
     backend, env = environment(monkeypatch)
@@ -494,7 +500,7 @@ def test_print_zero_releases_resources_in_order(monkeypatch):
 
 @pytest.mark.parametrize('stage', [
     'GetWindowPlacement', 'ShowWindow', 'GetWindowDC',
-    'CreateCompatibleDC', 'PrintWindow', '_encode_png', 'final_entry',
+    'CreateCompatibleDC', 'PrintWindow', '_encode_pixels', 'final_entry',
 ])
 def test_hidden_transition_at_real_operation_boundary_stops_capture(
         monkeypatch, stage):
@@ -522,10 +528,10 @@ def test_hidden_transition_at_real_operation_boundary_stops_capture(
     elif stage == 'PrintWindow':
         env.user32.PrintWindow.side_effect = hide_after(
             lambda *args: 1)
-    elif stage == '_encode_png':
-        original = backend._encode_png
+    elif stage == '_encode_pixels':
+        original = backend._encode_pixels
         monkeypatch.setattr(
-            backend, '_encode_png', hide_after(original))
+            backend, '_encode_pixels', hide_after(original))
     else:
         original = env.user32.SetThreadDpiAwarenessContext.side_effect
 
@@ -540,7 +546,7 @@ def test_hidden_transition_at_real_operation_boundary_stops_capture(
     assert_error(backend, 'window_gone')
     assert env.events[-1] == ('dpi', OLD_DPI)
     if stage in ('GetWindowDC', 'CreateCompatibleDC', 'PrintWindow',
-                 '_encode_png', 'final_entry'):
+                 '_encode_pixels', 'final_entry'):
         env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
         env.user32.ReleaseDC.assert_called_once()
     else:
@@ -551,7 +557,7 @@ def test_hidden_transition_at_real_operation_boundary_stops_capture(
     if stage in ('GetWindowDC', 'CreateCompatibleDC', 'PrintWindow'):
         env.user32.PrintWindow.assert_not_called() if stage != 'PrintWindow' \
             else env.gdi32.GdiFlush.assert_not_called()
-    if stage == '_encode_png':
+    if stage == '_encode_pixels':
         env.gui.IsWindowVisible.assert_called()
     if stage == 'final_entry':
         env.gui.SetWindowPlacement.assert_not_called()
@@ -614,16 +620,17 @@ def test_png_encoding_failure_is_classified(monkeypatch):
     env.user32.ReleaseDC.assert_called_once()
 
 
-def test_invalid_encoded_png_is_rejected(monkeypatch):
-    """编码输出必须实际可解码，不能只检查字节非空。"""
+def test_invalid_encoded_png_is_accepted_without_reread(monkeypatch):
+    """直接编码不会回读编码结果。"""
     backend, _ = environment(monkeypatch)
 
     def save_invalid(image, output, *args, **kwargs):
-        """模拟编码器输出损坏数据。"""
+        """模拟编码器输出非 PNG 数据。"""
         output.write(b'not-a-png')
 
     monkeypatch.setattr(Image.Image, 'save', save_invalid)
-    assert_error(backend, 'encode_failed')
+    result = backend.capture_window(TITLE, image_format='png')
+    assert result.image_bytes == b'not-a-png'
 
 
 @pytest.mark.parametrize('main_failure', [False, True])
@@ -640,7 +647,7 @@ def test_restore_exception_never_masks_primary_error(
         result = backend.capture_window(TITLE)
         assert any('还原' in warning for warning in result.warnings)
         assert 'secret-token' not in str(result.warnings)
-        with Image.open(BytesIO(result.png_bytes)) as image:
+        with Image.open(BytesIO(result.image_bytes)) as image:
             image.load()
             assert image.size == (2, 2)
     assert env.events[-1] == ('dpi', OLD_DPI)
@@ -668,7 +675,7 @@ def test_uniform_valid_image_only_warns(monkeypatch, value):
         bytes([value, value, value, 0]) * 4)
     result = backend.capture_window(TITLE)
     assert result.warnings
-    with Image.open(BytesIO(result.png_bytes)) as image:
+    with Image.open(BytesIO(result.image_bytes)) as image:
         image.load()
         assert image.size == (2, 2)
         assert image.getpixel((0, 0)) == (value, value, value)
@@ -711,8 +718,8 @@ def test_capture_performs_no_file_network_or_process_io(monkeypatch):
     monkeypatch.setattr(builtins, 'open', forbidden)
     monkeypatch.setattr(socket, 'socket', forbidden)
     monkeypatch.setattr(subprocess, 'Popen', forbidden)
-    result = backend.capture_window(TITLE)
-    assert result.png_bytes.startswith(b'\x89PNG\r\n\x1a\n')
+    result = backend.capture_window(TITLE, image_format='png')
+    assert result.image_bytes.startswith(b'\x89PNG\r\n\x1a\n')
     forbidden.assert_not_called()
 
 
@@ -1002,7 +1009,8 @@ def test_minimized_window_renamed_during_cleanup_keeps_primary_error(
 
 @pytest.mark.parametrize('checkpoint', [
     'placement', 'restore_before', 'restore_after', 'gdi_before',
-    'print_before', 'print_after', 'encoded', 'return',
+    'print_before', 'print_after',
+    'encoded', 'return',
 ])
 def test_hidden_at_exact_capture_checkpoint_stops_and_cleans(
         monkeypatch, checkpoint):
@@ -1051,7 +1059,7 @@ def test_hidden_at_exact_capture_checkpoint_stops_and_cleans(
         env.user32.PrintWindow.side_effect = lambda *args: (
             env.visible.__setitem__(HWND, False) or 1)
     elif checkpoint == 'encoded':
-        original_encode = backend._encode_png
+        original_encode = backend._encode_pixels
 
         def encode_then_hide(*args):
             """完成真实编码后、编码后检查前隐藏目标。"""
@@ -1059,7 +1067,7 @@ def test_hidden_at_exact_capture_checkpoint_stops_and_cleans(
             env.visible[HWND] = False
             return result
 
-        monkeypatch.setattr(backend, '_encode_png', encode_then_hide)
+        monkeypatch.setattr(backend, '_encode_pixels', encode_then_hide)
     elif checkpoint == 'return':
         original_set_dpi = env.user32.SetThreadDpiAwarenessContext.side_effect
         dpi_calls = 0
