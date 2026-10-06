@@ -8,11 +8,14 @@ from .models import CaptureResult
 from .window import capture_window
 
 
-def capture(source: str, target: str) -> CaptureResult:
+def capture(
+        source: str, target: str, *, image_format='jpeg',
+        purpose='automatic') -> CaptureResult:
     """只调用指定后端一次，保留结果和异常，不提供自动回退。"""
     if isinstance(source, str):
         if source == 'window':
-            return capture_window(target)
+            return capture_window(target, image_format=image_format)
         if source == 'adb':
-            return capture_adb(target)
+            return capture_adb(
+                target, image_format=image_format, purpose=purpose)
     raise CaptureError('invalid_source', '截图来源必须为 window 或 adb')

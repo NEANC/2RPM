@@ -226,8 +226,8 @@ def test_real_protocol_returns_exact_serial_color_png(environment, version):
     assert isinstance(result, backend.CaptureResult)
     assert (result.source, result.target) == ('adb', SERIAL)
     assert (result.width, result.height, result.warnings) == (2, 2, ())
-    assert result.png_bytes == environment.png
-    with Image.open(BytesIO(result.png_bytes)) as image:
+    assert result.image_bytes == environment.png
+    with Image.open(BytesIO(result.image_bytes)) as image:
         image.load()
         assert [image.getpixel((x, y)) for y in range(2)
                 for x in range(2)] == COLORS
@@ -382,9 +382,9 @@ def test_exact_adb_response_limit_waits_for_eof(
     monkeypatch.setattr(backend, '_MAX_PNG_RESPONSE_BYTES', limit)
     environment.payload_plan = [limit, 1]
     result = backend.capture_adb(SERIAL)
-    assert result.png_bytes == environment.png
+    assert result.image_bytes == environment.png
     assert (result.width, result.height) == (2, 2)
-    with Image.open(BytesIO(result.png_bytes)) as image:
+    with Image.open(BytesIO(result.image_bytes)) as image:
         image.load()
         assert [image.getpixel((x, y)) for y in range(2)
                 for x in range(2)] == (COLORS if colorful else [(0, 0, 0)] * 4)
@@ -516,7 +516,7 @@ def test_real_black_png_is_not_rejected(environment):
     """真实完整黑图是合法截图，不与库的错误占位混淆。"""
     backend = load_backend()
     environment.png = make_png(colorful=False)
-    assert backend.capture_adb(SERIAL).png_bytes == environment.png
+    assert backend.capture_adb(SERIAL).image_bytes == environment.png
 
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
@@ -631,7 +631,7 @@ def test_capture_has_no_file_upload_or_window_side_effects(
     monkeypatch.setattr(window._user32, 'PrintWindow', forbidden)
     try:
         result = backend.capture_adb(SERIAL)
-        assert result.png_bytes == environment.png
+        assert result.image_bytes == environment.png
     finally:
         forbidden.assert_not_called()
 
