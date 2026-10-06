@@ -49,10 +49,10 @@ def _shared_failure(code):
     return UploadResult(False, None, None, (), (_failure('配置', code),))
 
 
-def _valid_input(png_bytes, filename):
+def _valid_input(image_bytes, filename):
     """要求非空字节及安全的单一文件名，不在上传层解码图片。"""
     return (
-        isinstance(png_bytes, bytes) and bool(png_bytes)
+        isinstance(image_bytes, bytes) and bool(image_bytes)
         and isinstance(filename, str) and bool(filename.strip())
         and filename not in {'.', '..'} and not _has_control(filename)
         and not any(char in filename for char in '<>:"/\\|?*')
@@ -90,7 +90,7 @@ def _copy_options(host):
 
 
 def _prepare_v2(context, image, index, provider, token, options, seconds,
-                warnings, png_bytes=None, filename=None):
+                warnings, image_bytes=None, filename=None):
     """复用版本化存储选择；Boltp 按候选独立上传并重算期限。"""
     if provider == 'boltp':
         retention = (context.get_boltp_retention(token)
@@ -107,7 +107,7 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                 deepcopy(options), expired_at=decision.expired_at)
             prepared['storage_id'] = storage_id
             try:
-                result = UPLOADERS[provider](png_bytes, filename, token, prepared)
+                result = UPLOADERS[provider](image_bytes, filename, token, prepared)
                 return validate_image_url(result), None
             except ImageHostError as error:
                 failure = _failure(provider, error.code, error=error)
@@ -142,7 +142,7 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
     return prepared
 
 
-def _upload_chain(png_bytes, filename, hosts, context, image):
+def _upload_chain(image_bytes, filename, hosts, context, image):
     """按配置槽位顺序上传，仅两站的精确存储拒绝允许一次恢复。"""
     attempts = []
     failures = []
@@ -195,7 +195,7 @@ def _upload_chain(png_bytes, filename, hosts, context, image):
                 if provider == 'boltp':
                     url, candidate_failure = _prepare_v2(
                         context, image, index, provider, token, options,
-                        seconds, warnings, png_bytes, filename)
+                        seconds, warnings, image_bytes, filename)
                     if candidate_failure is not None:
                         failures.append(candidate_failure)
                     break
@@ -205,7 +205,7 @@ def _upload_chain(png_bytes, filename, hosts, context, image):
                 failure = None
                 try:
                     candidate = UPLOADERS[provider](
-                        png_bytes, filename, token, prepared)
+                        image_bytes, filename, token, prepared)
                     url = validate_image_url(candidate)
                 except ImageHostError as error:
                     failure = _failure(provider, error.code, error=error)
@@ -236,14 +236,14 @@ def _upload_chain(png_bytes, filename, hosts, context, image):
                         tuple(warnings))
 
 
-def upload_with_fallback(png_bytes, filename, hosts, *,
+def upload_with_fallback(image_bytes, filename, hosts, *,
                          context=None) -> UploadResult:
     """首个有效直链即停止，复用外部事件或确定性关闭自有事件。
 
     保留原三个位置参数及适配器四参数调用。共享输入提前失败不执行
     缓存或网络 IO；普通错误仅保存安全字段，控制信号原对象传播。
     """
-    if not _valid_input(png_bytes, filename):
+    if not _valid_input(image_bytes, filename):
         return _shared_failure('invalid_input')
     if hosts is None:
         return _shared_failure('not_configured')
@@ -261,7 +261,7 @@ def upload_with_fallback(png_bytes, filename, hosts, *,
             try:
                 image = context.start_image()
                 return _upload_chain(
-                    png_bytes, filename, hosts, context, image)
+                    image_bytes, filename, hosts, context, image)
             except ImageHostError as error:
                 return UploadResult(False, None, None, (), (
                     _failure('配置', error.code, error=error),),

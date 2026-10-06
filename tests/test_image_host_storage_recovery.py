@@ -1007,7 +1007,7 @@ def test_registry_context_signature_and_hot_cache(integration):
     """公开参数仅追加关键字 context，热缓存不再 GET。"""
     state = integration
     params = signature(state['registry'].upload_with_fallback).parameters
-    assert list(params) == ['png_bytes', 'filename', 'hosts', 'context']
+    assert list(params) == ['image_bytes', 'filename', 'hosts', 'context']
     assert params['context'].kind is params['context'].KEYWORD_ONLY
     assert params['context'].default is None
     cache = state['cache']

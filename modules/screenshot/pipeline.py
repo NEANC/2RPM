@@ -106,10 +106,14 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context):
         return '截图失败'
 
     warnings.extend(result.warnings)
+    if result.image_format not in {'jpeg', 'png', 'webp'}:
+        diagnostics.append(f'截图目标 {item["index"]}：截图格式不支持上传')
+        return '截图上传失败'
+    extension = {'jpeg': '.jpg', 'png': '.png', 'webp': '.webp'}[result.image_format]
     failure = '截图上传失败'
     try:
         uploaded = upload_with_fallback(
-            result.png_bytes, item['out'] + '.png', hosts, context=context)
+            result.image_bytes, item['out'] + extension, hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
             return markdown_image(item['out'], uploaded.url)

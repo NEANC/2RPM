@@ -133,15 +133,31 @@ def test_only_implemented_providers_are_registered():
     assert signature(providers().upload_catbox).return_annotation is str
 
 
+@pytest.mark.parametrize(('filename', 'mime'), [
+    ('capture.png', 'image/png'),
+    ('capture.jpg', 'image/jpeg'),
+    ('capture.jpeg', 'image/jpeg'),
+    ('capture.webp', 'image/webp'),
+])
+def test_catbox_multipart_mime_matches_filename(client, filename, mime):
+    """multipart 声明的 MIME 与上传文件后缀一致，字节对象原样传递。"""
+    providers().upload_catbox(IMAGE, filename, '', {})
+    file_part = client.calls[0][1]['files']['fileToUpload']
+    assert file_part[0] == filename
+    assert file_part[1] is IMAGE
+    assert file_part[2] == mime
+
+
 @pytest.mark.parametrize('token', [None, ''])
 def test_anonymous_multipart_contract(client, token):
     """匿名 POST 精确发送字段、文件名、PNG MIME 和安全 HTTP 参数。"""
     result = upload(token)
     assert result.success
     assert result.url == URL
+    mime = providers()._image_mime(FILENAME)
     assert client.calls == [(ENDPOINT, {
         'data': {'reqtype': 'fileupload'},
-        'files': {'fileToUpload': (FILENAME, IMAGE, 'image/png')},
+        'files': {'fileToUpload': (FILENAME, IMAGE, mime)},
         'timeout': (5, 15), 'verify': True, 'allow_redirects': False,
         'stream': True,
     })]
@@ -546,7 +562,7 @@ def test_wmimg_multipart_and_credentials(wmclient, token):
         headers['Authorization'] = 'Bearer ' + token
     assert wmclient.calls == [(WMIMG_ENDPOINT, {
         'data': {'permission': 1},
-        'files': {'file': (FILENAME, IMAGE, 'image/png')},
+        'files': {'file': (FILENAME, IMAGE, import_module('modules.image_host.providers')._image_mime(FILENAME))},
         'headers': headers, 'timeout': (5, 15), 'verify': True,
         'stream': True, 'allow_redirects': False,
     })]

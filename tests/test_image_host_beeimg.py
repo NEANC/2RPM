@@ -160,7 +160,7 @@ def test_exact_multipart_authentication_and_anonymous_contract(client, token):
         data['apikey'] = token
     assert client.calls == [(ENDPOINT, {
         'data': data,
-        'files': {'file': (FILENAME, IMAGE, 'image/png')},
+        'files': {'file': (FILENAME, IMAGE, import_module('modules.image_host.providers')._image_mime(FILENAME))},
         'timeout': (5, 15), 'verify': True, 'stream': True,
         'allow_redirects': False,
     })]

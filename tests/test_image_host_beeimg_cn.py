@@ -202,7 +202,7 @@ def test_exact_multipart_authentication_and_anonymous_contract(client, token):
         headers['Authorization'] = 'Bearer ' + token
     assert client.calls == [(ENDPOINT, {
         'data': {'storage_id': STORAGE_ID, 'is_public': '1'},
-        'files': {'file': (FILENAME, IMAGE, 'image/png')},
+        'files': {'file': (FILENAME, IMAGE, import_module('modules.image_host.providers')._image_mime(FILENAME))},
         'headers': headers, 'timeout': (5, 15), 'verify': True,
         'stream': True, 'allow_redirects': False,
     })]
