@@ -194,6 +194,19 @@ def test_inline_upload_option_is_parsed_and_validated():
     assert args.hosts == [{'provider': 'catbox', 'options': {}}]
 
 
+@pytest.mark.parametrize('body', [
+    '{<<: {provider: catbox}, token: FIRST_SECRET, token: SECOND_SECRET}',
+    'provider: catbox, options: {<<: {mode: default}, mode: first, mode: second}',
+])
+def test_inline_merge_duplicates_are_private_parameter_errors(body, capsys):
+    """重复键使整组参数失败，错误码与输出均不泄露凭证。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox; ' + body])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第2项：mapping_syntax\n'
+
+
 def test_source_syntax_requires_output():
     """来源写法测试必须显式启用输出，CLI 默认无副作用。"""
     with pytest.raises(SystemExit) as exit_info:

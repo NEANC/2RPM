@@ -91,6 +91,38 @@ def test_anonymous_provider_can_omit_token():
     assert prepare_cli_host(parse_inline_hosts('provider: catbox')[0])[0]['token'] == ''
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize('body', [
+    '<<: {provider: catbox}, token: FIRST_SECRET, token: SECOND_SECRET',
+    'provider: catbox, options: {<<: {mode: default}, mode: first, mode: second}',
+    '<<: {provider: catbox, token: FIRST_SECRET, token: SECOND_SECRET}',
+    'provider: catbox, options: {<<: [{mode: first, mode: second}]}',
+])
+def test_merge_cannot_hide_explicit_duplicate_keys(body, wrapped):
+    """合并前的显式重复键必须拒绝，且异常不保留输入。"""
+    text = '{' + body + '}' if wrapped else body
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(text)
+    assert caught.value.code == 'mapping_syntax'
+    assert 'SECRET' not in ''.join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize('body', [
+    '<<: {provider: beeimg, token: default}, provider: catbox, token: override',
+    '<<: [{provider: catbox, token: first}, {token: second}], token: override',
+    'provider: catbox, token: override, options: {<<: &defaults {mode: default}, mode: custom}',
+])
+def test_merge_defaults_allow_explicit_overrides(body):
+    """正常合并默认值及显式覆盖仍遵循安全 YAML 语义。"""
+    host = parse_inline_hosts(body)[0]
+    assert host['provider'] == 'catbox'
+    assert host['token'] == 'override'
+    if host['options']:
+        assert host['options']['mode'] == 'custom'
+
+
 def test_non_anonymous_provider_requires_token():
     """不支持匿名的图床省略凭证时拒绝。"""
     with pytest.raises(InlineUploadError):
