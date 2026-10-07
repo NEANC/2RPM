@@ -32,8 +32,13 @@ def entry_module():
 
 
 def parse(argv):
-    """调用真实解析接口，验证归一结果而非 argparse 内部行为。"""
-    return cli_module().parse_screenshot_args(argv)
+    """调用真实解析接口；来源语法测试默认只验证参数归一。"""
+    return cli_module().parse_screenshot_args(list(argv))
+
+
+def parse_syntax(argv):
+    """解析来源语法并附带 --output，满足“需要输出或上传”的新契约。"""
+    return cli_module().parse_screenshot_args(list(argv) + ['--output'])
 
 
 def patch_capture(monkeypatch, mock):
@@ -70,10 +75,11 @@ def _png_bytes(size=(4, 3)):
      ('adb', '127.0.0.1:16384')),
     (['--source', 'window', '--target', 'MuMu模拟器 1'],
      ('window', 'MuMu模拟器 1')),
+    (['--source', ' adb: 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
 ])
 def test_each_documented_form_maps_to_expected_pair(argv, expected):
     """逐条验证七种写法对应的来源与目标。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == expected
 
 
@@ -85,7 +91,7 @@ def test_each_documented_form_maps_to_expected_pair(argv, expected):
 ])
 def test_adb_forms_are_equivalent(argv):
     """ADB 的三种等价写法归一到同一 serial。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == ('adb', '127.0.0.1:16384')
 
 
@@ -98,7 +104,7 @@ def test_adb_forms_are_equivalent(argv):
 ])
 def test_window_forms_are_equivalent(argv):
     """窗口标题的四种等价写法归一到 window 后端。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == ('window', 'MuMu模拟器 1')
 
 
@@ -110,7 +116,7 @@ def test_window_forms_are_equivalent(argv):
 ])
 def test_keyword_like_titles_use_window_form(argv):
     """窗口名恰为 adb 时用 window: 形式明确表达。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == ('window', 'adb')
 
 
@@ -120,7 +126,7 @@ def test_keyword_like_titles_use_window_form(argv):
 ])
 def test_window_title_named_window(argv):
     """窗口名恰为 window 时仍归一到 window 后端。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == ('window', 'window')
 
 
@@ -133,7 +139,7 @@ def test_window_title_named_window(argv):
 ])
 def test_window_titles_preserve_surrounding_whitespace(argv, expected):
     """窗口标题四种写法均保留首尾空白，供窗口匹配原样使用。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == expected
 
 
@@ -164,15 +170,15 @@ def test_window_titles_reject_all_whitespace(argv):
 def test_source_keywords_are_normalized_without_trimming_window_titles(
         argv, expected):
     """来源关键字独立去空白，窗口目标保留原始取值。"""
-    args = parse(argv)
+    args = parse_syntax(argv)
     assert (args.source, args.target) == expected
 
 
 def test_adb_serial_is_opaque_and_not_reclassified():
     """ADB 目标不做外形判定，不因带冒号或 window: 前缀改判。"""
-    args = parse(['--source', 'adb', 'window:测试窗口'])
+    args = parse_syntax(['--source', 'adb', 'window:测试窗口'])
     assert (args.source, args.target) == ('adb', 'window:测试窗口')
-    args = parse(['--source', 'adb', '--target', 'emulator-5554'])
+    args = parse_syntax(['--source', 'adb', '--target', 'emulator-5554'])
     assert (args.source, args.target) == ('adb', 'emulator-5554')
 
 
@@ -188,21 +194,56 @@ def test_inline_upload_option_is_parsed_and_validated():
     assert args.hosts == [{'provider': 'catbox', 'options': {}}]
 
 
+def test_source_syntax_requires_output():
+    """来源写法测试必须显式启用输出，CLI 默认无副作用。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:MuMu模拟器 1'])
+    assert exit_info.value.code == 2
+
+
+def test_argument_errors_use_fixed_output_without_secrets(capsys):
+    """未知及旧参数错误只输出固定文案，不回显输入内容。"""
+    for option in (['--config', 'FAKE_SECRET'], ['-c', 'FAKE_SECRET'],
+                   ['--image-host', 'FAKE_SECRET']):
+        with pytest.raises(SystemExit) as exit_info:
+            parse(['--source', 'window:title', '--output'] + option)
+        assert exit_info.value.code == 2
+        assert capsys.readouterr().err == '截图参数无效\n'
+
+
 @pytest.mark.parametrize('option', [
-    ['--image-host', 'catbox'],
-    ['-c', 'custom.yaml'],
+    ['--config', 'FAKE_SECRET'], ['-c', 'FAKE_SECRET'],
+    ['--image-host', 'FAKE_SECRET'],
 ])
 def test_legacy_upload_options_are_rejected(option):
     """旧上传参数在截图前拒绝。"""
     with pytest.raises(SystemExit) as exit_info:
-        parse(['--source', 'window:MuMu模拟器 1'] + option)
+        parse(['--source', 'window:MuMu模拟器 1', '--output'] + option)
     assert exit_info.value.code == 2
 
 
-def test_upload_defaults_to_disabled():
-    """未提供内联上传时不创建图床项。"""
-    args = parse(['--source', 'window:MuMu模拟器 1'])
-    assert args.hosts is None
+def test_output_and_upload_are_required_and_legacy_options_are_rejected(capsys):
+    """输出或上传必须显式提供，旧参数安全拒绝。"""
+    for argv in [
+        ['--source', 'window:title'],
+        ['--source', 'window:title', '--config', 'SECRET_VALUE'],
+        ['--source', 'window:title', '-c', 'SECRET_VALUE'],
+        ['--source', 'window:title', '--image-host', 'SECRET_VALUE'],
+    ]:
+        with pytest.raises(SystemExit) as exit_info:
+            parse(argv)
+        assert exit_info.value.code == 2
+        assert 'SECRET_VALUE' not in capsys.readouterr().err
+
+
+def test_output_and_upload_are_single_string_options():
+    """output 可无值，upload 接收单个内联字符串且均不可重复。"""
+    assert parse(['--source', 'window:title', '--output']).output == ''
+    assert parse(['--source', 'window:title', '--upload', 'provider: catbox']).hosts
+    for option in ('--output', '--upload'):
+        with pytest.raises(SystemExit) as exit_info:
+            parse(['--source', 'window:title', option, 'one', option, 'two'])
+        assert exit_info.value.code == 2
 
 
 @pytest.mark.parametrize('argv', [
@@ -254,41 +295,41 @@ def test_argument_error_creates_no_config_file(monkeypatch, tmp_path):
 
 
 def test_run_prints_source_target_and_size(monkeypatch, capsys, tmp_path):
-    """run_screenshot_cli 成功时返回 0 并输出来源、目标与尺寸，同时落盘。"""
+    """run_screenshot_cli 成功时返回 0、默认请求 JPEG 并输出实际保存路径。"""
     cli = cli_module()
     expected = CaptureResult(
-        _png_bytes(), 'window', 'MuMu模拟器 1', 320, 240)
+        _png_bytes(), 'window', 'MuMu模拟器 1', 320, 240, image_format='png')
     capture = patch_capture(monkeypatch, Mock(return_value=expected))
     config = import_module('modules.config')
     load_spy = Mock()
     monkeypatch.setattr(config, 'load_config', load_spy)
 
-    args = parse(['--source', 'window:MuMu模拟器 1'])
+    args = parse(['--source', 'window:MuMu模拟器 1', '--output'])
 
     assert cli.run_screenshot_cli(args, str(tmp_path)) == 0
-    capture.assert_called_once_with('window', 'MuMu模拟器 1')
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format='jpeg', purpose='cli')
     load_spy.assert_not_called()
     out = capsys.readouterr().out
-    assert 'window' in out
-    assert 'MuMu模拟器 1' in out
-    assert '320' in out and '240' in out
     saved = list((tmp_path / 'screenshot').glob('*.png'))
     assert len(saved) == 1
     assert str(saved[0]) in out
 
 
 def test_run_returns_one_on_capture_failure(monkeypatch, capsys):
-    """截图失败返回 1，并输出固定安全分类。"""
+    """截图失败返回 1，并输出固定安全分类，不回显后端细节。"""
     cli = cli_module()
     error = CaptureError('backend_failed', '固定安全消息')
     capture = patch_capture(monkeypatch, Mock(side_effect=error))
-    args = parse(['--source', 'adb:127.0.0.1:16384'])
+    args = parse(['--source', 'adb:127.0.0.1:16384', '--output'])
 
     assert cli.run_screenshot_cli(args, 'C:\\program') == 1
-    capture.assert_called_once_with('adb', '127.0.0.1:16384')
+    capture.assert_called_once_with(
+        'adb', '127.0.0.1:16384', image_format='jpeg', purpose='cli')
     out = capsys.readouterr().out
     assert '失败' in out
-    assert 'backend_failed' in out
+    assert 'backend_failed' not in out
+    assert '固定安全消息' not in out
 
 
 def test_run_hides_unexpected_error_details(monkeypatch, capsys):
@@ -296,7 +337,7 @@ def test_run_hides_unexpected_error_details(monkeypatch, capsys):
     cli = cli_module()
     capture = patch_capture(
         monkeypatch, Mock(side_effect=RuntimeError('secret-token')))
-    args = parse(['--source', 'adb:127.0.0.1:16384'])
+    args = parse(['--source', 'adb:127.0.0.1:16384', '--output'])
 
     assert cli.run_screenshot_cli(args, 'C:\\program') == 1
     assert capture.call_count == 1
@@ -388,16 +429,19 @@ def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
     """入口分流使用真实解析与真实分派，不读取配置，仅写出截图产物。"""
     entry, spies = _capture_entry_environment(monkeypatch, tmp_path)
     config_spy = _patch_entry_config(monkeypatch, entry)
-    result = CaptureResult(_png_bytes((8, 6)), 'window', 'MuMu模拟器 1', 8, 6)
+    result = CaptureResult(_png_bytes((8, 6)), 'window', 'MuMu模拟器 1', 8, 6,
+                           image_format='png')
     capture = patch_capture(monkeypatch, Mock(return_value=result))
     monkeypatch.setattr(
-        sys, 'argv', ['2RPM.py', 'screenshot', '--source', 'MuMu模拟器 1'])
+        sys, 'argv',
+        ['2RPM.py', 'screenshot', '--source', 'MuMu模拟器 1', '--output'])
 
     with pytest.raises(SystemExit) as exit_info:
         entry.main()
 
     assert exit_info.value.code == 0
-    capture.assert_called_once_with('window', 'MuMu模拟器 1')
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format='jpeg', purpose='cli')
     config_spy.assert_not_called()
     for spy in spies.values():
         spy.assert_not_called()
