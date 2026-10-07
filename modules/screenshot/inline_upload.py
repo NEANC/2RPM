@@ -16,6 +16,7 @@ from modules.image_host.registry import UPLOADERS
 
 
 _ENV = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\}')
+_NODE_PROPERTY = re.compile(r'(?:&[^\s,\[\]{};]+|!<[^>]*>|![^\s,\[\]{};]*)(?=\s)')
 _AUTH_OPTIONS = {'beeimg': frozenset({'albumid'}), 'catbox': frozenset()}
 
 
@@ -56,6 +57,11 @@ def _split_items(text):
                 quote = None
             index += 1
             continue
+        if scalar_start and char in '&!':
+            property_match = _NODE_PROPERTY.match(text, index)
+            if property_match is not None:
+                index = property_match.end()
+                continue
         if char in "\"'" and scalar_start:
             quote = char
             scalar_start = False

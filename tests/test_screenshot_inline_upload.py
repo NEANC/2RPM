@@ -123,6 +123,45 @@ def test_merge_defaults_allow_explicit_overrides(body):
         assert host['options']['mode'] == 'custom'
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize(('value', 'expected'), [
+    ('&credential "a;b"', 'a;b'),
+    ('!!str "a;b"', 'a;b'),
+    ('&credential !!str "a;b"', 'a;b'),
+    ('!!str &credential "a;b"', 'a;b'),
+    ('!<tag:yaml.org,2002:str> "a;b"', 'a;b'),
+    ('&credential "a\\\";b"', 'a";b'),
+    ("&credential 'a'';b'", "a';b"),
+    ("&credential don't", "don't"),
+    ("don't", "don't"),
+])
+def test_node_properties_preserve_quoted_delimiters(value, expected, wrapped):
+    """节点属性后的引号仍保护分号，普通撇号不改变分段。"""
+    body = 'provider: catbox, token: ' + value
+    body = '{' + body + '}' if wrapped else body
+    hosts = parse_inline_hosts(body + '; provider: catbox')
+    assert len(hosts) == 2
+    assert hosts[0]['token'] == expected
+
+
+def test_nested_property_quotes_and_aliases():
+    """嵌套属性值中的括号不参与状态机，别名保持原值。"""
+    host = parse_inline_hosts(
+        'provider: catbox, token: &credential "a;b", '
+        'options: {copy: *credential, value: !!str "};["}')[0]
+    assert host['options'] == {'copy': 'a;b', 'value': '};['}
+
+
+@pytest.mark.parametrize('value', ['&credential "SECRET;a', '!!str \'SECRET;a'])
+def test_unclosed_property_quote_is_private(value):
+    """属性后未闭合引号只产生固定错误且不保留敏感异常链。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts('provider: catbox, token: ' + value)
+    assert 'SECRET' not in ''.join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
 def test_non_anonymous_provider_requires_token():
     """不支持匿名的图床省略凭证时拒绝。"""
     with pytest.raises(InlineUploadError):
