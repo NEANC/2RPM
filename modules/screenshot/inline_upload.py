@@ -7,6 +7,7 @@ from copy import deepcopy
 import re
 
 from ruamel.yaml import YAML
+from ruamel.yaml.constructor import SafeConstructor
 
 from modules.image_host.core import ImageHostError
 from modules.image_host.core import resolve_token
@@ -89,12 +90,41 @@ def _split_items(text):
     return items + [item]
 
 
+class _UniqueKeyConstructor(SafeConstructor):
+    """在合并展开前校验显式键，保留安全构造器的覆盖规则。"""
+
+    def __init__(self, *args, **kwargs):
+        """为当前解析器保存已检查节点，避免别名重复展开。"""
+        super().__init__(*args, **kwargs)
+        self._checked_nodes = set()
+
+    def flatten_mapping(self, node):
+        """逐个检查原始映射键，避免 merge 绕过重复键校验。"""
+        if node in self._checked_nodes:
+            return
+        self._checked_nodes.add(node)
+        keys = set()
+        merge_key = object()
+        for key_node, _ in node.value:
+            if key_node.tag == 'tag:yaml.org,2002:merge':
+                key = merge_key
+            else:
+                key = self.construct_object(key_node, deep=True)
+                if isinstance(key, list):
+                    key = tuple(key)
+            if key in keys:
+                raise ValueError('duplicate_key')
+            keys.add(key)
+        super().flatten_mapping(node)
+
+
 def _load_mapping(item, index):
     """以安全 YAML 解析单项并抹除底层异常链。"""
     source = item if item.startswith('{') else '{' + item + '}'
     parse_failed = False
     try:
         yaml = YAML(typ='safe')
+        yaml.Constructor = _UniqueKeyConstructor
         yaml.allow_duplicate_keys = False
         value = yaml.load(source)
     except Exception:
