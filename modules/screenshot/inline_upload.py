@@ -58,6 +58,10 @@ def _split_items(text):
                 quote = None
             index += 1
             continue
+        if scalar_start and char == '?' and (
+                index + 1 == len(text) or text[index + 1].isspace()):
+            index += 1
+            continue
         if scalar_start and char == '*':
             alias_match = _ALIAS.match(text, index)
             if alias_match is not None:
