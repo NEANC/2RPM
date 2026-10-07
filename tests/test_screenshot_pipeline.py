@@ -22,6 +22,7 @@ from modules.image_host.core import UploadFailure
 from modules.image_host.core import UploadResult
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
+from modules.screenshot.retention import SaveOutcome
 
 
 URL = 'https://cdn.example.com/image?signature=a%2Fb%3D&token=FAKE_URL_KEY'
@@ -76,7 +77,7 @@ def uploaded(url=URL):
 def boundaries(monkeypatch):
     """只替换截图及上传边界，保留真实分配与编排逻辑。"""
     module = pipeline()
-    capture = Mock(side_effect=lambda source, name: captured(source, name))
+    capture = Mock(side_effect=lambda source, name, **kwargs: captured(source, name))
     upload = Mock(return_value=uploaded())
     monkeypatch.setattr(module, 'capture', capture)
     monkeypatch.setattr(module, 'upload_with_fallback', upload)
@@ -87,7 +88,7 @@ def test_fixed_interfaces_and_frozen_batch():
     """固定字段、参数名及冻结属性与约定一致。"""
     module = pipeline()
     assert list(signature(module.prepare_screenshots).parameters) == [
-        'section', 'enabled', 'reserved_names']
+        'section', 'enabled', 'reserved_names', 'runtime', 'event']
     assert list(signature(module.append_screenshot_notices).parameters) == [
         'rendered_content', 'original_template', 'batch']
     assert module.ScreenshotBatch.__annotations__ == {
@@ -104,7 +105,7 @@ def test_two_targets_serial_success_and_aggregate(monkeypatch, caplog):
     module, capture, upload = boundaries(monkeypatch)
     events = []
 
-    def take(source, name):
+    def take(source, name, **kwargs):
         """记录截图顺序并返回真实结果类型。"""
         events.append(('capture', source, name))
         return captured(source, name)
@@ -515,7 +516,7 @@ def test_real_registry_markdown_preserves_url_structure(
     module = pipeline()
     registry = import_module('modules.image_host.registry')
     calls = []
-    capture = Mock(side_effect=lambda source, name: captured(source, name))
+    capture = Mock(side_effect=lambda source, name, **kwargs: captured(source, name))
     monkeypatch.setattr(module, 'capture', capture)
 
     def local_upload(image, filename, token, options):
@@ -678,3 +679,106 @@ def test_inactive_batch_never_constructs_context(monkeypatch, enabled, targets):
     module.prepare_screenshots(section(targets), enabled, ())
     capture.assert_not_called()
     upload.assert_not_called()
+
+
+def test_capture_uses_jpeg_automatic(monkeypatch):
+    """自动截图固定请求 JPEG 且标记 purpose=automatic。"""
+    module, capture, _ = boundaries(monkeypatch)
+    module.prepare_screenshots(section([target()]), True, ())
+    capture.assert_called_once_with(
+        'window', '窗口', image_format='jpeg', purpose='automatic')
+
+
+def test_capture_save_upload_share_bytes_in_order(monkeypatch):
+    """同一目标的截图、保存、上传使用同一 image_bytes 且顺序固定。"""
+    module, capture, upload = boundaries(monkeypatch)
+    events = []
+
+    def take(source, name, **kwargs):
+        """记录截图顺序。"""
+        events.append(('capture', source, name))
+        return captured(source, name)
+
+    capture.side_effect = take
+    monkeypatch.setattr(
+        module, 'save_automatic',
+        lambda result, runtime, event, policy: (
+            events.append(('save', result.image_bytes))
+            or SaveOutcome('saved.jpg', 'saved.jpg', ())))
+    upload.side_effect = lambda image, filename, hosts, *, context: (
+        events.append(('upload', image, filename)) or uploaded())
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    payload = captured().image_bytes
+    assert events == [
+        ('capture', 'window', '窗口'),
+        ('save', payload),
+        ('upload', payload, 'screenshot_1.jpg'),
+    ]
+    assert batch.values['screenshot_1'].startswith('![')
+
+
+def test_disabled_policy_does_not_touch_disk(monkeypatch):
+    """关闭保留策略时保存层不写盘。"""
+    module, _, _ = boundaries(monkeypatch)
+    winfs = import_module('modules.screenshot.retention').winfs
+    monkeypatch.setattr(
+        winfs, 'write_exclusive',
+        lambda *args, **kwargs: pytest.fail('关闭策略不得写盘'))
+    module.prepare_screenshots(section([target()]), True, ())
+
+
+def test_enabled_policy_passes_runtime_event_and_policy(monkeypatch):
+    """启用保留时向保存层传递 runtime、真实事件键与解析后的策略。"""
+    module, _, _ = boundaries(monkeypatch)
+    seen = {}
+
+    def save(result, runtime, event, policy):
+        """记录保存层入参并返回带告警的结果。"""
+        seen['runtime'] = runtime
+        seen['event'] = event
+        seen['enabled'] = policy.enabled
+        return SaveOutcome('a.jpg', 'a.jpg', ('保留提示',))
+
+    monkeypatch.setattr(module, 'save_automatic', save)
+    config = section([target()])
+    config['retention'] = {'enabled': True, 'max_days': 7}
+    runtime = {'program_dir': 'P', 'config_stem': 'c'}
+    batch = module.prepare_screenshots(
+        config, True, (), runtime=runtime, event='on_end')
+    assert seen == {'runtime': runtime, 'event': 'on_end', 'enabled': True}
+    assert '保留提示' in batch.warnings
+
+
+def test_runtime_fallback_uses_program_dir_and_config_stem(monkeypatch):
+    """缺省运行上下文时按程序目录与 config.yaml 生成。"""
+    module, _, _ = boundaries(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        module, 'save_automatic',
+        lambda result, runtime, event, policy: (
+            seen.update(runtime=runtime, event=event)
+            or SaveOutcome(None, '', ())))
+    module.prepare_screenshots(section([target()]), True, ())
+    assert seen['runtime'] == {
+        'program_dir': module.get_program_directory(), 'config_stem': 'config'}
+    assert seen['event'] == 'event'
+
+
+def test_save_exception_does_not_block_upload(monkeypatch):
+    """保存抛异常只追加固定告警，不阻断上传。"""
+    module, _, upload = boundaries(monkeypatch)
+    monkeypatch.setattr(
+        module, 'save_automatic', Mock(side_effect=OSError('boom')))
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    assert batch.values['screenshot_1'].startswith('![')
+    upload.assert_called_once()
+    assert '截图保存失败：无法写入输出路径' in batch.warnings
+
+
+def test_invalid_retention_policy_warning_surfaces_once(monkeypatch):
+    """非法保留天数转成一次固定告警进入批次。"""
+    module, _, _ = boundaries(monkeypatch)
+    config = section([target()])
+    config['retention'] = {'enabled': True, 'max_days': 'bad'}
+    batch = module.prepare_screenshots(config, True, ())
+    assert sum('保留天数无效' in warning for warning in batch.warnings) == 1
