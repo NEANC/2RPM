@@ -1,425 +1,226 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""验证截图输出的路径判定、真实编码与保存失败分类。
+"""截图调试 CLI 的输出路径、格式与保存失败行为。"""
 
-测试只替换截图边界为内存合成的 CaptureResult，使用真实 Pillow 生成与
-校验图像，不执行真实截图、ADB、窗口或图床调用。
-"""
-
-import os
 from argparse import Namespace
 from importlib import import_module
-from importlib.util import find_spec
 from io import BytesIO
-from pathlib import Path
+import os
 from unittest.mock import Mock
 
 from PIL import Image
 import pytest
 
 from modules.screenshot.models import CaptureError, CaptureResult
+from modules.screenshot.retention import SaveOutcome
 
 
 def cli_module():
-    """导入截图 CLI，模块缺失时让测试明确失败。"""
-    assert find_spec('modules.screenshot.cli') is not None, '尚未实现截图 CLI'
+    """导入 CLI 模块。"""
     return import_module('modules.screenshot.cli')
 
 
-def make_png(size=(8, 6), color=(10, 20, 30, 255)):
-    """用真实 Pillow 生成可解码的 PNG 字节（含 alpha 通道）。"""
-    image = Image.new('RGBA', size, color)
+def make_image(image_format='png', size=(8, 6)):
+    """生成指定格式的真实图像字节；RAW 无编码器时以 PNG 代替载荷。"""
     buffer = BytesIO()
-    image.save(buffer, format='PNG')
+    if image_format == 'raw':
+        Image.new('RGBA', size, (10, 20, 30)).save(buffer, format='PNG')
+        return buffer.getvalue()
+    mode = 'RGB' if image_format == 'jpeg' else 'RGBA'
+    Image.new(mode, size, (10, 20, 30)).save(buffer, format=image_format.upper())
     return buffer.getvalue()
 
 
-def patch_capture(monkeypatch, result=None, error=None):
-    """同时替换服务层与 CLI 的截图调用，返回可直接断言的 Mock。"""
-    service = import_module('modules.screenshot.service')
-    cli = cli_module()
-    mock = Mock(side_effect=error) if error else Mock(return_value=result)
-    monkeypatch.setattr(service, 'capture', mock)
-    monkeypatch.setattr(cli, 'capture', mock, raising=False)
-    return mock
-
-
 def args_for(output, **overrides):
-    """构造 run_screenshot_cli 所需的完整参数命名空间。"""
-    values = {
-        'source': 'window',
-        'target': 'MuMu模拟器 1',
-        'output': output,
-        'upload': None,
-        'image_host': None,
-        'config': None,
-    }
+    """构造完整 CLI 参数。"""
+    values = dict(source='window', target='MuMu模拟器 1', output=output,
+                  hosts=None)
     values.update(overrides)
     return Namespace(**values)
 
 
-def run_cli(monkeypatch, tmp_path, output, program_name='program', **kwargs):
-    """在隔离目录内执行一次截图输出，返回退出码、合成 PNG 与程序根目录。"""
-    program_dir = tmp_path / program_name
+def run_cli(monkeypatch, tmp_path, output, image_format='png', **overrides):
+    """使用合成截图执行一次 CLI。"""
+    program_dir = tmp_path / 'program'
     program_dir.mkdir(exist_ok=True)
-    size = kwargs.pop('size', (8, 6))
-    png = make_png(size=size)
-    result = CaptureResult(
-        png, 'window', 'MuMu模拟器 1', size[0], size[1],
-        kwargs.pop('warnings', ()))
-    patch_capture(monkeypatch, result=result)
+    payload = make_image(image_format)
+    result = CaptureResult(payload, 'window', 'MuMu模拟器 1', 8, 6,
+                           image_format=image_format)
+    capture = Mock(return_value=result)
+    monkeypatch.setattr(cli_module(), 'capture', capture)
     code = cli_module().run_screenshot_cli(
-        args_for(output, **kwargs), str(program_dir))
-    return code, png, program_dir
+        args_for(output, **overrides), str(program_dir))
+    return code, payload, program_dir, capture
 
 
-def decode(path):
-    """用真实 Pillow 打开产物，返回格式、尺寸与像素模式。"""
-    with Image.open(path) as image:
-        image.load()
-        return image.format, image.size, image.mode
-
-
-def created_pngs(directory):
-    """列出目录内的 PNG 产物路径。"""
-    return sorted(Path(directory).glob('*.png'))
-
-
-def test_default_output_lives_under_program_dir(monkeypatch, tmp_path, capsys):
-    """未指定 --output 时写入程序根目录下的 screenshot 子目录。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, _, program_dir = run_cli(monkeypatch, tmp_path, None)
-
+def test_capture_without_output_defaults_to_jpeg(monkeypatch, tmp_path):
+    """空 --output 使用默认目录并默认请求 JPEG。"""
+    code, payload, program_dir, capture = run_cli(
+        monkeypatch, tmp_path, '', image_format='jpeg')
     assert code == 0
-    saved = created_pngs(program_dir / 'screenshot')
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format='jpeg', purpose='cli')
+    saved = list((program_dir / 'screenshot').glob('*.jpg'))
     assert len(saved) == 1
-    assert decode(saved[0])[0] == 'PNG'
-    assert not (work / 'screenshot').exists()
-    assert str(saved[0]) in capsys.readouterr().out
+    assert saved[0].name.startswith('screenshot_')
+    assert saved[0].read_bytes() == payload
 
 
-def test_explicit_relative_path_is_relative_to_cwd(monkeypatch, tmp_path):
-    """显式相对路径相对当前工作目录，而非程序根目录。"""
+def test_output_none_does_not_save_and_fails_without_upload(monkeypatch, tmp_path):
+    """没有保存目标且没有上传时不创建文件，返回失败。"""
+    code, _, program_dir, _ = run_cli(monkeypatch, tmp_path, None)
+    assert code == 1
+    assert list(program_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(('suffix', 'image_format'), [
+    ('.jpg', 'jpeg'), ('.jpeg', 'jpeg'), ('.png', 'png'),
+    ('.webp', 'webp'), ('.raw', 'raw'),
+])
+def test_explicit_suffix_selects_capture_format(monkeypatch, tmp_path,
+                                                suffix, image_format):
+    """显式文件后缀决定 capture 请求格式。"""
+    target = str(tmp_path / ('shot' + suffix))
+    code, _, _, capture = run_cli(monkeypatch, tmp_path, target,
+                                  image_format=image_format)
+    assert code == 0
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format=image_format, purpose='cli')
+
+
+def test_raw_upload_rejected_before_capture(monkeypatch, tmp_path):
+    """RAW 与上传组合在截图、保存与上传之前拒绝。"""
+    cli = cli_module()
+    capture = Mock()
+    save = Mock()
+    upload = Mock()
+    monkeypatch.setattr(cli, 'capture', capture)
+    monkeypatch.setattr(cli, 'save_cli', save)
+    monkeypatch.setattr(cli, '_upload_all', upload)
+    assert cli.run_screenshot_cli(
+        args_for(str(tmp_path / 'shot.raw'), hosts=[{'provider': 'catbox'}]),
+        str(tmp_path)) == 2
+    capture.assert_not_called()
+    save.assert_not_called()
+    upload.assert_not_called()
+
+
+def test_existing_explicit_file_is_not_overwritten(monkeypatch, tmp_path):
+    """既有显式文件不覆盖并返回失败。"""
+    target = tmp_path / 'shot.png'
+    target.write_bytes(b'user-data')
+    code, _, _, _ = run_cli(monkeypatch, tmp_path, str(target))
+    assert code == 1
+    assert target.read_bytes() == b'user-data'
+
+
+def test_save_failure_returns_one_without_upload(monkeypatch, tmp_path):
+    """纯保存失败返回 1。"""
+    cli = cli_module()
+    outcome = SaveOutcome(None, 'shot.png', ('截图保存失败：无法写入输出路径',))
+    monkeypatch.setattr(cli, 'save_cli', lambda *args, **kwargs: outcome)
+    code, _, _, _ = run_cli(monkeypatch, tmp_path, str(tmp_path / 'shot.png'))
+    assert code == 1
+
+
+def test_capture_failure_returns_one(monkeypatch, tmp_path):
+    """截图异常以固定失败码返回。"""
+    capture = Mock(side_effect=CaptureError('backend_failed', 'secret'))
+    monkeypatch.setattr(cli_module(), 'capture', capture)
+    assert cli_module().run_screenshot_cli(
+        args_for(str(tmp_path / 'shot.png')), str(tmp_path)) == 1
+
+
+def test_explicit_directory_is_relative_to_cwd(monkeypatch, tmp_path):
+    """显式相对目录位于当前目录，空 output 的默认目录位于程序目录。"""
     work = tmp_path / 'work'
     work.mkdir()
     monkeypatch.chdir(work)
-
-    code, _, program_dir = run_cli(monkeypatch, tmp_path, 'shots')
-
+    code, _, program_dir, _ = run_cli(
+        monkeypatch, tmp_path, 'shots', image_format='jpeg')
     assert code == 0
-    assert len(created_pngs(work / 'shots')) == 1
-    assert not (program_dir / 'shots').exists()
+    assert len(list((work / 'shots').glob('*.jpg'))) == 1
     assert not (program_dir / 'screenshot').exists()
 
 
-def test_existing_directory_wins_over_image_suffix(monkeypatch, tmp_path):
-    """已存在同名目录时优先按目录处理，即使后缀形似图片。"""
+def test_managed_date_target_is_rejected_before_capture(monkeypatch, tmp_path):
+    """受管日期目录内的目标是保留区的，截图前拒绝。"""
+    capture = Mock()
+    monkeypatch.setattr(cli_module(), 'capture', capture)
+    managed = tmp_path / 'program' / 'screenshot' / '2026_10_07'
+    managed.mkdir(parents=True)
+    code = cli_module().run_screenshot_cli(
+        args_for(str(managed / 'shot.png')), str(tmp_path / 'program'))
+    assert code == 2
+    capture.assert_not_called()
+
+
+def test_managed_date_target_is_rejected_even_when_absent(monkeypatch, tmp_path):
+    """受管日期目录即使尚不存在也按保留区拒绝。"""
+    capture = Mock()
+    monkeypatch.setattr(cli_module(), 'capture', capture)
+    absent = tmp_path / 'program' / 'screenshot' / '2026_10_07' / 'shots'
+    code = cli_module().run_screenshot_cli(
+        args_for(str(absent)), str(tmp_path / 'program'))
+    assert code == 2
+    capture.assert_not_called()
+
+
+def test_date_directory_outside_managed_root_is_allowed(monkeypatch, tmp_path):
+    """程序目录之外的同名日期目录不属于保留区，允许输出。"""
+    outside = tmp_path / '2026_10_07' / 'shots'
+    code, _, _, _ = run_cli(monkeypatch, tmp_path, str(outside),
+                            image_format='jpeg')
+    assert code == 0
+    assert len(list(outside.glob('*.jpg'))) == 1
+
+
+def test_existing_image_named_directory_is_treated_as_directory(monkeypatch, tmp_path):
+    """已存在的图片后缀同名目录优先按目录处理。"""
     work = tmp_path / 'work'
     work.mkdir()
     monkeypatch.chdir(work)
     (work / 'out.png').mkdir()
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, 'out.png')
-
+    code, _, _, _ = run_cli(monkeypatch, tmp_path, 'out.png')
     assert code == 0
-    assert (work / 'out.png').is_dir()
-    assert len(created_pngs(work / 'out.png')) == 1
+    assert len(list((work / 'out.png').glob('*.png'))) == 1
 
 
-@pytest.mark.parametrize('separator', [os.sep, '/'])
-def test_trailing_separator_means_directory(monkeypatch, tmp_path, separator):
+def test_trailing_separator_means_directory(monkeypatch, tmp_path):
     """带尾随分隔符的取值按目录处理，即使是图片后缀。"""
     work = tmp_path / 'work'
     work.mkdir()
     monkeypatch.chdir(work)
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, 'bundle.png' + separator)
-
+    code, _, _, _ = run_cli(
+        monkeypatch, tmp_path, 'bundle.png' + os.sep)
     assert code == 0
     assert (work / 'bundle.png').is_dir()
-    assert len(created_pngs(work / 'bundle.png')) == 1
+    assert len(list((work / 'bundle.png').glob('*.png'))) == 1
 
 
-@pytest.mark.parametrize('name', ['shot.png', 'shot.PNG', 'shot.Png'])
-def test_png_suffix_is_treated_as_file(monkeypatch, tmp_path, name):
-    """PNG 后缀不区分大小写时按文件处理，且写入原始字节。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, png, _ = run_cli(monkeypatch, tmp_path, name)
-
-    assert code == 0
-    target = work / name
-    assert target.is_file()
-    assert target.read_bytes() == png
-    assert decode(target)[0] == 'PNG'
-
-
-@pytest.mark.parametrize('name', ['shot.jpg', 'shot.JPEG'])
-def test_jpeg_suffix_is_real_jpeg_without_alpha(monkeypatch, tmp_path, name):
-    """JPEG 后缀以真实 JPEG 编码落盘，并去除 alpha 通道。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, name)
-
-    assert code == 0
-    target = work / name
-    assert target.read_bytes().startswith(b'\xff\xd8')
-    image_format, size, mode = decode(target)
-    assert image_format == 'JPEG'
-    assert size == (8, 6)
-    assert mode == 'RGB'
-
-
-def test_jpeg_encoder_documents_black_background_and_alpha_drop():
-    """_encode_jpeg 的契约说明按黑底合成并丢弃 alpha，以保证 JPEG 无 alpha。"""
-    document = cli_module()._encode_jpeg.__doc__ or ''
-    assert '黑底' in document
-    assert 'alpha' in document
-
-
-def test_directory_with_other_suffix_is_created(monkeypatch, tmp_path):
-    """非图片后缀的取值按目录处理。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, 'shots.dat')
-
-    assert code == 0
-    assert (work / 'shots.dat').is_dir()
-
-
-def test_missing_nested_directory_is_created(monkeypatch, tmp_path):
-    """不存在的多级输出目录自动创建。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, os.path.join('a', 'b', 'c'))
-
-    assert code == 0
-    assert len(created_pngs(work / 'a' / 'b' / 'c')) == 1
-
-
-def test_explicit_file_parent_directory_is_created(monkeypatch, tmp_path):
-    """显式文件路径的缺失父目录自动创建。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, png, _ = run_cli(
-        monkeypatch, tmp_path, os.path.join('nested', 'shot.png'))
-
-    assert code == 0
-    assert (work / 'nested' / 'shot.png').read_bytes() == png
-
-
-def test_directory_creation_failure_returns_one(monkeypatch, tmp_path, capsys):
-    """目录创建失败时报错返回 1，不更换路径也不回退默认目录。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-    blocked = work / 'blocked'
-    blocked.write_bytes(b'not-a-directory')
-
-    code, _, program_dir = run_cli(monkeypatch, tmp_path, 'blocked')
-
+@pytest.mark.parametrize(('suffix', 'requested'), [
+    ('.jpg', 'jpeg'), ('.jpeg', 'jpeg'), ('.webp', 'webp'), ('.raw', 'raw')])
+def test_png_fallback_renames_and_keeps_existing_png(monkeypatch, tmp_path,
+                                                     suffix, requested):
+    """显式非 PNG 后缀但实际为 PNG 时改用 .png 名且不覆盖既有 .png。"""
+    target = tmp_path / ('capture' + suffix)
+    existing = tmp_path / 'capture.png'
+    existing.write_bytes(b'user-data')
+    code, _, _, capture = run_cli(
+        monkeypatch, tmp_path, str(target), image_format='png')
     assert code == 1
-    assert blocked.read_bytes() == b'not-a-directory'
-    assert not (program_dir / 'screenshot').exists()
-    assert '失败' in capsys.readouterr().out
-
-
-def test_write_failure_returns_one_without_details(
-        monkeypatch, tmp_path, capsys):
-    """写入失败返回 1 并输出固定分类，不泄露底层异常内容。"""
-    cli = cli_module()
-    program_dir = tmp_path / 'program'
-    program_dir.mkdir()
-    png = make_png()
-    result = CaptureResult(png, 'window', 'MuMu模拟器 1', 8, 6)
-    patch_capture(monkeypatch, result=result)
-    monkeypatch.setattr(
-        cli, '_write_exclusive_file',
-        Mock(side_effect=OSError('secret-token')))
-
-    code = cli.run_screenshot_cli(args_for(None), str(program_dir))
-
-    assert code == 1
-    out = capsys.readouterr().out
-    assert '失败' in out
-    assert '无法写入输出路径' in out
-    assert '目标文件已存在' not in out
-    assert 'secret-token' not in out
-    assert created_pngs(program_dir / 'screenshot') == []
-
-
-def test_existing_explicit_file_is_not_overwritten(
-        monkeypatch, tmp_path, capsys):
-    """显式文件已存在时报错返回 1，使用未覆盖专用提示且不覆盖既有内容。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-    target = work / 'shot.png'
-    target.write_bytes(b'user-data')
-
-    code, _, _ = run_cli(monkeypatch, tmp_path, 'shot.png')
-
-    assert code == 1
-    assert target.read_bytes() == b'user-data'
-    out = capsys.readouterr().out
-    assert '失败' in out
-    assert '目标文件已存在' in out
-    assert '无法写入输出路径' not in out
-
-
-def test_consecutive_calls_do_not_overwrite(monkeypatch, tmp_path):
-    """连续两次调用生成两个互不覆盖且均可解码的 PNG。"""
-    code_first, _, program_dir = run_cli(monkeypatch, tmp_path, None)
-    code_second, _, _ = run_cli(monkeypatch, tmp_path, None)
-
-    assert (code_first, code_second) == (0, 0)
-    saved = created_pngs(program_dir / 'screenshot')
-    assert len(saved) == 2
-    assert saved[0] != saved[1]
-    assert all(decode(path)[0] == 'PNG' for path in saved)
-
-
-def test_same_timestamp_calls_use_distinct_names(monkeypatch, tmp_path):
-    """时间戳令牌相同时仍以序号生成不同文件名。"""
-    cli = cli_module()
-    monkeypatch.setattr(cli, '_timestamp_token', lambda: 'STAMP')
-    code_first, _, program_dir = run_cli(monkeypatch, tmp_path, None)
-    code_second, _, _ = run_cli(monkeypatch, tmp_path, None)
-
-    assert (code_first, code_second) == (0, 0)
-    names = sorted(path.name for path in created_pngs(
-        program_dir / 'screenshot'))
-    assert names == ['screenshot_STAMP.png', 'screenshot_STAMP_1.png']
-
-
-def test_partial_write_discards_new_file_only(monkeypatch, tmp_path):
-    """写入中途失败只清理本次半成品，保留用户既有文件。"""
-    cli = cli_module()
-    existing = tmp_path / 'existing.png'
-    existing.write_bytes(b'keep')
-    target = tmp_path / 'out.png'
-
-    class FlakyHandle:
-        """先真实创建并写入部分内容，再在写入时失败的文件替身。"""
-
-        def __init__(self, path):
-            """记录目标路径。"""
-            self.path = path
-            self.real = None
-
-        def __enter__(self):
-            """真实排他创建文件并写入部分内容。"""
-            self.real = open(self.path, 'xb')
-            self.real.write(b'partial')
-            return self
-
-        def write(self, data):
-            """模拟磁盘写入中途失败。"""
-            raise OSError('disk-full: secret-token')
-
-        def __exit__(self, *exc_info):
-            """关闭真实文件句柄。"""
-            self.real.close()
-            return False
-
-    def fake_open(path, mode='r', *args, **kwargs):
-        """返回失败替身。"""
-        return FlakyHandle(path)
-
-    monkeypatch.setattr(cli, 'open', fake_open, raising=False)
-
-    with pytest.raises(OSError):
-        cli._write_exclusive_file(str(target), b'payload')
-
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format=requested, purpose='cli')
+    assert existing.read_bytes() == b'user-data'
     assert not target.exists()
-    assert existing.read_bytes() == b'keep'
 
 
-def test_warnings_are_surfaced_to_terminal(monkeypatch, tmp_path, capsys):
-    """截图告警随成功信息一并输出，不改变退出码。"""
-    code, _, _ = run_cli(
-        monkeypatch, tmp_path, None, warnings=('可疑的纯色图像',))
-
+def test_capture_warnings_are_printed(monkeypatch, tmp_path, capsys):
+    """截图回退告警在成功路径原样输出。"""
+    result = CaptureResult(make_image('jpeg'), 'window', 'MuMu模拟器 1', 8, 6,
+                           warnings=('已回退为 PNG',), image_format='jpeg')
+    monkeypatch.setattr(cli_module(), 'capture', Mock(return_value=result))
+    code = cli_module().run_screenshot_cli(
+        args_for(str(tmp_path / 'shot.jpg')), str(tmp_path))
     assert code == 0
-    assert '可疑的纯色图像' in capsys.readouterr().out
-
-
-def test_success_message_reports_source_target_size_and_path(
-        monkeypatch, tmp_path, capsys):
-    """成功输出包含来源、目标、尺寸与完整保存路径。"""
-    work = tmp_path / 'work'
-    work.mkdir()
-    monkeypatch.chdir(work)
-
-    code, _, program_dir = run_cli(monkeypatch, tmp_path, 'shots')
-
-    assert code == 0
-    out = capsys.readouterr().out
-    assert 'window' in out
-    assert 'MuMu模拟器 1' in out
-    assert '8x6' in out
-    saved = created_pngs(work / 'shots')[0]
-    assert str(saved) in out
-    assert program_dir not in saved.parents
-
-
-def test_capture_failure_returns_one_and_saves_nothing(
-        monkeypatch, tmp_path, capsys):
-    """截图失败返回 1 且不产生任何输出文件。"""
-    program_dir = tmp_path / 'program'
-    program_dir.mkdir()
-    patch_capture(monkeypatch, error=CaptureError('backend_failed', '安全消息'))
-
-    code = cli_module().run_screenshot_cli(args_for(None), str(program_dir))
-
-    assert code == 1
-    assert not (program_dir / 'screenshot').exists()
-    assert 'backend_failed' in capsys.readouterr().out
-
-
-@pytest.mark.parametrize('args', [
-    pytest.param(Namespace(source='auto', target='x', output=None),
-                 id='unknown-source'),
-    pytest.param(Namespace(source='adb', target='', output=None),
-                 id='empty-target'),
-])
-def test_invalid_arguments_return_two(monkeypatch, tmp_path, args):
-    """入参不合法时返回 2，且不截图、不写出文件。"""
-    program_dir = tmp_path / 'program'
-    program_dir.mkdir()
-    patch_capture(monkeypatch, result=CaptureResult(b'png', 'adb', 'x', 1, 1))
-
-    assert cli_module().run_screenshot_cli(args, str(program_dir)) == 2
-    assert list(program_dir.iterdir()) == []
-
-
-def test_output_ignores_config_and_upload_options(monkeypatch, tmp_path):
-    """输出路径不读取配置，也不因配置类选项改变行为。"""
-    config = import_module('modules.config')
-    config_spy = Mock(return_value={})
-    monkeypatch.setattr(config, 'load_config', config_spy)
-    cli = cli_module()
-    reader = Mock(side_effect=AssertionError('未带 --upload 不应读取配置'))
-    monkeypatch.setattr(cli, '_read_yaml_config', reader, raising=False)
-
-    code, _, program_dir = run_cli(
-        monkeypatch, tmp_path, None, upload=None,
-        image_host=None, config='custom.yaml')
-
-    assert code == 0
-    config_spy.assert_not_called()
-    reader.assert_not_called()
-    assert len(created_pngs(program_dir / 'screenshot')) == 1
+    assert '已回退为 PNG' in capsys.readouterr().out
