@@ -775,10 +775,23 @@ def test_save_exception_does_not_block_upload(monkeypatch):
     assert '截图保存失败：无法写入输出路径' in batch.warnings
 
 
-def test_invalid_retention_policy_warning_surfaces_once(monkeypatch):
-    """非法保留天数转成一次固定告警进入批次。"""
+def test_invalid_retention_policy_warning_surfaces_once(
+        monkeypatch, tmp_path, caplog):
+    """真实截图仅保存到临时目录，非法保留天数告警只出现一次。"""
     module, _, _ = boundaries(monkeypatch)
+    monkeypatch.setattr(
+        module, 'get_program_directory',
+        Mock(side_effect=AssertionError('不得回退到程序目录')))
     config = section([target()])
     config['retention'] = {'enabled': True, 'max_days': 'bad'}
-    batch = module.prepare_screenshots(config, True, ())
+    runtime = {'program_dir': str(tmp_path), 'config_stem': 'config'}
+    batch = module.prepare_screenshots(config, True, (), runtime=runtime)
+    files = [path for path in tmp_path.rglob('*') if path.is_file()]
+    assert len(files) == 1
+    saved = files[0]
+    assert saved.relative_to(tmp_path).parts[0] == 'screenshot'
+    assert saved.parent.name == 'config'
+    assert saved.name == 'event_01.jpg'
+    assert saved.read_bytes() == captured().image_bytes
     assert sum('保留天数无效' in warning for warning in batch.warnings) == 1
+    assert caplog.text.count('保留天数无效') == 1
