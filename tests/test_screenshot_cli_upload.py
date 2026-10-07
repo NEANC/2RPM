@@ -119,6 +119,28 @@ def test_upload_filename_uses_actual_capture_format(
     assert calls[0][1].endswith(suffix)
 
 
+@pytest.mark.parametrize('name, image_format, expected', [
+    ('Capture.PNG', 'png', 'Capture.PNG'),
+    ('Capture.WebP', 'webp', 'Capture.WebP'),
+    ('Capture.JPG', 'jpeg', 'Capture.JPG'),
+    ('Capture.JpEg', 'jpeg', 'Capture.JpEg'),
+    ('Capture.WebP', 'png', 'Capture.png'),
+])
+def test_explicit_save_and_upload_share_actual_filename(
+        monkeypatch, tmp_path, name, image_format, expected):
+    """显式输出保存与上传共用保留大小写或按实际格式回退的名称。"""
+    hosts = load_hosts('provider: catbox')
+    calls = install_upload(monkeypatch, lambda *args: True)
+    code, payload, _, _ = run_cli(
+        monkeypatch, tmp_path, str(tmp_path / name), hosts,
+        image_format=image_format)
+    assert code == 0
+    assert calls == [(payload, expected, hosts)]
+    saved = [path for path in tmp_path.iterdir() if path.is_file()]
+    assert [path.name for path in saved] == [expected]
+    assert saved[0].read_bytes() == payload
+
+
 def test_save_failure_still_uploads_and_success_returns_zero(
         monkeypatch, tmp_path):
     """保存失败仍继续上传，且上传成功时整体成功。"""
