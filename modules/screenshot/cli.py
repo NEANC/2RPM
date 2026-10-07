@@ -422,11 +422,11 @@ def _save_capture(result, output, program_dir):
     """
     target, is_file = _resolve_output(output, program_dir)
     if not is_file:
-        return _save_to_directory(result.png_bytes, target)
+        return _save_to_directory(result.image_bytes, target)
     parent = os.path.dirname(target)
     if parent:
         os.makedirs(parent, exist_ok=True)
-    _write_exclusive_file(target, _encode_image(result.png_bytes, target))
+    _write_exclusive_file(target, _encode_image(result.image_bytes, target))
     return target
 
 
