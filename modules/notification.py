@@ -340,7 +340,8 @@ def _has_valid_screenshot_target(section, reserved_names):
     return any(item['error'] is None for item in targets)
 
 
-def _prepare_screenshot_batch(section, enabled, reserved_names):
+def _prepare_screenshot_batch(section, enabled, reserved_names, *,
+                              runtime=None, event='event'):
     """调用一次截图编排，未知普通异常时安全降级为空批次
 
     控制信号保持原对象向上传播，不被吞掉或包装。降级时一并返回内部错误
@@ -351,12 +352,16 @@ def _prepare_screenshot_batch(section, enabled, reserved_names):
         section: screenshot 配置映射
         enabled: 是否执行截图上传
         reserved_names: 调用方保留的普通变量名集合
+        runtime: 运行上下文（程序根与净化的配置 stem）
+        event: 本次事件的真实模板键
 
     Returns:
         tuple[ScreenshotBatch, bool]: 可跨通道复用的截图批次与内部错误标记
     """
     try:
-        return prepare_screenshots(section, enabled, reserved_names), False
+        return prepare_screenshots(
+            section, enabled, reserved_names,
+            runtime=runtime, event=event), False
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
@@ -501,7 +506,8 @@ def send_notification(config, template_key, **kwargs):
             screenshot_section, reserved_names):
         enabled = False
     batch, internal_error = _prepare_screenshot_batch(
-        screenshot_section, enabled, reserved_names)
+        screenshot_section, enabled, reserved_names,
+        runtime=config.get('_runtime'), event=template_key)
 
     values = dict(batch.values)
     values.update(kwargs)
