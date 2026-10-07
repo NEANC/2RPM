@@ -5,11 +5,15 @@ import os
 import sys
 import argparse
 import logging
+from collections.abc import Mapping
 
 from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
 from modules.monitor import monitor_processes
 from modules.screenshot.cli import parse_screenshot_args, run_screenshot_cli
+from modules.screenshot.retention import cleanup_retention
+from modules.screenshot.retention import parse_policy
+from modules.screenshot.retention import runtime_context
 from modules.spinner import spinner_phase, notify_fail
 from modules.utils import get_program_directory
 from modules.version import VERSION, print_info
@@ -114,8 +118,31 @@ def main():
         CONFIG = load_config(config_file, spinner=sp, is_user_specified=user_specified)
         LOGGER.info("配置已加载")
 
+        # 运行上下文只保存程序根与净化的配置 stem，不进入模板或配置回写
+        CONFIG['_runtime'] = runtime_context(program_dir, config_file)
+
         # 设置日志
         setup_logging(CONFIG, config_file)
+
+        # 启动时按保留策略执行一次整日期目录清理（关闭时不触碰磁盘）
+        push_section = CONFIG.get('push')
+        screenshot_section = (
+            push_section.get('screenshot')
+            if isinstance(push_section, Mapping) else None
+        )
+        retention = (
+            screenshot_section.get('retention')
+            if isinstance(screenshot_section, Mapping) else None
+        )
+        policy = parse_policy(retention)
+        for warning in policy.warnings:
+            LOGGER.warning('%s', warning)
+        try:
+            cleanup_warnings = cleanup_retention(program_dir, policy)
+        except Exception:
+            cleanup_warnings = ('截图清理失败：已跳过本次清理',)
+        for warning in cleanup_warnings:
+            LOGGER.warning('%s', warning)
         sp.done("程序初始化完成。")
 
     # 退出码：正常结束为 0，异常或手动终止为 1
