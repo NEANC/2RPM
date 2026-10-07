@@ -186,6 +186,31 @@ def test_cli_filename_supports_all_capture_formats(image_format, suffix):
                                   date(2026, 10, 7)).endswith(suffix)
 
 
+@pytest.mark.parametrize('image_format, extension', [
+    ('png', 'png'), ('webp', 'webp'), ('raw', 'raw'),
+    ('jpeg', 'jpg'), ('jpeg', 'jpeg'),
+])
+@pytest.mark.parametrize('letter_case', ['lower', 'upper', 'title'])
+def test_cli_filename_preserves_matching_basename(
+        image_format, extension, letter_case):
+    """实际格式未改变时完整保留显式文件名及扩展名大小写。"""
+    name = 'Capture.' + getattr(extension, letter_case)()
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format=image_format)
+    assert retention.cli_filename(
+        result, 'C:\\Shots\\' + name, True, date(2026, 10, 7)) == name
+
+
+@pytest.mark.parametrize('extension', ['JPG', 'Jpeg', 'WebP', 'RAW'])
+def test_cli_filename_replaces_suffix_on_png_fallback(extension):
+    """ADB 实际回退 PNG 时只替换原后缀，保留主文件名。"""
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format='png')
+    assert retention.cli_filename(
+        result, 'C:\\Shots\\Capture.' + extension, True,
+        date(2026, 10, 7)) == 'Capture.png'
+
+
 @pytest.mark.parametrize('days', [True, '2', 2.0, 0, -1])
 def test_policy_rejects_non_positive_or_non_integer_days(days):
     """非法保留天数回退到默认值并告警。"""

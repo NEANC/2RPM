@@ -89,6 +89,8 @@ def cli_filename(result, target, is_file, today, sequence=0):
     if is_file:
         name = ntpath.basename(target)
         stem, extension = ntpath.splitext(name)
+        if extension.lower() == suffix:
+            return name
         if result.image_format == 'jpeg' and extension.lower() in ('.jpg', '.jpeg'):
             return name
         return stem + suffix
