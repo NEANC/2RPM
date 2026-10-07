@@ -218,7 +218,10 @@ def test_duplicate_value_tag_key_is_private(options):
 
 @pytest.mark.parametrize('wrapped', [False, True])
 @pytest.mark.parametrize('separator', ['', '; provider: catbox'])
-@pytest.mark.parametrize('key', ['? "x]"', "? 'x;[}'", '?\n "x]"', '? &key "x]"', '? !!str "x]"', '?name', 'what?'])
+@pytest.mark.parametrize('key', [
+    '? "x]"', "? 'x;[}'", '?\n "x]"', '? &key "x]"',
+    '? !!str "x]"', '?name', 'what?',
+])
 def test_explicit_mapping_key_preserves_boundaries(key, wrapped, separator):
     """显式键标记保持节点起始，普通问号仍属于标量。"""
     body = 'provider: catbox, options: {' + key + ': value}'
@@ -227,6 +230,34 @@ def test_explicit_mapping_key_preserves_boundaries(key, wrapped, separator):
     hosts = parse_inline_hosts(text + separator)
     assert hosts[0] == expected
     assert len(hosts) == (2 if separator else 1)
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize('separator', ['', '; provider: catbox'])
+@pytest.mark.parametrize('newline', ['\n', '\r\n', '\r'])
+@pytest.mark.parametrize('body', [
+    'provider: catbox, token: abc # ]{;\'"',
+    'provider: catbox, token: "abc" # ]{;\'"',
+    'provider: catbox, # ]{;\'"{nl} token: abc',
+    'provider: catbox, options: {? # ]{;\'"{nl} "x]": value}, token: abc',
+])
+def test_yaml_comments_preserve_boundaries(body, newline, wrapped, separator):
+    """注释中的结构字符无效，换行后恢复节点和分项边界。"""
+    body = body.replace('{nl}', newline) + newline
+    expected = YAML(typ='safe').load('{' + body + '}')
+    expected.setdefault('options', {})
+    text = '{' + body + '}' if wrapped else body
+    hosts = parse_inline_hosts(text + separator)
+    assert hosts[0] == expected
+    assert len(hosts) == (2 if separator else 1)
+
+
+@pytest.mark.parametrize('value', ['abc#def', 'abc#def"', 'abc#def\''])
+def test_plain_hash_does_not_hide_item_separator(value):
+    """普通标量内非分隔井号不能吞掉后续分项。"""
+    hosts = parse_inline_hosts('provider: catbox, token: ' + value + '; provider: catbox')
+    assert hosts[0]['token'] == value
+    assert len(hosts) == 2
 
 
 def test_non_anonymous_provider_requires_token():

@@ -40,11 +40,17 @@ def _split_items(text):
     items = []
     stack = []
     quote = None
+    comment = False
     start = 0
     scalar_start = True
     index = 0
     while index < len(text):
         char = text[index]
+        if comment:
+            if char in '\r\n\x85\u2028\u2029':
+                comment = False
+            index += 1
+            continue
         if quote is not None:
             if quote == '"' and char == '\\':
                 if index + 1 >= len(text):
@@ -56,6 +62,11 @@ def _split_items(text):
                 continue
             if char == quote:
                 quote = None
+            index += 1
+            continue
+        if char == '#' and (scalar_start or index == 0
+                            or text[index - 1].isspace()):
+            comment = True
             index += 1
             continue
         if scalar_start and char == '?' and (
@@ -86,8 +97,8 @@ def _split_items(text):
             stack.pop()
             scalar_start = False
         elif char == ';' and not stack:
-            item = text[start:index].strip()
-            if not item:
+            item = text[start:index].lstrip()
+            if not item.strip():
                 raise InlineUploadError(len(items) + 1, 'empty_item')
             items.append(item)
             start = index + 1
@@ -101,8 +112,8 @@ def _split_items(text):
         index += 1
     if quote is not None or stack:
         raise InlineUploadError(len(items) + 1, 'mapping_syntax')
-    item = text[start:].strip()
-    if not item:
+    item = text[start:].lstrip()
+    if not item.strip():
         raise InlineUploadError(len(items) + 1, 'empty_item')
     return items + [item]
 
