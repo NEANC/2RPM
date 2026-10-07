@@ -5,6 +5,7 @@
 import traceback
 
 import pytest
+from ruamel.yaml import YAML
 
 from modules.screenshot.inline_upload import InlineUploadError
 from modules.screenshot.inline_upload import parse_inline_hosts
@@ -147,6 +148,25 @@ def test_node_properties_preserve_quoted_delimiters(value, expected, wrapped):
     hosts = parse_inline_hosts(body + '; provider: catbox')
     assert len(hosts) == 2
     assert hosts[0]['token'] == expected
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize('separator', ['', ' ; provider: catbox'])
+@pytest.mark.parametrize('body', [
+    'provider: &a;b catbox, token: *a;b',
+    'provider: &a;b catbox, token: *a;b, options: {copy: *a;b}',
+    'provider: &a;b catbox, options: {copies: [*a;b, {copy: *a;b}]}, token: *a;b',
+])
+def test_semicolon_alias_preserves_safe_yaml_semantics(body, wrapped, separator):
+    """别名名称中的分号不是分隔符，空白终止后的分号仍可分项。"""
+    expected = YAML(typ='safe').load('{' + body + '}')
+    expected.setdefault('options', {})
+    text = '{' + body + '}' if wrapped else body
+    hosts = parse_inline_hosts(text + separator)
+    assert hosts[0] == expected
+    assert len(hosts) == (2 if separator else 1)
+    if separator:
+        assert hosts[1] == {'provider': 'catbox', 'options': {}}
 
 
 def test_nested_property_quotes_and_aliases():
