@@ -17,6 +17,7 @@ from modules.image_host.registry import upload_with_fallback
 from modules.utils import get_program_directory
 
 from .models import CaptureError
+from .models import capture_failure_message
 from .retention import parse_policy
 from .retention import runtime_context
 from .retention import save_automatic
@@ -25,30 +26,6 @@ from .targets import allocate_targets
 
 
 LOGGER = logging.getLogger(__name__)
-_CAPTURE_MESSAGES = {
-    'invalid_source': '截图来源必须为 window 或 adb',
-    'invalid_title': '窗口标题必须为非空字符串',
-    'window_not_found': '未找到完整标题匹配的窗口',
-    'window_ambiguous': '存在多个完整标题匹配的窗口',
-    'window_lookup_failed': '无法枚举目标窗口',
-    'window_gone': '目标窗口已失效或标题已变化',
-    'window_state_failed': '无法读取或恢复目标窗口状态',
-    'invalid_dimensions': '目标窗口尺寸无效',
-    'dpi_failed': '无法设置局部线程 DPI 上下文',
-    'gdi_failed': '无法分配或访问窗口图像资源',
-    'print_failed': '窗口图像绘制失败',
-    'image_failed': '无法构造有效窗口图像',
-    'encode_failed': '窗口图像 PNG 编码或校验失败',
-    'invalid_serial': 'ADB 序列号必须为非空字符串',
-    'adb_version_unsupported': 'ADB 依赖版本未经支持验证',
-    'adb_unavailable': '无法连接已有本机 ADB Server',
-    'adb_not_found': '未找到指定 ADB 设备',
-    'adb_offline': '指定 ADB 设备处于离线状态',
-    'adb_unauthorized': '指定 ADB 设备尚未授权',
-    'adb_timeout': 'ADB 连接或读写等待超时',
-    'adb_protocol_failed': 'ADB 设备通信失败',
-    'adb_image_failed': 'ADB 未返回完整有效的 PNG 图像',
-}
 _MARKDOWN_DELIMITERS = frozenset('[]()<>"\\')
 _CONFIG_FAILURE = '截图配置失败：未配置有效截图目标'
 
@@ -101,11 +78,7 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
             item['provider'], item['target'],
             image_format='jpeg', purpose='automatic')
     except CaptureError as error:
-        message = (
-            _CAPTURE_MESSAGES.get(error.code)
-            if type(error.code) is str else None
-        )
-        failure = f'截图失败：{message}' if message else '截图失败'
+        failure = capture_failure_message(error)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
         return failure
     except Exception:

@@ -40,9 +40,9 @@ _MESSAGES = {
     'adb_unauthorized': '指定 ADB 设备尚未授权',
     'adb_timeout': 'ADB 连接或读写等待超时',
     'adb_protocol_failed': 'ADB 设备通信失败',
-    'adb_image_failed': 'ADB 未返回完整有效的图像',
+    'adb_image_failed': 'ADB 未返回完整有效的图像数据',
     'adb_raw_invalid': 'ADB 未返回有效的 raw 图像',
-    'adb_encode_failed': '无法编码 ADB 截图',
+    'adb_encode_failed': 'ADB 图像编码失败',
 }
 
 
