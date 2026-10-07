@@ -115,11 +115,13 @@ class UploadContext:
     不保存图片、上传 URL、完整响应，也不修改调用方配置或环境。
     """
 
-    def __init__(self, *, diagnostics=False, cache=None, clock=time.time):
+    def __init__(self, *, diagnostics=False, cache=None, clock=time.time,
+                 resolved_tokens=None):
         """仅初始化内存容器；随机密钥和磁盘身份都延迟到实际使用。"""
         self._diagnostics = diagnostics is True
         self._cache = cache if cache is not None else StorageCache(clock=clock)
         self._clock = clock
+        self._resolved_tokens = dict(resolved_tokens or {})
         self._key = None
         self._entries = {}
         self._retentions = {}
@@ -403,7 +405,9 @@ class UploadContext:
                 if self._diagnostics and type(raw) is str and raw:
                     self._secrets = tuple(dict.fromkeys(
                         self._secrets + (raw,)))
-                token = resolve_token(raw)
+                token = (self._resolved_tokens[index]
+                         if index in self._resolved_tokens
+                         else resolve_token(raw))
             except Exception as error:
                 failure = self._failure(error, fallback='config_error')
                 self._credentials[index] = _Credential(None, failure)
@@ -456,6 +460,7 @@ class UploadContext:
         self._images.clear()
         self._corrected.clear()
         self._credentials.clear()
+        self._resolved_tokens.clear()
         self._secrets = ()
         self._warnings.clear()
         self._key = None

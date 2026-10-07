@@ -91,11 +91,21 @@ def assert_safe(error, code):
         assert secret not in str(error) + repr(error) + repr(error.args)
 
 
+def test_resolved_token_snapshot_is_used_once_and_cleared():
+    """可信内部凭证快照不再二次解析，关闭后清空。"""
+    module = context_module()
+    context = module.UploadContext(resolved_tokens={0: '${LITERAL}'})
+    host = {'provider': 'catbox', 'token': '${MISSING_TOKEN}'}
+    assert context.resolve_credential(0, host) == '${LITERAL}'
+    context.close()
+    assert context._resolved_tokens == {}
+
+
 def test_constructor_contract_has_no_io(monkeypatch, tmp_path):
     """构造及读取空告警不访问磁盘、随机源或时钟。"""
     module = context_module()
     params = signature(module.UploadContext).parameters
-    assert list(params) == ['diagnostics', 'cache', 'clock']
+    assert list(params) == ['diagnostics', 'cache', 'clock', 'resolved_tokens']
     assert all(p.kind is p.KEYWORD_ONLY for p in params.values())
     assert params['diagnostics'].default is False
     assert params['cache'].default is None
