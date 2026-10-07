@@ -176,28 +176,33 @@ def test_adb_serial_is_opaque_and_not_reclassified():
     assert (args.source, args.target) == ('adb', 'emulator-5554')
 
 
-def test_reserved_options_are_accepted_and_readable():
-    """上传与配置选项可被解析，且不改变 source/target 归一结果。"""
+def test_inline_upload_option_is_parsed_and_validated():
+    """内联上传配置可被解析并保留为已校验图床列表。"""
     args = parse([
         '--source', 'window:MuMu模拟器 1',
         '--output', 'debug.png',
-        '--upload',
-        '--image-host', 'superbed',
-        '-c', 'custom.yaml',
+        '--upload', 'provider: catbox',
     ])
     assert (args.source, args.target) == ('window', 'MuMu模拟器 1')
     assert args.output == 'debug.png'
-    assert args.upload is True
-    assert args.image_host == 'superbed'
-    assert args.config == 'custom.yaml'
+    assert args.hosts == [{'provider': 'catbox', 'options': {}}]
 
 
-def test_upload_flag_defaults_to_disabled():
-    """未提供 --upload 时上传开关为关闭，且不影响来源与目标归一。"""
+@pytest.mark.parametrize('option', [
+    ['--image-host', 'catbox'],
+    ['-c', 'custom.yaml'],
+])
+def test_legacy_upload_options_are_rejected(option):
+    """旧上传参数在截图前拒绝。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:MuMu模拟器 1'] + option)
+    assert exit_info.value.code == 2
+
+
+def test_upload_defaults_to_disabled():
+    """未提供内联上传时不创建图床项。"""
     args = parse(['--source', 'window:MuMu模拟器 1'])
-    assert args.upload is False
-    assert args.image_host is None
-    assert args.config is None
+    assert args.hosts is None
 
 
 @pytest.mark.parametrize('argv', [

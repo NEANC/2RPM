@@ -19,6 +19,9 @@ from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
 from modules.image_host.registry import upload_with_fallback
 
+from .inline_upload import InlineUploadError
+from .inline_upload import parse_inline_hosts
+from .inline_upload import prepare_cli_host
 from .models import CaptureError
 from .pipeline import markdown_image
 from .service import capture
@@ -62,15 +65,36 @@ UPLOAD_NOT_CONFIGURED_MESSAGE = '上传失败：未配置图床'
 UPLOAD_FILTER_INVALID_MESSAGE = '上传失败：--image-host 未提供有效名称'
 
 
+class SafeArgumentParser(argparse.ArgumentParser):
+    """参数错误不回显用户原始输入。"""
+
+    def error(self, message):
+        """输出固定参数错误并以退出码 2 结束。"""
+        self.exit(ARGUMENT_ERROR_CODE, '截图参数无效\n')
+
+
+class OnceAction(argparse.Action):
+    """限制单个选项最多出现一次。"""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        """记录选项出现状态，拒绝重复参数。"""
+        marker = '_seen_' + self.dest
+        if getattr(namespace, marker, False):
+            parser.error('重复参数')
+        setattr(namespace, marker, True)
+        setattr(namespace, self.dest, values)
+
+
 def _build_parser():
     """构建截图调试子命令的参数解析器。
 
     Returns:
         argparse.ArgumentParser: 已注册来源、目标及预留选项的解析器。
     """
-    parser = argparse.ArgumentParser(
+    parser = SafeArgumentParser(
         prog='2RPM.py screenshot',
         description='截图调试：截取指定窗口或 ADB 设备并输出尺寸',
+        allow_abbrev=False,
     )
     parser.add_argument(
         '--source', action='append', default=None, metavar='SOURCE',
@@ -86,14 +110,9 @@ def _build_parser():
     )
     parser.add_argument('--output', default=None, help='截图输出路径')
     parser.add_argument(
-        '--upload', action='store_true',
-        help='读取配置文件并尝试上传截图到图床')
-    parser.add_argument(
-        '--image-host', dest='image_host', default=None,
-        help='逗号分隔的图床名称筛选，仅在 --upload 时有效')
-    parser.add_argument(
-        '-c', '--config', dest='config', default=None,
-        help='上传所用的配置文件，默认 program_dir/config.yaml')
+        '--upload', default=None, action=OnceAction,
+        help='使用内联图床配置上传截图',
+    )
     return parser
 
 
@@ -225,13 +244,17 @@ def parse_screenshot_args(argv):
 
     parsed = parser.parse_args(remaining)
     source, target = _normalize(parser, parsed)
+    hosts = None
+    if parsed.upload is not None:
+        try:
+            hosts = parse_inline_hosts(parsed.upload)
+        except InlineUploadError as error:
+            parser.exit(ARGUMENT_ERROR_CODE, str(error) + '\n')
     return argparse.Namespace(
         source=source,
         target=target,
         output=parsed.output,
-        upload=parsed.upload,
-        image_host=parsed.image_host,
-        config=parsed.config,
+        hosts=hosts,
     )
 
 
@@ -570,6 +593,38 @@ def _print_upload_failures(result):
         print(details)
 
 
+def _upload_inline_hosts(image_bytes, filename, hosts):
+    """按内联声明顺序独立上传全部图床项并累计成功状态。"""
+    all_success = True
+    successful = []
+    for host in hosts:
+        prepared, error = prepare_cli_host(host)
+        if prepared is None:
+            all_success = False
+            print(f'上传失败：图床 {host["provider"]}：{error}')
+            continue
+        with UploadContext(
+                diagnostics=False,
+                resolved_tokens={0: prepared.get('token', '')}) as context:
+            try:
+                uploaded = upload_with_fallback(
+                    image_bytes, filename, [prepared], context=context)
+            except Exception:
+                all_success = False
+                print(f'上传失败：图床 {prepared["provider"]}：upload_failed')
+                continue
+        if uploaded.success:
+            successful.append((prepared['provider'], uploaded.url))
+        else:
+            all_success = False
+            print(f'上传失败：图床 {prepared["provider"]}：upload_failed')
+    for provider, url in successful:
+        print(f'上传成功：图床 {provider}')
+        print(f'图片地址：{url}')
+        print(f'Markdown：{markdown_image(os.path.splitext(filename)[0], url)}')
+    return all_success
+
+
 def _upload_debug_image(args, png_bytes, saved_path, program_dir):
     """读取图床配置并执行一次顺序上传，返回退出码。
 
@@ -584,6 +639,11 @@ def _upload_debug_image(args, png_bytes, saved_path, program_dir):
     Returns:
         int: 上传成功为 0，配置或上传失败为 1。
     """
+    hosts = getattr(args, 'hosts', None)
+    if hosts is not None:
+        filename = os.path.splitext(os.path.basename(saved_path))[0] + '.png'
+        return (0 if _upload_inline_hosts(png_bytes, filename, hosts)
+                else CAPTURE_FAILURE_CODE)
     config_path = _resolve_config_path(
         getattr(args, 'config', None), program_dir)
     hosts, message = _load_image_hosts(config_path)
@@ -635,10 +695,18 @@ def run_screenshot_cli(args, program_dir):
         print('截图参数无效：请提供有效的 --source 与目标')
         return ARGUMENT_ERROR_CODE
 
-    upload = bool(getattr(args, 'upload', None))
-    if getattr(args, 'image_host', None) is not None and not upload:
-        print('参数错误：--image-host 仅在 --upload 时有效')
-        return ARGUMENT_ERROR_CODE
+    inline_hosts = getattr(args, 'hosts', None)
+    if hasattr(args, 'hosts'):
+        upload = inline_hosts is not None
+        if getattr(args, 'image_host', None) is not None \
+                or getattr(args, 'config', None) is not None:
+            print('参数错误：旧上传参数不受支持')
+            return ARGUMENT_ERROR_CODE
+    else:
+        upload = bool(getattr(args, 'upload', None))
+        if getattr(args, 'image_host', None) is not None and not upload:
+            print('参数错误：--image-host 仅在 --upload 时有效')
+            return ARGUMENT_ERROR_CODE
 
     try:
         result = capture(source, target)
@@ -667,5 +735,10 @@ def run_screenshot_cli(args, program_dir):
         print(f'提示：{warning}')
     if not upload:
         return 0
+    if inline_hosts is not None:
+        filename = os.path.splitext(os.path.basename(saved_path))[0] + '.png'
+        return (0 if _upload_inline_hosts(
+            result.image_bytes, filename, inline_hosts)
+                else CAPTURE_FAILURE_CODE)
     return _upload_debug_image(
         args, result.image_bytes, saved_path, program_dir)
