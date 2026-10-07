@@ -79,7 +79,7 @@ def _install_boundaries(monkeypatch, capture_side_effect=None, upload_result=Non
     """只替换截图与上传边界，保留真实编排、目标分配与通知逻辑。"""
     module = _pipeline()
     capture = Mock(side_effect=capture_side_effect or (
-        lambda source, name: CaptureResult(
+        lambda source, name, **kwargs: CaptureResult(
             b'png-' + name.encode(), source, name, 2, 3)))
     upload = Mock(return_value=upload_result or UploadResult(
         True, 'catbox', URL, ('catbox',), ()))
@@ -133,6 +133,64 @@ def _base_config(channels=CHANNELS, targets=(WINDOW_TARGET,), image_host=None,
             'retry': retry or {'interval': '0s', 'max_count': 1},
         },
     }
+
+
+def test_prepare_batch_forwards_runtime_and_event(monkeypatch):
+    """包装层把 runtime 与事件键透传给编排，且不吞掉控制信号取值。"""
+    seen = {}
+
+    def fake(section, enabled, reserved, *, runtime=None, event='event'):
+        """记录入参并返回空批次。"""
+        seen.update(section=section, enabled=enabled, reserved=reserved,
+                    runtime=runtime, event=event)
+        return notif.ScreenshotBatch({'screenshot': ''}, (), ())
+
+    monkeypatch.setattr(notif, 'prepare_screenshots', fake)
+    reserved = frozenset({'process_name'})
+    batch, internal_error = notif._prepare_screenshot_batch(
+        {'targets': []}, True, reserved,
+        runtime={'program_dir': 'P', 'config_stem': 'c'}, event='on_end')
+    assert internal_error is False
+    assert seen == {
+        'section': {'targets': []}, 'enabled': True, 'reserved': reserved,
+        'runtime': {'program_dir': 'P', 'config_stem': 'c'}, 'event': 'on_end',
+    }
+    assert batch.values == {'screenshot': ''}
+
+
+def test_send_notification_forwards_config_runtime_and_template_key(monkeypatch):
+    """send_notification 使用 config['_runtime'] 与真实模板键作为事件。"""
+    seen = {}
+
+    def fake(section, enabled, reserved, *, runtime=None, event='event'):
+        """记录 runtime 与事件键并返回空批次。"""
+        seen['runtime'] = runtime
+        seen['event'] = event
+        return notif.ScreenshotBatch({'screenshot': ''}, (), ())
+
+    monkeypatch.setattr(notif, 'prepare_screenshots', fake)
+    _install_onepush(monkeypatch)
+    config = _base_config()
+    config['_runtime'] = {'program_dir': 'P', 'config_stem': 'stem'}
+    notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert seen == {
+        'runtime': {'program_dir': 'P', 'config_stem': 'stem'},
+        'event': 'on_end',
+    }
+
+
+def test_runtime_context_never_reaches_rendered_content(monkeypatch):
+    """运行上下文不进入模板渲染结果或通知正文。"""
+    sent, _, _ = _install_onepush(monkeypatch)
+    _install_boundaries(monkeypatch)
+    config = _base_config()
+    config['_runtime'] = {
+        'program_dir': 'FAKE_RUNTIME_DIR', 'config_stem': 'FAKE_RUNTIME_STEM'}
+    notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert sent
+    for title, content in sent:
+        assert 'FAKE_RUNTIME' not in title
+        assert 'FAKE_RUNTIME' not in content
 
 
 @pytest.mark.parametrize('template_key', TEMPLATE_KEYS)
@@ -571,8 +629,9 @@ def test_single_image_upload_follows_host_chain(monkeypatch, caplog):
     module = _pipeline()
     registry = import_module('modules.image_host.registry')
     calls = []
-    monkeypatch.setattr(module, 'capture', Mock(side_effect=lambda source, name: (
-        CaptureResult(b'png-' + name.encode(), source, name, 2, 3))))
+    monkeypatch.setattr(module, 'capture', Mock(
+        side_effect=lambda source, name, **kwargs: (
+            CaptureResult(b'png-' + name.encode(), source, name, 2, 3))))
 
     def failing(image, filename, token, options):
         """首个图床失败，不返回链接。"""
@@ -723,7 +782,7 @@ def notification_http(monkeypatch):
         state['responses'].append(response)
         return response
 
-    capture = Mock(side_effect=lambda source, name: CaptureResult(
+    capture = Mock(side_effect=lambda source, name, **kwargs: CaptureResult(
         b'png-' + name.encode(), source, name, 2, 3))
     monkeypatch.setattr(_pipeline(), 'capture', capture)
     monkeypatch.setattr(UploadContext, '__init__', observed_init)
