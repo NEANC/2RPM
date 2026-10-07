@@ -126,6 +126,11 @@ def test_merge_defaults_allow_explicit_overrides(body):
 @pytest.mark.parametrize('wrapped', [False, True])
 @pytest.mark.parametrize(('value', 'expected'), [
     ('&credential "a;b"', 'a;b'),
+    ('&a;b "x;y"', 'x;y'),
+    ('&a;b "};["', '};['),
+    ("&a;b '};['", '};['),
+    ('&a;b !!str "x;y"', 'x;y'),
+    ('!!str &a;b "x;y"', 'x;y'),
     ('!!str "a;b"', 'a;b'),
     ('&credential !!str "a;b"', 'a;b'),
     ('!!str &credential "a;b"', 'a;b'),
@@ -152,7 +157,10 @@ def test_nested_property_quotes_and_aliases():
     assert host['options'] == {'copy': 'a;b', 'value': '};['}
 
 
-@pytest.mark.parametrize('value', ['&credential "SECRET;a', '!!str \'SECRET;a'])
+@pytest.mark.parametrize('value', [
+    '&credential "SECRET;a', '!!str \'SECRET;a',
+    '&a;b "SECRET;};[', "&a;b 'SECRET;};[",
+])
 def test_unclosed_property_quote_is_private(value):
     """属性后未闭合引号只产生固定错误且不保留敏感异常链。"""
     with pytest.raises(InlineUploadError) as caught:
