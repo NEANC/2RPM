@@ -16,7 +16,7 @@ from modules.image_host.registry import UPLOADERS
 
 
 _ENV = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\}')
-_NODE_PROPERTY = re.compile(r'(?:&[^\s,\[\]{};]+|!<[^>]*>|![^\s,\[\]{};]*)(?=\s)')
+_NODE_PROPERTY = re.compile(r'(?:&[^\s,\[\]{}]+|!<[^>]*>|![^\s,\[\]{};]*)(?=\s)')
 _AUTH_OPTIONS = {'beeimg': frozenset({'albumid'}), 'catbox': frozenset()}
 
 
