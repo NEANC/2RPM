@@ -12,6 +12,7 @@ from . import winfs
 
 
 _RESERVED = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$', re.I)
+FORMAT_SUFFIX = {'jpeg': '.jpg', 'png': '.png', 'webp': '.webp', 'raw': '.raw'}
 _DATE_NAME = re.compile(r'[0-9]{4}_[0-9]{2}_[0-9]{2}')
 
 
@@ -83,38 +84,37 @@ def _directory_date(name):
 
 
 def cli_filename(result, target, is_file, today, sequence=0):
-    """生成 CLI 文件名或目录输出的序列候选名。"""
-    extension = {'jpeg': '.jpg', 'png': '.png', 'webp': '.webp', 'raw': '.raw'}[result.image_format]
+    """仅按本次日期和实际格式命名，不检查本地重名。"""
+    suffix = FORMAT_SUFFIX[result.image_format]
     if is_file:
-        stem, old_extension = ntpath.splitext(target)
-        if old_extension.casefold() in ('.png', '.jpg', '.jpeg') and result.image_format == 'png':
-            return stem + extension
-        return target
-    return f'screenshot_{today:%Y%m%d}_{sequence:04d}{extension}'
+        name = ntpath.basename(target)
+        stem, extension = ntpath.splitext(name)
+        if result.image_format == 'jpeg' and extension.lower() in ('.jpg', '.jpeg'):
+            return name
+        return stem + suffix
+    return f'screenshot_{today:%Y%m%d}_{sequence:04d}{suffix}'
 
 
 def save_cli(result, target, is_file, *, today=None):
-    """排他保存 CLI 结果，不覆盖现存目标。"""
+    """只有排他冲突递增，普通失败保留最后候选上传名。"""
     today = date.today() if today is None else today
-    filename = cli_filename(result, target, is_file, today)
-    if is_file:
-        path = target
-        try:
-            winfs.write_exclusive(path, result.image_bytes)
-            return SaveOutcome(path, ntpath.basename(path))
-        except Exception:
-            return SaveOutcome(None, ntpath.basename(path), ('截图保存失败：无法写入输出路径',))
     sequence = 0
     while True:
-        filename = cli_filename(result, target, False, today, sequence)
-        path = ntpath.join(target, filename)
+        name = cli_filename(result, target, is_file, today, sequence)
+        path = ntpath.join(ntpath.dirname(target) if is_file else target, name)
         try:
             winfs.write_exclusive(path, result.image_bytes)
-            return SaveOutcome(path, filename)
         except FileExistsError:
-            sequence += 1
-        except Exception:
-            return SaveOutcome(None, filename, ('截图保存失败：无法写入输出路径',))
+            if not is_file:
+                sequence += 1
+                continue
+            return SaveOutcome(None, name, ('截图保存失败：目标文件已存在，未覆盖',))
+        except Exception as error:
+            warnings = ['截图保存失败：无法写入输出路径']
+            if '截图半成品清理失败' in getattr(error, '__notes__', ()):
+                warnings.append('截图半成品清理失败')
+            return SaveOutcome(None, name, tuple(warnings))
+        return SaveOutcome(path, name)
 
 
 def cleanup_retention(program_dir, policy, *, today=None):

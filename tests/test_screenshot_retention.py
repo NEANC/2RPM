@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""截图保留策略测试。"""
+"""验证截图本地保留策略、命名与日期目录清理。"""
 
 from datetime import date
 
@@ -25,6 +25,24 @@ def test_component_sanitizing_blocks_devices_and_path_separators():
     assert len(retention.sanitize_component('x' * 100, 'event')) == 80
 
 
+def test_runtime_context_has_two_fields_and_uses_basename_stem(tmp_path):
+    """运行上下文只含程序根与净化的配置 stem，不持有完整路径。"""
+    runtime = retention.runtime_context(str(tmp_path), 'C:\\secret\\my.cfg.yaml')
+    assert list(runtime) == ['program_dir', 'config_stem']
+    assert runtime['program_dir'] == str(tmp_path)
+    assert runtime['config_stem'] == 'my.cfg'
+    assert 'secret' not in runtime['config_stem']
+
+
+@pytest.mark.parametrize('name', ['a?b.yaml', 'a*b.yaml'])
+def test_runtime_context_sanitizes_stem_characters(tmp_path, name):
+    """不同配置名的非法字符被净化为安全 stem，避免同名碰撞。"""
+    runtime = retention.runtime_context(str(tmp_path), name)
+    assert set(runtime) == {'program_dir', 'config_stem'}
+    assert not (set('<>:"/\\|?*') & set(runtime['config_stem']))
+    assert runtime['config_stem'] == 'a_b'
+
+
 def test_cleanup_uses_calendar_days_and_handle_tree_removal(monkeypatch, tmp_path):
     """仅按严格有效日期计算保留边界并经 winfs 删除日期树。"""
     removed = []
@@ -40,7 +58,6 @@ def test_automatic_save_uses_jpeg_and_starts_at_one(monkeypatch, tmp_path):
     """自动保存使用 JPEG，并从两位序号 01 开始。"""
     result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
     writes = []
-
     monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
     monkeypatch.setattr(retention.winfs, 'write_exclusive',
                         lambda path, data: writes.append((path, data)))
@@ -48,7 +65,6 @@ def test_automatic_save_uses_jpeg_and_starts_at_one(monkeypatch, tmp_path):
     outcome = retention.save_automatic(
         result, runtime, 'event', retention.RetentionPolicy(True),
         today=date(2026, 10, 6))
-
     assert outcome.filename == 'event_01.jpg'
     assert writes == [(outcome.path, result.image_bytes)]
 
@@ -57,7 +73,6 @@ def test_automatic_save_scans_jpeg_and_increments_conflicts(monkeypatch, tmp_pat
     """自动保存按 JPEG 最大序号继续，并在排他冲突后递增。"""
     result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
     calls = []
-
     monkeypatch.setattr(retention.winfs, 'list_names', lambda path: (
         'event_02.jpg', 'event_09.JPG', 'event_100.png'))
 
@@ -71,7 +86,6 @@ def test_automatic_save_scans_jpeg_and_increments_conflicts(monkeypatch, tmp_pat
     outcome = retention.save_automatic(
         result, runtime, 'event', retention.RetentionPolicy(True),
         today=date(2026, 10, 6))
-
     assert outcome.filename == 'event_11.jpg'
     assert [retention.ntpath.basename(path) for path in calls] == [
         'event_10.jpg', 'event_11.jpg']
@@ -80,7 +94,6 @@ def test_automatic_save_scans_jpeg_and_increments_conflicts(monkeypatch, tmp_pat
 def test_cleanup_does_not_delete_date_named_file(monkeypatch, tmp_path):
     """日期名称普通文件由安全删除层拒绝，不被清理误删。"""
     removed = []
-
     monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ('2024_02_29',))
 
     def reject_file(path):
@@ -90,12 +103,8 @@ def test_cleanup_does_not_delete_date_named_file(monkeypatch, tmp_path):
     monkeypatch.setattr(retention.winfs, 'remove_tree', reject_file)
     warnings = retention.cleanup_retention(
         str(tmp_path), retention.RetentionPolicy(True, 2), today=date(2024, 3, 2))
-
     assert len(removed) == 1
     assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
-
-
-
 
 
 def test_cli_save_increments_unbounded_sequence(monkeypatch, tmp_path):
@@ -112,6 +121,16 @@ def test_cli_save_increments_unbounded_sequence(monkeypatch, tmp_path):
     outcome = retention.save_cli(result, str(tmp_path), False, today=date(2026, 10, 7))
     assert outcome.filename == 'screenshot_20261007_0001.png'
     assert calls[-1][1] == result.image_bytes
+
+
+@pytest.mark.parametrize('image_format, suffix', [
+    ('jpeg', '.jpg'), ('png', '.png'), ('webp', '.webp'), ('raw', '.raw')])
+def test_cli_filename_supports_all_capture_formats(image_format, suffix):
+    """CLI 文件名映射支持每种截图编码格式。"""
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format=image_format)
+    assert retention.cli_filename(result, 'shots', False,
+                                  date(2026, 10, 7)).endswith(suffix)
 
 
 @pytest.mark.parametrize('days', [True, '2', 2.0, 0, -1])
