@@ -107,6 +107,59 @@ def test_cleanup_does_not_delete_date_named_file(monkeypatch, tmp_path):
     assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
 
 
+@pytest.mark.parametrize('cleanup_failed', [False, True])
+def test_automatic_save_failure_preserves_safe_notes(
+        monkeypatch, tmp_path, cleanup_failed):
+    """写入失败保留策略和固定清理告警，不暴露异常或其他附注。"""
+    result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
+    secret = str(tmp_path / 'private-token.jpg')
+    error = OSError(secret)
+    error.add_note(secret)
+    if cleanup_failed:
+        error.add_note('截图半成品清理失败')
+    calls = []
+
+    def fail_write(path, data):
+        """记录临时目录中的写入候选并模拟底层失败。"""
+        calls.append((path, data))
+        raise error
+
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', fail_write)
+    policy = retention.RetentionPolicy(True, warnings=('保留策略提示',))
+    outcome = retention.save_automatic(
+        result, retention.runtime_context(str(tmp_path), 'config.yaml'),
+        'event', policy, today=date(2026, 10, 6))
+    expected = ('保留策略提示', '截图保存失败：无法写入输出路径')
+    if cleanup_failed:
+        expected += ('截图半成品清理失败',)
+    assert outcome == retention.SaveOutcome(None, 'event_01.jpg', expected)
+    assert calls == [(str(tmp_path / 'screenshot' / '2026_10_06'
+                         / 'config' / 'event_01.jpg'), result.image_bytes)]
+    assert secret not in repr(outcome)
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_automatic_save_propagates_write_control_signal(
+        monkeypatch, tmp_path, signal_type):
+    """带清理附注的写入控制信号仍以原对象传播。"""
+    signal = signal_type('private-token')
+    signal.add_note('截图半成品清理失败')
+
+    def interrupt_write(path, data):
+        """模拟底层写入被控制信号中断。"""
+        raise signal
+
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', interrupt_write)
+    with pytest.raises(signal_type) as caught:
+        retention.save_automatic(
+            CaptureResult(b'fixture', 'window', 'test', 1, 1),
+            retention.runtime_context(str(tmp_path), 'config.yaml'),
+            'event', retention.RetentionPolicy(True))
+    assert caught.value is signal
+
+
 def test_cli_save_increments_unbounded_sequence(monkeypatch, tmp_path):
     """目录保存使用四位递增编号并保留原始载荷。"""
     result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='png')
