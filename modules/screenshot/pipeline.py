@@ -14,8 +14,12 @@ from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.registry import upload_with_fallback
+from modules.utils import get_program_directory
 
 from .models import CaptureError
+from .retention import parse_policy
+from .retention import runtime_context
+from .retention import save_automatic
 from .service import capture
 from .targets import allocate_targets
 
@@ -85,14 +89,17 @@ def _upload_failure_summary(failures):
     return '截图上传失败：' + summary if summary else '截图上传失败'
 
 
-def _prepare_target(item, hosts, warnings, diagnostics, *, context):
+def _prepare_target(item, hosts, warnings, diagnostics, *, context,
+                    runtime, event, policy):
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。"""
     if item['error'] is not None:
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
         return f'截图配置失败：{item["error"]}'
 
     try:
-        result = capture(item['provider'], item['target'])
+        result = capture(
+            item['provider'], item['target'],
+            image_format='jpeg', purpose='automatic')
     except CaptureError as error:
         message = (
             _CAPTURE_MESSAGES.get(error.code)
@@ -106,14 +113,16 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context):
         return '截图失败'
 
     warnings.extend(result.warnings)
-    if result.image_format not in {'jpeg', 'png', 'webp'}:
-        diagnostics.append(f'截图目标 {item["index"]}：截图格式不支持上传')
-        return '截图上传失败'
-    extension = {'jpeg': '.jpg', 'png': '.png', 'webp': '.webp'}[result.image_format]
+    try:
+        outcome = save_automatic(result, runtime, event, policy)
+    except Exception:
+        warnings.append('截图保存失败：无法写入输出路径')
+    else:
+        warnings.extend(outcome.warnings)
     failure = '截图上传失败'
     try:
         uploaded = upload_with_fallback(
-            result.image_bytes, item['out'] + extension, hosts, context=context)
+            result.image_bytes, item['out'] + '.jpg', hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
             return markdown_image(item['out'], uploaded.url)
@@ -124,13 +133,16 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context):
     return failure
 
 
-def prepare_screenshots(section, enabled, reserved_names) -> ScreenshotBatch:
+def prepare_screenshots(section, enabled, reserved_names, *,
+                        runtime=None, event='event') -> ScreenshotBatch:
     """先分配所有名称再串行处理，禁用时不读取任何图床设置。
 
     Args:
         section: screenshot 配置映射，不是整个推送配置。
         enabled: 是否执行截图上传；关闭时输出变量全部置空。
-        reserved_names: 调用方已有的保留变量名。
+        reserved_names: 调用方已有的保留变量名集合。
+        runtime: 运行上下文（程序根与净化的配置 stem）；缺省时按程序目录回退。
+        event: 本次事件的真实模板键；用于自动截图的事件序号。
 
     Returns:
         包含实际输出名、顺序聚合、去重告警及改名输出的冻结结果。
@@ -142,6 +154,11 @@ def prepare_screenshots(section, enabled, reserved_names) -> ScreenshotBatch:
     if not enabled:
         values['screenshot'] = ''
         return ScreenshotBatch(values, (), ())
+
+    policy = parse_policy(section.get('retention') if valid_section else None)
+    warnings.extend(policy.warnings)
+    if runtime is None:
+        runtime = runtime_context(get_program_directory(), 'config.yaml')
 
     diagnostics = []
     if not valid_section:
@@ -158,7 +175,8 @@ def prepare_screenshots(section, enabled, reserved_names) -> ScreenshotBatch:
                     context = stack.enter_context(
                         UploadContext(diagnostics=False))
                 values[item['out']] = _prepare_target(
-                    item, hosts, warnings, diagnostics, context=context)
+                    item, hosts, warnings, diagnostics, context=context,
+                    runtime=runtime, event=event, policy=policy)
         values['screenshot'] = '\n\n'.join(values.values())
     else:
         values['screenshot'] = _CONFIG_FAILURE
