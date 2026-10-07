@@ -183,5 +183,8 @@ def save_automatic(result, runtime, event, policy, *, today=None):
                 return SaveOutcome(path, name, policy.warnings)
             except FileExistsError:
                 sequence += 1
-    except Exception:
-        return SaveOutcome(None, name, policy.warnings + ('截图保存失败：无法写入输出路径',))
+    except Exception as error:
+        warnings = policy.warnings + ('截图保存失败：无法写入输出路径',)
+        if '截图半成品清理失败' in getattr(error, '__notes__', ()):
+            warnings += ('截图半成品清理失败',)
+        return SaveOutcome(None, name, warnings)

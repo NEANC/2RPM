@@ -775,6 +775,69 @@ def test_save_exception_does_not_block_upload(monkeypatch):
     assert '截图保存失败：无法写入输出路径' in batch.warnings
 
 
+def test_automatic_write_cleanup_warning_does_not_block_upload(
+        monkeypatch, tmp_path, caplog):
+    """真实保存层传递固定清理告警，仍上传且日志与正文不泄露异常。"""
+    module, capture, upload = boundaries(monkeypatch)
+    winfs = import_module('modules.screenshot.retention').winfs
+    error = OSError(SECRET)
+    error.add_note(SECRET)
+    error.add_note('截图半成品清理失败')
+
+    def fail_write(path, data):
+        """仅模拟临时目录中的写入失败及清理附注。"""
+        assert path.startswith(str(tmp_path) + os.sep)
+        assert data == captured().image_bytes
+        raise error
+
+    monkeypatch.setattr(winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(winfs, 'write_exclusive', fail_write)
+    config = section([target(), target()])
+    config['retention'] = {'enabled': True}
+    batch = module.prepare_screenshots(
+        config, True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    assert capture.call_count == upload.call_count == 2
+    assert all(value.startswith('![') for value in batch.values.values())
+    assert [call.args[:2] for call in upload.call_args_list] == [
+        (captured().image_bytes, 'screenshot_1.jpg'),
+        (captured().image_bytes, 'screenshot_2.jpg')]
+    assert batch.warnings == (
+        '截图保存失败：无法写入输出路径', '截图半成品清理失败')
+    body = module.append_screenshot_notices(
+        batch.values['screenshot'], '{screenshot}', batch)
+    for warning in batch.warnings:
+        assert body.count(warning) == caplog.text.count(warning) == 1
+    assert SECRET not in repr(batch) + body + caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_automatic_write_control_signal_stops_pipeline(
+        monkeypatch, tmp_path, signal_type):
+    """真实保存层的控制信号原样传播，不上传或处理后续目标。"""
+    module, capture, upload = boundaries(monkeypatch)
+    winfs = import_module('modules.screenshot.retention').winfs
+    signal = signal_type(SECRET)
+    signal.add_note('截图半成品清理失败')
+
+    def interrupt_write(path, data):
+        """模拟带清理附注的底层写入中断。"""
+        raise signal
+
+    monkeypatch.setattr(winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(winfs, 'write_exclusive', interrupt_write)
+    config = section([target(), target()])
+    config['retention'] = {'enabled': True}
+    with pytest.raises(signal_type) as caught:
+        module.prepare_screenshots(
+            config, True, (),
+            runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    assert caught.value is signal
+    assert capture.call_count == 1
+    upload.assert_not_called()
+
+
 def test_invalid_retention_policy_warning_surfaces_once(
         monkeypatch, tmp_path, caplog):
     """真实截图仅保存到临时目录，非法保留天数告警只出现一次。"""
