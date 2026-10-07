@@ -5,6 +5,7 @@
 
 import copy
 import os
+import re
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,6 +21,12 @@ from modules import config as config_module
 
 TEMPLATE_NAMES = ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external')
 SECRET = 'private-image-host-token-7319'
+DEFAULT_RETENTION = {'enabled': None, 'max_days': 14}
+DEFAULT_SCREENSHOT = {
+    'targets': [],
+    'image_host': [{'provider': 'catbox', 'token': ''}],
+    'retention': DEFAULT_RETENTION,
+}
 
 
 def _write_config(tmp_path, push, complete=False):
@@ -46,9 +53,7 @@ def _read_config(path):
 def test_defaults_are_registered_before_templates():
     """截图默认不指定目标，且默认图床仅含一个无凭证条目。"""
     push = config_module.DEFAULT_VALUES['push']
-    assert push['screenshot'] == {
-        'targets': [], 'image_host': [{'provider': 'catbox', 'token': ''}],
-    }
+    assert push['screenshot'] == DEFAULT_SCREENSHOT
     assert list(push).index('screenshot') < list(push).index('templates')
     for name in TEMPLATE_NAMES:
         assert push['templates'][name]['capture_screenshot'] is True
@@ -62,13 +67,9 @@ def test_default_nodes_are_independent():
     first['push']['screenshot']['targets'].append({'provider': 'window'})
     first['push']['screenshot']['image_host'][0]['token'] = SECRET
     first['push']['templates']['on_end']['capture_screenshot'] = False
-    assert second['push']['screenshot'] == {
-        'targets': [], 'image_host': [{'provider': 'catbox', 'token': ''}],
-    }
+    assert second['push']['screenshot'] == DEFAULT_SCREENSHOT
     assert second['push']['templates']['on_end']['capture_screenshot'] is True
-    assert config_module.DEFAULT_VALUES['push']['screenshot'] == {
-        'targets': [], 'image_host': [{'provider': 'catbox', 'token': ''}],
-    }
+    assert config_module.DEFAULT_VALUES['push']['screenshot'] == DEFAULT_SCREENSHOT
 
 
 def test_comments_explain_independent_targets_and_template_variables():
@@ -148,6 +149,7 @@ def test_expiration_and_invalid_storage_survive_yaml_round_trip(
                 'nested': {'flag': False, 'values': ['keep', 0]},
             },
         }],
+        'retention': DEFAULT_RETENTION,
     }
     expected = copy.deepcopy(screenshot)
     path = _write_config(tmp_path, {'screenshot': screenshot})
@@ -181,9 +183,7 @@ def test_missing_fields_are_completed_without_logging_host_values(
     """真实加载补齐缺省开关且不把截图默认映射写入日志。"""
     path = _write_config(tmp_path, {})
     result = config_module.load_config(str(path))
-    assert result['push']['screenshot'] == {
-        'targets': [], 'image_host': [{'provider': 'catbox', 'token': ''}],
-    }
+    assert result['push']['screenshot'] == DEFAULT_SCREENSHOT
     for name in TEMPLATE_NAMES:
         template = result['push']['templates'][name]
         assert template['capture_screenshot'] is True
@@ -216,12 +216,47 @@ def test_explicit_empty_lists_and_template_switches_survive(tmp_path):
     })
     for _ in range(2):
         result = config_module.load_config(str(path))
-        assert result['push']['screenshot'] == {'targets': [], 'image_host': []}
+        assert result['push']['screenshot'] == {
+            'targets': [], 'image_host': [], 'retention': DEFAULT_RETENTION,
+        }
         for name in TEMPLATE_NAMES:
             assert result['push']['templates'][name]['capture_screenshot'] is False
             assert result['push']['templates'][name]['enable'] is (
                 name == 'on_external'
             )
+
+
+@pytest.mark.parametrize('retention', [
+    {'enabled': 'invalid', 'max_days': 'invalid'},
+    {'enabled': True, 'max_days': -1},
+    {'enabled': None, 'max_days': 0},
+])
+def test_retention_values_survive_round_trip_without_normalization(
+        tmp_path, retention):
+    """显式 retention 原值经加载写回保持，不被数值归一化修正。"""
+    screenshot = {'targets': [], 'image_host': [], 'retention': retention}
+    expected = copy.deepcopy(screenshot)
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        assert result['push']['screenshot'] == expected
+        assert _read_config(path)['push']['screenshot'] == expected
+
+
+def test_default_file_writes_null_retention_without_extra_schema(tmp_path):
+    """新建默认文件写入 retention，enabled 为 null 且不含其它图像配置。"""
+    path = tmp_path / 'default.yaml'
+    config_module.create_default_config(str(path))
+    text = path.read_text(encoding='utf-8')
+    assert re.search(r'(?m)^\s+enabled:\s*$', text)
+    assert re.search(r'(?m)^\s+enabled:\s*(true|false)\s*$', text) is None
+    assert re.search(r'(?m)^\s+max_days:\s*14\s*$', text)
+    schema = config_module.DEFAULT_VALUES['push']['screenshot']
+    assert set(schema) == {'targets', 'image_host', 'retention'}
+    assert set(schema['retention']) == {'enabled', 'max_days'}
+    assert _read_config(path)['push']['screenshot']['retention'] == (
+        DEFAULT_RETENTION
+    )
 
 
 def test_round_trip_preserves_values_order_duplicates_and_flow_style(
@@ -241,6 +276,7 @@ def test_round_trip_preserves_values_order_duplicates_and_flow_style(
             {'provider': 'CatBox', 'token': 'another-token',
              'options': {'nested': {'flag': False}, 'values': [1, 2]}},
         ],
+        'retention': DEFAULT_RETENTION,
     }
     expected = copy.deepcopy(screenshot)
     path = _write_config(tmp_path, {'screenshot': screenshot})
@@ -299,8 +335,10 @@ def test_invalid_screenshot_nodes_do_not_abort_monitor(
     path = _write_config(tmp_path, {'screenshot': screenshot})
     result = config_module.load_config(str(path))
     assert result['monitor']['psutil']['process_name'] == 'ok.exe'
-    assert result['push']['screenshot'] == screenshot
-    assert _read_config(path)['push']['screenshot'] == screenshot
+    expected = (dict(screenshot, retention=DEFAULT_RETENTION)
+                if isinstance(screenshot, dict) else screenshot)
+    assert result['push']['screenshot'] == expected
+    assert _read_config(path)['push']['screenshot'] == expected
     assert SECRET not in caplog.text
 
 
