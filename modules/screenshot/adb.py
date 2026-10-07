@@ -50,10 +50,6 @@ class ResponseTooLarge(Exception):
     """单次二进制响应超限。"""
 
 
-class _StateCheckError(CaptureError):
-    """设备状态检查失败，不允许进入采集回退。"""
-
-
 class _ConnectionTimeout(AdbTimeout):
     """建立 ADB socket 时发生的超时。"""
 
@@ -232,7 +228,7 @@ def _read_capture(serial, png):
                 code = {'offline': 'adb_offline',
                         'unauthorized': 'adb_unauthorized'}.get(
                             state, 'adb_protocol_failed')
-                raise _StateCheckError(code, _MESSAGES[code])
+                raise _error(code)
             command = ['screencap', '-p'] if png else ['screencap']
             try:
                 return device.shell(command, encoding=None,
@@ -244,8 +240,6 @@ def _read_capture(serial, png):
             except AdbError as error:
                 raise _protocol_error(error, serial) from None
     except ResponseTooLarge:
-        raise
-    except _StateCheckError:
         raise
     except CaptureError:
         raise
@@ -296,13 +290,7 @@ def capture_adb(serial: str, *, image_format='jpeg',
     for _ in range(2):
         try:
             image = _parse_raw(_read_capture(serial, False))
-        except _StateCheckError:
-            raise
         except CaptureError as error:
-            if error.code not in ('adb_timeout', 'adb_raw_invalid',
-                                  'adb_image_failed', 'adb_protocol_failed',
-                                  'adb_unavailable'):
-                raise
             reason = '超时' if error.code == 'adb_timeout' else '采集或解析失败'
             if not automatic and error.code == 'adb_timeout':
                 break
