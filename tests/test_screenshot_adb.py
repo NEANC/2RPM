@@ -99,7 +99,8 @@ class FakeSocket:
         elif command in env.raw_responses:
             self.pending.extend(env.raw_responses[command])
         elif command == f'host-serial:{env.serial}:get-state':
-            self.pending.extend(b'OKAY' + block(env.state))
+            state = env.states.pop(0) if env.states else env.state
+            self.pending.extend(b'OKAY' + block(state))
         elif command == 'host:version':
             self.pending.extend(b'OKAY' + block(env.version))
         elif command == f'host:tport:serial:{env.serial}':
@@ -165,6 +166,7 @@ class AdbEnvironment:
         """准备一台明确 serial 的模拟设备和安全故障入口。"""
         self.serial = SERIAL
         self.state = b'device'
+        self.states = []
         self.version = b'0029'
         self.png = make_png()
         self.raw = struct.pack('<III', 2, 2, 1) + bytes(
@@ -279,12 +281,13 @@ def test_serial_preserved_and_host_environment_ignored(environment, monkeypatch)
     (b'bootloader', 'adb_protocol_failed'),
     (b'secret-token', 'adb_protocol_failed'),
 ])
-def test_unavailable_state_never_runs_shell(environment, state, code):
-    """非在线状态明确失败，不能进行截图或回退。"""
+@pytest.mark.parametrize('purpose', ['automatic', 'cli'])
+def test_unavailable_state_exhausts_attempts(environment, state, code, purpose):
+    """持续非在线状态耗尽两次 raw 和唯一 PNG，且不执行 shell。"""
     backend = load_backend()
     environment.state = state
-    assert_capture_error(backend, code)
-    assert environment.commands == [f'host-serial:{SERIAL}:get-state']
+    assert_capture_error(backend, code, purpose=purpose)
+    assert environment.commands == [f'host-serial:{SERIAL}:get-state'] * 3
 
 
 @pytest.mark.parametrize(('response', 'code'), [
@@ -307,6 +310,10 @@ def test_protocol_fail_is_safe_at_each_stage(environment, response, code, stage)
     if stage == 'shell':
         environment.fail_responses['shell:screencap'] = response
     assert_capture_error(backend, code)
+    assert environment.commands.count(f'host-serial:{SERIAL}:get-state') == 3
+    if stage == 'shell':
+        assert environment.commands.count('shell:screencap') == 2
+        assert environment.commands.count('shell:screencap -p') == 1
 
 
 @pytest.mark.parametrize('index', [0, 1, 2])
@@ -763,3 +770,120 @@ def test_read_capture_propagates_response_too_large(environment, monkeypatch):
     environment.payload_plan = [9]
     with pytest.raises(backend.ResponseTooLarge):
         backend._read_capture(SERIAL, False)
+
+
+@pytest.mark.parametrize('purpose', ['automatic', 'cli'])
+@pytest.mark.parametrize('state', [b'offline', b'unauthorized', b'bootloader'])
+@pytest.mark.parametrize('failures', [1, 2])
+def test_device_state_recovers_within_capture_budget(
+        environment, purpose, state, failures):
+    """非在线状态可在第二次 raw 或唯一 PNG 前恢复。"""
+    backend = load_backend()
+    environment.states = [state] * failures + [b'device']
+    result = backend.capture_adb(SERIAL, purpose=purpose)
+    assert environment.commands.count(f'host-serial:{SERIAL}:get-state') == (
+        failures + 1)
+    assert environment.commands.count('shell:screencap') == (failures == 1)
+    assert environment.commands.count('shell:screencap -p') == (failures == 2)
+    expected = 'png' if purpose == 'cli' and failures == 2 else 'jpeg'
+    assert result.image_format == expected
+
+
+@pytest.mark.parametrize('purpose', ['automatic', 'cli'])
+@pytest.mark.parametrize('code', [
+    'adb_not_found', 'adb_offline', 'adb_unauthorized',
+    'adb_unavailable', 'adb_protocol_failed',
+])
+@pytest.mark.parametrize('fallback', ['timeout', 'invalid', 'large'])
+def test_fallback_failure_is_final_classification(
+        environment, monkeypatch, purpose, code, fallback):
+    """最终错误只取唯一 PNG 阶段，不保留 raw 错误或尝试第三次 raw。"""
+    backend = load_backend()
+    outcomes = {
+        'timeout': backend._error('adb_timeout'),
+        'invalid': b'not-png',
+        'large': backend.ResponseTooLarge(),
+    }
+    read = Mock(side_effect=[backend._error(code), backend._error(code),
+                             outcomes[fallback]])
+    monkeypatch.setattr(backend, '_read_capture', read)
+    expected = 'adb_timeout' if fallback == 'timeout' else 'adb_image_failed'
+    assert_capture_error(backend, expected, purpose=purpose)
+    assert [item.args for item in read.call_args_list] == [
+        (SERIAL, False), (SERIAL, False), (SERIAL, True)]
+
+
+@pytest.mark.parametrize('purpose', ['automatic', 'cli'])
+def test_raw_limit_immediately_uses_unique_png(environment, monkeypatch, purpose):
+    """raw 超限不重试，自动最终 JPEG，CLI 保留 PNG。"""
+    backend = load_backend()
+    read = Mock(side_effect=[backend.ResponseTooLarge(), environment.png])
+    monkeypatch.setattr(backend, '_read_capture', read)
+    result = backend.capture_adb(SERIAL, purpose=purpose)
+    assert [item.args for item in read.call_args_list] == [
+        (SERIAL, False), (SERIAL, True)]
+    assert result.image_format == ('jpeg' if purpose == 'automatic' else 'png')
+
+
+@pytest.mark.parametrize(('purpose', 'image_format', 'failures', 'calls'), [
+    ('automatic', 'jpeg', 1, [False, False]),
+    ('automatic', 'jpeg', 2, [False, False, True]),
+    ('automatic', 'jpeg', 3, [False, False, True]),
+    ('cli', 'jpeg', 1, [False]),
+    ('cli', 'webp', 1, [False]),
+    ('cli', 'png', 0, [True]),
+])
+def test_encoding_failure_policy_matrix(
+        environment, monkeypatch, purpose, image_format, failures, calls):
+    """自动编码失败可重采及回退，CLI 编码失败终止且 PNG 不编码。"""
+    backend = load_backend()
+    original_encode = backend.encode_image
+    encode_calls = []
+
+    def encode_with_failures(image, target_format):
+        """仅注入前若干次编码失败，其余使用实际编码器。"""
+        encode_calls.append(target_format)
+        if len(encode_calls) <= failures:
+            raise ValueError('secret-token')
+        return original_encode(image, target_format)
+
+    read = Mock(side_effect=[environment.png if png else environment.raw
+                             for png in calls])
+    monkeypatch.setattr(backend, '_read_capture', read)
+    monkeypatch.setattr(backend, 'encode_image', encode_with_failures)
+    if failures == 3 or (purpose == 'cli' and failures):
+        assert_capture_error(backend, 'adb_encode_failed', purpose=purpose,
+                             image_format=image_format)
+    else:
+        result = backend.capture_adb(SERIAL, purpose=purpose,
+                                     image_format=image_format)
+        assert result.image_format == image_format
+    assert [item.args for item in read.call_args_list] == [
+        (SERIAL, png) for png in calls]
+    assert len(encode_calls) == (0 if image_format == 'png' else len(calls))
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['raw_parse', 'raw_encode', 'png_read',
+                                  'png_decode', 'png_encode'])
+def test_state_machine_preserves_control_signal_identity(
+        environment, monkeypatch, signal_type, stage):
+    """raw 和回退各阶段的控制信号原对象传播且不重采。"""
+    backend = load_backend()
+    signal = signal_type('control-signal')
+    fallback = stage.startswith('png_')
+    outcomes = [backend._error('adb_raw_invalid')] * 2 if fallback else []
+    outcomes.append(signal if stage == 'png_read' else (
+        environment.png if fallback else environment.raw))
+    read = Mock(side_effect=outcomes)
+    monkeypatch.setattr(backend, '_read_capture', read)
+    target = {'raw_parse': '_parse_raw', 'raw_encode': 'encode_image',
+              'png_decode': '_decode_png', 'png_encode': 'encode_image'}
+    if stage in target:
+        monkeypatch.setattr(backend, target[stage], Mock(side_effect=signal))
+    with pytest.raises(signal_type) as caught:
+        backend.capture_adb(SERIAL)
+    assert caught.value is signal
+    assert [item.args for item in read.call_args_list] == (
+        [(SERIAL, False), (SERIAL, False), (SERIAL, True)] if fallback
+        else [(SERIAL, False)])
