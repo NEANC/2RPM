@@ -115,6 +115,8 @@ class _UniqueKeyConstructor(SafeConstructor):
             if key_node.tag == 'tag:yaml.org,2002:merge':
                 key = merge_key
             else:
+                if key_node.tag == 'tag:yaml.org,2002:value':
+                    key_node.tag = 'tag:yaml.org,2002:str'
                 key = self.construct_object(key_node, deep=True)
                 if isinstance(key, list):
                     key = tuple(key)

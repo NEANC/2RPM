@@ -162,6 +162,32 @@ def test_unclosed_property_quote_is_private(value):
     assert caught.value.__cause__ is None
 
 
+@pytest.mark.parametrize('options', [
+    '{=: value}',
+    '{<<: {=: default}, =: value}',
+    '{<<: [{=: value}]}',
+])
+def test_value_tag_key_preserves_safe_mapping_semantics(options):
+    """等号键遵循安全构造器的字符串转换与合并覆盖语义。"""
+    host = parse_inline_hosts('provider: catbox, options: ' + options)[0]
+    assert host['options'] == {'=': 'value'}
+
+
+@pytest.mark.parametrize('options', [
+    '{=: FIRST_SECRET, "=": SECOND_SECRET}',
+    '{<<: {mode: default}, =: FIRST_SECRET, "=": SECOND_SECRET}',
+    '{<<: {=: FIRST_SECRET, "=": SECOND_SECRET}}',
+])
+def test_duplicate_value_tag_key_is_private(options):
+    """等号键规范化后仍拒绝重复键且不泄露敏感值。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts('provider: catbox, options: ' + options)
+    assert caught.value.code == 'mapping_syntax'
+    assert 'SECRET' not in ''.join(traceback.format_exception(caught.value))
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
 def test_non_anonymous_provider_requires_token():
     """不支持匿名的图床省略凭证时拒绝。"""
     with pytest.raises(InlineUploadError):
