@@ -216,6 +216,19 @@ def test_duplicate_value_tag_key_is_private(options):
     assert caught.value.__cause__ is None
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize('separator', ['', '; provider: catbox'])
+@pytest.mark.parametrize('key', ['? "x]"', "? 'x;[}'", '?\n "x]"', '? &key "x]"', '? !!str "x]"', '?name', 'what?'])
+def test_explicit_mapping_key_preserves_boundaries(key, wrapped, separator):
+    """显式键标记保持节点起始，普通问号仍属于标量。"""
+    body = 'provider: catbox, options: {' + key + ': value}'
+    expected = YAML(typ='safe').load('{' + body + '}')
+    text = '{' + body + '}' if wrapped else body
+    hosts = parse_inline_hosts(text + separator)
+    assert hosts[0] == expected
+    assert len(hosts) == (2 if separator else 1)
+
+
 def test_non_anonymous_provider_requires_token():
     """不支持匿名的图床省略凭证时拒绝。"""
     with pytest.raises(InlineUploadError):
