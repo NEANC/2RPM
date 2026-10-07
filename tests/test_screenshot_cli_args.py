@@ -207,6 +207,25 @@ def test_inline_merge_duplicates_are_private_parameter_errors(body, capsys):
     assert capsys.readouterr().err == '第2项：mapping_syntax\n'
 
 
+@pytest.mark.parametrize('attribute', ['&credential', '!!str'])
+def test_inline_node_properties_keep_semicolons_in_values(attribute):
+    """CLI 接受节点属性后的带分号字符串而不错误分项。"""
+    args = parse(['--source', 'window:title', '--upload',
+                  f'provider: catbox, token: {attribute} "a;b"; provider: catbox'])
+    assert len(args.hosts) == 2
+    assert args.hosts[0]['token'] == 'a;b'
+
+
+@pytest.mark.parametrize('attribute', ['&credential', '!!str'])
+def test_inline_unclosed_property_quote_is_parameter_error(attribute, capsys):
+    """未闭合属性字符串返回错误码二且不输出凭证。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               f'provider: catbox, token: {attribute} "SECRET;a'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第1项：mapping_syntax\n'
+
+
 def test_source_syntax_requires_output():
     """来源写法测试必须显式启用输出，CLI 默认无副作用。"""
     with pytest.raises(SystemExit) as exit_info:
