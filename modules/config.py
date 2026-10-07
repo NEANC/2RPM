@@ -78,6 +78,7 @@ DEFAULT_VALUES = {
         'screenshot': {
             'targets': [],
             'image_host': [{'provider': 'catbox', 'token': ''}],
+            'retention': {'enabled': None, 'max_days': 14},
         },
         'templates': {
             'on_end': {
@@ -240,6 +241,12 @@ COMMENTS = {
                 "expiration: 1d12h, options: {permission: 1}}\n"
                 "- 示例: {provider: wmimg, token: '${WMIMG_TOKEN}', "
                 "options: {strategy_id: 1, album_id: 12}}\n"
+            ),
+            'retention': (
+                "\n自动截图本地保留策略（仅自动截图生效，CLI 不清理）\n"
+                "- enabled: 是否启用本地保留清理；留空(null)表示不启用\n"
+                "- max_days: 保留天数，默认 14，必须为正整数\n"
+                "- 每次启动仅清理一次早于保留天数的日期目录\n"
             ),
         },
         'templates': {
