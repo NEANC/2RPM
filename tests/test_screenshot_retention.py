@@ -10,6 +10,83 @@ from modules.screenshot import retention
 from modules.screenshot.models import CaptureResult
 
 
+def test_cleanup_rejects_replaced_date_directory(monkeypatch, tmp_path):
+    """枚举后替换同名普通目录，外部和替换哨兵均不得被删除。"""
+    root = tmp_path / 'screenshot'
+    candidate = root / '2020_01_01'
+    candidate.mkdir(parents=True)
+    (candidate / 'original').write_bytes(b'original')
+    outside = root / 'outside'
+    outside.mkdir()
+    (outside / 'sentinel').write_bytes(b'outside')
+    original_entries = retention.winfs._entries
+    exchanged = False
+
+    def exchange_after_enumeration(handle):
+        """真实读取 NTFS 身份记录后再交换未打开的日期目录。"""
+        nonlocal exchanged
+        entries = tuple(original_entries(handle))
+        if not exchanged and any(name == candidate.name for name, _, _ in entries):
+            exchanged = True
+            try:
+                (candidate / 'original').unlink()
+                candidate.rmdir()
+                candidate.mkdir()
+                (candidate / 'sentinel').write_bytes(b'replacement')
+            except OSError as error:
+                pytest.fail(f'目录交换失败：{error}')
+        yield from entries
+
+    monkeypatch.setattr(retention.winfs, '_entries', exchange_after_enumeration)
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
+    assert exchanged
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+    assert (candidate / 'sentinel').read_bytes() == b'replacement'
+    assert (outside / 'sentinel').read_bytes() == b'outside'
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_cleanup_propagates_candidate_signal(monkeypatch, tmp_path, signal_type):
+    """候选删除控制信号原样传播且释放枚举根句柄。"""
+    root = tmp_path / 'screenshot'
+    candidate = root / '2020_01_01'
+    candidate.mkdir(parents=True)
+    signal = signal_type('private-path')
+
+    def interrupt(name, **kwargs):
+        """模拟候选处理被中断。"""
+        raise signal
+
+    monkeypatch.setattr(retention.winfs, 'remove_tree', interrupt)
+    with pytest.raises(signal_type) as caught:
+        retention.cleanup_retention(str(tmp_path), retention.RetentionPolicy(True))
+    assert caught.value is signal
+    root.rename(tmp_path / 'released')
+
+
+def test_cleanup_skips_disappeared_candidate(monkeypatch, tmp_path):
+    """枚举后正常消失的候选无告警，其他日期树继续删除。"""
+    root = tmp_path / 'screenshot'
+    missing = root / '2020_01_01'
+    missing.mkdir(parents=True)
+    remaining = root / '2020_01_02'
+    remaining.mkdir()
+    original_entries = retention.winfs._entries
+
+    def disappear(handle):
+        """枚举后删除空候选以制造正常消失窗口。"""
+        entries = tuple(original_entries(handle))
+        if any(name == missing.name for name, _, _ in entries):
+            missing.rmdir()
+        yield from entries
+
+    monkeypatch.setattr(retention.winfs, '_entries', disappear)
+    assert retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True)) == ()
+    assert not remaining.exists()
+
+
 def test_policy_rejects_boolean_as_days():
     """天数配置只接受严格正整数。"""
     policy = retention.parse_policy({'enabled': True, 'max_days': True})
@@ -46,9 +123,12 @@ def test_runtime_context_sanitizes_stem_characters(tmp_path, name):
 def test_cleanup_uses_calendar_days_and_handle_tree_removal(monkeypatch, tmp_path):
     """仅按严格有效日期计算保留边界并经 winfs 删除日期树。"""
     removed = []
-    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: (
-        '2024_02_29', '2024_03_01', '2024_02_30', '2024_03_02'))
-    monkeypatch.setattr(retention.winfs, 'remove_tree', lambda path: removed.append(path))
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in ('2024_02_29', '2024_03_01', '2024_02_30', '2024_03_02'):
+        (root / name).mkdir()
+    monkeypatch.setattr(retention.winfs, 'remove_tree',
+                        lambda name, **kwargs: removed.append(str(root / name)))
     assert retention.cleanup_retention(str(tmp_path), retention.RetentionPolicy(True, 2),
                                        today=date(2024, 3, 2)) == ()
     assert removed == [str(tmp_path / 'screenshot' / '2024_02_29')]
@@ -93,17 +173,12 @@ def test_automatic_save_scans_jpeg_and_increments_conflicts(monkeypatch, tmp_pat
 
 def test_cleanup_does_not_delete_date_named_file(monkeypatch, tmp_path):
     """日期名称普通文件由安全删除层拒绝，不被清理误删。"""
-    removed = []
-    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ('2024_02_29',))
-
-    def reject_file(path):
-        removed.append(path)
-        raise retention.winfs.UnsafeObjectError('根不是目录')
-
-    monkeypatch.setattr(retention.winfs, 'remove_tree', reject_file)
+    target = tmp_path / 'screenshot' / '2024_02_29'
+    target.parent.mkdir()
+    target.write_bytes(b'preserved')
     warnings = retention.cleanup_retention(
         str(tmp_path), retention.RetentionPolicy(True, 2), today=date(2024, 3, 2))
-    assert len(removed) == 1
+    assert target.read_bytes() == b'preserved'
     assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
 
 
@@ -237,9 +312,12 @@ def test_policy_switch_boundaries(value, enabled, warning):
 def test_cleanup_skips_future_and_retained_directories_without_enumerating(monkeypatch, tmp_path):
     """未来日期及保留期内日期不进入删除层。"""
     removed = []
-    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: (
-        '2024_03_01', '2024_03_02', '2024_03_03', 'other'))
-    monkeypatch.setattr(retention.winfs, 'remove_tree', lambda path: removed.append(path))
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in ('2024_03_01', '2024_03_02', '2024_03_03', 'other'):
+        (root / name).mkdir()
+    monkeypatch.setattr(retention.winfs, 'remove_tree',
+                        lambda name, **kwargs: removed.append(name))
     assert retention.cleanup_retention(
         str(tmp_path), retention.RetentionPolicy(True, 2), today=date(2024, 3, 2)) == ()
     assert removed == []
@@ -250,12 +328,17 @@ def test_cleanup_continues_after_removal_failure_and_has_no_count_limit(monkeypa
     names = tuple(f'2020_01_{day:02d}' for day in range(1, 32))
     removed = []
 
-    def remove(path):
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in names:
+        (root / name).mkdir()
+
+    def remove(path, **kwargs):
+        """首棵日期树失败后记录其余候选。"""
         removed.append(path)
         if path.endswith('2020_01_01'):
             raise OSError('fixture')
 
-    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: names)
     monkeypatch.setattr(retention.winfs, 'remove_tree', remove)
     warnings = retention.cleanup_retention(
         str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
