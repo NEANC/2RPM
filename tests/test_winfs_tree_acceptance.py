@@ -31,10 +31,10 @@ def test_retention_reparse_mixed_tree_preserves_every_entry(tmp_path):
     os.link(managed, hardlink)
     junction = nested / 'junction'
     make_junction(junction, outside)
-    safe = tree.parent / '2020_01_02'
-    safe.mkdir()
-    (safe / 'normal.bin').write_bytes(b'normal')
     try:
+        safe = tree.parent / '2020_01_02'
+        safe.mkdir()
+        (safe / 'normal.bin').write_bytes(b'normal')
         warnings = retention.cleanup_retention(
             str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
         assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
