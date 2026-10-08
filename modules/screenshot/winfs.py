@@ -310,9 +310,35 @@ def list_names(path):
         return tuple(name for name, attributes, file_id in _entries(directory))
 
 
-def remove_tree(path):
+@contextmanager
+def directory_entries(path):
+    """保持枚举根及祖先句柄存活，并携带候选对象身份。"""
+    with _open_path(path) as directory:
+        volume = _identity(directory)[0]
+        entries = tuple((name, attributes, (volume, file_id,
+                                            bool(attributes & _DIRECTORY)))
+                        for name, attributes, file_id in _entries(directory))
+        yield directory, entries
+
+
+@contextmanager
+def _open_tree(path, parent, expected):
+    """相对原枚举根打开候选并在扫描前核对身份。"""
+    if parent is None:
+        with _open_path(path, delete_leaf=True) as root:
+            yield root
+        return
+    with ExitStack() as stack:
+        root = _open_child(parent, path, True, delete=True)
+        stack.callback(_close_owned, root)
+        if _identity(root) != expected:
+            raise UnsafeObjectError('日期目录身份改变')
+        yield root
+
+
+def remove_tree(path, *, parent=None, expected=None):
     """固定整树对象后按句柄身份校验并后序删除。"""
-    with _open_path(path, delete_leaf=True) as root:
+    with _open_tree(path, parent, expected) as root:
         with ExitStack() as stack:
             pending = [(root, _identity(root))]
             preorder = []

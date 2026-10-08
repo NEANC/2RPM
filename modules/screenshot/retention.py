@@ -125,23 +125,25 @@ def cleanup_retention(program_dir, policy, *, today=None):
         return ()
     today = date.today() if today is None else today
     root = ntpath.join(program_dir, 'screenshot')
-    try:
-        names = winfs.list_names(root)
-    except FileNotFoundError:
-        return ()
-    except Exception:
-        return ('截图清理失败：无法安全枚举受管目录',)
     warnings = []
-    for name in names:
-        folder_date = _directory_date(name)
-        if folder_date is None or (today - folder_date).days < policy.max_days:
-            continue
-        try:
-            winfs.remove_tree(ntpath.join(root, name))
-        except FileNotFoundError:
-            continue
-        except Exception:
-            warnings.append('截图清理失败：已跳过不安全或无法删除的日期目录')
+    try:
+        with winfs.directory_entries(root) as (directory, entries):
+            for name, attributes, identity in entries:
+                folder_date = _directory_date(name)
+                if folder_date is None or (today - folder_date).days < policy.max_days:
+                    continue
+                try:
+                    if attributes & winfs._REPARSE:
+                        raise winfs.UnsafeObjectError('日期目录含重解析对象')
+                    winfs.remove_tree(name, parent=directory, expected=identity)
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    warnings.append('截图清理失败：已跳过不安全或无法删除的日期目录')
+    except FileNotFoundError:
+        pass
+    except Exception:
+        warnings.append('截图清理失败：无法安全枚举受管目录')
     return tuple(dict.fromkeys(warnings))
 
 
