@@ -187,23 +187,28 @@ def test_symlink_cleanup_failure_preserves_exception(
         operations.append('unlink')
         raise cleanup_error
 
-    with monkeypatch.context() as patch:
-        patch.setattr(os, 'symlink', create_link)
-        patch.setattr(Path, 'lstat', query_link)
-        patch.setattr(Path, 'is_symlink', lambda path: path == link)
-        patch.setattr(Path, 'unlink', remove_link)
-        with pytest.raises(BaseException) as caught:
-            with make_symlink(link, target, directory):
-                cleaning = True
-                if primary_error is not None:
-                    raise primary_error
-    assert caught.value is (primary_error if primary_error is not None else cleanup_error)
-    if primary_error is not None:
-        assert caught.value.__notes__ == ['符号链接清理失败，链接可能残留']
-        assert caught.value.__context__ is None
-    assert operations == (['lstat'] if cleanup_failure == 'lstat' else ['lstat', 'unlink'])
-    assert link.read_bytes() == b'placeholder'
-    assert target.is_dir() if directory else target.read_bytes() == b'target'
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(os, 'symlink', create_link)
+            patch.setattr(Path, 'lstat', query_link)
+            patch.setattr(Path, 'is_symlink', lambda path: path == link)
+            patch.setattr(Path, 'unlink', remove_link)
+            with pytest.raises(BaseException) as caught:
+                with make_symlink(link, target, directory):
+                    cleaning = True
+                    if primary_error is not None:
+                        raise primary_error
+        assert caught.value is (primary_error if primary_error is not None else cleanup_error)
+        if primary_error is not None:
+            assert caught.value.__notes__ == ['符号链接清理失败，链接可能残留']
+            assert caught.value.__context__ is None
+        assert operations == (['lstat'] if cleanup_failure == 'lstat' else ['lstat', 'unlink'])
+        assert link.read_bytes() == b'placeholder'
+        assert target.is_dir() if directory else target.read_bytes() == b'target'
+    finally:
+        if created:
+            link.unlink()
+    assert not os.path.lexists(link)
 
 
 @pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
