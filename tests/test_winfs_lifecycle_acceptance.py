@@ -10,10 +10,13 @@ import pytest
 
 from modules.screenshot import winfs
 from test_winfs_partial_acceptance import require_ntfs
+from winfs_process_guard import run_isolated
 
 
-def test_parent_cannot_be_replaced_during_real_write(monkeypatch, tmp_path):
+def test_parent_cannot_be_replaced_during_real_write(monkeypatch, request, tmp_path):
     """以事件暂停真实写入，父目录替换失败且完成后句柄释放。"""
+    if run_isolated(request, tmp_path):
+        return
     require_ntfs(tmp_path)
     parent = tmp_path / 'parent'
     parent.mkdir()

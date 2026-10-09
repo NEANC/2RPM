@@ -11,10 +11,13 @@ from modules.screenshot import retention
 from modules.screenshot import winfs
 from modules.screenshot.models import CaptureResult
 from test_winfs_partial_acceptance import require_ntfs
+from winfs_process_guard import run_isolated
 
 
-def test_concurrent_exclusive_creation_has_one_complete_winner(tmp_path):
+def test_concurrent_exclusive_creation_has_one_complete_winner(request, tmp_path):
     """同时竞争同一路径时仅一个完整载荷成功且失败者不清理胜者。"""
+    if run_isolated(request, tmp_path):
+        return
     require_ntfs(tmp_path)
     target = tmp_path / 'capture.bin'
     barrier = Barrier(2)
@@ -37,8 +40,10 @@ def test_concurrent_exclusive_creation_has_one_complete_winner(tmp_path):
 
 
 def test_automatic_concurrent_snapshot_conflict_keeps_both_payloads(
-        monkeypatch, tmp_path):
+        monkeypatch, request, tmp_path):
     """两个保存者观察相同最大编号，冲突递增后各自载荷完整且旧文件不变。"""
+    if run_isolated(request, tmp_path):
+        return
     require_ntfs(tmp_path)
     folder = tmp_path / 'screenshot' / '2026_10_06' / 'config'
     folder.mkdir(parents=True)
