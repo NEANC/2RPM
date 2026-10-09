@@ -2,10 +2,13 @@
 # -_- coding: utf-8 -_-
 """真实符号链接边界及不区分标签的重解析属性拒绝验收。"""
 
+from contextlib import contextmanager
 import ctypes
 from datetime import date
 import os
+from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -26,22 +29,148 @@ REAL_SYMLINK_ACCEPTANCE = pytest.mark.skipif(
 )
 
 
+@contextmanager
 def make_symlink(link, target, directory):
-    """创建并核实真实 symlink；无权限时明确跳过而不使用 junction 替代。"""
+    """保护创建、校验和使用全过程，仅非递归清理本次符号链接。"""
     assert target.is_absolute() and target.exists()
     assert target.is_dir() == directory
     assert link.is_absolute() and link.parent.is_dir()
     assert not os.path.lexists(link)
     try:
-        os.symlink(target, link, target_is_directory=directory)
-    except OSError as error:
-        if error.winerror == 1314:
-            pytest.skip('真实 symlink 未执行：缺少符号链接创建权限（WinError 1314），未提权')
-        raise
-    metadata = link.lstat()
-    assert metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
-    assert metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK
-    assert link.is_symlink()
+        try:
+            os.symlink(target, link, target_is_directory=directory)
+        except OSError as error:
+            if error.winerror == 1314:
+                pytest.skip('真实 symlink 未执行：缺少符号链接创建权限（WinError 1314），未提权')
+            raise
+        metadata = link.lstat()
+        assert metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+        assert metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK
+        assert link.is_symlink()
+        yield
+    finally:
+        try:
+            metadata = link.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if (metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    and metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK):
+                link.unlink()
+
+
+@pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
+@pytest.mark.parametrize('failure', ['lstat', 'attributes', 'tag', 'is_symlink', 87, 2, 1314])
+def test_symlink_creation_failure_cleans_only_link(monkeypatch, tmp_path, directory, failure):
+    """模拟创建后故障，清理链接占位物而不触碰真实外部目标。"""
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    sentinel = outside / 'sentinel.bin'
+    sentinel.write_bytes(b'outside')
+    target = outside if directory else sentinel
+    link = tmp_path / 'link'
+    original_lstat = Path.lstat
+    original_unlink = Path.unlink
+    created = False
+    queries = 0
+    removed = []
+
+    def create_then_fail(source, destination, target_is_directory):
+        """创建普通占位物，按需模拟原生 API 已创建但仍抛错。"""
+        nonlocal created
+        assert (source, destination, target_is_directory) == (target, link, directory)
+        link.write_bytes(b'link placeholder')
+        created = True
+        if isinstance(failure, int):
+            error = OSError('injected creation failure')
+            error.winerror = failure
+            raise error
+
+    def injected_lstat(path, *args, **kwargs):
+        """仅对已创建的占位路径注入链接身份及一次校验故障。"""
+        nonlocal queries
+        if path != link or not created:
+            return original_lstat(path, *args, **kwargs)
+        queries += 1
+        if queries == 1 and failure == 'lstat':
+            raise OSError('injected lstat failure')
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK,
+            st_file_attributes=(0 if queries == 1 and failure == 'attributes'
+                                else stat.FILE_ATTRIBUTE_REPARSE_POINT),
+            st_reparse_tag=(0 if queries == 1 and failure == 'tag'
+                            else stat.IO_REPARSE_TAG_SYMLINK),
+        )
+
+    def remove_link(path, *args, **kwargs):
+        """记录非递归删除并拒绝任何目标删除。"""
+        assert path == link
+        removed.append(path)
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'symlink', create_then_fail)
+    monkeypatch.setattr(Path, 'lstat', injected_lstat)
+    monkeypatch.setattr(Path, 'unlink', remove_link)
+    if failure == 'is_symlink':
+        monkeypatch.setattr(Path, 'is_symlink', lambda path: False)
+    expected = (pytest.skip.Exception if failure == 1314 else
+                OSError if isinstance(failure, int) or failure == 'lstat' else AssertionError)
+    with pytest.raises(expected):
+        with make_symlink(link, target, directory):
+            pytest.fail('故障必须在进入验收主体前传播')
+    assert removed == [link]
+    assert not os.path.lexists(link)
+    assert sentinel.read_bytes() == b'outside'
+    assert set(outside.iterdir()) == {sentinel}
+
+
+@pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
+def test_symlink_preexisting_path_is_not_owned(monkeypatch, tmp_path, directory):
+    """预存路径不属于本次创建，不得调用创建或删除。"""
+    target = tmp_path / 'target'
+    target.write_bytes(b'target')
+    link = tmp_path / 'link'
+    if directory:
+        link.mkdir()
+    else:
+        link.write_bytes(b'existing')
+
+    def unexpected_operation(*args, **kwargs):
+        """任何创建或删除均表示越过归属边界。"""
+        pytest.fail('不得操作预存路径')
+
+    monkeypatch.setattr(os, 'symlink', unexpected_operation)
+    monkeypatch.setattr(Path, 'unlink', unexpected_operation)
+    with pytest.raises(AssertionError):
+        with make_symlink(link, target, False):
+            pytest.fail('不得接受预存路径')
+    assert link.is_dir() if directory else link.read_bytes() == b'existing'
+    assert target.read_bytes() == b'target'
+
+
+@pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
+def test_symlink_failed_creation_preserves_nonlink(monkeypatch, tmp_path, directory):
+    """创建失败后若路径不是链接，不能将普通对象误当链接删除。"""
+    target = tmp_path / 'target'
+    target.write_bytes(b'target')
+    link = tmp_path / 'link'
+
+    def create_nonlink(*args, **kwargs):
+        """模拟失败调用留下普通对象而非重解析链接。"""
+        if directory:
+            link.mkdir()
+        else:
+            link.write_bytes(b'ordinary')
+        error = OSError('injected creation failure')
+        error.winerror = 87
+        raise error
+
+    monkeypatch.setattr(os, 'symlink', create_nonlink)
+    with pytest.raises(OSError):
+        with make_symlink(link, target, False):
+            pytest.fail('创建失败必须传播')
+    assert link.is_dir() if directory else link.read_bytes() == b'ordinary'
+    assert target.read_bytes() == b'target'
 
 
 @REAL_SYMLINK_ACCEPTANCE
@@ -58,8 +187,7 @@ def test_real_symlink_preserves_entire_tree_and_external_target(tmp_path, direct
     sentinel = outside / 'sentinel.bin'
     sentinel.write_bytes(b'outside')
     link = tree / 'link'
-    make_symlink(link, outside if directory else sentinel, directory)
-    try:
+    with make_symlink(link, outside if directory else sentinel, directory):
         with pytest.raises(winfs.UnsafeObjectError, match='整树含重解析对象'):
             winfs.remove_tree(str(tree))
         if directory:
@@ -72,8 +200,6 @@ def test_real_symlink_preserves_entire_tree_and_external_target(tmp_path, direct
         assert sentinel.read_bytes() == b'outside'
         assert set(outside.iterdir()) == {sentinel}
         assert link.is_symlink()
-    finally:
-        link.unlink()
 
 
 @REAL_SYMLINK_ACCEPTANCE
@@ -95,8 +221,7 @@ def test_real_symlink_roots_reject_save_and_cleanup(tmp_path, root_kind):
     expired.mkdir(parents=True)
     sentinel = expired / 'sentinel.bin'
     sentinel.write_bytes(b'outside')
-    make_symlink(link, outside, True)
-    try:
+    with make_symlink(link, outside, True):
         with pytest.raises(winfs.UnsafeObjectError, match='拒绝重解析对象'):
             winfs.list_names(str(program / 'screenshot'))
         policy = retention.RetentionPolicy(True, 1)
@@ -111,8 +236,6 @@ def test_real_symlink_roots_reject_save_and_cleanup(tmp_path, root_kind):
         assert sentinel.read_bytes() == b'outside'
         assert set(managed.iterdir()) == {expired}
         assert link.is_symlink()
-    finally:
-        link.unlink()
 
 
 @pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
