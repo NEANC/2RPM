@@ -36,6 +36,7 @@ def make_symlink(link, target, directory):
     assert target.is_dir() == directory
     assert link.is_absolute() and link.parent.is_dir()
     assert not os.path.lexists(link)
+    primary_error = None
     try:
         try:
             os.symlink(target, link, target_is_directory=directory)
@@ -48,15 +49,23 @@ def make_symlink(link, target, directory):
         assert metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK
         assert link.is_symlink()
         yield
+    except BaseException as error:
+        primary_error = error
+        raise
     finally:
         try:
-            metadata = link.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            if (metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
-                    and metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK):
-                link.unlink()
+            try:
+                metadata = link.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                        and metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK):
+                    link.unlink()
+        except OSError:
+            if primary_error is None:
+                raise
+            primary_error.add_note('符号链接清理失败，链接可能残留')
 
 
 @pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
@@ -122,6 +131,79 @@ def test_symlink_creation_failure_cleans_only_link(monkeypatch, tmp_path, direct
     assert not os.path.lexists(link)
     assert sentinel.read_bytes() == b'outside'
     assert set(outside.iterdir()) == {sentinel}
+
+
+@pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
+@pytest.mark.parametrize('cleanup_failure', ['lstat', 'unlink'])
+@pytest.mark.parametrize('failure', [87, 2, KeyboardInterrupt, SystemExit, AssertionError, None])
+def test_symlink_cleanup_failure_preserves_exception(
+        monkeypatch, tmp_path, directory, cleanup_failure, failure):
+    """双重故障保留主异常身份并脱敏，无主异常则传播清理失败。"""
+    target = tmp_path / 'target'
+    if directory:
+        target.mkdir()
+    else:
+        target.write_bytes(b'target')
+    link = tmp_path / 'link'
+    original_lstat = Path.lstat
+    created = False
+    cleaning = False
+    operations = []
+    primary_error = None
+    if isinstance(failure, int):
+        primary_error = OSError('injected creation failure')
+        primary_error.winerror = failure
+    elif failure is not None:
+        primary_error = failure('injected body failure')
+    cleanup_error = OSError(5, 'sensitive cleanup detail', str(link))
+
+    def create_link(source, destination, target_is_directory):
+        """用占位物模拟链接创建，并按需抛出既定原生异常。"""
+        nonlocal created, cleaning
+        assert (source, destination, target_is_directory) == (target, link, directory)
+        link.write_bytes(b'placeholder')
+        created = True
+        if isinstance(failure, int):
+            cleaning = True
+            raise primary_error
+
+    def query_link(path, *args, **kwargs):
+        """模拟链接元数据，仅在清理阶段注入查询失败。"""
+        if path != link or not created:
+            return original_lstat(path, *args, **kwargs)
+        if cleaning:
+            operations.append('lstat')
+            if cleanup_failure == 'lstat':
+                raise cleanup_error
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK,
+            st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+            st_reparse_tag=stat.IO_REPARSE_TAG_SYMLINK,
+        )
+
+    def remove_link(path, *args, **kwargs):
+        """仅允许删除本次链接，并模拟删除故障。"""
+        assert path == link
+        operations.append('unlink')
+        raise cleanup_error
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'symlink', create_link)
+        patch.setattr(Path, 'lstat', query_link)
+        patch.setattr(Path, 'is_symlink', lambda path: path == link)
+        patch.setattr(Path, 'unlink', remove_link)
+        with pytest.raises(BaseException) as caught:
+            with make_symlink(link, target, directory):
+                cleaning = True
+                if primary_error is not None:
+                    raise primary_error
+    assert caught.value is (primary_error if primary_error is not None else cleanup_error)
+    if primary_error is not None:
+        assert caught.value.__notes__ == ['符号链接清理失败，链接可能残留']
+        assert caught.value.__context__ is None
+    assert operations == (['lstat'] if cleanup_failure == 'lstat' else ['lstat', 'unlink'])
+    assert link.read_bytes() == b'placeholder'
+    assert target.is_dir() if directory else target.read_bytes() == b'target'
 
 
 @pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
