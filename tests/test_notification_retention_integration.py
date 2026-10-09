@@ -13,6 +13,7 @@ import pytest
 
 from modules import notification
 from modules.screenshot import pipeline
+from modules.screenshot import retention
 from modules.screenshot import window
 from test_notification_screenshot import _base_config
 from test_notification_screenshot import _install_onepush
@@ -30,6 +31,10 @@ def test_retained_notification_retries_share_capture_save_and_upload(
         monkeypatch, tmp_path, http_calls, event):
     """真实事件名落盘一次，首图床成功即停止，三通道重试复用同一正文。"""
     WindowEnvironment(window, monkeypatch)
+    today = date(2026, 1, 15)
+    fixed_date = Mock(wraps=date)
+    fixed_date.today.return_value = today
+    monkeypatch.setattr(retention, 'date', fixed_date)
     capture = Mock(wraps=pipeline.capture)
     save = Mock(wraps=pipeline.save_automatic)
     monkeypatch.setattr(pipeline, 'capture', capture)
@@ -68,7 +73,7 @@ def test_retained_notification_retries_share_capture_save_and_upload(
     assert part[1] is save.call_args.args[0].image_bytes
     assert part[2] == 'image/jpeg'
     files = list(tmp_path.rglob('*.jpg'))
-    assert files == [tmp_path / 'screenshot' / date.today().strftime('%Y_%m_%d')
+    assert files == [tmp_path / 'screenshot' / today.strftime('%Y_%m_%d')
                      / 'PRIVATE_RUNTIME_STEM' / (event + '_01.jpg')]
     assert files[0].read_bytes() == part[1]
     with Image.open(BytesIO(files[0].read_bytes())) as image:
