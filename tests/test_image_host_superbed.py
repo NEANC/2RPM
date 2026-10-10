@@ -186,15 +186,18 @@ def test_registration_and_signature():
 @pytest.mark.parametrize('second', [False, True])
 def test_exact_contract_request(client, options, version, second):
     if second:
+        client.responses[0].status_code = 503
         client.add(version=version)
+    else:
+        client.responses[0].body = json.dumps(payload(version=version))
     original = deepcopy(options)
     result = upload(options=options)
     assert result.success and result.url == URL
     assert result.attempts == ('superbed',) and result.failures == ()
     assert options == original
-    domains = ['cc' if version == 'v1' else 'cn']
+    domains = ['cc', 'cn'] if second else ['cc']
     assert len(client.calls) == len(domains)
-    for (url, kwargs), domain in zip(client.calls, domains):
+    for index, ((url, kwargs), domain) in enumerate(zip(client.calls, domains)):
         expected = {
             'data': {} if version == 'v1' else {'token': SECRET},
             'files': {('files' if version == 'v1' else 'file'):
@@ -207,10 +210,16 @@ def test_exact_contract_request(client, options, version, second):
         assert url == endpoint(version, domain)
         assert kwargs == expected
         assert next(iter(kwargs['files'].values()))[1] is IMAGE
-    assert len({id(s) for s in client.created}) == 1
-    assert len(client.queue) == int(second)
-    assert client.events == [event for i in range(len(domains)) for event in
-                             [('create', 0), ('response', 0), ('session', 0)]]
+        assert client.created[index] is client.sessions[index]
+        assert client.responses[index] is client.sessions[index].response
+    assert len({id(s) for s in client.created}) == len(domains)
+    assert len({id(s) for s in client.sessions[:len(domains)]}) == len(domains)
+    assert len({id(r) for r in client.responses[:len(domains)]}) == len(domains)
+    assert not client.queue
+    assert client.events == [event for index in range(len(domains)) for event in
+                             [('create', index), ('response', index),
+                              ('session', index)]]
+    assert client.create.call_count == len(domains)
 
 
 def test_failed_request_closes_resources_and_drains_queue(client):
