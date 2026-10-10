@@ -267,7 +267,9 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                 if cleanup_failed and not interrupted:
                     raise ImageHostError('upload_failed', '') from None
         except ImageHostError as error:
-            code = error.code
+            code = (error.code if type(error.code) is str
+                    and error.code in ('upload_failed', 'invalid_url')
+                    else 'upload_failed')
         except Exception:
             code = 'upload_failed'
     raise ImageHostError(code, '')

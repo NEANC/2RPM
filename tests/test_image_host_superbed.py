@@ -439,6 +439,49 @@ def test_bad_json_releases_resources(client, caplog, body):
     assert not caplog.records
 
 
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('stage', ['post', 'json', 'parse'])
+@pytest.mark.parametrize('code', [
+    'invalid_options', 'invalid_token', 'business_rejected',
+    SECRET, None, [], {}, True, 1,
+])
+def test_untrusted_error_code_matrix(client, monkeypatch, caplog,
+                                     version, stage, code):
+    client.responses[0].body = json.dumps(payload(version))
+    client.add(version=version)
+    error = ImageHostError('upload_failed', '')
+    error.code = code
+    error.diagnostic = SECRET + URL + 'RAW_BODY_7319'
+    if stage == 'parse':
+        monkeypatch.setattr(providers, '_parse_superbed',
+                            Mock(side_effect=error))
+    else:
+        for session, response in zip(client.sessions, client.responses):
+            target = session.post if stage == 'post' else response.json
+            target.side_effect = error
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(
+            IMAGE, FILENAME, SECRET, {'api_version': version})
+    assert_safe(caught.value, 'upload_failed', caplog.text)
+    assert client.create.call_count == 2
+    assert all(session.close.call_count == 1 for session in client.sessions)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('last_code', ['upload_failed', 'invalid_url'])
+def test_final_code_uses_last_domain_whitelist(client, version, last_code):
+    client.responses[0].body = json.dumps(payload(version, 'invalid'))
+    body = (payload(version, 'invalid') if last_code == 'invalid_url'
+            else {'error': 'RAW_BODY_7319'})
+    client.add(body=body, version=version)
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(
+            IMAGE, FILENAME, SECRET, {'api_version': version})
+    assert_safe(caught.value, last_code)
+    assert client.create.call_count == 2
+
+
 @pytest.mark.parametrize('status', [199, 300, 301, 302, 303, 307, 308,
                                    401, 429, 500])
 def test_non_2xx_fails_without_read_or_redirect(client, status):
