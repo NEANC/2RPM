@@ -267,15 +267,10 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                 if cleanup_failed and not interrupted:
                     raise ImageHostError('upload_failed', '') from None
         except ImageHostError as error:
-            if domain == domains[-1]:
-                raise ImageHostError(error.code, '') from None
-        except requests.exceptions.RequestException:
-            if domain == domains[-1]:
-                raise ImageHostError('upload_failed', '') from None
+            code = error.code
         except Exception:
-            if domain == domains[-1]:
-                raise ImageHostError('upload_failed', '') from None
-    raise ImageHostError('upload_failed', '') from None
+            code = 'upload_failed'
+    raise ImageHostError(code, '')
 
 
 def _parse_superbed(version, payload):

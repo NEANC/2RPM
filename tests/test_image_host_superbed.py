@@ -828,3 +828,43 @@ def test_legacy_tries_cc_then_cn(client):
     assert result.success
     assert [call[0] for call in client.calls] == [
         endpoint('legacy', 'cc'), endpoint('legacy', 'cn')]
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('stage', [
+    'session', 'post', 'json', 'http', 'structure', 'url',
+    'response_close', 'session_close', 'both_close',
+])
+def test_final_exception_has_no_context_matrix(client, caplog, version, stage):
+    client.responses[0].status_code = 503
+    session, response = client.add(version=version)
+    raw = RuntimeError(SECRET + URL + 'RAW_BODY_7319')
+    if stage == 'session':
+        client.create.side_effect = [client.sessions[0], raw]
+    elif stage == 'post':
+        session.post.side_effect = requests.exceptions.ReadTimeout(str(raw))
+    elif stage == 'json':
+        response.json.side_effect = raw
+    elif stage == 'http':
+        response.status_code = 503
+    elif stage == 'structure':
+        response.body = json.dumps({'error': str(raw)})
+    elif stage == 'url':
+        response.body = json.dumps(payload(version, 'invalid'))
+    else:
+        if stage in ('response_close', 'both_close'):
+            response.close.side_effect = raw
+        if stage in ('session_close', 'both_close'):
+            session.close.side_effect = raw
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(
+            IMAGE, FILENAME, SECRET, {'api_version': version})
+    expected = 'invalid_url' if stage == 'url' else 'upload_failed'
+    assert_safe(caught.value, expected, caplog.text)
+    assert client.create.call_count == 2
+    assert client.sessions[0].closed and client.responses[0].closed
+    if stage != 'session':
+        assert session.post.call_count == 1
+        assert session.close.call_count == 1
+        assert response.close.call_count == int(stage != 'post')
+    assert not caplog.records
