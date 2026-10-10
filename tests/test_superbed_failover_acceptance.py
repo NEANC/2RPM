@@ -24,7 +24,8 @@ EXCEPTIONS = {
     'connection': requests.exceptions.ConnectionError,
     'runtime': RuntimeError,
 }
-FAILURES = (*EXCEPTIONS, 'http', 'json', 'structure', 'invalid_url', 'business')
+FAILURES = (*EXCEPTIONS, 'http', 'json', 'content_decoding', 'structure',
+            'invalid_url', 'business')
 
 
 def arrange_outcome(client, index, version, outcome):
@@ -41,6 +42,9 @@ def arrange_outcome(client, index, version, outcome):
         response.status_code = 503
     elif outcome == 'json':
         response.body = 'RAW_BODY_7319' + SECRET + URL
+    elif outcome == 'content_decoding':
+        response.json.side_effect = requests.exceptions.ContentDecodingError(
+            SECRET + URL + 'RAW_BODY_7319')
     elif outcome == 'structure':
         response.body = json.dumps([SECRET, URL, 'RAW_BODY_7319'])
     elif outcome == 'invalid_url':
@@ -98,6 +102,25 @@ def test_failover_cross_matrix(client, caplog, version, first, second):
         assert_safe(caught.value, code, caplog.text)
     assert options == original
     assert_lifecycle(client, version, (first, second))
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('status', [301, 302, 303, 307, 308, 401, 429, 500])
+def test_non_2xx_never_decodes_json_on_both_domains(
+        client, caplog, version, status):
+    """验证两版非成功响应均不解析正文且按序释放双域资源。"""
+    client.responses[0].body = json.dumps(payload(version))
+    client.responses[0].status_code = status
+    client.add(version=version, status=status)
+    options = {'api_version': version}
+    original = deepcopy(options)
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(IMAGE, FILENAME, SECRET, options)
+    assert_safe(caught.value, 'upload_failed', caplog.text)
+    assert options == original
+    assert_lifecycle(client, version, ('http', 'http'))
+    for response in client.responses:
+        response.json.assert_not_called()
 
 
 @pytest.mark.parametrize('field,value', [
