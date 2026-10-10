@@ -22,20 +22,40 @@ from test_screenshot_window import TITLE
 from test_screenshot_window import WindowEnvironment
 
 
-@pytest.mark.parametrize('provider,options,version', [
-    ('wmimg', {}, None), ('beeimg', {}, None), ('beeimg_cn', {'storage_id': 1}, None),
-    ('boltp', {'storage_id': 1}, None), ('superbed', {}, 'v1'),
-    ('superbed', {'api_version': 'legacy'}, 'legacy')])
+@pytest.mark.parametrize('provider,options,version,endpoint,file_key,auth', [
+    ('catbox', {}, None, providers.CATBOX_ENDPOINT, 'fileToUpload',
+     ('data', 'reqtype', 'fileupload')),
+    ('wmimg', {}, None, providers.WMIMG_ENDPOINT, 'file',
+     ('headers', 'Authorization', 'Bearer SYNTHETIC_TOKEN')),
+    ('beeimg', {}, None, providers.BEEIMG_ENDPOINT, 'file',
+     ('data', 'apikey', 'SYNTHETIC_TOKEN')),
+    ('beeimg_cn', {'storage_id': 1}, None,
+     'https://www.beeimg.cn/api/v2/upload', 'file',
+     ('headers', 'Authorization', 'Bearer SYNTHETIC_TOKEN')),
+    ('boltp', {'storage_id': 1}, None,
+     'https://www.boltp.com/api/v2/upload', 'file',
+     ('headers', 'Authorization', 'Bearer SYNTHETIC_TOKEN')),
+    ('superbed', {}, 'v1',
+     'https://api.superbed.cc/api/v1/upload/', 'files',
+     ('headers', 'X-API-Key', 'SYNTHETIC_TOKEN')),
+    ('superbed', {'api_version': 'legacy'}, 'legacy',
+     'https://api.superbed.cc/upload', 'file',
+     ('data', 'token', 'SYNTHETIC_TOKEN'))])
 @pytest.mark.parametrize('suffix,mime', [
-    ('jpg', 'image/jpeg'), ('png', 'image/png'), ('webp', 'image/webp')])
+    ('jpg', 'image/jpeg'), ('jpeg', 'image/jpeg'),
+    ('png', 'image/png'), ('webp', 'image/webp')])
 def test_remaining_providers_multipart_contract(
-        monkeypatch, http_calls, provider, options, version, suffix, mime):
-    """每个适配器独立断言后缀、固定 MIME 以及同一字节对象。"""
+        monkeypatch, http_calls, provider, options, version, endpoint, file_key,
+        auth, suffix, mime):
+    """每个适配器断言路径、认证、文件契约、MIME 和同一字节对象。"""
     original = requests.sessions.Session.request
 
     def response_for_provider(session, method, url, **kwargs):
         """只替换 HTTP 响应，同时保留实际 v2 流式 JSON 解码。"""
         response = original(session, method, url, **kwargs)
+        if provider == 'catbox':
+            response._content = URL.encode()
+            return response
         payload = {
             'status': 'success' if provider in ('beeimg_cn', 'boltp') else True,
             'data': {'links': {'url': URL}, 'public_url': URL},
@@ -57,16 +77,21 @@ def test_remaining_providers_multipart_contract(
     uploader = getattr(providers, 'upload_' + provider)
     assert uploader(data, filename, 'SYNTHETIC_TOKEN', options) == URL
     assert len(http_calls) == 1
-    key = 'files' if version == 'v1' else 'file'
-    part = http_calls[0][2]['files'][key]
+    part = http_calls[0][2]['files'][file_key]
+    assert http_calls[0][1] == endpoint
     assert part[0] == filename
     assert part[1] is data
     assert part[2] == mime
+    auth_location, auth_name, auth_value = auth
+    assert http_calls[0][2][auth_location][auth_name] == auth_value
+    if provider == 'catbox':
+        assert http_calls[0][2]['data']['userhash'] == 'SYNTHETIC_TOKEN'
 
 
 @pytest.mark.parametrize('source', ['window', 'adb'])
 @pytest.mark.parametrize('suffix,format_name,mime', [
-    ('jpg', 'JPEG', 'image/jpeg'), ('png', 'PNG', 'image/png'),
+    ('jpg', 'JPEG', 'image/jpeg'), ('jpeg', 'JPEG', 'image/jpeg'),
+    ('png', 'PNG', 'image/png'),
     ('webp', 'WEBP', 'image/webp')])
 def test_cli_source_encoding_save_upload_shared_bytes(
         monkeypatch, tmp_path, http_calls, source, suffix, format_name, mime):
