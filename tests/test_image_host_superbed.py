@@ -361,7 +361,7 @@ def test_missing_root_url_never_uses_other_links(client, body):
     'https://example.com:' + SECRET,
 ])
 def test_invalid_url_uses_core_safe_error(client, caplog, url):
-    client.responses[0].body = json.dumps(payload(version='v1', url=url))
+    client.responses[0].body = json.dumps(payload(version='legacy', url=url))
     result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'invalid_url'
