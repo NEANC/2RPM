@@ -183,29 +183,34 @@ def test_registration_and_signature():
                  marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
     ({'api_version': 'legacy'}, 'legacy'),
 ])
-def test_exact_contract_request(client, options, version):
-    client.responses[0].body = json.dumps(payload(version=version))
+@pytest.mark.parametrize('second', [False, True])
+def test_exact_contract_request(client, options, version, second):
+    if second:
+        client.add(version=version)
     original = deepcopy(options)
     result = upload(options=options)
     assert result.success and result.url == URL
     assert result.attempts == ('superbed',) and result.failures == ()
     assert options == original
-    expected = {
-        'data': {} if version == 'v1' else {'token': SECRET},
-        'files': {('files' if version == 'v1' else 'file'):
-                  (FILENAME, IMAGE, 'image/png')},
-        'timeout': (5, 15), 'verify': True,
-        'allow_redirects': False, 'stream': True,
-    }
-    if version == 'v1':
-        expected['headers'] = {'X-API-Key': SECRET}
-    domain = 'cc' if version == 'v1' else 'cn'
-    assert client.calls[0][0] == endpoint(version, domain)
-    assert client.calls[0][1] == expected
-    assert next(iter(expected['files'].values()))[1] is IMAGE
-    assert len(client.created) == 1
-    assert not client.queue
-    assert client.events == [('create', 0), ('response', 0), ('session', 0)]
+    domains = ['cc' if version == 'v1' else 'cn']
+    assert len(client.calls) == len(domains)
+    for (url, kwargs), domain in zip(client.calls, domains):
+        expected = {
+            'data': {} if version == 'v1' else {'token': SECRET},
+            'files': {('files' if version == 'v1' else 'file'):
+                      (FILENAME, IMAGE, 'image/png')},
+            'timeout': (5, 15), 'verify': True,
+            'allow_redirects': False, 'stream': True,
+        }
+        if version == 'v1':
+            expected['headers'] = {'X-API-Key': SECRET}
+        assert url == endpoint(version, domain)
+        assert kwargs == expected
+        assert next(iter(kwargs['files'].values()))[1] is IMAGE
+    assert len({id(s) for s in client.created}) == 1
+    assert len(client.queue) == int(second)
+    assert client.events == [event for i in range(len(domains)) for event in
+                             [('create', 0), ('response', 0), ('session', 0)]]
 
 
 def test_failed_request_closes_resources_and_drains_queue(client):
