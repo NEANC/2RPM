@@ -490,3 +490,89 @@ def test_standard_session_has_no_retries():
         for scheme in ('http://', 'https://'):
             retry = session.get_adapter(scheme).max_retries
             assert retry.total == 0
+
+
+BAD_OPTIONS = [
+    {'api_version': value} for value in
+    (None, '', 'V1', 'Legacy', ' v1', 'v1 ', True, 1, [], {})
+] + [
+    {'folder_id': value} for value in
+    (None, '', 'bad', ' 123e4567-e89b-12d3-a456-426614174000 ',
+     True, 1, [], {})
+] + [
+    {'api_version': 'legacy', 'categories': value}
+    for value in (None, False, True, 0, 123, 1.0, [], {})
+] + [
+    {'permission': value}
+    for value in (0, True, False, None, -1, 2, '1', 1.0, [], {})
+] + [
+    {'privacy': value} for value in (None, '', False, [], {}, 'public')
+] + [
+    {'categories': value} for value in (None, '', [], {}, 'a/b')
+] + [
+    {'api_version': 'legacy', 'folder_id': value}
+    for value in (None, '', [], {}, UUID_TEXT)
+] + [
+    {'folder_id': UUID_TEXT, 'categories': ''},
+    {'api_version': 'legacy', 'folder_id': UUID_TEXT, 'categories': ''},
+]
+
+
+@pytest.mark.parametrize('options', BAD_OPTIONS)
+def test_prepare_invalid_options(client, options):
+    before = deepcopy(options)
+    assert providers._prepare_superbed(SECRET, options, FILENAME) == (
+        None, 'invalid_options')
+    assert options == before
+    client.create.assert_not_called()
+
+
+@pytest.mark.parametrize('token', [None, '', True, 123, [], {}, ' key',
+                                   '\tkey', 'key\rvalue', 'key\nvalue',
+                                   '中文', '\ud800'])
+def test_prepare_invalid_token(client, token):
+    assert providers._prepare_superbed(token, {}, FILENAME) == (
+        None, 'invalid_token')
+    client.create.assert_not_called()
+
+
+@pytest.mark.parametrize('folder', [UUID_TEXT, UUID_TEXT.lower(),
+                                    UUID_TEXT.replace('-', ''),
+                                    '{' + UUID_TEXT + '}'])
+def test_prepare_uuid_preserves_original(client, folder):
+    options = {'folder_id': folder}
+    before = deepcopy(options)
+    materials, code = providers._prepare_superbed(SECRET, options, FILENAME)
+    assert code is None
+    assert materials == ('v1', {'X-API-Key': SECRET}, {'folder_id': folder},
+                         'files', 'image/png')
+    assert options == before
+    client.create.assert_not_called()
+
+
+@pytest.mark.parametrize('categories', ['', '截图相册', '  a/b/c  ', '123'])
+@pytest.mark.parametrize('token', [SECRET, '  key  ', '中文'])
+def test_prepare_legacy_preserves_strings(client, categories, token):
+    options = {'api_version': 'legacy', 'categories': categories}
+    materials, code = providers._prepare_superbed(token, options, FILENAME)
+    assert code is None
+    assert materials == ('legacy', None,
+                         {'token': token, 'categories': categories},
+                         'file', 'image/png')
+    client.create.assert_not_called()
+
+
+@pytest.mark.parametrize('token', ['key ', 'clé'])
+def test_prepare_valid_header_without_trimming(client, token):
+    materials, code = providers._prepare_superbed(token, {}, FILENAME)
+    assert code is None
+    assert materials[1] == {'X-API-Key': token}
+
+
+def test_prepare_mime_and_warning_order(client, caplog):
+    options = {SECRET: {'nested': URL}}
+    with caplog.at_level(logging.WARNING):
+        assert providers._prepare_superbed(SECRET, options, 'x.gif') == (
+            None, 'invalid_input')
+    assert not caplog.records
+    client.create.assert_not_called()
