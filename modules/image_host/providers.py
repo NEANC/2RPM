@@ -250,7 +250,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
         except requests.exceptions.RequestException:
             if domain == domains[-1]:
                 raise ImageHostError('upload_failed', '') from None
-        except (ValueError, TypeError, KeyError):
+        except Exception:
             if domain == domains[-1]:
                 raise ImageHostError('upload_failed', '') from None
     raise ImageHostError('upload_failed', '') from None
@@ -260,6 +260,9 @@ def _parse_superbed(version, payload):
     if not isinstance(payload, Mapping):
         raise ImageHostError('upload_failed', '') from None
     if version == 'v1':
+        if (payload.get('success') is False or payload.get('status') is False
+                or payload.get('error')):
+            raise ImageHostError('upload_failed', '') from None
         if (payload.get('success') is not True
                 or type(payload.get('total')) is not int
                 or payload.get('total') != 1

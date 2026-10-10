@@ -22,12 +22,14 @@ from test_screenshot_window import TITLE
 from test_screenshot_window import WindowEnvironment
 
 
-@pytest.mark.parametrize('provider', [
-    'wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed'])
+@pytest.mark.parametrize('provider,options,version', [
+    ('wmimg', {}, None), ('beeimg', {}, None), ('beeimg_cn', {'storage_id': 1}, None),
+    ('boltp', {'storage_id': 1}, None), ('superbed', {}, 'v1'),
+    ('superbed', {'api_version': 'legacy'}, 'legacy')])
 @pytest.mark.parametrize('suffix,mime', [
     ('jpg', 'image/jpeg'), ('png', 'image/png'), ('webp', 'image/webp')])
 def test_remaining_providers_multipart_contract(
-        monkeypatch, http_calls, provider, suffix, mime):
+        monkeypatch, http_calls, provider, options, version, suffix, mime):
     """每个适配器独立断言后缀、固定 MIME 以及同一字节对象。"""
     original = requests.sessions.Session.request
 
@@ -39,11 +41,13 @@ def test_remaining_providers_multipart_contract(
             'data': {'links': {'url': URL}, 'public_url': URL},
             'files': {'status': 'Success', 'url': URL}, 'url': URL,
         }
-        if provider == 'superbed':
+        if provider == 'superbed' and version == 'v1':
             payload = {
                 'success': True, 'total': 1, 'succeed': 1, 'failed': 0,
                 'files': [{'url': URL}],
             }
+        elif provider == 'superbed':
+            payload = {'err': 0, 'url': URL}
         response._content = json.dumps(payload).encode()
         return response
 
@@ -51,10 +55,9 @@ def test_remaining_providers_multipart_contract(
     data = bytes(bytearray(b'format-contract-payload'))
     filename = 'capture.' + suffix
     uploader = getattr(providers, 'upload_' + provider)
-    assert uploader(data, filename, 'SYNTHETIC_TOKEN', {'storage_id': 1}
-                    if provider in ('beeimg_cn', 'boltp') else {}) == URL
+    assert uploader(data, filename, 'SYNTHETIC_TOKEN', options) == URL
     assert len(http_calls) == 1
-    key = 'files' if provider == 'superbed' else 'file'
+    key = 'files' if version == 'v1' else 'file'
     part = http_calls[0][2]['files'][key]
     assert part[0] == filename
     assert part[1] is data

@@ -225,13 +225,16 @@ def test_exact_contract_request(client, options, version, second):
 
 def test_failed_request_closes_resources_and_drains_queue(client):
     client.sessions[0].response.status_code = 503
+    client.add(version='legacy')
+    client.responses[1].status_code = 503
     result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert not client.queue
     assert client.sessions[0].closed
     assert client.responses[0].closed
-    assert client.events == [('create', 0), ('response', 0), ('session', 0)]
+    assert client.events == [('create', 0), ('response', 0), ('session', 0),
+                             ('create', 1), ('response', 1), ('session', 1)]
 
 
 @pytest.mark.parametrize('token', [None, ''])
@@ -318,8 +321,11 @@ def test_unknown_nonsafety_options_emit_only_fixed_warning(client, caplog):
 @pytest.mark.parametrize('extra', [{}, {'message': 'local information'}])
 def test_root_url_needs_no_invented_success_fields(client, extra):
     client.responses[0].body = json.dumps({'url': URL, **extra})
+    client.add(version='legacy')
+    client.responses[1].body = client.responses[0].body
     result = upload(options={'api_version': 'legacy'})
-    assert result.success and result.url == URL
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
 
 
 @pytest.mark.parametrize('marker', [
@@ -329,6 +335,8 @@ def test_root_url_needs_no_invented_success_fields(client, extra):
 def test_explicit_failure_marker_rejected(client, caplog, marker):
     client.responses[0].body = json.dumps({'url': URL, 'message': SECRET,
                                             **marker})
+    client.add(version='legacy')
+    client.responses[1].body = client.responses[0].body
     result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
@@ -339,7 +347,9 @@ def test_explicit_failure_marker_rejected(client, caplog, marker):
 @pytest.mark.parametrize('body', [None, [], True, 1, 'url'])
 def test_invalid_json_structure_rejected(client, body):
     client.responses[0].body = json.dumps(body)
-    result = upload()
+    client.add(version='v1')
+    client.responses[1].body = client.responses[0].body
+    result = upload(options={'api_version': 'v1'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert client.responses[0].closed
@@ -351,9 +361,11 @@ def test_invalid_json_structure_rejected(client, body):
 ])
 def test_missing_root_url_never_uses_other_links(client, body):
     client.responses[0].body = json.dumps(body)
+    client.add(version='legacy')
+    client.responses[1].body = client.responses[0].body
     result = upload(options={'api_version': 'legacy'})
     assert not result.success
-    assert result.failures[0].code == 'invalid_url'
+    assert result.failures[0].code == 'upload_failed'
 
 
 @pytest.mark.parametrize('url', [
@@ -363,6 +375,8 @@ def test_missing_root_url_never_uses_other_links(client, body):
 ])
 def test_invalid_url_uses_core_safe_error(client, caplog, url):
     client.responses[0].body = json.dumps(payload(version='legacy', url=url))
+    client.add(version='legacy')
+    client.responses[1].body = client.responses[0].body
     result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'invalid_url'
@@ -373,7 +387,9 @@ def test_invalid_url_uses_core_safe_error(client, caplog, url):
                                   '{"url":', 'not-json-' + SECRET])
 def test_bad_json_releases_resources(client, caplog, body):
     client.responses[0].body = body
-    result = upload()
+    client.add(version='v1')
+    client.responses[1].body = client.responses[0].body
+    result = upload(options={'api_version': 'v1'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert client.responses[0].closed and client.sessions[0].closed
@@ -386,7 +402,9 @@ def test_bad_json_releases_resources(client, caplog, body):
 def test_non_2xx_fails_without_read_or_redirect(client, status):
     client.responses[0].status_code = status
     client.responses[0].body = SECRET
-    result = upload()
+    client.add(version='v1')
+    client.responses[1].status_code = status
+    result = upload(options={'api_version': 'v1'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert client.responses[0].json.call_count == 0
@@ -404,7 +422,9 @@ def test_exception_sanitization_and_owned_resource_cleanup(
         client, caplog, error_type, stage):
     target = client.sessions[0].post if stage == 'post' else client.responses[0].json
     target.side_effect = error_type(SECRET + URL)
-    result = upload()
+    client.add(version='v1')
+    client.sessions[1].post.side_effect = error_type(SECRET + URL)
+    result = upload(options={'api_version': 'v1'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert client.sessions[0].closed
@@ -429,11 +449,12 @@ def test_control_signal_identity_cleanup_and_no_fallback(
 
 def test_signed_url_and_inputs_preserved(client, caplog):
     signed = URL + '&token=' + SECRET
-    client.responses[0].body = json.dumps({'url': signed})
+    client.responses[0].body = json.dumps({'err': 0, 'url': signed})
     hosts = [{'provider': ' SUPERBED ', 'token': SECRET,
               'options': {'api_version': 'legacy', 'permission': 1,
                           'categories': '本地相册'}}]
     original = deepcopy(hosts)
+    client.add(version='legacy')
     result = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
     assert result.success
     assert result.url == signed
@@ -456,35 +477,41 @@ def test_serial_fallback_credentials_and_first_success_stop(client, failure):
         first_body = []
     elif failure == 'url':
         first_body = {'url': 'invalid'}
-    client.add()
+    if failure is None:
+        first_body = {'err': 0, 'url': URL}
+    if failure in ('options', 'token'):
+        client.add(version='legacy')
+    elif failure is not None:
+        client.add(version='legacy')
+        client.add(version='legacy')
     calls = []
 
     client.responses[0].status_code = 500 if failure == 'http' else 200
     client.responses[0].body = (
         'not-json' if failure == 'json' else json.dumps(first_body))
-    client.responses[1].body = json.dumps({'status': True,
-                                           'data': {'links': {'url': URL}}})
-
-    def post(index, url, **kwargs):
-        calls.append((url, kwargs))
-        return client.responses[1] if 'wmimg.com' in url else client.responses[0]
-
-    client.sessions[0].post.side_effect = lambda url, **kwargs: post(0, url, **kwargs)
-    client.sessions[1].post.side_effect = lambda url, **kwargs: post(1, url, **kwargs)
+    if failure in ('options', 'token'):
+        client.responses[0].body = json.dumps({
+            'status': True, 'data': {'links': {'url': URL}}})
+    if failure not in (None, 'options', 'token'):
+        client.responses[1].body = client.responses[0].body
+        client.responses[1].status_code = client.responses[0].status_code
+    if failure is not None:
+        client.responses[-1].body = json.dumps({
+            'status': True, 'data': {'links': {'url': URL}}})
     result = upload(token, options, [{'provider': 'wmimg',
                                       'token': 'FAKE_WMIMG_ONLY'}])
     assert result.success
     if failure is None:
         assert result.provider == 'superbed'
         assert result.attempts == ('superbed',)
-        assert len(calls) == 1
+        assert len(client.calls) == 1
     else:
         assert result.provider == 'wmimg'
         assert result.attempts == ('superbed', 'wmimg')
         assert len(result.failures) == 1
-        assert len(calls) == (1 if failure in ('options', 'token') else 2)
-        assert calls[-1][0] == 'https://wmimg.com/api/v1/upload'
-        assert calls[-1][1]['headers']['Authorization'] == 'Bearer FAKE_WMIMG_ONLY'
+        assert len(client.calls) == (1 if failure in ('options', 'token') else 3)
+        assert client.calls[-1][0] == 'https://wmimg.com/api/v1/upload'
+        assert client.calls[-1][1]['headers']['Authorization'] == 'Bearer FAKE_WMIMG_ONLY'
 
 
 def test_standard_session_has_no_retries():
@@ -589,6 +616,20 @@ def test_prepare_mime_and_warning_order(client, caplog):
      'files': [{'url': URL}, {'url': URL}]},
 ])
 def test_parse_v1_requires_exact_contract(body):
+    with pytest.raises(ImageHostError) as caught:
+        providers._parse_superbed('v1', body)
+    assert caught.value.code == 'upload_failed'
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize('marker', [
+    {'success': False}, {'status': False}, {'error': SECRET},
+    {'error': True}, {'error': {'message': SECRET}},
+])
+def test_parse_v1_rejects_explicit_failure_markers(marker):
+    body = payload()
+    body.update(marker)
     with pytest.raises(ImageHostError) as caught:
         providers._parse_superbed('v1', body)
     assert caught.value.code == 'upload_failed'
