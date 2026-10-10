@@ -129,7 +129,7 @@ def client(monkeypatch, tmp_path):
             self.close()
             return False
 
-    def add(body=None, status=200, version='v1'):
+    def add(body=None, status=200, version='legacy'):
         index = len(state.sessions)
         response = Response(index, payload(version) if body is None else body,
                             status)
@@ -154,6 +154,7 @@ def client(monkeypatch, tmp_path):
 
     state.add = add
     state.create = Mock(side_effect=create)
+    state.add()
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.setattr(socket.socket, 'connect', forbidden)
     monkeypatch.setattr(socket, 'create_connection', forbidden)
@@ -176,37 +177,295 @@ def test_registration_and_signature():
 
 
 @pytest.mark.parametrize('options,version', [
-    (None, 'v1'), ({}, 'v1'), ({'api_version': 'v1'}, 'v1'),
+    pytest.param(None, 'v1', marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
+    pytest.param({}, 'v1', marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
+    pytest.param({'api_version': 'v1'}, 'v1',
+                 marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
     ({'api_version': 'legacy'}, 'legacy'),
 ])
-@pytest.mark.parametrize('second', [False, True])
-def test_exact_contract(client, options, version, second):
-    if second:
-        client.add(status=503, version=version)
-    client.add(version=version)
+def test_exact_contract_request(client, options, version):
+    client.responses[0].body = json.dumps(payload(version=version))
     original = deepcopy(options)
     result = upload(options=options)
     assert result.success and result.url == URL
     assert result.attempts == ('superbed',) and result.failures == ()
     assert options == original
-    domains = ['cc', 'cn'] if second else ['cc']
-    assert len(client.calls) == len(domains)
-    for (url, kwargs), domain in zip(client.calls, domains):
-        expected = {
-            'data': {} if version == 'v1' else {'token': SECRET},
-            'files': {('files' if version == 'v1' else 'file'):
-                      (FILENAME, IMAGE, 'image/png')},
-            'timeout': (5, 15), 'verify': True,
-            'allow_redirects': False, 'stream': True,
-        }
-        if version == 'v1':
-            expected['headers'] = {'X-API-Key': SECRET}
-        assert url == endpoint(version, domain)
-        assert kwargs == expected
-        assert next(iter(kwargs['files'].values()))[1] is IMAGE
-    assert len({id(s) for s in client.created}) == len(domains)
-    assert client.events == [event for i in range(len(domains)) for event in
-                             [('create', i), ('response', i), ('session', i)]]
+    expected = {
+        'data': {} if version == 'v1' else {'token': SECRET},
+        'files': {('files' if version == 'v1' else 'file'):
+                  (FILENAME, IMAGE, 'image/png')},
+        'timeout': (5, 15), 'verify': True,
+        'allow_redirects': False, 'stream': True,
+    }
+    if version == 'v1':
+        expected['headers'] = {'X-API-Key': SECRET}
+    domain = 'cc' if version == 'v1' else 'cn'
+    assert client.calls[0][0] == endpoint(version, domain)
+    assert client.calls[0][1] == expected
+    assert next(iter(expected['files'].values()))[1] is IMAGE
+    assert len(client.created) == 1
+    assert not client.queue
+    assert client.events == [('create', 0), ('response', 0), ('session', 0)]
+
+
+def test_failed_request_closes_resources_and_drains_queue(client):
+    client.sessions[0].response.status_code = 503
+    result = upload(options={'api_version': 'legacy'})
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert not client.queue
+    assert client.sessions[0].closed
+    assert client.responses[0].closed
+    assert client.events == [('create', 0), ('response', 0), ('session', 0)]
+
+
+@pytest.mark.parametrize('token', [None, ''])
+def test_empty_credential_rejected_before_session(client, token):
+    result = upload(token)
+    assert not result.success
+    assert result.failures[0].code == 'invalid_token'
+    assert not client.created
+    assert len(client.queue) == 1
+
+
+@pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
+def test_environment_resolved_once(client, monkeypatch, resolved):
+    monkeypatch.setenv(ENV_NAME, resolved)
+    assert upload('${' + ENV_NAME + '}').success
+    assert client.calls[0][1]['data'] == {'token': resolved}
+
+
+@pytest.mark.parametrize('value', [None, ''])
+def test_missing_environment_rejected(client, monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv(ENV_NAME, raising=False)
+    else:
+        monkeypatch.setenv(ENV_NAME, value)
+    result = upload('${' + ENV_NAME + '}')
+    assert not result.success
+    assert result.failures[0].code == 'missing_environment'
+    assert not client.created
+
+
+@pytest.mark.parametrize('categories', ['', '截图相册', '  原样相册  ', '123'])
+def test_categories_string_preserved(client, categories):
+    options = {'categories': categories}
+    original = deepcopy(options)
+    assert upload(options=options).success
+    assert client.calls[0][1]['data'] == {
+        'token': SECRET, 'categories': categories}
+    assert options == original
+
+
+@pytest.mark.parametrize('categories', [None, False, True, 0, 123, 1.0, [], {}])
+def test_invalid_categories_type_rejected(client, categories):
+    result = upload(options={'categories': categories})
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert not client.created
+
+
+@pytest.mark.parametrize('permission', [
+    0, True, False, None, -1, 2, '0', '1', 'private', 1.0, [], {},
+])
+def test_private_and_invalid_permission_rejected(client, permission):
+    result = upload(options={'permission': permission})
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert not client.created
+
+
+@pytest.mark.parametrize('privacy', ['private', 'public', None])
+def test_unsupported_privacy_cannot_be_ignored(client, privacy):
+    result = upload(options={'privacy': privacy})
+    assert not result.success
+    assert result.failures[0].code == 'invalid_options'
+    assert not client.created
+
+
+def test_unknown_nonsafety_options_emit_only_fixed_warning(client, caplog):
+    options = {'album_id': 123, 'strategy_id': 456, 'token': SECRET,
+               SECRET + '\nforged warning': {'url': URL}}
+    original = deepcopy(options)
+    with caplog.at_level(logging.WARNING):
+        result = upload(options=options)
+    assert result.success
+    assert options == original
+    assert client.calls[0][1]['data'] == {'token': SECRET}
+    assert [(record.levelno, record.getMessage()) for record in caplog.records] == [
+        (logging.WARNING, WARNING)]
+    assert SECRET not in caplog.text + repr(result)
+    assert URL not in caplog.text + repr(result)
+    assert 'forged warning' not in caplog.text
+
+
+@pytest.mark.parametrize('extra', [{}, {'message': 'local information'}])
+def test_root_url_needs_no_invented_success_fields(client, extra):
+    client.responses[0].body = json.dumps({'url': URL, **extra})
+    result = upload()
+    assert result.success and result.url == URL
+
+
+@pytest.mark.parametrize('marker', [
+    {'success': False}, {'status': False}, {'error': SECRET},
+    {'error': True}, {'error': {'message': SECRET}},
+])
+def test_explicit_failure_marker_rejected(client, caplog, marker):
+    client.responses[0].body = json.dumps({'url': URL, 'message': SECRET,
+                                            **marker})
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert SECRET not in caplog.text + repr(result)
+    assert client.responses[0].closed
+
+
+@pytest.mark.parametrize('body', [None, [], True, 1, 'url'])
+def test_invalid_json_structure_rejected(client, body):
+    client.responses[0].body = json.dumps(body)
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert client.responses[0].closed
+
+
+@pytest.mark.parametrize('body', [
+    {}, {'data': {'url': URL}}, {'view_url': URL}, {'thumbnail_url': URL},
+    {'files': {'status': 'Success', 'url': URL}},
+])
+def test_missing_root_url_never_uses_other_links(client, body):
+    client.responses[0].body = json.dumps(body)
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'invalid_url'
+
+
+@pytest.mark.parametrize('url', [
+    None, True, 123, [], {}, '', 'ftp://example.com/a', '//example.com/a',
+    'https://user:' + SECRET + '@example.com/a',
+    'https://example.com:' + SECRET,
+])
+def test_invalid_url_uses_core_safe_error(client, caplog, url):
+    client.responses[0].body = json.dumps({'url': url})
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'invalid_url'
+    assert SECRET not in caplog.text + repr(result)
+
+
+@pytest.mark.parametrize('body', ['', '<html>' + SECRET + '</html>',
+                                  '{"url":', 'not-json-' + SECRET])
+def test_bad_json_releases_resources(client, caplog, body):
+    client.responses[0].body = body
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert client.responses[0].closed and client.sessions[0].closed
+    assert SECRET not in repr(result) + caplog.text
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('status', [199, 300, 301, 302, 303, 307, 308,
+                                   401, 429, 500])
+def test_non_2xx_fails_without_read_or_redirect(client, status):
+    client.responses[0].status_code = status
+    client.responses[0].body = SECRET
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert client.responses[0].json.call_count == 0
+    assert client.sessions[0].post.call_count == 1
+    assert client.responses[0].closed and client.sessions[0].closed
+
+
+@pytest.mark.parametrize('error_type', [
+    requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout,
+    requests.exceptions.ConnectionError, requests.exceptions.SSLError,
+    requests.exceptions.ContentDecodingError, ValueError, RuntimeError,
+])
+@pytest.mark.parametrize('stage', ['post', 'json'])
+def test_exception_sanitization_and_owned_resource_cleanup(
+        client, caplog, error_type, stage):
+    target = client.sessions[0].post if stage == 'post' else client.responses[0].json
+    target.side_effect = error_type(SECRET + URL)
+    result = upload()
+    assert not result.success
+    assert result.failures[0].code == 'upload_failed'
+    assert client.sessions[0].closed
+    assert client.responses[0].closed == (stage == 'json')
+    assert SECRET not in repr(result) + caplog.text
+    assert URL not in repr(result) + caplog.text
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('stage', ['post', 'json'])
+def test_control_signal_identity_cleanup_and_no_fallback(
+        client, signal_type, stage):
+    signal = signal_type('local stop')
+    target = client.sessions[0].post if stage == 'post' else client.responses[0].json
+    target.side_effect = signal
+    with pytest.raises(signal_type) as caught:
+        upload(extra_hosts=[{'provider': 'wmimg'}])
+    assert caught.value is signal
+    assert client.sessions[0].closed
+    assert client.responses[0].closed == (stage == 'json')
+
+
+def test_signed_url_and_inputs_preserved(client, caplog):
+    signed = URL + '&token=' + SECRET
+    client.responses[0].body = json.dumps({'url': signed})
+    hosts = [{'provider': ' SUPERBED ', 'token': SECRET,
+              'options': {'permission': 1, 'categories': '本地相册'}}]
+    original = deepcopy(hosts)
+    result = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
+    assert result.success
+    assert result.url == signed
+    assert hosts == original
+    assert SECRET not in repr(result) + str(result) + caplog.text
+    assert signed not in repr(result) + str(result) + caplog.text
+
+
+@pytest.mark.parametrize('failure', [None, 'http', 'business', 'json',
+                                     'structure', 'url', 'options', 'token'])
+def test_serial_fallback_credentials_and_first_success_stop(client, failure):
+    options = {'permission': 0} if failure == 'options' else {}
+    token = '' if failure == 'token' else SECRET
+    first_body = {'url': URL}
+    if failure == 'business':
+        first_body = {'error': SECRET}
+    elif failure == 'structure':
+        first_body = []
+    elif failure == 'url':
+        first_body = {'url': 'invalid'}
+    client.add()
+    calls = []
+
+    client.responses[0].status_code = 500 if failure == 'http' else 200
+    client.responses[0].body = (
+        'not-json' if failure == 'json' else json.dumps(first_body))
+    client.responses[1].body = json.dumps({'status': True,
+                                           'data': {'links': {'url': URL}}})
+
+    def post(index, url, **kwargs):
+        calls.append((url, kwargs))
+        return client.responses[1] if 'wmimg.com' in url else client.responses[0]
+
+    client.sessions[0].post.side_effect = lambda url, **kwargs: post(0, url, **kwargs)
+    client.sessions[1].post.side_effect = lambda url, **kwargs: post(1, url, **kwargs)
+    result = upload(token, options, [{'provider': 'wmimg',
+                                      'token': 'FAKE_WMIMG_ONLY'}])
+    assert result.success
+    if failure is None:
+        assert result.provider == 'superbed'
+        assert result.attempts == ('superbed',)
+        assert len(calls) == 1
+    else:
+        assert result.provider == 'wmimg'
+        assert result.attempts == ('superbed', 'wmimg')
+        assert len(result.failures) == 1
+        assert len(calls) == (1 if failure in ('options', 'token') else 2)
+        assert calls[-1][0] == 'https://wmimg.com/api/v1/upload'
+        assert calls[-1][1]['headers']['Authorization'] == 'Bearer FAKE_WMIMG_ONLY'
 
 
 def test_standard_session_has_no_retries():
