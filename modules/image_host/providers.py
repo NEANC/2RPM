@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import PurePath
 import logging
 import re
+import sys
 import uuid
 
 import requests
@@ -238,13 +239,33 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
             }
             if headers is not None:
                 request_options['headers'] = headers
-            with requests.Session() as session:
-                with session.post(
-                        domain + endpoint_path, **request_options) as response:
-                    if not 200 <= response.status_code < 300:
-                        raise ImageHostError('upload_failed', '') from None
-                    payload = response.json()
-                    return _parse_superbed(version, payload)
+            session = requests.Session()
+            response = None
+            try:
+                response = session.post(
+                    domain + endpoint_path, **request_options)
+                if not 200 <= response.status_code < 300:
+                    raise ImageHostError('upload_failed', '') from None
+                payload = response.json()
+                return _parse_superbed(version, payload)
+            finally:
+                pending = sys.exc_info()[1]
+                interrupted = pending is not None and not isinstance(
+                    pending, Exception)
+                cleanup_failed = False
+                try:
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            cleanup_failed = True
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        cleanup_failed = True
+                if cleanup_failed and not interrupted:
+                    raise ImageHostError('upload_failed', '') from None
         except ImageHostError as error:
             if domain == domains[-1]:
                 raise ImageHostError(error.code, '') from None

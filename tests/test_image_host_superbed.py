@@ -636,6 +636,44 @@ def test_registry_control_signal_does_not_reach_next_provider(
     later.assert_not_called()
 
 
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('domain', [0, 1])
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit,
+                                        GeneratorExit])
+@pytest.mark.parametrize('stage', ['post', 'json', 'parse'])
+@pytest.mark.parametrize('cleanup', ['response', 'session', 'both'])
+def test_cleanup_preserves_control_signal_matrix(
+        client, monkeypatch, version, domain, signal_type, stage, cleanup):
+    client.responses[0].body = json.dumps(payload(version))
+    if domain:
+        client.responses[0].status_code = 503
+        client.add(version=version)
+    session = client.sessions[domain]
+    response = client.responses[domain]
+    signal = signal_type('local stop')
+    if stage == 'parse':
+        monkeypatch.setattr(providers, '_parse_superbed',
+                            Mock(side_effect=signal))
+    else:
+        target = session.post if stage == 'post' else response.json
+        target.side_effect = signal
+    if cleanup in ('response', 'both'):
+        response.close.side_effect = RuntimeError('RAW_BODY_7319')
+    if cleanup in ('session', 'both'):
+        session.close.side_effect = RuntimeError(SECRET)
+    later = Mock(return_value=URL)
+    monkeypatch.setitem(registry.UPLOADERS, 'later', later)
+    with pytest.raises(BaseException) as caught:
+        upload(options={'api_version': version},
+               extra_hosts=[{'provider': 'later'}])
+    assert caught.value is signal
+    assert len(client.created) == domain + 1
+    assert session.post.call_count == 1
+    assert response.close.call_count == int(stage != 'post')
+    assert session.close.call_count == 1
+    later.assert_not_called()
+
+
 def test_standard_session_has_no_retries():
     with REAL_SESSION() as session:
         for scheme in ('http://', 'https://'):
