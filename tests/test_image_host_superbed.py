@@ -383,6 +383,15 @@ def test_invalid_url_uses_core_safe_error(client, caplog, url):
     assert SECRET not in caplog.text + repr(result)
 
 
+def test_direct_parser_invalid_url_has_no_exception_chain():
+    with pytest.raises(ImageHostError) as caught:
+        providers._parse_superbed('legacy', {'err': 0, 'url': 'invalid'})
+    assert caught.value.code == 'invalid_url'
+    assert str(caught.value) == '图床返回的图片链接无效'
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
 @pytest.mark.parametrize('body', ['', '<html>' + SECRET + '</html>',
                                   '{"url":', 'not-json-' + SECRET])
 def test_bad_json_releases_resources(client, caplog, body):

@@ -275,19 +275,27 @@ def _parse_superbed(version, payload):
         if (not isinstance(files, list) or len(files) != 1
                 or not isinstance(files[0], Mapping)):
             raise ImageHostError('upload_failed', '') from None
+        error_code = None
         try:
-            return validate_image_url(files[0].get('url'))
+            url = validate_image_url(files[0].get('url'))
         except ImageHostError as error:
-            raise ImageHostError(error.code, '') from None
+            error_code = error.code
+        if error_code is not None:
+            raise ImageHostError(error_code, '') from None
+        return url
     if (payload.get('error') or payload.get('success') is False
             or payload.get('status') is False):
         raise ImageHostError('upload_failed', '') from None
     if type(payload.get('err')) is not int or payload.get('err') != 0:
         raise ImageHostError('upload_failed', '') from None
+    error_code = None
     try:
-        return validate_image_url(payload.get('url'))
+        url = validate_image_url(payload.get('url'))
     except ImageHostError as error:
-        raise ImageHostError(error.code, '') from None
+        error_code = error.code
+    if error_code is not None:
+        raise ImageHostError(error_code, '') from None
+    return url
 
 
 def _prepare_superbed(token, options, filename):
