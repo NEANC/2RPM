@@ -219,47 +219,50 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     官方提取根级 url，不要求额外成功字段；明确失败标记防御性拒绝。
     每次最多一次请求，连接和读取超时不保证服务端尚未保存图片。
     """
-    if not isinstance(token, str) or not token:
-        raise ImageHostError('invalid_token', '')
-    permission = options.get('permission', 1)
-    if (not isinstance(permission, int) or isinstance(permission, bool)
-            or permission != 1 or 'privacy' in options):
-        raise ImageHostError('invalid_options', '')
-
-    data = {'token': token}
-    if 'categories' in options:
-        categories = options['categories']
-        if not isinstance(categories, str):
-            raise ImageHostError('invalid_options', '')
-        data['categories'] = categories
-    if any(name not in {'permission', 'categories'} for name in options):
-        LOGGER.warning('Superbed 存在不支持的其他选项，已忽略')
-
-    try:
-        with requests.Session() as session:
-            with session.post(
-                    SUPERBED_ENDPOINT,
-                    data=data,
-                    files={'file': (filename, image_bytes, _image_mime(filename))},
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    verify=True,
-                    stream=True,
-                    allow_redirects=False) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '')
-                payload = response.json()
-                if not isinstance(payload, Mapping):
-                    raise ImageHostError('upload_failed', '')
-                if (payload.get('success') is False
-                        or payload.get('status') is False
-                        or payload.get('error')):
-                    raise ImageHostError('upload_failed', '')
-                return validate_image_url(payload.get('url'))
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    # 离开异常处理器后再抛出，避免保存包含凭证或正文的异常链。
+    materials, code = _prepare_superbed(token, options, filename)
+    if code is not None:
+        raise ImageHostError(code, '')
+    version, headers, data, file_key, mime = materials
+    domains = SUPERBED_DOMAINS if version == 'v1' else (SUPERBED_DOMAINS[1],)
+    endpoint_path = SUPERBED_CONTRACTS[version][0]
+    for domain in domains:
+        retryable = False
+        try:
+            request_options = {
+                'data': data,
+                'files': {file_key: (filename, image_bytes, mime)},
+                'timeout': (CONNECT_TIMEOUT, READ_TIMEOUT),
+                'verify': True,
+                'stream': True,
+                'allow_redirects': False,
+            }
+            if headers is not None:
+                request_options['headers'] = headers
+            with requests.Session() as session:
+                with session.post(
+                        domain + endpoint_path, **request_options) as response:
+                    if not 200 <= response.status_code < 300:
+                        retryable = True
+                        raise ImageHostError('upload_failed', '')
+                    payload = response.json()
+                    if not isinstance(payload, Mapping):
+                        raise ImageHostError('upload_failed', '')
+                    if version == 'v1':
+                        if (payload.get('success') is not True
+                                or not payload.get('files')):
+                            raise ImageHostError('upload_failed', '')
+                        return validate_image_url(payload['files'][0].get('url'))
+                    if (payload.get('err') not in (0, None)
+                            or payload.get('error')
+                            or payload.get('success') is False
+                            or payload.get('status') is False):
+                        raise ImageHostError('upload_failed', '')
+                    return validate_image_url(payload.get('url'))
+        except ImageHostError:
+            if not retryable or domain == domains[-1]:
+                raise
+        except Exception:
+            break
     raise ImageHostError('upload_failed', '')
 
 

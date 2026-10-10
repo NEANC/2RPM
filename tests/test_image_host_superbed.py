@@ -40,6 +40,8 @@ def endpoint(version, domain):
 
 
 def upload(token=SECRET, options=None, extra_hosts=(), context=None):
+    if options is None:
+        options = {'api_version': 'legacy'}
     hosts = [{'provider': 'superbed', 'token': token, 'options': options}]
     return registry.upload_with_fallback(
         IMAGE, FILENAME, hosts + list(extra_hosts), context=context)
@@ -177,10 +179,8 @@ def test_registration_and_signature():
 
 
 @pytest.mark.parametrize('options,version', [
-    pytest.param(None, 'v1', marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
-    pytest.param({}, 'v1', marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
-    pytest.param({'api_version': 'v1'}, 'v1',
-                 marks=pytest.mark.xfail(reason='生产端尚未实现 v1 契约')),
+    ({}, 'v1'),
+    ({'api_version': 'v1'}, 'v1'),
     ({'api_version': 'legacy'}, 'legacy'),
 ])
 @pytest.mark.parametrize('second', [False, True])
@@ -299,7 +299,8 @@ def test_unsupported_privacy_cannot_be_ignored(client, privacy):
 
 
 def test_unknown_nonsafety_options_emit_only_fixed_warning(client, caplog):
-    options = {'album_id': 123, 'strategy_id': 456, 'token': SECRET,
+    options = {'api_version': 'legacy', 'album_id': 123, 'strategy_id': 456,
+               'token': SECRET,
                SECRET + '\nforged warning': {'url': URL}}
     original = deepcopy(options)
     with caplog.at_level(logging.WARNING):
@@ -430,7 +431,8 @@ def test_signed_url_and_inputs_preserved(client, caplog):
     signed = URL + '&token=' + SECRET
     client.responses[0].body = json.dumps({'url': signed})
     hosts = [{'provider': ' SUPERBED ', 'token': SECRET,
-              'options': {'permission': 1, 'categories': '本地相册'}}]
+              'options': {'api_version': 'legacy', 'permission': 1,
+                          'categories': '本地相册'}}]
     original = deepcopy(hosts)
     result = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
     assert result.success
