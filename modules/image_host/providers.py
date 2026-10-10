@@ -23,7 +23,6 @@ LOGGER = logging.getLogger(__name__)
 CATBOX_ENDPOINT = 'https://catbox.moe/user/api.php'
 WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
 BEEIMG_ENDPOINT = 'https://beeimg.com/api/upload/file/json/'
-SUPERBED_ENDPOINT = 'https://api.superbed.cn/upload'
 SUPERBED_DOMAINS = ('https://api.superbed.cc', 'https://api.superbed.cn')
 SUPERBED_CONTRACTS = {
     'v1': ('/api/v1/upload/', 'files'),
@@ -209,15 +208,17 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
 
 
 def upload_superbed(image_bytes, filename, token, options) -> str:
-    """依据 Superbed 官方客户端上传示例发送内存 PNG。
+    """按 Superbed 的默认 v1 或显式 legacy 契约上传内存 PNG。
 
-    契约来源：https://www.superbed.cn/help 的 PicGo 和 ShareX 示例；
-    仅核验公开文档，未做真实上传。已解析的凭证原样进入表单 token，
-    不混发通用说明中的 X-API-Key，也不推测匿名支持。categories
-    为可选相册名称字符串。公开是项目约定，不代表已验证服务端权限；
-    未确认私有能力，因此请求前拒绝私有要求及原生 privacy 参数。
-    官方提取根级 url，不要求额外成功字段；明确失败标记防御性拒绝。
-    每次最多一次请求，连接和读取超时不保证服务端尚未保存图片。
+    缺省及显式 ``api_version='v1'`` 使用 ``X-API-Key``、``files``
+    和 ``/api/v1/upload/``；显式 ``api_version='legacy'`` 使用表单
+    ``token``、``file`` 和 ``/upload``。每个版本先请求 ``api.superbed.cc``，
+    失败后最多再请求一次 ``api.superbed.cn``，不跨版本回退或混用认证。
+    v1 要求 ``success``、``total``、``succeed``、``failed`` 及唯一文件的
+    ``url``；legacy 要求 ``err == 0`` 及根级 ``url``，两个 URL 均经过核心
+    校验。token 必须为非空凭证；``folder_id`` 仅用于 v1，``categories``
+    仅用于 legacy，公开权限是项目约定，不代表服务端权限保证。
+    每次最多发送两次请求，连接和读取超时不保证服务端尚未保存图片。
     """
     materials, code = _prepare_superbed(token, options, filename)
     if code is not None:
