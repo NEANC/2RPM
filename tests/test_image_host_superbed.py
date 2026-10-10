@@ -41,7 +41,7 @@ def endpoint(version, domain):
 
 def upload(token=SECRET, options=None, extra_hosts=(), context=None):
     if options is None:
-        options = {'api_version': 'legacy'}
+        options = {}
     hosts = [{'provider': 'superbed', 'token': token, 'options': options}]
     return registry.upload_with_fallback(
         IMAGE, FILENAME, hosts + list(extra_hosts), context=context)
@@ -178,6 +178,13 @@ def test_registration_and_signature():
     assert params.return_annotation is str
 
 
+def test_upload_helper_defaults_to_v1(client):
+    client.responses[0].body = json.dumps(payload('v1'))
+    result = upload()
+    assert result.success
+    assert client.calls[0][0] == endpoint('v1', 'cc')
+
+
 @pytest.mark.parametrize('options,version', [
     ({}, 'v1'),
     ({'api_version': 'v1'}, 'v1'),
@@ -249,8 +256,32 @@ def test_empty_credential_rejected_before_session(client, token):
 @pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
 def test_environment_resolved_once(client, monkeypatch, resolved):
     monkeypatch.setenv(ENV_NAME, resolved)
-    assert upload('${' + ENV_NAME + '}').success
+    client.responses[0].body = json.dumps(payload('legacy'))
+    assert upload('${' + ENV_NAME + '}', {'api_version': 'legacy'}).success
     assert client.calls[0][1]['data'] == {'token': resolved}
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('resolved', [SECRET, '${NOT_EXPANDED_AGAIN}'])
+def test_environment_value_is_frozen_across_domains(client, monkeypatch,
+                                                     version, resolved):
+    monkeypatch.setenv(ENV_NAME, resolved)
+    first = client.sessions[0]
+    first.response.status_code = 503
+    client.add(version=version)
+    original_send = first.post.side_effect
+
+    def send(url, **kwargs):
+        monkeypatch.setenv(ENV_NAME, 'CHANGED_LOCAL_VALUE')
+        return original_send(url, **kwargs)
+
+    first.post.side_effect = send
+    result = upload('${' + ENV_NAME + '}', {'api_version': version})
+    assert result.success
+    for _, kwargs in client.calls:
+        actual = (kwargs['headers']['X-API-Key'] if version == 'v1'
+                  else kwargs['data']['token'])
+        assert actual == resolved
 
 
 @pytest.mark.parametrize('value', [None, ''])
@@ -269,6 +300,7 @@ def test_missing_environment_rejected(client, monkeypatch, value):
 def test_categories_string_preserved(client, categories):
     options = {'api_version': 'legacy', 'categories': categories}
     original = deepcopy(options)
+    client.responses[0].body = json.dumps(payload('legacy'))
     assert upload(options=options).success
     assert client.calls[0][1]['data'] == {
         'token': SECRET, 'categories': categories}
@@ -277,7 +309,7 @@ def test_categories_string_preserved(client, categories):
 
 @pytest.mark.parametrize('categories', [None, False, True, 0, 123, 1.0, [], {}])
 def test_invalid_categories_type_rejected(client, categories):
-    result = upload(options={'categories': categories})
+    result = upload(options={'api_version': 'legacy', 'categories': categories})
     assert not result.success
     assert result.failures[0].code == 'invalid_options'
     assert not client.created
@@ -306,6 +338,7 @@ def test_unknown_nonsafety_options_emit_only_fixed_warning(client, caplog):
                'token': SECRET,
                SECRET + '\nforged warning': {'url': URL}}
     original = deepcopy(options)
+    client.responses[0].body = json.dumps(payload('legacy'))
     with caplog.at_level(logging.WARNING):
         result = upload(options=options)
     assert result.success
@@ -521,6 +554,86 @@ def test_serial_fallback_credentials_and_first_success_stop(client, failure):
         assert len(client.calls) == (1 if failure in ('options', 'token') else 3)
         assert client.calls[-1][0] == 'https://wmimg.com/api/v1/upload'
         assert client.calls[-1][1]['headers']['Authorization'] == 'Bearer FAKE_WMIMG_ONLY'
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+def test_real_registry_success_stops_after_superbed(client, monkeypatch, version):
+    later = Mock(side_effect=AssertionError('不应到达后续图床'))
+    monkeypatch.setitem(registry.UPLOADERS, 'later', later)
+    client.responses[0].body = json.dumps(payload(version))
+    hosts = [
+        {'provider': 'superbed', 'token': SECRET,
+         'options': {'api_version': version}},
+        {'provider': 'later'},
+    ]
+    result = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
+    assert result.success
+    assert result.provider == 'superbed'
+    assert result.attempts == ('superbed',)
+    assert result.failures == ()
+    later.assert_not_called()
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+def test_real_registry_uses_wmimg_after_both_domains_fail(client, version):
+    for response in client.responses:
+        response.status_code = 500
+    client.add(status=500, version=version)
+    client.add(status=200, body={
+        'status': True, 'data': {'links': {'url': URL}}})
+    result = upload(options={'api_version': version}, extra_hosts=[
+        {'provider': 'wmimg', 'token': 'FAKE_WMIMG_ONLY'},
+    ])
+    assert result.success
+    assert result.provider == 'wmimg'
+    assert result.attempts == ('superbed', 'wmimg')
+    assert len(result.failures) == 1
+    assert result.failures[0].provider == 'superbed'
+    assert result.failures[0].code == 'upload_failed'
+    assert len(client.calls) == 3
+    assert client.calls[-1][0] == providers.WMIMG_ENDPOINT
+    assert client.calls[-1][1]['headers']['Authorization'] == (
+        'Bearer FAKE_WMIMG_ONLY')
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+def test_registry_budget_restarts_from_cc_on_next_call(client, version):
+    client.responses[0].status_code = 500
+    for status in (500, 500, 200):
+        client.add(status=status, version=version)
+    hosts = [{'provider': 'superbed', 'token': SECRET,
+              'options': {'api_version': version}}]
+    first = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
+    second = registry.upload_with_fallback(IMAGE, FILENAME, hosts)
+    assert not first.success
+    assert second.success
+    assert first.attempts == second.attempts == ('superbed',)
+    assert len(first.failures) == 1
+    assert second.failures == ()
+    assert [url for url, _ in client.calls] == [
+        endpoint(version, domain) for domain in ('cc', 'cn', 'cc', 'cn')]
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('stage', ['post', 'json'])
+def test_registry_control_signal_does_not_reach_next_provider(
+        client, monkeypatch, version, stage):
+    signal = KeyboardInterrupt('local stop')
+    client.responses[0].status_code = 503
+    second, response = client.add(version=version)
+    target = second.post if stage == 'post' else response.json
+    target.side_effect = signal
+    later = Mock(side_effect=AssertionError('不应到达后续图床'))
+    monkeypatch.setitem(registry.UPLOADERS, 'later', later)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        upload(options={'api_version': version}, extra_hosts=[
+            {'provider': 'later'},
+        ])
+    assert caught.value is signal
+    assert len(client.created) == 2
+    assert second.close.call_count == 1
+    assert response.close.call_count == int(stage == 'json')
+    later.assert_not_called()
 
 
 def test_standard_session_has_no_retries():
