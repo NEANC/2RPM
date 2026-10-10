@@ -129,6 +129,7 @@ push_settings:
 - [无铭图床](https://wmimg.com)
 - [蜜蜂图床](https://www.beeimg.cn/)
 - [闪电图床](https://www.boltp.com/)
+- [Superbed（聚合图床）](https://www.superbed.cn/)
 - [BeeIMG.com](https://beeimg.com)
   - 支持匿名上传，匿名上传有效期未知，登陆后未找到 API Key 配置
 
@@ -137,8 +138,45 @@ push_settings:
 - [catbox](https://catbox.moe)
   - 测试上传超时，使用代理也超时
   - 理论上支持匿名上传，匿名上传有效期2年
-- [Superbed（聚合图床）](https://www.superbed.cn/)
-  - 不付费无法获取 API Key，没有便宜的月付计划
+
+### Superbed 版本与双域上传
+
+`provider: superbed` 缺省使用 `options.api_version: v1`。版本仅接受精确字符串 `v1` 或 `legacy`，不去空白、不转小写；不会自动跨版本或切换认证方式。
+
+```yaml
+provider: superbed
+token: '${SUPERBED_API_KEY}'
+```
+
+新版使用 `X-API-Key`、multipart `files`、`/api/v1/upload/`，可选 `folder_id` 必须是 UUID 字符串；发送时保留原字符串。示例 UUID 仅说明格式，需要替换为账号实际文件夹 UUID，或省略该项。
+
+```yaml
+provider: superbed
+token: '${SUPERBED_API_KEY}'
+options:
+  api_version: v1
+  folder_id: '123e4567-e89b-12d3-a456-426614174000'
+  permission: 1
+```
+
+兼容版使用表单 `token`、multipart `file`、`/upload`。可选 `categories` 是保留空白的层级路径字符串，也允许空字符串。
+
+```yaml
+provider: superbed
+token: '${SUPERBED_API_KEY}'
+options:
+  api_version: legacy
+  categories: 'screenshots/2026'
+  permission: 1
+```
+
+运行前由用户安全设置环境变量 `SUPERBED_API_KEY`，不要将凭证写入仓库。v1 中禁止出现 `categories`，legacy 中禁止出现 `folder_id`，即使值为空也拒绝。`permission` 只接受整数 1，`privacy` 不受支持；公开是项目约定，不表示已验证服务端权限。
+
+原来省略版本的配置现在使用 v1。已有 `categories` 的配置必须显式增加 `api_version: legacy`，或主动迁移为真实文件夹 UUID；程序不自动转换路径或改写配置。
+
+每次调用固定从 `api.superbed.cc` 开始，失败才尝试 `api.superbed.cn`，每域最多一个 POST，总计最多两个；任一成功即停止。两域失败后，按原配置顺序尝试后续图床；下次上传仍从 `.cc` 开始。每次请求连接/读取超时为 5/15 秒，启用 TLS 校验，不跟随上传重定向，不自动 HTTP 重试。超时不证明服务端没有保存图片，双域或后续图床重传可能产生重复文件；不承诺幂等、去重、两域同步或自动删除。
+
+适配器只上传单个内存文件，不提供批量、远程 URL 抓取、Base64、目录或模板能力，也不下载图片验证。返回直链保留完整签名；更多接口资料、独立 HTTP 历史观测及其验证边界见 [Superbed API 参考](Superbed_api.md)。
 
 ---
 
