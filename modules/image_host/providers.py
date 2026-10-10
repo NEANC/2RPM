@@ -247,7 +247,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                 if not 200 <= response.status_code < 300:
                     raise ImageHostError('upload_failed', '') from None
                 payload = response.json()
-                return _parse_superbed(version, payload)
+                url, code = _parse_superbed(version, payload)
             finally:
                 pending = sys.exc_info()[1]
                 interrupted = pending is not None and not isinstance(
@@ -266,22 +266,21 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                         cleanup_failed = True
                 if cleanup_failed and not interrupted:
                     raise ImageHostError('upload_failed', '') from None
-        except ImageHostError as error:
-            code = (error.code if type(error.code) is str
-                    and error.code in ('upload_failed', 'invalid_url')
-                    else 'upload_failed')
         except Exception:
             code = 'upload_failed'
+        if code is None:
+            return url
     raise ImageHostError(code, '')
 
 
 def _parse_superbed(version, payload):
+    """通过安全结果区分响应结构与链接校验失败，不传递底层异常。"""
     if not isinstance(payload, Mapping):
-        raise ImageHostError('upload_failed', '') from None
+        return None, 'upload_failed'
     if version == 'v1':
         if (payload.get('success') is False or payload.get('status') is False
                 or payload.get('error')):
-            raise ImageHostError('upload_failed', '') from None
+            return None, 'upload_failed'
         if (payload.get('success') is not True
                 or type(payload.get('total')) is not int
                 or payload.get('total') != 1
@@ -289,32 +288,23 @@ def _parse_superbed(version, payload):
                 or payload.get('succeed') != 1
                 or type(payload.get('failed')) is not int
                 or payload.get('failed') != 0):
-            raise ImageHostError('upload_failed', '') from None
+            return None, 'upload_failed'
         files = payload.get('files')
         if (not isinstance(files, list) or len(files) != 1
                 or not isinstance(files[0], Mapping)):
-            raise ImageHostError('upload_failed', '') from None
-        error_code = None
-        try:
-            url = validate_image_url(files[0].get('url'))
-        except ImageHostError as error:
-            error_code = error.code
-        if error_code is not None:
-            raise ImageHostError(error_code, '') from None
-        return url
-    if (payload.get('error') or payload.get('success') is False
-            or payload.get('status') is False):
-        raise ImageHostError('upload_failed', '') from None
-    if type(payload.get('err')) is not int or payload.get('err') != 0:
-        raise ImageHostError('upload_failed', '') from None
-    error_code = None
+            return None, 'upload_failed'
+        candidate = files[0].get('url')
+    else:
+        if (payload.get('error') or payload.get('success') is False
+                or payload.get('status') is False):
+            return None, 'upload_failed'
+        if type(payload.get('err')) is not int or payload.get('err') != 0:
+            return None, 'upload_failed'
+        candidate = payload.get('url')
     try:
-        url = validate_image_url(payload.get('url'))
-    except ImageHostError as error:
-        error_code = error.code
-    if error_code is not None:
-        raise ImageHostError(error_code, '') from None
-    return url
+        return validate_image_url(candidate), None
+    except Exception:
+        return None, 'invalid_url'
 
 
 def _prepare_superbed(token, options, filename):

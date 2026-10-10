@@ -416,13 +416,9 @@ def test_invalid_url_uses_core_safe_error(client, caplog, url):
     assert SECRET not in caplog.text + repr(result)
 
 
-def test_direct_parser_invalid_url_has_no_exception_chain():
-    with pytest.raises(ImageHostError) as caught:
-        providers._parse_superbed('legacy', {'err': 0, 'url': 'invalid'})
-    assert caught.value.code == 'invalid_url'
-    assert str(caught.value) == '图床返回的图片链接无效'
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+def test_direct_parser_invalid_url_returns_safe_result():
+    assert providers._parse_superbed(
+        'legacy', {'err': 0, 'url': 'invalid'}) == (None, 'invalid_url')
 
 
 @pytest.mark.parametrize('body', ['', '<html>' + SECRET + '</html>',
@@ -442,7 +438,7 @@ def test_bad_json_releases_resources(client, caplog, body):
 @pytest.mark.parametrize('version', ['v1', 'legacy'])
 @pytest.mark.parametrize('stage', ['post', 'json', 'parse'])
 @pytest.mark.parametrize('code', [
-    'invalid_options', 'invalid_token', 'business_rejected',
+    'invalid_url', 'upload_failed', 'invalid_options', 'invalid_token', 'business_rejected',
     SECRET, None, [], {}, True, 1,
 ])
 def test_untrusted_error_code_matrix(client, monkeypatch, caplog,
@@ -470,7 +466,7 @@ def test_untrusted_error_code_matrix(client, monkeypatch, caplog,
 
 @pytest.mark.parametrize('version', ['v1', 'legacy'])
 @pytest.mark.parametrize('last_code', ['upload_failed', 'invalid_url'])
-def test_final_code_uses_last_domain_whitelist(client, version, last_code):
+def test_final_code_uses_last_domain_boundary_result(client, version, last_code):
     client.responses[0].body = json.dumps(payload(version, 'invalid'))
     body = (payload(version, 'invalid') if last_code == 'invalid_url'
             else {'error': 'RAW_BODY_7319'})
@@ -810,6 +806,55 @@ def test_prepare_mime_and_warning_order(client, caplog):
     client.create.assert_not_called()
 
 
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('stage', [
+    'session', 'post', 'json', 'response_close', 'session_close',
+])
+def test_lifecycle_cannot_inject_invalid_url(client, caplog, version, stage):
+    client.responses[0].status_code = 503
+    session, response = client.add(version=version)
+    error = ImageHostError('invalid_url', '')
+    error.diagnostic = SECRET + URL + 'RAW_BODY_7319'
+    if stage == 'session':
+        client.create.side_effect = [client.sessions[0], error]
+    else:
+        target = {'post': session.post, 'json': response.json,
+                  'response_close': response.close,
+                  'session_close': session.close}[stage]
+        target.side_effect = error
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(
+            IMAGE, FILENAME, SECRET, {'api_version': version})
+    assert_safe(caught.value, 'upload_failed', caplog.text)
+    assert client.create.call_count == 2
+    if stage != 'session':
+        assert session.close.call_count == 1
+        assert response.close.call_count == int(stage != 'post')
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('error_type', [Exception, ValueError, RuntimeError,
+                                       ImageHostError])
+def test_validator_exception_is_always_invalid_url(
+        client, monkeypatch, caplog, version, error_type):
+    client.responses[0].body = json.dumps(payload(version))
+    client.add(version=version)
+    error = (ImageHostError('invalid_options', '')
+             if error_type is ImageHostError
+             else error_type(SECRET + URL + 'RAW_BODY_7319'))
+    validator = Mock(side_effect=error)
+    monkeypatch.setattr(providers, 'validate_image_url', validator)
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(
+            IMAGE, FILENAME, SECRET, {'api_version': version})
+    assert_safe(caught.value, 'invalid_url', caplog.text)
+    assert validator.call_count == client.create.call_count == 2
+    assert all(s.close.call_count == 1 for s in client.sessions)
+    assert all(r.close.call_count == 1 for r in client.responses)
+    assert not caplog.records
+
+
 @pytest.mark.parametrize('body', [
     {'success': 1, 'total': 1, 'succeed': 1, 'failed': 0,
      'files': [{'url': URL}]},
@@ -819,11 +864,7 @@ def test_prepare_mime_and_warning_order(client, caplog):
      'files': [{'url': URL}, {'url': URL}]},
 ])
 def test_parse_v1_requires_exact_contract(body):
-    with pytest.raises(ImageHostError) as caught:
-        providers._parse_superbed('v1', body)
-    assert caught.value.code == 'upload_failed'
-    assert caught.value.__context__ is None
-    assert caught.value.__cause__ is None
+    assert providers._parse_superbed('v1', body) == (None, 'upload_failed')
 
 
 @pytest.mark.parametrize('marker', [
@@ -833,34 +874,24 @@ def test_parse_v1_requires_exact_contract(body):
 def test_parse_v1_rejects_explicit_failure_markers(marker):
     body = payload()
     body.update(marker)
-    with pytest.raises(ImageHostError) as caught:
-        providers._parse_superbed('v1', body)
-    assert caught.value.code == 'upload_failed'
-    assert caught.value.__context__ is None
-    assert caught.value.__cause__ is None
+    assert providers._parse_superbed('v1', body) == (None, 'upload_failed')
 
 
 def test_parse_v1_accepts_exact_contract():
-    assert providers._parse_superbed('v1', payload()) == URL
+    assert providers._parse_superbed('v1', payload()) == (URL, None)
 
 
 def test_parse_legacy_requires_strict_zero_error():
     for body in ({'url': URL}, {'err': False, 'url': URL},
                  {'err': 0.0, 'url': URL}):
-        with pytest.raises(ImageHostError) as caught:
-            providers._parse_superbed('legacy', body)
-        assert caught.value.code == 'upload_failed'
-        assert caught.value.__context__ is None
-        assert caught.value.__cause__ is None
+        assert providers._parse_superbed('legacy', body) == (
+            None, 'upload_failed')
 
 
 def test_parse_explicit_failure_precedes_legacy_success():
-    with pytest.raises(ImageHostError) as caught:
-        providers._parse_superbed(
-            'legacy', {'err': 0, 'success': False, 'url': URL})
-    assert caught.value.code == 'upload_failed'
-    assert caught.value.__context__ is None
-    assert caught.value.__cause__ is None
+    assert providers._parse_superbed(
+        'legacy', {'err': 0, 'success': False, 'url': URL}) == (
+            None, 'upload_failed')
 
 
 def test_legacy_tries_cc_then_cn(client):
