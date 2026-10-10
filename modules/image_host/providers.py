@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import PurePath
 import logging
 import re
+import uuid
 
 import requests
 
@@ -23,6 +24,11 @@ CATBOX_ENDPOINT = 'https://catbox.moe/user/api.php'
 WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
 BEEIMG_ENDPOINT = 'https://beeimg.com/api/upload/file/json/'
 SUPERBED_ENDPOINT = 'https://api.superbed.cn/upload'
+SUPERBED_DOMAINS = ('https://api.superbed.cc', 'https://api.superbed.cn')
+SUPERBED_CONTRACTS = {
+    'v1': ('/api/v1/upload/', 'files'),
+    'legacy': ('/upload', 'file'),
+}
 BEEIMG_CN_ENDPOINT = 'https://www.beeimg.cn/api/v2/upload'
 BOLTP_ENDPOINT = 'https://www.boltp.com/api/v2/upload'
 V2_SUCCESS_STATUS = 'success'
@@ -255,6 +261,56 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
         pass
     # 离开异常处理器后再抛出，避免保存包含凭证或正文的异常链。
     raise ImageHostError('upload_failed', '')
+
+
+def _prepare_superbed(token, options, filename):
+    if not isinstance(token, str) or not token:
+        return None, 'invalid_token'
+    if not isinstance(options, Mapping):
+        return None, 'invalid_options'
+    version = options.get('api_version', 'v1')
+    if not isinstance(version, str) or version not in SUPERBED_CONTRACTS:
+        return None, 'invalid_options'
+    permission = options.get('permission', 1)
+    if type(permission) is not int or permission != 1 or 'privacy' in options:
+        return None, 'invalid_options'
+    forbidden = 'categories' if version == 'v1' else 'folder_id'
+    if forbidden in options:
+        return None, 'invalid_options'
+    headers = None
+    data = {}
+    if version == 'v1':
+        try:
+            requests.utils.check_header_validity(('X-API-Key', token))
+            token.encode('latin-1')
+        except Exception:
+            return None, 'invalid_token'
+        headers = {'X-API-Key': token}
+        if 'folder_id' in options:
+            folder = options['folder_id']
+            if not isinstance(folder, str) or not folder:
+                return None, 'invalid_options'
+            try:
+                uuid.UUID(folder)
+            except Exception:
+                return None, 'invalid_options'
+            data['folder_id'] = folder
+    else:
+        data['token'] = token
+        if 'categories' in options:
+            categories = options['categories']
+            if not isinstance(categories, str):
+                return None, 'invalid_options'
+            data['categories'] = categories
+    try:
+        mime = _image_mime(filename)
+    except Exception:
+        return None, 'invalid_input'
+    known = {'api_version', 'permission',
+             'folder_id' if version == 'v1' else 'categories'}
+    if any(name not in known for name in options):
+        LOGGER.warning('Superbed 存在不支持的其他选项，已忽略')
+    return (version, headers, data, SUPERBED_CONTRACTS[version][1], mime), None
 
 
 def validate_v2_options(options, *, provider='beeimg_cn', require_storage=True):
