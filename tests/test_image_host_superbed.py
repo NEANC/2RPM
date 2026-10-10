@@ -185,7 +185,7 @@ def test_registration_and_signature():
 ])
 @pytest.mark.parametrize('second', [False, True])
 def test_exact_contract_request(client, options, version, second):
-    if second:
+    if second and version == 'v1':
         client.responses[0].status_code = 503
         client.add(version=version)
     else:
@@ -195,7 +195,8 @@ def test_exact_contract_request(client, options, version, second):
     assert result.success and result.url == URL
     assert result.attempts == ('superbed',) and result.failures == ()
     assert options == original
-    domains = ['cc', 'cn'] if second else ['cc']
+    domains = ['cc', 'cn'] if second and version == 'v1' else [
+        'cc' if version == 'v1' else 'cn']
     assert len(client.calls) == len(domains)
     for index, ((url, kwargs), domain) in enumerate(zip(client.calls, domains)):
         expected = {
@@ -263,7 +264,7 @@ def test_missing_environment_rejected(client, monkeypatch, value):
 
 @pytest.mark.parametrize('categories', ['', '截图相册', '  原样相册  ', '123'])
 def test_categories_string_preserved(client, categories):
-    options = {'categories': categories}
+    options = {'api_version': 'legacy', 'categories': categories}
     original = deepcopy(options)
     assert upload(options=options).success
     assert client.calls[0][1]['data'] == {
@@ -316,7 +317,7 @@ def test_unknown_nonsafety_options_emit_only_fixed_warning(client, caplog):
 @pytest.mark.parametrize('extra', [{}, {'message': 'local information'}])
 def test_root_url_needs_no_invented_success_fields(client, extra):
     client.responses[0].body = json.dumps({'url': URL, **extra})
-    result = upload()
+    result = upload(options={'api_version': 'legacy'})
     assert result.success and result.url == URL
 
 
@@ -327,7 +328,7 @@ def test_root_url_needs_no_invented_success_fields(client, extra):
 def test_explicit_failure_marker_rejected(client, caplog, marker):
     client.responses[0].body = json.dumps({'url': URL, 'message': SECRET,
                                             **marker})
-    result = upload()
+    result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'upload_failed'
     assert SECRET not in caplog.text + repr(result)
@@ -349,7 +350,7 @@ def test_invalid_json_structure_rejected(client, body):
 ])
 def test_missing_root_url_never_uses_other_links(client, body):
     client.responses[0].body = json.dumps(body)
-    result = upload()
+    result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'invalid_url'
 
@@ -360,8 +361,8 @@ def test_missing_root_url_never_uses_other_links(client, body):
     'https://example.com:' + SECRET,
 ])
 def test_invalid_url_uses_core_safe_error(client, caplog, url):
-    client.responses[0].body = json.dumps({'url': url})
-    result = upload()
+    client.responses[0].body = json.dumps(payload(version='v1', url=url))
+    result = upload(options={'api_version': 'legacy'})
     assert not result.success
     assert result.failures[0].code == 'invalid_url'
     assert SECRET not in caplog.text + repr(result)
@@ -442,7 +443,9 @@ def test_signed_url_and_inputs_preserved(client, caplog):
 @pytest.mark.parametrize('failure', [None, 'http', 'business', 'json',
                                      'structure', 'url', 'options', 'token'])
 def test_serial_fallback_credentials_and_first_success_stop(client, failure):
-    options = {'permission': 0} if failure == 'options' else {}
+    options = {'api_version': 'legacy'}
+    if failure == 'options':
+        options['permission'] = 0
     token = '' if failure == 'token' else SECRET
     first_body = {'url': URL}
     if failure == 'business':
