@@ -39,6 +39,11 @@ def test_remaining_providers_multipart_contract(
             'data': {'links': {'url': URL}, 'public_url': URL},
             'files': {'status': 'Success', 'url': URL}, 'url': URL,
         }
+        if provider == 'superbed':
+            payload = {
+                'success': True, 'total': 1, 'succeed': 1, 'failed': 0,
+                'files': [{'url': URL}],
+            }
         response._content = json.dumps(payload).encode()
         return response
 
@@ -49,7 +54,8 @@ def test_remaining_providers_multipart_contract(
     assert uploader(data, filename, 'SYNTHETIC_TOKEN', {'storage_id': 1}
                     if provider in ('beeimg_cn', 'boltp') else {}) == URL
     assert len(http_calls) == 1
-    part = http_calls[0][2]['files']['file']
+    key = 'files' if provider == 'superbed' else 'file'
+    part = http_calls[0][2]['files'][key]
     assert part[0] == filename
     assert part[1] is data
     assert part[2] == mime

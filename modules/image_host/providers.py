@@ -223,10 +223,9 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     if code is not None:
         raise ImageHostError(code, '')
     version, headers, data, file_key, mime = materials
-    domains = SUPERBED_DOMAINS if version == 'v1' else (SUPERBED_DOMAINS[1],)
+    domains = SUPERBED_DOMAINS
     endpoint_path = SUPERBED_CONTRACTS[version][0]
     for domain in domains:
-        retryable = False
         try:
             request_options = {
                 'data': data,
@@ -242,28 +241,50 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                 with session.post(
                         domain + endpoint_path, **request_options) as response:
                     if not 200 <= response.status_code < 300:
-                        retryable = True
-                        raise ImageHostError('upload_failed', '')
+                        raise ImageHostError('upload_failed', '') from None
                     payload = response.json()
-                    if not isinstance(payload, Mapping):
-                        raise ImageHostError('upload_failed', '')
-                    if version == 'v1':
-                        if (payload.get('success') is not True
-                                or not payload.get('files')):
-                            raise ImageHostError('upload_failed', '')
-                        return validate_image_url(payload['files'][0].get('url'))
-                    if (payload.get('err') not in (0, None)
-                            or payload.get('error')
-                            or payload.get('success') is False
-                            or payload.get('status') is False):
-                        raise ImageHostError('upload_failed', '')
-                    return validate_image_url(payload.get('url'))
-        except ImageHostError:
-            if not retryable or domain == domains[-1]:
-                raise
-        except Exception:
-            break
-    raise ImageHostError('upload_failed', '')
+                    return _parse_superbed(version, payload)
+        except ImageHostError as error:
+            if domain == domains[-1]:
+                raise ImageHostError(error.code, '') from None
+        except requests.exceptions.RequestException:
+            if domain == domains[-1]:
+                raise ImageHostError('upload_failed', '') from None
+        except (ValueError, TypeError, KeyError):
+            if domain == domains[-1]:
+                raise ImageHostError('upload_failed', '') from None
+    raise ImageHostError('upload_failed', '') from None
+
+
+def _parse_superbed(version, payload):
+    if not isinstance(payload, Mapping):
+        raise ImageHostError('upload_failed', '') from None
+    if version == 'v1':
+        if (payload.get('success') is not True
+                or type(payload.get('total')) is not int
+                or payload.get('total') != 1
+                or type(payload.get('succeed')) is not int
+                or payload.get('succeed') != 1
+                or type(payload.get('failed')) is not int
+                or payload.get('failed') != 0):
+            raise ImageHostError('upload_failed', '') from None
+        files = payload.get('files')
+        if (not isinstance(files, list) or len(files) != 1
+                or not isinstance(files[0], Mapping)):
+            raise ImageHostError('upload_failed', '') from None
+        try:
+            return validate_image_url(files[0].get('url'))
+        except ImageHostError as error:
+            raise ImageHostError(error.code, '') from None
+    if (payload.get('error') or payload.get('success') is False
+            or payload.get('status') is False):
+        raise ImageHostError('upload_failed', '') from None
+    if type(payload.get('err')) is not int or payload.get('err') != 0:
+        raise ImageHostError('upload_failed', '') from None
+    try:
+        return validate_image_url(payload.get('url'))
+    except ImageHostError as error:
+        raise ImageHostError(error.code, '') from None
 
 
 def _prepare_superbed(token, options, filename):

@@ -185,9 +185,10 @@ def test_registration_and_signature():
 ])
 @pytest.mark.parametrize('second', [False, True])
 def test_exact_contract_request(client, options, version, second):
-    if second and version == 'v1':
+    if second:
         client.responses[0].status_code = 503
         client.add(version=version)
+        client.responses[1].body = json.dumps(payload(version=version))
     else:
         client.responses[0].body = json.dumps(payload(version=version))
     original = deepcopy(options)
@@ -195,8 +196,7 @@ def test_exact_contract_request(client, options, version, second):
     assert result.success and result.url == URL
     assert result.attempts == ('superbed',) and result.failures == ()
     assert options == original
-    domains = ['cc', 'cn'] if second and version == 'v1' else [
-        'cc' if version == 'v1' else 'cn']
+    domains = ['cc', 'cn'] if second else ['cc']
     assert len(client.calls) == len(domains)
     for index, ((url, kwargs), domain) in enumerate(zip(client.calls, domains)):
         expected = {
@@ -578,3 +578,52 @@ def test_prepare_mime_and_warning_order(client, caplog):
             None, 'invalid_input')
     assert not caplog.records
     client.create.assert_not_called()
+
+
+@pytest.mark.parametrize('body', [
+    {'success': 1, 'total': 1, 'succeed': 1, 'failed': 0,
+     'files': [{'url': URL}]},
+    {'success': True, 'total': True, 'succeed': 1, 'failed': 0,
+     'files': [{'url': URL}]},
+    {'success': True, 'total': 1, 'succeed': 1, 'failed': 0,
+     'files': [{'url': URL}, {'url': URL}]},
+])
+def test_parse_v1_requires_exact_contract(body):
+    with pytest.raises(ImageHostError) as caught:
+        providers._parse_superbed('v1', body)
+    assert caught.value.code == 'upload_failed'
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+def test_parse_v1_accepts_exact_contract():
+    assert providers._parse_superbed('v1', payload()) == URL
+
+
+def test_parse_legacy_requires_strict_zero_error():
+    for body in ({'url': URL}, {'err': False, 'url': URL},
+                 {'err': 0.0, 'url': URL}):
+        with pytest.raises(ImageHostError) as caught:
+            providers._parse_superbed('legacy', body)
+        assert caught.value.code == 'upload_failed'
+        assert caught.value.__context__ is None
+        assert caught.value.__cause__ is None
+
+
+def test_parse_explicit_failure_precedes_legacy_success():
+    with pytest.raises(ImageHostError) as caught:
+        providers._parse_superbed(
+            'legacy', {'err': 0, 'success': False, 'url': URL})
+    assert caught.value.code == 'upload_failed'
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+def test_legacy_tries_cc_then_cn(client):
+    client.responses[0].status_code = 503
+    client.add(version='legacy')
+    client.responses[1].body = json.dumps(payload(version='legacy'))
+    result = upload(options={'api_version': 'legacy'})
+    assert result.success
+    assert [call[0] for call in client.calls] == [
+        endpoint('legacy', 'cc'), endpoint('legacy', 'cn')]
