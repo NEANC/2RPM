@@ -237,6 +237,10 @@ class UploadContext:
         """
         entry = self._entry(provider, token)
         if disk_only:
+            entry.metadata = None
+            entry.from_disk = False
+            entry.invalidated = True
+            entry.disk_invalidated = False
             if entry.disk_ready:
                 self._cache_call('invalidate', entry.disk_identity)
                 entry.disk_invalidated = True

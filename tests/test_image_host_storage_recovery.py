@@ -1208,6 +1208,35 @@ def test_registry_rejection_invalidates_cache_when_recovery_budget_is_used(
     assert state['cache'].load(identity) is None
 
 
+def test_registry_exhausted_slot_does_not_reuse_stale_metadata_in_next_slot(
+        integration):
+    """槽位 A 预算耗尽后，槽位 B 同身份重新查询且不额外重传。"""
+    state = integration
+    state['replies'] = [
+        group_reply(), profile_reply(), rejection_reply(),
+        group_reply((21,)), profile_reply(21), upload_reply(),
+    ]
+    hosts = [
+        {'provider': PROVIDER, 'token': SECRET,
+         'options': {'storage_id': 0}},
+        {'provider': PROVIDER, 'token': SECRET},
+    ]
+
+    result = registry_upload(state, hosts)
+
+    assert result.success
+    assert result.attempts == (PROVIDER, PROVIDER)
+    assert [call[0] for call in state['calls']] == [
+        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [14, 21]
+    image, = state['context']._images
+    assert state['context'].storage_state(
+        image, 0, PROVIDER, SECRET).correction_used
+    assert state['context'].storage_state(
+        image, 1, PROVIDER, SECRET).correction_used is False
+    assert not state['replies']
+
+
 @pytest.mark.parametrize('reply, code', [
     ((200, {'status': 'error', 'message': '不存在的储存驱动 '}), 'business_rejected'),
     ((200, {'status': 'error', 'message': '请先绑定手机号'}), 'business_rejected'),
@@ -1417,7 +1446,7 @@ def test_registry_same_identity_slots_have_independent_budgets(integration):
     state['replies'] = [
         group_reply(), profile_reply(), rejection_reply(),
         group_reply((21,)), profile_reply(21), rejection_reply(),
-        rejection_reply(), group_reply((22,)), profile_reply(22), upload_reply(),
+        group_reply((22,)), profile_reply(22), upload_reply(),
     ]
     hosts = [{'provider': PROVIDER, 'token': SECRET}] * 2
     result = registry_upload(state, hosts)
@@ -1425,13 +1454,13 @@ def test_registry_same_identity_slots_have_independent_budgets(integration):
     assert result.attempts == (PROVIDER, PROVIDER)
     assert result.failures
     assert all(f.code == 'storage_unavailable' for f in result.failures)
-    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 21, 22]
-    assert len(state['calls']) == 10
+    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 22]
+    assert len(state['calls']) == 9
     image, = state['context']._images
     first = state['context'].storage_state(image, 0, PROVIDER, SECRET)
     second = state['context'].storage_state(image, 1, PROVIDER, SECRET)
-    assert first.correction_used and second.correction_used
-    assert first.metadata_version < second.metadata_version
+    assert first.correction_used and not second.correction_used
+    assert first.metadata_version == second.metadata_version
     assert not state['replies']
 
 
