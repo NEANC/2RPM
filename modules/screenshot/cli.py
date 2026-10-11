@@ -48,6 +48,9 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message):
         """输出固定参数错误并以退出码 2 结束。"""
+        if message.startswith('duplicate_option:'):
+            option = message.partition(':')[2]
+            self.exit(ARGUMENT_ERROR_CODE, f'参数错误：{option} 重复参数\n')
         self.exit(ARGUMENT_ERROR_CODE, '截图参数无效\n')
 
 
@@ -58,7 +61,7 @@ class OnceAction(argparse.Action):
         """记录选项出现状态，拒绝重复参数。"""
         marker = '_seen_' + self.dest
         if getattr(namespace, marker, False):
-            parser.error('重复参数')
+            parser.error(f'duplicate_option:{option_string}')
         setattr(namespace, marker, True)
         setattr(namespace, self.dest, values)
 

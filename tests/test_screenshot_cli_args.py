@@ -278,6 +278,27 @@ def test_output_and_upload_are_single_string_options():
         assert exit_info.value.code == 2
 
 
+@pytest.mark.parametrize(('option', 'expected'), [
+    ('--output', '参数错误：--output 重复参数\n'),
+    ('--upload', '参数错误：--upload 重复参数\n'),
+])
+def test_duplicate_output_and_upload_name_error_without_echoing_values(
+        monkeypatch, capsys, option, expected):
+    """重复输出或上传选项说明参数名和错误类型，且不截图、不泄密。"""
+    capture, config_spy = _spies(monkeypatch)
+    secret = 'INLINE_SECRET_9317'
+    value = secret if option == '--upload' else 'private-path.png'
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:title', option, value,
+               option, value])
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert error == expected
+    assert secret not in error
+    capture.assert_not_called()
+    config_spy.assert_not_called()
+
+
 @pytest.mark.parametrize('argv', [
     pytest.param([], id='missing-source'),
     pytest.param(['--source', ''], id='empty-source-value'),
