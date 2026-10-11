@@ -3,6 +3,7 @@
 """验证截图本地保留策略、命名与日期目录清理。"""
 
 from datetime import date
+import stat
 
 import pytest
 
@@ -408,6 +409,39 @@ def test_cleanup_warns_and_continues_when_real_tree_mark_delete_fails(
     assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
     assert failed.is_dir()
     assert not remaining.exists()
+
+
+def test_cleanup_continues_after_real_readonly_file_failure(tmp_path):
+    """NTFS 只读文件真实删除失败后仍清理后续过期日期树。"""
+    root = tmp_path / 'screenshot'
+    failed = root / '2020_01_01'
+    remaining = root / '2020_01_02'
+    readonly = failed / 'config' / 'readonly.jpg'
+    readonly.parent.mkdir(parents=True)
+    remaining.mkdir()
+    (remaining / 'payload.bin').write_bytes(b'expired')
+    readonly.write_bytes(b'preserved')
+    readonly.chmod(stat.S_IREAD)
+    try:
+        assert readonly.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        with retention.winfs.directory_entries(str(root)) as (_, entries):
+            names = [name for name, _, _ in entries]
+        assert names.index(failed.name) < names.index(remaining.name)
+        with pytest.raises(OSError) as caught:
+            retention.winfs.remove_tree(str(failed))
+        assert caught.value.winerror == 5
+
+        warnings = retention.cleanup_retention(
+            str(tmp_path), retention.RetentionPolicy(True, 1),
+            today=date(2024, 1, 1))
+
+        assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+        assert readonly.read_bytes() == b'preserved'
+        assert not remaining.exists()
+    finally:
+        readonly.chmod(stat.S_IWRITE)
+    retention.winfs.remove_tree(str(failed))
+    root.rename(tmp_path / 'released')
 
 
 def test_automatic_save_does_not_trigger_retention_cleanup(monkeypatch, tmp_path):
