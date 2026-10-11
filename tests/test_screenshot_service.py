@@ -47,6 +47,27 @@ def test_explicit_source_calls_only_selected_backend(
     other.assert_not_called()
 
 
+@pytest.mark.parametrize('source', ['window', 'adb'])
+@pytest.mark.parametrize('expression', [
+    'App@{version}', 'Straße@{VERSION}', '工具@{Version}',
+    ' App@{version} ', 'App@{vErSiOn}', 'App@{version',
+])
+@pytest.mark.parametrize('image_format', ['jpeg', 'png', 'webp'])
+@pytest.mark.parametrize('purpose', ['automatic', 'manual'])
+def test_service_preserves_version_expression(
+        monkeypatch, source, expression, image_format, purpose):
+    service = service_environment(monkeypatch)
+    selected = getattr(service, f'capture_{source}')
+    other = service.capture_adb if source == 'window' else service.capture_window
+    result = service.capture(
+        source, expression, image_format=image_format, purpose=purpose)
+    assert result is selected.return_value
+    selected.assert_called_once_with(
+        expression, image_format=image_format,
+        **({'purpose': purpose} if source == 'adb' else {}))
+    other.assert_not_called()
+
+
 def test_custom_format_and_purpose_reach_selected_backend(monkeypatch):
     """显式格式和调用目的必须原样传给对应后端。"""
     service = service_environment(monkeypatch)

@@ -84,6 +84,44 @@ def boundaries(monkeypatch):
     return module, capture, upload
 
 
+@pytest.mark.parametrize('invalid_source', ['window', 'adb'])
+@pytest.mark.parametrize('invalid_target', [
+    'App@{vErSiOn}', 'App@{version', 'App@{version}tail',
+])
+def test_pipeline_invalid_version_target_keeps_output_slot(
+        monkeypatch, invalid_source, invalid_target):
+    module, capture, upload = boundaries(monkeypatch)
+    config = section([
+        target(target='App@{version}', out='first'),
+        target(provider=invalid_source, target=invalid_target),
+        target(target='Straße@{Version}', out='last'),
+    ])
+    before = deepcopy(config)
+    batch = module.prepare_screenshots(config, True, ())
+    assert config == before
+    assert list(batch.values) == ['first', 'screenshot_2', 'last', 'screenshot']
+    assert batch.values['screenshot_2'].startswith('截图配置失败：')
+    assert batch.values['first'] == f'![first]({URL})'
+    assert batch.values['last'] == f'![last]({URL})'
+    assert batch.values['screenshot'] == '\n\n'.join(
+        batch.values[name] for name in ('first', 'screenshot_2', 'last'))
+    assert capture.call_count == upload.call_count == 2
+    contexts = []
+    for capture_call, upload_call, expression, name in zip(
+            capture.call_args_list, upload.call_args_list,
+            ('App@{version}', 'Straße@{Version}'), ('first', 'last')):
+        assert capture_call.args == ('window', expression)
+        assert capture_call.kwargs == {
+            'image_format': 'jpeg', 'purpose': 'automatic'}
+        assert upload_call.args == (
+            captured(name=expression).image_bytes, name + '.jpg',
+            before['image_host'])
+        assert set(upload_call.kwargs) == {'context'}
+        contexts.append(upload_call.kwargs['context'])
+    assert isinstance(contexts[0], UploadContext)
+    assert contexts[0] is contexts[1]
+
+
 def test_fixed_interfaces_and_frozen_batch():
     """固定字段、参数名及冻结属性与约定一致。"""
     module = pipeline()

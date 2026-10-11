@@ -596,6 +596,57 @@ def test_inputs_are_not_mutated(monkeypatch):
     assert kwargs == {'process_name': 'demo.exe'}
 
 
+@pytest.mark.parametrize('marker', ['@{version}', '@{VERSION}', '@{Version}'])
+def test_notification_version_targets_reuse_capture_batch(monkeypatch, marker):
+    capture, upload = _install_boundaries(monkeypatch)
+    attempts = Counter()
+
+    def notify(title=None, content=None, **params):
+        key = params.get('sckey') or params.get('token') or params.get('webhook')
+        attempts[key] += 1
+        return _response(500 if attempts[key] == 1 else 200)
+
+    sent, notifier, _ = _install_onepush(monkeypatch, notify)
+    config = _base_config(
+        channels=deepcopy(THREE_CHANNELS),
+        targets=[
+            {'provider': 'window', 'target': 'App' + marker, 'out': 'first'},
+            {'provider': 'window', 'target': 'App@{vErSiOn}'},
+            {'provider': 'adb', 'target': 'serial@{version}'},
+            {'provider': 'window', 'target': 'Straße' + marker, 'out': 'last'},
+        ],
+        retry={'interval': '0s', 'max_count': 2})
+    config['push']['templates']['on_end']['content'] = '{screenshot}'
+    before = deepcopy(config)
+    results = notif.send_notification(config, 'on_end', process_name='demo.exe')
+    assert config == before
+    assert results == [(channel['provider'], True) for channel in THREE_CHANNELS]
+    assert attempts == {'s1': 2, 't1': 2, 'w1': 2}
+    assert notifier.notify.call_count == len(sent) == 6
+    assert len(set(sent)) == 1
+    parts = sent[0][1].split('\n\n')
+    assert len(parts) == 4
+    assert parts[0] == f'![first]({URL})'
+    assert parts[1].startswith('截图配置失败：')
+    assert parts[2].startswith('截图配置失败：')
+    assert parts[3] == f'![last]({URL})'
+    assert capture.call_count == upload.call_count == 2
+    contexts = []
+    for capture_call, upload_call, expression, name in zip(
+            capture.call_args_list, upload.call_args_list,
+            ('App' + marker, 'Straße' + marker), ('first', 'last')):
+        assert capture_call.args == ('window', expression)
+        assert capture_call.kwargs == {
+            'image_format': 'jpeg', 'purpose': 'automatic'}
+        assert upload_call.args == (
+            b'png-' + expression.encode(), name + '.jpg',
+            before['push']['screenshot']['image_host'])
+        assert set(upload_call.kwargs) == {'context'}
+        contexts.append(upload_call.kwargs['context'])
+    assert isinstance(contexts[0], UploadContext)
+    assert contexts[0] is contexts[1]
+
+
 def test_channels_and_retries_reuse_one_batch(monkeypatch):
     """三通道及各自重试复用同一批次，截图与上传次数只由目标数决定。"""
     capture, upload = _install_boundaries(monkeypatch)
