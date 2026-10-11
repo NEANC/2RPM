@@ -143,8 +143,13 @@ def test_webp_saved_from_real_source_preserves_every_pixel(
     if source == 'window':
         WindowEnvironment(window, monkeypatch)
     else:
+        expected = bytes([
+            17, 83, 149, 0, 31, 97, 163, 128,
+            47, 113, 179, 255, 61, 127, 193, 0,
+        ])
         raw = struct.pack('<III', 2, 2, 1) + expected
-        monkeypatch.setattr(adb, '_read_capture', Mock(return_value=raw))
+        read = Mock(return_value=raw)
+        monkeypatch.setattr(adb, '_read_capture', read)
     target = tmp_path / 'capture.webp'
     args = cli.parse_screenshot_args([
         '--source', source + ':' + TITLE, '--output', str(target)])
@@ -156,6 +161,9 @@ def test_webp_saved_from_real_source_preserves_every_pixel(
         assert image.format == 'WEBP'
         assert image.size == (2, 2)
         assert image.convert('RGBA').tobytes() == expected
+    if source == 'adb':
+        read.assert_called_once_with(TITLE, False)
+    assert http_calls == []
 
 
 @pytest.mark.parametrize('save_conflict', [False, True])
