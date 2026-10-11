@@ -38,7 +38,7 @@ class _V2Session(requests.sessions.Session):
 
 
 def is_storage_rejection(provider, status_code, payload) -> bool:
-    """精确匹配存储拒绝；Boltp 仅采用批准的合成兼容策略。
+    """精确匹配存储拒绝；Boltp 仅采用批准的兼容策略。
 
     BeeIMG.cn 有历史样本；不将 Boltp 策略描述为官方或实测行为。
     """

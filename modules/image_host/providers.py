@@ -457,10 +457,12 @@ def upload_boltp(image_bytes, filename, token, options) -> str:
     2026-09-30。2026-10-03 已用 Bearer 令牌完成真实上传验证：组接口返回
     可用存储编号 2，上传返回 status 为 success 及 data.public_url。
     同次验证中资料接口返回 HTTP 403，提示令牌无权访问；存储查询层仅对
-    Boltp 的该状态忽略默认存储资料，仍使用组接口返回的可用存储。
-    经注册表调用时，存储按有效手填值、可用默认值、组内首项的顺序选择；
-    本适配器不查询存储，直接调用仍须在 options 中提供有效 storage_id。
-    不硬编码本次实测编号，也不采用文档中互相冲突的示例编号。
+    Boltp 的该状态忽略默认存储资料；上传选择不依赖默认值或组列表。
+    经注册表调用时，忽略账号默认存储资料，优先尝试有效手填值，再按
+    2、3 的固定候选顺序上传；候选最多两个自动编号，且仅在 HTTP 200、
+    status=error、message 精确等于“不存在的储存驱动”时继续尝试。
+    这些编号是项目策略，并非动态发现或官方保证；本适配器不查询存储，
+    直接调用仍须在 options 中提供有效 storage_id。
     """
     return _upload_v2_storage(
         'boltp', 'Boltp', image_bytes, filename, token, options)
