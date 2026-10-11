@@ -18,13 +18,14 @@ def isolation():
         pytest.fail('缺少 winfs_process_guard 子进程隔离实现')
 
 
-def make_probe(tmp_path, body):
+def make_probe(tmp_path, body, startup=''):
     """生成只允许点名执行的探针，额外节点执行即失败。"""
     source = tmp_path / 'probe_case.py'
     source.write_text(
         'import pytest\n'
         'from winfs_process_guard import run_isolated\n\n'
-        'def test_probe(request, tmp_path):\n'
+        + startup + '\n'
+        + 'def test_probe(request, tmp_path):\n'
         '    """子进程验证精确标记并执行探针。"""\n'
         '    assert not run_isolated(request, tmp_path)\n'
         + ''.join('    ' + line + '\n' for line in body.splitlines())
@@ -37,16 +38,19 @@ def make_probe(tmp_path, body):
         nodeid=str(source) + '::test_probe', path=source))
 
 
-def test_hung_child_is_reaped_before_temp_cleanup(isolation, tmp_path, monkeypatch):
+@pytest.mark.parametrize('startup_delay', [0, 6])
+def test_hung_child_is_reaped_before_temp_cleanup(
+    isolation, tmp_path, monkeypatch, startup_delay,
+):
     """故意挂起持有文件的子进程，期限后确认回收且专属目录清空。"""
     ready = tmp_path / 'ready.txt'
     request = make_probe(tmp_path, '\n'.join([
         'from pathlib import Path',
         'import time',
         'held = (tmp_path / "held.bin").open("wb")',
-        f'Path({str(ready)!r}).write_text("ready")',
+        f'Path({str(ready)!r}).write_text(str(time.monotonic()))',
         'time.sleep(300)',
-    ]))
+    ]), startup=f'import time\ntime.sleep({startup_delay})')
     processes = []
     original = isolation.subprocess.Popen
 
@@ -60,13 +64,38 @@ def test_hung_child_is_reaped_before_temp_cleanup(isolation, tmp_path, monkeypat
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     started = time.monotonic()
-    with pytest.raises(pytest.fail.Exception, match='超时'):
+    with pytest.raises(pytest.fail.Exception, match='执行超时'):
         isolation.run_isolated(request, workspace, timeout=5)
-    assert time.monotonic() - started < 15
-    assert ready.read_text() == 'ready'
+    assert time.monotonic() - started < isolation.DEFAULT_TIMEOUT + 15
+    assert 4.5 <= time.monotonic() - float(ready.read_text()) < 15
     assert len(processes) == 1
     assert processes[0].poll() is not None
     assert list(workspace.iterdir()) == []
+
+
+def test_startup_timeout_reaps_child(isolation, tmp_path, monkeypatch):
+    """收集阶段挂起也必须按启动期限回收，不能进入测试正文。"""
+    request = make_probe(
+        tmp_path, 'pytest.fail("probe must not run")',
+        startup='import time\ntime.sleep(300)',
+    )
+    processes = []
+    original = isolation.subprocess.Popen
+
+    def record_process(*args, **kwargs):
+        """记录真实启动进程，验证超时后已经回收。"""
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(isolation.subprocess, 'Popen', record_process)
+    started = time.monotonic()
+    with pytest.raises(pytest.fail.Exception, match='启动超时（1 秒）'):
+        isolation.run_isolated(request, tmp_path, timeout=30, startup_timeout=1)
+    assert time.monotonic() - started < 10
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+    assert not list(tmp_path.glob('winfs-isolated-*'))
 
 
 @pytest.mark.parametrize('body, outcome, message', [
