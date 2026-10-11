@@ -14,6 +14,8 @@ INVALID_TARGETS = [
     'App@{version}@{Version}', 'App@{ version}@{version}',
     'App@{version}@{vErSiOn}', 'App@{version}@{VERSION',
     'App@{VERSION broken @{version}',
+    'App@{version broken {tail',
+    'App@{version broken {tail@{Version}',
 ]
 CONTROLS = [chr(value) for value in (
     *range(32), *range(127, 160), 0x2028, 0x2029)]
@@ -160,7 +162,9 @@ def test_window_target_is_frozen(matcher):
 
 
 @pytest.mark.parametrize('source', ['window', 'adb'])
-@pytest.mark.parametrize('text', [' Device ', 'Device@{other}', 'Device\t'])
+@pytest.mark.parametrize('text', [
+    ' Device ', 'Device@{other}', 'Device\t', 'App@{versionX}',
+])
 def test_validate_capture_target_preserves_literal_inputs(matcher, source, text):
     assert matcher.validate_capture_target(source, text) is None
 

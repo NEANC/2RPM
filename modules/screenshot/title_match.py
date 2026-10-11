@@ -4,7 +4,7 @@ import re
 
 _MARKERS = ('@{version}', '@{VERSION}', '@{Version}')
 _MARKER_CANDIDATE = re.compile(
-    r'@\{\s*(?ai:version)\s*\}|@\{(?ai:version)(?=[^{}]*(?:@\{|$))')
+    r'@\{\s*(?ai:version)\s*\}|@\{(?ai:version)(?=[^{}]*(?:\{|$))')
 _CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f\u2028\u2029]')
 _VERSION = re.compile(
     r'(?:(?:[vV] *|(?ai:version) +))?'
