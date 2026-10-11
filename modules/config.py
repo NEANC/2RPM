@@ -209,9 +209,15 @@ COMMENTS = {
             '_comment': "\n截图目标与图床配置\n",
             'targets': (
                 "\n独立于监控目标的截图列表，默认留空，不自动匹配目标\n"
-                "- window 使用完整窗口标题精确匹配，adb 使用设备地址/serial\n"
+                "- window 无标记时使用完整窗口标题精确匹配，区分大小写；"
+                "adb 使用设备地址/serial，ADB 目标不支持版本标记\n"
+                "- 非空应用名末尾仅允许一次 @{version}、@{VERSION} 或 @{Version}，"
+                "启用版本匹配\n"
+                "- 版本自由尾部可能接纳 Launcher、Settings 等辅助标题；"
+                "多个匹配时拒绝截图，不自动选取窗口\n"
                 "- 按列表位置生成 screenshot_N，可使用 out 自定义变量名\n"
                 "- 示例: {provider: window, target: MuMu模拟器 1, out: screenshot_2}\n"
+                "- 示例: {provider: window, target: 'AppName@{version}'}\n"
                 "- 示例: {provider: adb, target: 127.0.0.1:16384}\n"
             ),
             'image_host': (

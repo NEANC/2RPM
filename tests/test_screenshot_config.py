@@ -80,7 +80,6 @@ def test_comments_explain_independent_targets_and_template_variables():
     for text in ('window', 'adb', '完整窗口标题', '精确匹配', '设备地址', 'out',
                  '位置', '独立'):
         assert text in targets
-    # 窗口后端只做完整标题精确匹配，注释不得再声称支持 PID
     assert 'PID' not in targets
     for text in ('顺序', '成功', 'token', '环境', 'options'):
         assert text in hosts
@@ -90,6 +89,15 @@ def test_comments_explain_independent_targets_and_template_variables():
     for name in TEMPLATE_NAMES:
         assert 'capture_screenshot' in comments['templates'][name]
         assert '全部目标' in comments['templates'][name]
+
+
+def test_target_comments_explain_version_matching():
+    targets = config_module.COMMENTS['push']['screenshot']['targets']
+    for text in ('@{version}', '@{VERSION}', '@{Version}', '无标记',
+                 '完整窗口标题', '精确匹配', '区分大小写', '末尾', '一次',
+                 '应用名', '自由尾部', 'Launcher', 'Settings', '多个匹配',
+                 '拒绝', 'ADB'):
+        assert text in targets
 
 
 def test_host_comments_explain_storage_selection_and_expiration(tmp_path):

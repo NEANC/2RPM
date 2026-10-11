@@ -18,6 +18,7 @@ from .retention import cli_filename
 from .retention import cli_target_is_managed
 from .retention import save_cli
 from .service import capture
+from .title_match import validate_capture_target
 
 
 # 支持的截图来源，同时作为 --source 的内联前缀
@@ -75,6 +76,13 @@ def _build_parser():
     parser = SafeArgumentParser(
         prog='2RPM.py screenshot',
         description='截图调试：截取指定窗口或 ADB 设备并输出尺寸',
+        epilog=(
+            'window 无标记时按完整窗口标题精确匹配，区分大小写。'
+            '非空应用名末尾仅允许一次 @{version}、@{VERSION} 或 @{Version}，'
+            '启用版本匹配，例如 --source window --target "AppName@{Version}"。'
+            '版本自由尾部可能接纳 Launcher、Settings 等辅助标题；'
+            '多个匹配时拒绝截图，不自动选取窗口。ADB 目标不支持版本标记。'
+        ),
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -206,7 +214,7 @@ def parse_screenshot_args(argv):
 
     支持 "adb:序列号"、"window:窗口标题"、裸窗口标题、来源关键字加位置目标、
     来源关键字加 --target 五种形态，并解析 --output 与 --upload 选项。
-    目标按用户输入使用，不做外形判定。
+    window 目标保留原文并校验版本表达式，ADB 目标拒绝版本标记候选。
 
     Args:
         argv (list[str]): 截图子命令之后的参数列表；允许包含开头的
@@ -226,6 +234,10 @@ def parse_screenshot_args(argv):
 
     parsed = parser.parse_args(remaining)
     source, target = _normalize(parser, parsed)
+    try:
+        validate_capture_target(source, target)
+    except ValueError:
+        parser.error('截图参数无效')
     hosts = None
     if parsed.upload is not None:
         try:
@@ -301,6 +313,11 @@ def run_screenshot_cli(args, program_dir):
     hosts = getattr(args, 'hosts', None)
     if (source not in SOURCE_PROVIDERS or not isinstance(source_target, str)
             or not source_target.strip()):
+        print('截图参数无效')
+        return ARGUMENT_ERROR_CODE
+    try:
+        validate_capture_target(source, source_target)
+    except ValueError:
         print('截图参数无效')
         return ARGUMENT_ERROR_CODE
 
