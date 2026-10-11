@@ -7,9 +7,9 @@ from dataclasses import dataclass
 
 _CAPTURE_MESSAGES = {
     'invalid_source': '截图来源必须为 window 或 adb',
-    'invalid_title': '窗口标题必须为非空字符串',
-    'window_not_found': '未找到完整标题匹配的窗口',
-    'window_ambiguous': '存在多个完整标题匹配的窗口',
+    'invalid_title': '窗口标题或匹配表达式无效',
+    'window_not_found': '未找到匹配的窗口',
+    'window_ambiguous': '存在多个匹配的窗口',
     'window_lookup_failed': '无法枚举目标窗口',
     'window_gone': '目标窗口已失效或标题已变化',
     'window_state_failed': '无法读取或恢复目标窗口状态',

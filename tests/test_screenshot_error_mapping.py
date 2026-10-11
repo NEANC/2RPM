@@ -19,9 +19,19 @@ MESSAGES = {
     'encode_failed': '窗口图像编码失败',
     'adb_encode_failed': 'ADB 图像编码失败',
     'adb_image_failed': 'ADB 未返回完整有效的图像数据',
-    'window_not_found': '未找到完整标题匹配的窗口',
+    'invalid_title': '窗口标题或匹配表达式无效',
+    'window_not_found': '未找到匹配的窗口',
+    'window_ambiguous': '存在多个匹配的窗口',
     'adb_timeout': 'ADB 连接或读写等待超时',
 }
+
+
+@pytest.mark.parametrize('code', [
+    'invalid_title', 'window_not_found', 'window_ambiguous',
+])
+def test_window_selection_error_messages(code):
+    window = import_module('modules.screenshot.window')
+    assert str(window._error(code)) == MESSAGES[code]
 
 
 @pytest.mark.parametrize('image_format', ['jpeg', 'png', 'webp', 'raw'])

@@ -21,6 +21,8 @@ from .encoding import window_image
 
 from .models import CaptureError
 from .models import CaptureResult
+from .title_match import matches_window_title
+from .title_match import parse_window_target
 
 
 PW_RENDERFULLCONTENT = 0x2
@@ -29,9 +31,9 @@ _REPAINT_WAIT_SECONDS = 0.2
 _DPI_PER_MONITOR_AWARE = -3
 _CAPTURE_LOCK = threading.Lock()
 _MESSAGES = {
-    'invalid_title': '窗口标题必须为非空字符串',
-    'window_not_found': '未找到完整标题匹配的窗口',
-    'window_ambiguous': '存在多个完整标题匹配的窗口',
+    'invalid_title': '窗口标题或匹配表达式无效',
+    'window_not_found': '未找到匹配的窗口',
+    'window_ambiguous': '存在多个匹配的窗口',
     'window_lookup_failed': '无法枚举目标窗口',
     'window_gone': '目标窗口已失效、隐藏或标题已变化',
     'window_state_failed': '无法读取或恢复目标窗口状态',
@@ -137,17 +139,22 @@ def _ensure_window(hwnd, title):
         raise _error('window_gone')
 
 
-def _find_window(title):
-    """枚举完整标题匹配且未被 DWM 隐藏的可见顶层窗口。"""
+def _find_window(title: str) -> tuple[int, str]:
+    """枚举匹配且未被 DWM 隐藏的可见顶层窗口，保留实际标题。"""
+    try:
+        target = parse_window_target(title)
+    except ValueError:
+        raise _error('invalid_title') from None
     matches = []
 
     def collect(hwnd, argument):
-        """收集实际可见的精确匹配项，不因最小化或遮挡排除。"""
-        if (win32gui.IsWindow(hwnd)
-                and win32gui.IsWindowVisible(hwnd)
-                and win32gui.GetWindowText(hwnd) == title
+        """收集实际可见的匹配项，不因最小化或遮挡排除。"""
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return True
+        actual_title = win32gui.GetWindowText(hwnd)
+        if (matches_window_title(target, actual_title)
                 and not _is_cloaked(hwnd)):
-            matches.append(hwnd)
+            matches.append((hwnd, actual_title))
         return True
 
     try:
@@ -158,7 +165,7 @@ def _find_window(title):
         raise _error('window_not_found')
     if len(matches) != 1:
         raise _error('window_ambiguous')
-    _ensure_window(matches[0], title)
+    _ensure_window(*matches[0])
     return matches[0]
 
 
@@ -276,14 +283,14 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
 
 
 def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
-    """按唯一完整标题捕获窗口，返回指定格式的内存图像。
+    """按标题或版本表达式选择唯一窗口，锁定实际标题后捕获内存图像。
 
     Args:
-        title: 非空完整窗口标题；不剥离有效标题两端的空格。
+        title: 完整窗口标题或末尾带版本标记的表达式；不剥离两端空格。
         image_format: 输出格式，可选 jpeg、png、webp 或 raw。
 
     Returns:
-        包含图像字节、原始标题、尺寸和安全告警的不可变结果。
+        包含图像字节、原始请求目标、尺寸和安全告警的不可变结果。
 
     Raises:
         CaptureError: 标题、窗口状态、DPI、GDI、绘制或编码失败。
@@ -291,10 +298,8 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
     同步 PrintWindow 无可强制终止的线程超时。等待重绘仅为有限延迟，
     不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
     """
-    if not isinstance(title, str) or not title.strip():
-        raise _error('invalid_title')
     with _CAPTURE_LOCK:
-        hwnd = _find_window(title)
+        hwnd, actual_title = _find_window(title)
         warnings = []
         try:
             old_dpi = _user32.SetThreadDpiAwarenessContext(
@@ -306,19 +311,19 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
         restore_needed = False
         placement = None
         try:
-            _ensure_window(hwnd, title)
+            _ensure_window(hwnd, actual_title)
             placement = win32gui.GetWindowPlacement(hwnd)
-            _ensure_window(hwnd, title)
+            _ensure_window(hwnd, actual_title)
             if win32gui.IsIconic(hwnd):
                 restore_needed = True
-                _ensure_window(hwnd, title)
+                _ensure_window(hwnd, actual_title)
                 win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
                 time.sleep(_REPAINT_WAIT_SECONDS)
-                _ensure_window(hwnd, title)
+                _ensure_window(hwnd, actual_title)
                 if win32gui.IsIconic(hwnd):
                     raise _error('window_state_failed')
             encoded, width, height = _capture_bitmap(
-                hwnd, title, warnings, image_format)
+                hwnd, actual_title, warnings, image_format)
         except CaptureError:
             raise
         except Exception:
@@ -327,9 +332,9 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
             try:
                 if restore_needed:
                     try:
-                        _ensure_window(hwnd, title)
+                        _ensure_window(hwnd, actual_title)
                         win32gui.SetWindowPlacement(hwnd, placement)
-                        _ensure_window(hwnd, title)
+                        _ensure_window(hwnd, actual_title)
                         if not win32gui.IsIconic(hwnd):
                             warnings.append(_STATE_WARNING)
                     except Exception:
@@ -340,7 +345,7 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                         warnings.append(_DPI_WARNING)
                 except Exception:
                     warnings.append(_DPI_WARNING)
-        _ensure_window(hwnd, title)
+        _ensure_window(hwnd, actual_title)
         return CaptureResult(
             encoded, 'window', title, width, height, tuple(warnings),
             image_format)

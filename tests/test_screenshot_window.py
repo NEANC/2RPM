@@ -211,6 +211,163 @@ def assert_error(backend, code, title=TITLE):
     return caught.value
 
 
+@pytest.mark.parametrize('marker', ['@{version}', '@{VERSION}', '@{Version}'])
+@pytest.mark.parametrize('actual_title', ['AppName', 'appname V2.33.0'])
+@pytest.mark.parametrize('iconic', [False, True])
+def test_version_capture_preserves_requested_target(
+        monkeypatch, marker, actual_title, iconic):
+    backend, env = environment(monkeypatch)
+    env.windows[HWND] = actual_title
+    env.iconic = iconic
+    ensure = Mock(wraps=backend._ensure_window)
+    monkeypatch.setattr(backend, '_ensure_window', ensure)
+    target = 'AppName' + marker
+    result = backend.capture_window(target)
+    assert result.target == target
+    assert result.image_bytes.startswith(b'\xff\xd8')
+    assert result.warnings == ()
+    assert all(call.args == (HWND, actual_title)
+               for call in ensure.call_args_list)
+    env.gui.EnumWindows.assert_called_once()
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    assert env.iconic == iconic
+    if iconic:
+        env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+
+
+@pytest.mark.parametrize(('bare_state', 'version_state', 'code'), [
+    ('visible', 'visible', 'window_ambiguous'),
+    ('hidden', 'visible', None),
+    ('cloaked', 'visible', None),
+    ('visible', 'hidden', None),
+    ('visible', 'cloaked', None),
+    ('hidden', 'cloaked', 'window_not_found'),
+    ('cloaked', 'hidden', 'window_not_found'),
+])
+def test_version_bare_and_numbered_windows_are_ambiguous(
+        monkeypatch, bare_state, version_state, code):
+    backend, env = environment(monkeypatch)
+    env.windows = {HWND: 'AppName', HWND + 1: 'AppName v2.33.0',
+                   HWND + 2: 'AppNameHelper'}
+    for handle, state in ((HWND, bare_state), (HWND + 1, version_state)):
+        env.visible[handle] = state != 'hidden'
+        env.cloaked[handle] = int(state == 'cloaked')
+    if code:
+        assert_error(backend, code, 'AppName@{version}')
+        env.user32.SetThreadDpiAwarenessContext.assert_not_called()
+        env.user32.PrintWindow.assert_not_called()
+    else:
+        backend.capture_window('AppName@{version}')
+        selected = HWND if bare_state == 'visible' else HWND + 1
+        env.user32.PrintWindow.assert_called_once_with(selected, MEMORY_DC, 0x2)
+    env.gui.EnumWindows.assert_called_once()
+
+
+@pytest.mark.parametrize('target', [
+    '@{version}', '   @{Version}', 'AppName@{vErSiOn}',
+    'AppName@{ version}', 'AppName@{version }',
+    'AppName@{version}@{VERSION}', 'AppName@{version} suffix',
+    'AppName@{Version} ', 'secret-token@{version',
+    'secret-token@{version@{other}',
+])
+def test_invalid_version_expression_has_no_window_operations(monkeypatch, target):
+    backend, env = environment(monkeypatch)
+    error = assert_error(backend, 'invalid_title', target)
+    assert str(error) == '窗口标题或匹配表达式无效'
+    for boundary in (env.gui, env.user32, env.gdi32, env.dwmapi):
+        assert all(not mock.called for mock in vars(boundary).values())
+
+
+@pytest.mark.parametrize('new_title', [
+    'OtherApp v2.33.0', 'appname v2.33.0', 'AppName v2.34.0',
+])
+@pytest.mark.parametrize('stage', [
+    'enumeration', 'placement', 'restore', 'dimensions', 'dc',
+    'print_before', 'print_after', 'encoded', 'release', 'state_restore',
+    'return',
+])
+def test_version_title_changes_after_enumeration(monkeypatch, new_title, stage):
+    backend, env = environment(monkeypatch)
+    env.windows[HWND] = 'AppName v2.33.0'
+    env.iconic = stage in ('restore', 'state_restore')
+    boundaries = {
+        'enumeration': (env.gui, 'EnumWindows'),
+        'placement': (env.gui, 'GetWindowPlacement'),
+        'restore': (env.gui, 'ShowWindow'),
+        'dimensions': (env.gui, 'GetWindowRect'),
+        'dc': (env.user32, 'GetWindowDC'),
+        'print_before': (env.gdi32, 'SelectObject'),
+        'print_after': (env.user32, 'PrintWindow'),
+        'encoded': (backend, '_encode_pixels'),
+        'release': (env.user32, 'ReleaseDC'),
+        'state_restore': (env.gui, 'SetWindowPlacement'),
+        'return': (env.user32, 'SetThreadDpiAwarenessContext'),
+    }
+    owner, name = boundaries[stage]
+    original = getattr(owner, name)
+    operation = original.side_effect if isinstance(original, Mock) else original
+    if operation is None:
+        operation = lambda *args: original.return_value
+    injected = []
+
+    def change_after_operation(*args):
+        result = operation(*args)
+        if stage != 'return' or args == (OLD_DPI,):
+            env.windows[HWND] = new_title
+            env.windows[HWND + 1] = 'AppName v9.0'
+            injected.append(stage)
+        return result
+
+    if isinstance(original, Mock):
+        original.side_effect = change_after_operation
+    else:
+        monkeypatch.setattr(owner, name, change_after_operation)
+    assert_error(backend, 'window_gone', 'AppName@{Version}')
+    assert injected
+    env.gui.EnumWindows.assert_called_once()
+    if stage in ('print_after', 'encoded', 'release', 'state_restore', 'return'):
+        env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    else:
+        env.user32.PrintWindow.assert_not_called()
+    if stage in ('dc', 'print_before', 'print_after', 'encoded',
+                 'release', 'state_restore', 'return'):
+        env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+        env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+        env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    else:
+        env.user32.GetWindowDC.assert_not_called()
+    if stage == 'state_restore':
+        env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    else:
+        env.gui.SetWindowPlacement.assert_not_called()
+    if stage == 'enumeration':
+        env.user32.SetThreadDpiAwarenessContext.assert_not_called()
+        assert env.gui.GetWindowText.call_count == 2
+    else:
+        assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_version_cleanup_rename_preserves_primary_error(monkeypatch):
+    backend, env = environment(monkeypatch)
+    env.windows[HWND] = 'AppName v2.33.0'
+    env.iconic = True
+    env.user32.PrintWindow.return_value = 0
+
+    def release_then_rename(handle, dc):
+        result = env.release_dc(handle, dc)
+        env.windows[handle] = 'AppName v2.34.0'
+        return result
+
+    env.user32.ReleaseDC.side_effect = release_then_rename
+    assert_error(backend, 'print_failed', 'AppName@{version}')
+    env.gui.EnumWindows.assert_called_once()
+    env.gui.SetWindowPlacement.assert_not_called()
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
 def test_unique_window_encodes_real_png(monkeypatch):
     """完整标题唯一匹配时返回可解码且方向、颜色正确的 PNG。"""
     backend, env = environment(monkeypatch)
