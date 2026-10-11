@@ -655,7 +655,7 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     assert result.provider == 'wmimg'
     assert result.attempts == ('boltp', 'wmimg')
     assert result.failures[0].code == code
-    assert len(result.failures) == 1
+    assert len(result.failures) == (3 if recovering else 1)
     assert all(failure.code == code for failure in result.failures)
     assert len(client.calls) == (4 if recovering else 2)
     assert [call[1]['data']['storage_id'] for call in client.calls
@@ -665,3 +665,63 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     assert client.closed == client.created == len(client.calls)
     assert first.closed == (3 if recovering else 1)
     assert backup.closed == 1
+
+
+def test_candidate_loop_preserves_each_failure(client):
+    """候选 storage_id 连续遭精确拒绝时逐条保留失败记录。"""
+    client.response.body = json.dumps(
+        {'status': 'error', 'message': '不存在的储存驱动'})
+    client.response.status_code = 200
+    client.responses = [client.response] * 3
+    result = upload(options={'storage_id': STORAGE_ID})
+    assert not result.success
+    assert [failure.code for failure in result.failures] == [
+        'storage_unavailable', 'storage_unavailable', 'storage_unavailable']
+    assert len(client.calls) == 3
+
+
+def test_manual_exact_rejection_warns_once_when_candidates_replace_it(client):
+    """手填候选精确拒绝并改试替代值时只产生一次固定告警。"""
+    client.response.body = json.dumps(
+        {'status': 'error', 'message': '不存在的储存驱动'})
+    client.response.status_code = 200
+    client.responses = [client.response, Response(), Response()]
+    client.responses[1].body = json.dumps(
+        {'status': 'error', 'message': '不存在的储存驱动'})
+    client.responses[2].body = json.dumps(payload())
+    result = upload(options={'storage_id': STORAGE_ID})
+    assert result.success
+    assert result.warnings.count('手填储存驱动不可用，已自动替代') == 1
+
+
+def test_candidate_expiration_history_is_inherited_without_extension(
+        client, monkeypatch):
+    """候选切换继承首次期限决策及 shortened 状态，不延长 deadline。"""
+    context_type = import_module('modules.image_host.context').UploadContext
+    context = context_type(clock=lambda: 1000)
+    decisions = []
+    original_compute = registry().compute_expiration
+
+    def capture_compute(*args, **kwargs):
+        decision = original_compute(*args, **kwargs)
+        decisions.append(decision)
+        return decision
+
+    monkeypatch.setattr(registry(), 'compute_expiration', capture_compute)
+    monkeypatch.setattr(context, 'get_boltp_retention', lambda token: 100)
+    client.response.body = json.dumps(
+        {'status': 'error', 'message': '不存在的储存驱动'})
+    client.responses = [client.response, Response(), Response()]
+    client.responses[1].body = json.dumps(
+        {'status': 'error', 'message': '不存在的储存驱动'})
+    client.responses[2].body = json.dumps(payload())
+    result = registry().upload_with_fallback(
+        IMAGE, FILENAME,
+        [{'provider': 'boltp', 'token': SECRET,
+          'options': {'storage_id': STORAGE_ID}, 'expiration': '1h'}],
+        context=context)
+    assert result.success
+    assert len(decisions) == 3
+    assert decisions[1].deadline == decisions[0].deadline
+    assert decisions[1].shortened is decisions[0].shortened is True
+    assert decisions[2].deadline == decisions[1].deadline

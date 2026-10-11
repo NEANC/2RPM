@@ -97,10 +97,14 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                      if seconds is not None else None)
         candidates = ([options['storage_id']] if 'storage_id' in options else [])
         candidates.extend(value for value in (2, 3) if value not in candidates)
-        failure = None
+        failures = []
+        state = context.storage_state(image, index, provider, token)
         for storage_id in candidates:
             decision = compute_expiration(
-                seconds, image.started_at, retention, None, context.now())
+                seconds, image.started_at, retention,
+                state.previous_deadline, context.now(),
+                previous_shortened=state.previous_shortened)
+            context.record_expiration(image, index, provider, token, decision)
             if decision.shortened:
                 _add_warnings(warnings, (_WARN_SHORTENED,))
             prepared = PreparedV2Options(
@@ -113,11 +117,19 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                 failure = _failure(provider, error.code, error=error)
             except Exception:
                 failure = _failure(provider, 'upload_failed')
+            failures.append(failure)
+            if (storage_id == options.get('storage_id')
+                    and 'storage_id' in options
+                    and failure.code == 'storage_unavailable'
+                    and failure.stage == 'upload'
+                    and failure.http_status == 200):
+                _add_warnings(warnings, (_WARN_REPLACED,))
             if not (failure.code == 'storage_unavailable'
                     and failure.stage == 'upload'
                     and failure.http_status == 200):
                 break
-        return None, failure
+            state = context.storage_state(image, index, provider, token)
+        return None, failures
     try:
         selected = context.prepare_storage(
             image, index, provider, token,
@@ -197,7 +209,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                         context, image, index, provider, token, options,
                         seconds, warnings, image_bytes, filename)
                     if candidate_failure is not None:
-                        failures.append(candidate_failure)
+                        failures.extend(candidate_failure)
                     break
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
