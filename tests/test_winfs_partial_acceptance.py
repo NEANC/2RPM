@@ -96,3 +96,31 @@ def test_unproven_partial_identity_is_not_deleted(monkeypatch, tmp_path):
     assert target.read_bytes() == b'pa'
     target.unlink()
     tmp_path.rename(tmp_path.with_name(tmp_path.name + '-released'))
+
+
+def test_mark_delete_failure_on_partial_write_adds_warning(
+        monkeypatch, tmp_path):
+    """半成品实际删除失败时保留原异常并追加固定告警。"""
+    require_ntfs(tmp_path)
+    target = tmp_path / 'partial-delete-failure.bin'
+    original_write = winfs._write
+    failure = OSError('injected write failure')
+
+    def fail_after_write(handle, data):
+        """真实写入半成品后报告保存失败。"""
+        original_write(handle, data[:2])
+        raise failure
+
+    def fail_mark_delete(handle):
+        """模拟当前半成品句柄的删除标记失败。"""
+        raise OSError('injected delete failure')
+
+    monkeypatch.setattr(winfs, '_write', fail_after_write)
+    monkeypatch.setattr(winfs, '_mark_delete', fail_mark_delete)
+    with pytest.raises(OSError) as caught:
+        winfs.write_exclusive(str(target), b'payload')
+    assert caught.value is failure
+    assert failure.__notes__ == ['截图半成品清理失败']
+    assert target.read_bytes() == b'pa'
+    target.unlink()
+    tmp_path.rename(tmp_path.with_name(tmp_path.name + '-released'))

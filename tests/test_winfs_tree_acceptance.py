@@ -82,3 +82,53 @@ def test_scan_rejects_real_child_replacement_without_deleting_siblings(
     assert sibling.read_bytes() == b'sibling'
     assert saved.read_bytes() == b'original'
     tree.rename(tmp_path / 'released')
+
+
+def test_busy_child_keeps_entire_tree_unchanged(tmp_path):
+    """树内文件被不共享句柄占用时不删除树内其他对象。"""
+    require_ntfs(tmp_path)
+    tree = tmp_path / 'busy-tree'
+    tree.mkdir()
+    blocked = tree / 'blocked.bin'
+    blocked.write_bytes(b'blocked')
+    sibling = tree / 'sibling.bin'
+    sibling.write_bytes(b'sibling')
+    value = winfs._CreateFile(str(blocked), 0xC0000000, 0, None, 3,
+                              0x02000000, None)
+    assert value != winfs._INVALID
+    held = winfs._Handle(value)
+    try:
+        with pytest.raises(OSError):
+            winfs.remove_tree(str(tree))
+        assert blocked.exists()
+        assert sibling.exists()
+        assert tree.is_dir()
+    finally:
+        held.close()
+    assert blocked.read_bytes() == b'blocked'
+    assert sibling.read_bytes() == b'sibling'
+    tree.rename(tmp_path / 'released')
+
+
+def test_new_child_after_scan_keeps_date_tree(tmp_path, monkeypatch):
+    """预扫描后新增普通对象时目录非空保护阻止整树删除。"""
+    require_ntfs(tmp_path)
+    tree = tmp_path / 'new-child-tree'
+    tree.mkdir()
+    original_mark_delete = winfs._mark_delete
+    created = False
+
+    def add_child_then_delete(handle):
+        """在实际根目录删除前创建普通文件。"""
+        nonlocal created
+        if not created:
+            (tree / 'late.bin').write_bytes(b'late')
+            created = True
+        original_mark_delete(handle)
+
+    monkeypatch.setattr(winfs, '_mark_delete', add_child_then_delete)
+    with pytest.raises(OSError):
+        winfs.remove_tree(str(tree))
+    assert created
+    assert (tree / 'late.bin').read_bytes() == b'late'
+    tree.rename(tmp_path / 'released')

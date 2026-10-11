@@ -91,3 +91,24 @@ def test_partial_write_signal_cleans_file_and_releases_handles(
     parent.rmdir()
     moved = tmp_path.rename(tmp_path.with_name(tmp_path.name + '-released'))
     moved.rename(tmp_path)
+
+
+def test_delete_signal_propagates_and_releases_tree_handles(
+        monkeypatch, tmp_path):
+    """删除阶段控制信号原样传播且释放全部目录句柄。"""
+    require_ntfs(tmp_path)
+    tree = tmp_path / 'delete-signal'
+    tree.mkdir()
+    (tree / 'capture.bin').write_bytes(b'payload')
+    signal = KeyboardInterrupt('injected')
+
+    def interrupt_delete(handle):
+        """在真实删除阶段注入控制信号。"""
+        raise signal
+
+    monkeypatch.setattr(winfs, '_mark_delete', interrupt_delete)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        winfs.remove_tree(str(tree))
+    assert caught.value is signal
+    assert tree.is_dir()
+    tree.rename(tmp_path / 'released')
