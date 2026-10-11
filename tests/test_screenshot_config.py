@@ -98,8 +98,11 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
     config_module.create_default_config(str(path))
     text = path.read_text(encoding='utf-8')
     for fragment in (
-            'Boltp (boltp) 未填 options.storage_id 时按 2、3 顺序尝试，'
-            '手填非负整数优先，精确拒绝时继续下一个编号；'
+            'Boltp (boltp) 未填 options.storage_id 时按 2、3 顺序尝试',
+            '手填非负整数优先，精确拒绝时继续下一个编号',
+            '自动候选最多两个',
+            '仅匹配 HTTP 200、status=error 且 message 精确为'
+            '“不存在的储存驱动”才继续',
             '不查询存储元数据或使用磁盘存储缓存',
             'BeeIMG.cn (beeimg_cn) 未填 options.storage_id 时自动获取账号可用存储',
             'BeeIMG.cn 手填合法可用 ID 优先；非法或离表时取得新元数据后选择可用 ID',
