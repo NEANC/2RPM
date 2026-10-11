@@ -138,3 +138,29 @@ def test_legacy_rejects_nested_only_url_on_both_domains(
             IMAGE, FILENAME, SECRET, {'api_version': 'legacy'})
     assert_safe(caught.value, 'invalid_url', caplog.text)
     assert_lifecycle(client, 'legacy', ('invalid_url', 'invalid_url'))
+
+
+INVALID_URLS = {
+    'scheme': 'file:///RAW_BODY_7319',
+    'userinfo': 'https://FAKE_SUPERBED_SECRET_7319@cdn.example.com/image',
+    'port': 'https://cdn.example.com:99999/image',
+    'control': 'https://cdn.example.com/image\nRAW_BODY_7319',
+}
+
+
+@pytest.mark.parametrize('version', ['v1', 'legacy'])
+@pytest.mark.parametrize('invalid_kind,invalid_url', INVALID_URLS.items())
+def test_invalid_url_on_both_domains_fails_over_safely(
+        client, caplog, version, invalid_kind, invalid_url):
+    for response in client.responses:
+        response.body = json.dumps(payload(version, url=invalid_url))
+    client.add(version=version)
+    client.responses[1].body = json.dumps(payload(version, url=invalid_url))
+
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_superbed(IMAGE, FILENAME, SECRET,
+                                  {'api_version': version})
+
+    assert_safe(caught.value, 'invalid_url', caplog.text)
+    assert_lifecycle(client, version, ('invalid_url', 'invalid_url'))
+    assert len(client.calls) == 2
