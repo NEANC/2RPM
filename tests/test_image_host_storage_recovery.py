@@ -512,6 +512,28 @@ def test_budget_and_expiration_are_per_image_and_configuration(rig):
     assert ctx.storage_state(first, 0, PROVIDER, SECRET).correction_used
 
 
+def test_same_identity_slots_share_version_but_not_recovery_budget(rig):
+    """同身份槽位共享元数据版本推进，但恢复预算分别消费。"""
+    _, ctx, _, calls, _, _ = rig
+    first, second = ctx.start_image(), ctx.start_image()
+    for image in (first, second):
+        ctx.prepare_storage(image, 0, PROVIDER, SECRET)
+    first_state = ctx.storage_state(first, 0, PROVIDER, SECRET)
+    second_state = ctx.storage_state(second, 0, PROVIDER, SECRET)
+    assert (first_state.metadata_version, second_state.metadata_version) == (1, 1)
+
+    assert ctx.begin_recovery(first, 0, PROVIDER, SECRET)
+    first_state = ctx.storage_state(first, 0, PROVIDER, SECRET)
+    second_state = ctx.storage_state(second, 0, PROVIDER, SECRET)
+    assert first_state.correction_used
+    assert not second_state.correction_used
+    assert (first_state.metadata_version, second_state.metadata_version) == (1, 1)
+
+    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET)
+    assert ctx.storage_state(second, 0, PROVIDER, SECRET).correction_used
+    assert len(calls) == 1
+
+
 def test_corrected_selection_revalidated_on_metadata_version_change(rig):
     """同配置纠正事实复用，但新元数据必须重新选择可用编号。"""
     _, ctx, _, calls, replies, _ = rig
