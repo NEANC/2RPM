@@ -3,6 +3,7 @@
 """验证截图 CLI 内联上传与本地保存的独立编排，不访问真实网络。"""
 
 from argparse import Namespace
+from datetime import date
 from importlib import import_module
 from io import BytesIO
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import SaveOutcome
+from modules.screenshot import winfs
 
 
 URL = 'https://cdn.example.com/image.jpg'
@@ -167,21 +169,50 @@ def test_upload_failure_returns_one_but_keeps_saved_file(monkeypatch, tmp_path):
     assert target.exists()
 
 
+@pytest.mark.parametrize('write_failed', [False, True])
 def test_upload_uses_last_conflict_free_candidate_name(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, capsys, write_failed):
     """目录候选名冲突递增后，上传沿用最终实际候选名。"""
+    clock = Mock()
+    clock.today.return_value = date(2026, 10, 11)
+    monkeypatch.setattr(cli_module(), 'date', clock)
     hosts = load_hosts('provider: catbox')
     calls = install_upload(monkeypatch, lambda *args: True)
     output = tmp_path / 'shots'
     output.mkdir()
     first = output / 'screenshot_20261011_0000.jpg'
     first.write_bytes(b'existing')
+    second = output / 'screenshot_20261011_0001.jpg'
+    writes = []
+    original_write = winfs._write
+
+    def write_then_fail(handle, data):
+        """真实写入部分字节后注入故障，由生产路径清理半成品。"""
+        writes.append(data)
+        original_write(handle, data[:2])
+        raise OSError('synthetic-private-path')
+
+    if write_failed:
+        monkeypatch.setattr(winfs, '_write', write_then_fail)
     code, payload, _, _ = run_cli(
         monkeypatch, tmp_path, output=str(output), hosts=hosts,
         image_format='jpeg')
     assert code == 0
-    assert calls == [(payload, 'screenshot_20261011_0001.jpg', hosts)]
+    clock.today.assert_called_once_with()
+    assert len(calls) == 1
+    assert calls[0][0] is payload
+    assert calls[0][1:] == ('screenshot_20261011_0001.jpg', hosts)
     assert first.read_bytes() == b'existing'
+    printed = capsys.readouterr().out
+    if write_failed:
+        assert writes == [payload]
+        assert not second.exists()
+        assert list(output.iterdir()) == [first]
+        assert printed == '截图保存失败：无法写入输出路径\n'
+    else:
+        assert second.read_bytes() == payload
+        assert set(output.iterdir()) == {first, second}
+        assert printed == str(second) + '\n'
 
 
 def test_raw_upload_is_rejected_before_capture(monkeypatch, tmp_path):
