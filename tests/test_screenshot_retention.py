@@ -129,6 +129,15 @@ def test_component_sanitizing_keeps_complete_surrogate_pair_at_boundary():
     assert len(result.encode('utf-16-le')) // 2 == 80
 
 
+@pytest.mark.parametrize('value, expected', [
+    ('COM1.txt', '_COM1.txt'), ('LPT9.log.', '_LPT9.log'),
+    ('name\x1fpart', 'name_part'), ('  event.  ', 'event'),
+])
+def test_component_sanitizing_windows_edges(value, expected):
+    """净化 Windows 设备名、控制字符及尾部空白点号。"""
+    assert retention.sanitize_component(value, 'event') == expected
+
+
 def test_runtime_context_has_two_fields_and_uses_basename_stem(tmp_path):
     """运行上下文只含程序根与净化的配置 stem，不持有完整路径。"""
     runtime = retention.runtime_context(str(tmp_path), 'C:\\secret\\my.cfg.yaml')
