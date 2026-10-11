@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
+import warnings
 
 import pytest
 
@@ -43,7 +44,26 @@ def make_symlink(link, target, directory):
         except OSError as error:
             if error.winerror == 1314:
                 pytest.skip('真实 symlink 未执行：缺少符号链接创建权限（WinError 1314），未提权')
-            raise
+            if error.winerror not in (87, 2):
+                raise
+            try:
+                metadata = link.lstat()
+                verified = (
+                    metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                    and metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK
+                    and link.is_symlink()
+                    and link.samefile(target)
+                    and (link.is_dir() if directory else link.is_file())
+                )
+            except OSError:
+                verified = False
+            if not verified:
+                raise
+            warnings.warn(
+                f'原生创建报告 WinError {error.winerror}，'
+                '但 symlink 标签、目标身份及类型均已核验，继续真实验收',
+                RuntimeWarning, stacklevel=2,
+            )
         metadata = link.lstat()
         assert metadata.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
         assert metadata.st_reparse_tag == stat.IO_REPARSE_TAG_SYMLINK
@@ -69,7 +89,95 @@ def make_symlink(link, target, directory):
 
 
 @pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
-@pytest.mark.parametrize('failure', ['lstat', 'attributes', 'tag', 'is_symlink', 87, 2, 1314])
+@pytest.mark.parametrize('code', [87, 2])
+@pytest.mark.parametrize('failure', [
+    None, 'lstat', 'attributes', 'tag', 'is_symlink', 'samefile',
+    'samefile_error', 'type', 'type_error',
+])
+def test_symlink_creation_error_requires_verified_link(
+        monkeypatch, tmp_path, directory, code, failure):
+    """仅完整核验通过才告警继续，否则保留原生异常及目标。"""
+    target = tmp_path / 'target'
+    if directory:
+        target.mkdir()
+    else:
+        target.write_bytes(b'target')
+    link = tmp_path / 'link'
+    original_lstat = Path.lstat
+    original_is_dir = Path.is_dir
+    original_is_file = Path.is_file
+    error = OSError('injected creation failure')
+    error.winerror = code
+    queried = []
+
+    def create_then_fail(source, destination, target_is_directory):
+        """模拟原生创建留下对象后报告错误。"""
+        assert (source, destination, target_is_directory) == (target, link, directory)
+        link.write_bytes(b'placeholder')
+        raise error
+
+    def query_link(path, *args, **kwargs):
+        """区分报错后的首次核验与清理查询。"""
+        if path != link:
+            return original_lstat(path, *args, **kwargs)
+        queried.append('lstat')
+        if len(queried) == 1 and failure == 'lstat':
+            raise FileNotFoundError('injected missing link')
+        return SimpleNamespace(
+            st_mode=stat.S_IFLNK,
+            st_file_attributes=(0 if failure == 'attributes'
+                                else stat.FILE_ATTRIBUTE_REPARSE_POINT),
+            st_reparse_tag=(stat.IO_REPARSE_TAG_MOUNT_POINT if failure == 'tag'
+                            else stat.IO_REPARSE_TAG_SYMLINK),
+        )
+
+    def same_target(path, other):
+        """模拟目标身份不符或身份查询报错。"""
+        assert (path, other) == (link, target)
+        if failure == 'samefile_error':
+            raise OSError('injected identity failure')
+        return failure != 'samefile'
+
+    def link_type(path, expected_directory):
+        """模拟文件和目录类型核验，保留目标的真实类型。"""
+        if path != link:
+            return original_is_dir(path) if expected_directory else original_is_file(path)
+        if failure == 'type_error':
+            raise OSError('injected type failure')
+        return (directory == expected_directory) != (failure == 'type')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'symlink', create_then_fail)
+        patch.setattr(Path, 'lstat', query_link)
+        patch.setattr(Path, 'is_symlink', lambda path: failure != 'is_symlink')
+        patch.setattr(Path, 'samefile', same_target)
+        patch.setattr(Path, 'is_dir', lambda path: link_type(path, True))
+        patch.setattr(Path, 'is_file', lambda path: link_type(path, False))
+        if failure is None:
+            with pytest.warns(RuntimeWarning, match=f'WinError {code}') as caught:
+                with make_symlink(link, target, directory):
+                    assert link.read_bytes() == b'placeholder'
+            assert len(caught) == 1
+            assert str(link) not in str(caught[0].message)
+            assert str(target) not in str(caught[0].message)
+        else:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter('always')
+                with pytest.raises(OSError) as raised:
+                    with make_symlink(link, target, directory):
+                        pytest.fail('核验失败不得进入主体')
+            assert raised.value is error
+            assert not caught
+        assert len(queried) >= 2
+    if failure in ('attributes', 'tag'):
+        assert link.read_bytes() == b'placeholder'
+    else:
+        assert not os.path.lexists(link)
+    assert target.is_dir() if directory else target.read_bytes() == b'target'
+
+
+@pytest.mark.parametrize('directory', [False, True], ids=['file', 'directory'])
+@pytest.mark.parametrize('failure', ['lstat', 'attributes', 'tag', 'is_symlink', 87, 2, 5, 1314])
 def test_symlink_creation_failure_cleans_only_link(monkeypatch, tmp_path, directory, failure):
     """模拟创建后故障，清理链接占位物而不触碰真实外部目标。"""
     outside = tmp_path / 'outside'
@@ -202,7 +310,10 @@ def test_symlink_cleanup_failure_preserves_exception(
         if primary_error is not None:
             assert caught.value.__notes__ == ['符号链接清理失败，链接可能残留']
             assert caught.value.__context__ is None
-        assert operations == (['lstat'] if cleanup_failure == 'lstat' else ['lstat', 'unlink'])
+        expected_operations = ['lstat'] if isinstance(failure, int) else []
+        expected_operations += (['lstat'] if cleanup_failure == 'lstat'
+                                else ['lstat', 'unlink'])
+        assert operations == expected_operations
         assert link.read_bytes() == b'placeholder'
         assert target.is_dir() if directory else target.read_bytes() == b'target'
     finally:
