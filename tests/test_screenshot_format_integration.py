@@ -132,6 +132,32 @@ def test_cli_source_encoding_save_upload_shared_bytes(
         read.assert_called_once_with(TITLE, suffix == 'png')
 
 
+@pytest.mark.parametrize('source', ['window', 'adb'])
+def test_webp_saved_from_real_source_preserves_every_pixel(
+        monkeypatch, tmp_path, http_calls, source):
+    """window 和 ADB 的真实 CLI 编码保存后逐像素保留 RGBA。"""
+    expected = bytes([
+        255, 0, 0, 255, 0, 255, 0, 255,
+        0, 0, 255, 255, 255, 255, 255, 255,
+    ])
+    if source == 'window':
+        WindowEnvironment(window, monkeypatch)
+    else:
+        raw = struct.pack('<III', 2, 2, 1) + expected
+        monkeypatch.setattr(adb, '_read_capture', Mock(return_value=raw))
+    target = tmp_path / 'capture.webp'
+    args = cli.parse_screenshot_args([
+        '--source', source + ':' + TITLE, '--output', str(target)])
+    assert cli.run_screenshot_cli(args, str(tmp_path)) == 0
+    saved = target.read_bytes()
+    assert saved.startswith(b'RIFF')
+    with Image.open(BytesIO(saved)) as image:
+        image.load()
+        assert image.format == 'WEBP'
+        assert image.size == (2, 2)
+        assert image.convert('RGBA').tobytes() == expected
+
+
 @pytest.mark.parametrize('save_conflict', [False, True])
 def test_adb_fallback_actual_and_failed_candidate_names(
         monkeypatch, tmp_path, http_calls, save_conflict):

@@ -31,6 +31,34 @@ def test_webp_preserves_transparent_rgb():
             assert decoded.convert('RGBA').tobytes() == source.tobytes()
 
 
+def test_webp_uses_fixed_lossless_parameters(monkeypatch):
+    """WebP 编码必须锁定无损、质量、方法和透明 RGB 参数。"""
+    calls = []
+    original = Image.Image.save
+
+    def record(image, stream, **kwargs):
+        """保留真实编码并记录 WebP 参数。"""
+        calls.append((image.mode, kwargs))
+        return original(image, stream, **kwargs)
+
+    monkeypatch.setattr(Image.Image, 'save', record)
+    with Image.new('RGBA', (2, 1), (17, 31, 49, 0)) as image:
+        data = encode_image(image, 'webp')
+    assert data.startswith(b'RIFF')
+    assert calls == [('RGBA', {'format': 'WEBP', 'lossless': True,
+                               'quality': 100, 'method': 4, 'exact': True})]
+
+
+def test_window_bgrx_ignores_x_byte():
+    """窗口 BGRX 输入的第四字节不参与生成的 RGB 像素。"""
+    first = bytes([3, 2, 1, 0, 6, 5, 4, 7])
+    second = bytes([3, 2, 1, 255, 6, 5, 4, 128])
+    with window_image(first, 2, 1) as first_image:
+        with window_image(second, 2, 1) as second_image:
+            assert first_image.mode == second_image.mode == 'RGB'
+            assert first_image.tobytes() == second_image.tobytes()
+
+
 def test_jpeg_parameters(monkeypatch):
     """固定 q75、不优化、不显式设置采样。"""
     calls = []
