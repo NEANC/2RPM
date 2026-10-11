@@ -142,7 +142,7 @@ def test_legacy_rejects_nested_only_url_on_both_domains(
 
 INVALID_URLS = {
     'scheme': 'file:///RAW_BODY_7319',
-    'userinfo': 'https://FAKE_SUPERBED_SECRET_7319@cdn.example.com/image',
+    'userinfo': f'https://{SECRET}@cdn.example.com/image',
     'port': 'https://cdn.example.com:99999/image',
     'control': 'https://cdn.example.com/image\nRAW_BODY_7319',
 }
@@ -162,5 +162,8 @@ def test_invalid_url_on_both_domains_fails_over_safely(
                                   {'api_version': version})
 
     assert_safe(caught.value, 'invalid_url', caplog.text)
+    if invalid_kind == 'userinfo':
+        userinfo_secret = invalid_url.split('@', 1)[0].rsplit(':', 1)[-1]
+        assert userinfo_secret not in caplog.text + repr(caught.value)
     assert_lifecycle(client, version, ('invalid_url', 'invalid_url'))
     assert len(client.calls) == 2
