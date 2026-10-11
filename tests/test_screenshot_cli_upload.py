@@ -167,6 +167,23 @@ def test_upload_failure_returns_one_but_keeps_saved_file(monkeypatch, tmp_path):
     assert target.exists()
 
 
+def test_upload_uses_last_conflict_free_candidate_name(
+        monkeypatch, tmp_path):
+    """目录候选名冲突递增后，上传沿用最终实际候选名。"""
+    hosts = load_hosts('provider: catbox')
+    calls = install_upload(monkeypatch, lambda *args: True)
+    output = tmp_path / 'shots'
+    output.mkdir()
+    first = output / 'screenshot_20261011_0000.jpg'
+    first.write_bytes(b'existing')
+    code, payload, _, _ = run_cli(
+        monkeypatch, tmp_path, output=str(output), hosts=hosts,
+        image_format='jpeg')
+    assert code == 0
+    assert calls == [(payload, 'screenshot_20261011_0001.jpg', hosts)]
+    assert first.read_bytes() == b'existing'
+
+
 def test_raw_upload_is_rejected_before_capture(monkeypatch, tmp_path):
     """RAW 与上传组合在截图、保存与上传之前拒绝。"""
     cli = cli_module()

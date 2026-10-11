@@ -102,6 +102,33 @@ def test_component_sanitizing_blocks_devices_and_path_separators():
     assert len(retention.sanitize_component('x' * 100, 'event')) == 80
 
 
+@pytest.mark.parametrize('value, fallback', [
+    ('', 'event'), ('   ', 'event'), ('.', 'event'), ('..', 'event'),
+    ('....', 'event'),
+])
+def test_component_sanitizing_names_empty_and_dot_components(value, fallback):
+    """空名及点组件回退为安全名称。"""
+    assert retention.sanitize_component(value, fallback) == fallback
+
+
+def test_component_sanitizing_limits_utf16_without_splitting_surrogate_pair():
+    """长度限制按 UTF-16 单元计算且不保留孤立代理对。"""
+    value = 'a' * 79 + '😀'
+    result = retention.sanitize_component(value, 'event')
+    assert result == 'a' * 79
+    assert len(result.encode('utf-16-le')) // 2 == 79
+    assert '\ud800' not in result
+    assert '\udc00' not in result
+
+
+def test_component_sanitizing_keeps_complete_surrogate_pair_at_boundary():
+    """恰好容纳代理对时保留完整非 BMP 字符。"""
+    value = 'a' * 78 + '😀'
+    result = retention.sanitize_component(value, 'event')
+    assert result == value
+    assert len(result.encode('utf-16-le')) // 2 == 80
+
+
 def test_runtime_context_has_two_fields_and_uses_basename_stem(tmp_path):
     """运行上下文只含程序根与净化的配置 stem，不持有完整路径。"""
     runtime = retention.runtime_context(str(tmp_path), 'C:\\secret\\my.cfg.yaml')
