@@ -5,6 +5,8 @@
 from collections.abc import Mapping
 import re
 
+from .title_match import validate_capture_target
+
 
 _OUTPUT_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 _NUMBERED_NAME = re.compile(r'screenshot_([0-9]+)')
@@ -37,6 +39,11 @@ def _normalize_target(raw, index):
         result['error'] = 'provider 必须为 window 或 adb'
     elif not result['target']:
         result['error'] = 'target 必须为非空字符串'
+    else:
+        try:
+            validate_capture_target(result['provider'], result['target'])
+        except ValueError:
+            result['error'] = '截图目标或匹配表达式无效'
 
     if 'out' not in raw:
         return result

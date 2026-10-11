@@ -263,6 +263,52 @@ def test_invalid_serial_never_connects(environment, serial):
     assert environment.sockets == []
 
 
+@pytest.mark.parametrize('serial', [
+    'private@{version}', 'private@{VERSION}', 'private@{Version}',
+    'private@{vErSiOn}', 'private@{ version}', 'private@{version }',
+    'private@{\tVERSION\n}', 'private@{version}@{Version}',
+    'private@{version}suffix', 'private@{version} ',
+    'private@{version', 'private@{VERSION unfinished',
+    'private@{version@{other}', '@{version}',
+])
+@pytest.mark.parametrize(('purpose', 'image_format'), [
+    ('automatic', 'jpeg'), ('cli', 'jpeg'), ('cli', 'png'),
+])
+@pytest.mark.parametrize('supported_version', [True, False])
+def test_adb_marker_rejected_before_connection(
+        environment, monkeypatch, serial, purpose, image_format,
+        supported_version):
+    backend = load_backend()
+    if not supported_version:
+        monkeypatch.setattr(adbutils, '__version__', 'unsupported')
+    read = Mock(side_effect=AssertionError('禁止读取截图'))
+    png = Mock(side_effect=AssertionError('禁止 PNG 路径'))
+    monkeypatch.setattr(backend, '_read_capture', read)
+    monkeypatch.setattr(backend, '_png_result', png)
+    error = assert_capture_error(
+        backend, 'invalid_serial', serial,
+        purpose=purpose, image_format=image_format)
+    assert str(error) == 'ADB 序列号无效'
+    read.assert_not_called()
+    png.assert_not_called()
+    assert environment.sockets == []
+    assert environment.commands == []
+
+
+@pytest.mark.parametrize(('purpose', 'image_format'), [
+    ('automatic', 'jpeg'), ('cli', 'jpeg'), ('cli', 'png'),
+])
+def test_adb_other_marker_passed_literally(environment, purpose, image_format):
+    backend = load_backend()
+    environment.serial = ' device@{other} '
+    result = backend.capture_adb(
+        environment.serial, purpose=purpose, image_format=image_format)
+    assert result.target == environment.serial
+    assert environment.commands[0] == (
+        f'host-serial:{environment.serial}:get-state')
+    assert len(environment.sockets) == 3
+
+
 def test_serial_preserved_and_host_environment_ignored(environment, monkeypatch):
     """保留显式 serial，不将设备端口或环境变量用作主机地址。"""
     backend = load_backend()

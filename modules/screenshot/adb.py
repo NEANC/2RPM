@@ -22,6 +22,7 @@ from PIL import Image
 from .encoding import encode_image
 from .models import CaptureError
 from .models import CaptureResult
+from .title_match import validate_capture_target
 
 
 _ADBUTILS_VERSION = '2.12.0'
@@ -32,7 +33,7 @@ _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _PNG_SIGNATURE = b'\x89PNG\r\n\x1a\n'
 _PNG_END = b'\x00\x00\x00\x00IEND\xaeB`\x82'
 _MESSAGES = {
-    'invalid_serial': 'ADB 序列号必须为非空字符串',
+    'invalid_serial': 'ADB 序列号无效',
     'adb_version_unsupported': 'ADB 依赖版本未经支持验证',
     'adb_unavailable': '无法连接已有本机 ADB Server',
     'adb_not_found': '未找到指定 ADB 设备',
@@ -279,8 +280,10 @@ def _png_result(serial, automatic, warnings=()):
 def capture_adb(serial: str, *, image_format='jpeg',
                 purpose='automatic') -> CaptureResult:
     """自动采集最多两次 raw；CLI 超时回退，PNG 仅作终态回退。"""
-    if not isinstance(serial, str) or not serial.strip():
-        raise _error('invalid_serial')
+    try:
+        validate_capture_target('adb', serial)
+    except ValueError:
+        raise _error('invalid_serial') from None
     if adbutils.__version__ != _ADBUTILS_VERSION:
         raise _error('adb_version_unsupported')
     automatic = purpose == 'automatic'

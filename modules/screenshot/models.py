@@ -19,7 +19,7 @@ _CAPTURE_MESSAGES = {
     'print_failed': '窗口图像绘制失败',
     'image_failed': '无法构造有效窗口图像',
     'encode_failed': '窗口图像编码失败',
-    'invalid_serial': 'ADB 序列号必须为非空字符串',
+    'invalid_serial': 'ADB 序列号无效',
     'adb_version_unsupported': 'ADB 依赖版本未经支持验证',
     'adb_unavailable': '无法连接已有本机 ADB Server',
     'adb_not_found': '未找到指定 ADB 设备',
