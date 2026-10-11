@@ -237,6 +237,8 @@ class UploadContext:
         """
         entry = self._entry(provider, token)
         if disk_only:
+            if entry.failure is not None:
+                return
             entry.metadata = None
             entry.from_disk = False
             entry.invalidated = True
