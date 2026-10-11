@@ -382,6 +382,34 @@ def test_cleanup_continues_after_removal_failure_and_has_no_count_limit(monkeypa
     assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
 
 
+def test_cleanup_warns_and_continues_when_real_tree_mark_delete_fails(
+        monkeypatch, tmp_path):
+    """真实日期树删除在句柄标记失败后告警并继续删除其他日期树。"""
+    root = tmp_path / 'screenshot'
+    failed = root / '2020_01_01'
+    failed.mkdir(parents=True)
+    remaining = root / '2020_01_02'
+    remaining.mkdir()
+    with retention.winfs.directory_entries(str(root)) as (_, entries):
+        failed_identity = next(identity for name, _, identity in entries
+                               if name == failed.name)
+    original_mark_delete = retention.winfs._mark_delete
+
+    def fail_one_date_tree(handle):
+        """仅对首个日期目录的真实句柄注入删除标记失败。"""
+        if retention.winfs._identity(handle) == failed_identity:
+            raise OSError('injected delete failure')
+        original_mark_delete(handle)
+
+    monkeypatch.setattr(retention.winfs, '_mark_delete', fail_one_date_tree)
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
+
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+    assert failed.is_dir()
+    assert not remaining.exists()
+
+
 def test_automatic_save_does_not_trigger_retention_cleanup(monkeypatch, tmp_path):
     """自动保存不调用保留清理。"""
     result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
