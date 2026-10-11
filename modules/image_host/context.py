@@ -228,7 +228,7 @@ class UploadContext:
             self._cache_call('invalidate', entry.disk_identity)
             entry.disk_invalidated = True
 
-    def invalidate(self, provider, token):
+    def invalidate(self, provider, token, *, version=None, disk_only=False):
         """失效当前成功版本；重复待恢复或失败状态保持幂等。
 
         已查询的身份立即删除磁盘记录。尚未查询的身份仅记录失效，
@@ -236,7 +236,13 @@ class UploadContext:
         恢复失败在本事件内终止该代查询；再次 invalidate 不清除失败。
         """
         entry = self._entry(provider, token)
-        if entry.failure is not None or entry.invalidated:
+        if disk_only:
+            if entry.disk_ready:
+                self._cache_call('invalidate', entry.disk_identity)
+                entry.disk_invalidated = True
+            return
+        if (entry.failure is not None or entry.invalidated
+                or (version is not None and entry.version != version)):
             return
         entry.version += 1
         entry.metadata = None
@@ -376,12 +382,17 @@ class UploadContext:
         """
         items, key = self._item(image, index, provider, token)
         state = items[key]
-        if state.correction_used or state.selection is None:
+        if state.correction_used:
             return False
-        items[key] = replace(state, correction_used=True)
+        if state.selection is None:
+            items[key] = replace(state, correction_used=True)
+            return False
         entry = self._entries[key[1]]
-        if entry.version == state.metadata_version:
-            self.invalidate(provider, token)
+        if entry.version != state.metadata_version:
+            items[key] = replace(state, correction_used=True)
+            return True
+        items[key] = replace(state, correction_used=True)
+        self.invalidate(provider, token, version=state.metadata_version)
         return True
 
     def record_expiration(self, image, index, provider, token, decision):

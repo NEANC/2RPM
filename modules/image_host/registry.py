@@ -214,13 +214,21 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 if failure is None:
                     break
                 failures.append(failure)
-                if not (
-                        is_v2 and transmission == 0
-                        and failure.code == 'storage_unavailable'
-                        and failure.stage == 'upload'
-                        and failure.http_status == 200
-                        and context.begin_recovery(
-                            image, index, provider, token)):
+                precise_rejection = (
+                    failure.code == 'storage_unavailable'
+                    and failure.stage == 'upload'
+                    and failure.http_status == 200)
+                recovery_allowed = (
+                    is_v2 and transmission == 0 and precise_rejection
+                    and context.begin_recovery(
+                        image, index, provider, token))
+                if is_v2 and precise_rejection:
+                    state = context.storage_state(
+                        image, index, provider, token)
+                    context.invalidate(
+                        provider, token, version=state.metadata_version,
+                        disk_only=not recovery_allowed)
+                if not recovery_allowed:
                     break
         except ImageHostError as error:
             failures.append(_failure(provider, error.code, error=error))

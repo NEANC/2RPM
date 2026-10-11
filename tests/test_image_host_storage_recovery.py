@@ -1172,6 +1172,20 @@ def test_registry_manual_correction_consumes_recovery_budget(integration):
     assert result.failures[-1].code == 'storage_unavailable'
 
 
+def test_registry_rejection_invalidates_cache_when_recovery_budget_is_used(
+        integration):
+    """纠错已耗尽重试预算时，精确拒绝仍须删除旧磁盘缓存。"""
+    state = integration
+    identity = state['cache'].identity(PROVIDER, SECRET)
+    assert state['cache'].save(identity, metadata())
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'options': {'storage_id': 0}}])
+    assert not result.success
+    assert len(post_data(state)) == 1
+    assert state['cache'].load(identity) is None
+
+
 @pytest.mark.parametrize('reply, code', [
     ((200, {'status': 'error', 'message': '不存在的储存驱动 '}), 'business_rejected'),
     ((200, {'status': 'error', 'message': '请先绑定手机号'}), 'business_rejected'),
