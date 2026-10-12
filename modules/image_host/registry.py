@@ -201,7 +201,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 else:
                     validate_v2_options(options, provider=provider,
                                         require_storage=False)
-            elif seconds is not None:
+            elif seconds is not None and provider != 'wmimg':
                 _add_warnings(warnings, (_WARN_UNSUPPORTED,))
             for transmission in range(2 if is_v2 else 1):
                 if provider == 'boltp':
@@ -214,6 +214,11 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
                     seconds, warnings) if is_v2 else deepcopy(options))
+                if provider == 'wmimg' and seconds is not None:
+                    decision = compute_expiration(
+                        seconds, image.started_at, None, None, context.now())
+                    prepared = PreparedV2Options(
+                        prepared, expired_at=decision.expired_at)
                 failure = None
                 try:
                     candidate = UPLOADERS[provider](

@@ -1392,10 +1392,10 @@ def test_registry_owned_context_closes_after_scope(
     assert safe_current_message('普通内容') is None
 
 
-@pytest.mark.parametrize('provider', ['catbox', 'wmimg', 'beeimg', 'superbed'])
+@pytest.mark.parametrize('provider', ['catbox', 'beeimg', 'superbed'])
 def test_registry_other_sites_ignore_valid_expiration_without_cache(
         integration, monkeypatch, provider):
-    """四站期限仅告警，仍按原四参数单次调用且不触碰缓存。"""
+    """三站期限仅告警，仍按原四参数单次调用且不触碰缓存。"""
     state = integration
     calls = []
 

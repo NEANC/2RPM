@@ -107,6 +107,9 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
             or permission not in (0, 1)):
         raise ImageHostError('invalid_options', '')
     data = {'permission': permission}
+    expired_at = _prepared_expiration(options)
+    if expired_at is not None:
+        data['expired_at'] = expired_at
     for name in ('album_id', 'strategy_id'):
         if name not in options:
             continue

@@ -228,7 +228,7 @@ COMMENTS = {
                 "- options 保留各图床专属参数，由图床实现解释\n"
                 "- boltp 默认依次尝试存储 2、3；beeimg_cn 自动选择可用存储\n"
                 "- expiration 位于图床项顶层，不放入 options；如 7d、1d12h\n"
-                "- 仅 boltp / beeimg_cn 支持期限；未配置沿用站点策略\n"
+                "- 仅 wmimg / boltp / beeimg_cn 支持期限；未配置沿用站点策略\n"
                 "- 不保证服务端实际删除时间；详细规则见 README「图床存储与期限」\n"
                 "- 示例: {provider: beeimg_cn, token: '${BEEIMG_CN_TOKEN}', "
                 "expiration: 7d}\n"

@@ -4,6 +4,7 @@
 
 from collections import UserDict
 from copy import deepcopy
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from http.server import HTTPServer
 from importlib import import_module
@@ -867,3 +868,134 @@ def test_wmimg_registry_fallback_and_stop(wmclient, monkeypatch, failure):
         assert result.failures[0].provider == 'wmimg'
         assert calls == [(IMAGE, FILENAME, '', {})]
     assert len(wmclient.calls) == (failure != 'options')
+
+
+@pytest.mark.parametrize('delay', [0, 30, 59, 60, 61])
+def test_wmimg_expiration_uses_shared_start(wmclient, monkeypatch, delay):
+    """期限沿用前站起点，过期项零请求回退且不访问元数据。"""
+    module = import_module('modules.image_host.context')
+    clock = [1800000000.75]
+    start = clock[0]
+    calls = []
+
+    def first(*args):
+        """模拟前站耗时后失败。"""
+        clock[0] += delay
+        raise import_module('modules.image_host.core').ImageHostError(
+            'upload_failed', '')
+
+    def backup(*args):
+        """记录过期后的备用上传。"""
+        calls.append(args)
+        return URL
+
+    def forbidden(*args, **kwargs):
+        """禁止进入存储元数据、缓存和恢复流程。"""
+        pytest.fail('WMIMG 不应访问存储或恢复流程')
+
+    monkeypatch.setitem(registry().UPLOADERS, 'first', first)
+    monkeypatch.setitem(registry().UPLOADERS, 'backup', backup)
+    for name in ('get_metadata', 'prepare_storage', 'begin_recovery',
+                 'get_boltp_retention', 'storage_state', 'record_expiration'):
+        monkeypatch.setattr(module.UploadContext, name, forbidden)
+    hosts = [
+        {'provider': 'first'},
+        {'provider': 'wmimg', 'token': SECRET, 'expiration': '1m',
+         'options': {'permission': 0, 'album_id': 2, 'strategy_id': 3}},
+        {'provider': 'backup'},
+    ]
+    original = deepcopy(hosts)
+    with module.UploadContext(clock=lambda: clock[0]) as context:
+        result = registry().upload_with_fallback(
+            IMAGE, FILENAME, hosts, context=context)
+        assert context._cache._root is None
+    assert result.success
+    assert result.warnings == ()
+    assert hosts == original
+    if delay < 60:
+        assert result.provider == 'wmimg'
+        assert len(wmclient.calls) == 1
+        assert wmclient.calls[0][1]['data'] == {
+            'permission': 0, 'album_id': 2, 'strategy_id': 3,
+            'expired_at': datetime.fromtimestamp(int(start + 60)).strftime(
+                '%Y-%m-%d %H:%M:%S'),
+        }
+        assert not calls
+    else:
+        assert result.provider == 'backup'
+        assert result.failures[-1].code == 'config_error'
+        assert result.failures[-1].stage == 'expiration'
+        assert not wmclient.calls
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize('host_options', [
+    {'expiration': '1m', 'options': {'expired_at': None}},
+    {'expiration': None}, {'expiration': '0s'},
+    {'expiration': '1M'}, {'expiration': '315537897599s'},
+])
+def test_wmimg_expiration_invalid_or_conflicting_falls_back(
+        wmclient, monkeypatch, host_options):
+    """冲突、非法或无法表示的期限在网络前失败并回退。"""
+    monkeypatch.setitem(registry().UPLOADERS, 'backup', lambda *args: URL)
+    result = registry().upload_with_fallback(IMAGE, FILENAME, [
+        {'provider': 'wmimg', **host_options}, {'provider': 'backup'},
+    ])
+    assert result.success and result.provider == 'backup'
+    assert result.failures[0].code == 'config_error'
+    assert result.failures[0].stage == 'expiration'
+    assert not wmclient.calls
+
+
+@pytest.mark.parametrize('options', [
+    {}, {'expiration': '1m'}, {'expired_at': '2030-01-02 03:04:05'},
+])
+def test_wmimg_expiration_only_accepts_top_level(wmclient, options):
+    """普通选项及伪造属性不能注入期限，缺省不发送。"""
+    prepared = import_module('modules.image_host.expiration').PreparedV2Options(
+        options, expired_at='2030-01-02 03:04:05')
+    assert upload_wmimg(options=prepared).success
+    assert wmclient.calls[0][1]['data'] == {'permission': 1}
+
+
+@pytest.mark.parametrize('expired_at', [None, '2030-01-02 03:04:05'])
+def test_wmimg_prepared_expiration_is_forwarded(wmclient, expired_at):
+    """适配器仅转发内部计算属性且不修改输入。"""
+    options = import_module('modules.image_host.expiration').PreparedV2Options(
+        {'permission': 1}, expired_at=expired_at)
+    original = deepcopy(options)
+    assert providers().upload_wmimg(IMAGE, FILENAME, SECRET, options) == URL
+    data = wmclient.calls[0][1]['data']
+    assert data == ({'permission': 1} if expired_at is None else {
+        'permission': 1, 'expired_at': expired_at})
+    assert options == original
+    assert options.expired_at == original.expired_at
+    assert len(wmclient.calls) == 1
+
+
+@pytest.mark.parametrize('expired_at', [True, 123, '', SECRET,
+                                       '2030-02-30 03:04:05'])
+def test_wmimg_invalid_prepared_expiration_is_rejected(wmclient, expired_at):
+    """复用内部日期校验，无效期限不得发送或泄露。"""
+    options = import_module('modules.image_host.expiration').PreparedV2Options(
+        {}, expired_at=expired_at)
+    error_type = import_module('modules.image_host.core').ImageHostError
+    with pytest.raises(error_type) as caught:
+        providers().upload_wmimg(IMAGE, FILENAME, SECRET, options)
+    assert caught.value.code == 'invalid_options'
+    assert SECRET not in repr(caught.value)
+    assert wmclient.created == 0
+
+
+def test_wmimg_expiration_failure_does_not_retry(wmclient, monkeypatch):
+    """带期限上传失败仍仅一次 POST，直接交给后续图床。"""
+    wmclient.response.status_code = 500
+    monkeypatch.setitem(registry().UPLOADERS, 'backup', lambda *args: URL)
+    result = registry().upload_with_fallback(IMAGE, FILENAME, [
+        {'provider': 'wmimg', 'expiration': '1h'}, {'provider': 'backup'},
+    ])
+    assert result.success and result.provider == 'backup'
+    assert result.attempts == ('wmimg', 'backup')
+    assert len(wmclient.calls) == 1
+    assert 'expired_at' in wmclient.calls[0][1]['data']
+    assert result.warnings == ()

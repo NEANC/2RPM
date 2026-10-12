@@ -109,7 +109,7 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
     for fragment in (
             'boltp 默认依次尝试存储 2、3；beeimg_cn 自动选择可用存储',
             'expiration 位于图床项顶层，不放入 options',
-            '仅 boltp / beeimg_cn 支持期限；未配置沿用站点策略',
+            '仅 wmimg / boltp / beeimg_cn 支持期限；未配置沿用站点策略',
             '不保证服务端实际删除时间；详细规则见 README「图床存储与期限」'):
         assert fragment in text
     hosts = config_module.COMMENTS['push']['screenshot']['image_host']
