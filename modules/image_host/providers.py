@@ -101,6 +101,11 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
     私有值不代表直链必然限制访问。每次调用最多发送一次请求。
     文档仅规定相册和策略 ID 为整数，显式值的有效性由服务端判断。
     连接和读取超时不构成总时限，也不能保证超时后服务端未保存。
+    原生 API 支持 expired_at（yyyy-MM-dd HH:mm:ss）。2026-10-13
+    独立请求按本机 UTC+08:00 设置五分钟后到期，上传成功但未回显期限；
+    到期后手动确认图片已删除、直链返回 404，期间未调用主动删除接口。
+    此为该次样本的到期失效验证，不保证其他账号的时区或精确删除时刻。
+    当前适配器已支持顶层 expiration，并将期限转换为 expired_at 传递。
     """
     permission = options.get('permission', 1)
     if (not isinstance(permission, int) or isinstance(permission, bool)
