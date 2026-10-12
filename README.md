@@ -84,7 +84,7 @@ push:
 | `task_scheduler` | 通过 Windows 事件日志获取计划任务创建的进程 PID 后监视 | `monitor.task_scheduler.task_name`                                | 由计划任务拉起的进程       |
 | `launch`         | 主动拉起目标程序或计划任务并获取 PID 进行监视          | `monitor.launch.type`；`program` 填 `path`，`task` 填 `task_name` | 需要由 2RPM 主动启动目标   |
 
-> 从旧版本升级时，旧 layout 会在加载配置时自动迁移；迁移范围与边界见 [兼容性与实现细节](docs/兼容性与实现细节.md)。
+> 从旧版本升级时，旧 layout 会在加载配置时自动迁移；迁移范围与边界见 [开发者文档](docs/开发者文档.md)。
 
 ---
 
@@ -410,13 +410,13 @@ python .\2RPM.py screenshot --source 'window:完整窗口标题' --output --uplo
 
 |                    图床供应商                    |    缩写     | 是否支持时效性设置 | 是否支持匿名上传 |
 | :----------------------------------------------: | :---------: | :----------------: | :--------------: |
-|          [无铭图床](https://wmimg.com)           |   `wmimg`   |         ❌         |        ❌        |
+|          [无铭图床](https://wmimg.com)           |   `wmimg`   |         ✅         |        ❌        |
 |        [蜜蜂图床](https://www.beeimg.cn/)        | `beeimg_cn` |         ✅         |        ❌        |
 |        [闪电图床](https://www.boltp.com/)        |   `boltp`   |         ✅         |        ❌        |
 | [Superbed（聚合图床）](https://www.superbed.cn/) | `superbed`  |         ❌         |        ❌        |
 |         [BeeIMG.com](https://beeimg.com)         |  `beeimg`   |         ❌         |        ✅        |
 
-若站点「不支持匿名上传」表示必须提供有效 `token`。时效性设置、存储选择与期限计算的详细规则见 [兼容性与实现细节](docs/兼容性与实现细节.md)。
+若站点「不支持匿名上传」表示必须提供有效 `token`。时效性设置、存储选择与期限计算的详细规则见 [开发者文档](docs/开发者文档.md)。
 
 ---
 
