@@ -179,3 +179,4 @@ log/
 docs/superpowers/
 screenshot/
 community-scripts Style GUI/
+tests/test_community_scripts_style_gui.py
