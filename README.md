@@ -406,6 +406,8 @@ python .\2RPM.py screenshot --source 'window:完整窗口标题' --output --uplo
   - 测试上传超时，使用代理也超时，无法继续测试
   - 理论上支持匿名上传，匿名上传有效期 2 年
 
+### 图床能力
+
 |                    图床供应商                    |    缩写     | 是否支持时效性设置 | 是否支持匿名上传 |
 | :----------------------------------------------: | :---------: | :----------------: | :--------------: |
 |          [无铭图床](https://wmimg.com)           |   `wmimg`   |         ❌         |        ❌        |
@@ -413,7 +415,6 @@ python .\2RPM.py screenshot --source 'window:完整窗口标题' --output --uplo
 |        [闪电图床](https://www.boltp.com/)        |   `boltp`   |         ✅         |        ❌        |
 | [Superbed（聚合图床）](https://www.superbed.cn/) | `superbed`  |         ❌         |        ❌        |
 |         [BeeIMG.com](https://beeimg.com)         |  `beeimg`   |         ❌         |        ✅        |
-|           [Catbox](https://catbox.moe)           |  `catbox`   |         ❌         |        ✅        |
 
 若站点「不支持匿名上传」表示必须提供有效 `token`。时效性设置、存储选择与期限计算的详细规则见 [兼容性与实现细节](docs/兼容性与实现细节.md)。
 
