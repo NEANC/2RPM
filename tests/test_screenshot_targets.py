@@ -31,7 +31,7 @@ def test_capture_result_is_frozen_and_exported():
     models = import_module('modules.screenshot.models')
     package = import_module('modules.screenshot')
     result = models.CaptureResult(b'png', 'window', '窗口', 320, 240)
-    assert result.png_bytes == b'png'
+    assert result.image_bytes == b'png'
     assert result.source == 'window'
     assert result.target == '窗口'
     assert (result.width, result.height) == (320, 240)
