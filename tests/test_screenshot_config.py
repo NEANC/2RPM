@@ -5,6 +5,7 @@
 
 import copy
 import os
+from pathlib import Path
 import re
 import sys
 from types import SimpleNamespace
@@ -101,30 +102,20 @@ def test_target_comments_explain_version_matching():
 
 
 def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
-    """实际生成的配置注释说明自动存储、期限入口及服务端限制。"""
+    """生成的配置只保留图床要点，详细规则集中在 README。"""
     path = tmp_path / 'default.yaml'
     config_module.create_default_config(str(path))
     text = path.read_text(encoding='utf-8')
     for fragment in (
-            'Boltp (boltp) 未填 options.storage_id 时按 2、3 顺序尝试',
-            '手填非负整数优先，精确拒绝时继续下一个编号',
-            '自动候选最多两个',
-            '仅匹配 HTTP 200、status=error 且 message 精确为'
-            '“不存在的储存驱动”才继续',
-            '不查询存储元数据或使用磁盘存储缓存',
-            'BeeIMG.cn (beeimg_cn) 未填 options.storage_id 时自动获取账号可用存储',
-            'BeeIMG.cn 手填合法可用 ID 优先；非法或离表时取得新元数据后选择可用 ID',
-            '替代仅用于本次操作，不写回用户配置',
-            '查询失败或无可用存储转下一图床，不猜值',
+            'boltp 默认依次尝试存储 2、3；beeimg_cn 自动选择可用存储',
             'expiration 位于图床项顶层，不放入 options',
-            '小写 w/d/h/m/s 正整数降序组合，每单位一次；1d 为 24 小时',
-            '未配置沿用站点策略；不支持期限的图床忽略合法 expiration 并固定告警',
-            '两站将期限转换为本机本地时区的 expired_at 字符串',
-            '正数组期限仅作保守客户端缩短依据；0 不缩短，但不保证永久保存',
-            '服务端时区、优先级和实际删除时间无保证',
-            'expiration 与 options.expired_at 同时填写为冲突'):
+            '仅 boltp / beeimg_cn 支持期限；未配置沿用站点策略',
+            '不保证服务端实际删除时间；详细规则见 README「图床存储与期限」'):
         assert fragment in text
     hosts = config_module.COMMENTS['push']['screenshot']['image_host']
+    assert len(hosts.splitlines()) <= 13
+    for detail in ('HTTP 200', 'profile', '磁盘存储缓存', '正数组期限'):
+        assert detail not in hosts
     assert '必须提供 options.storage_id' not in hosts
     assert '必须显式填写' not in hosts
     examples = [YAML().load(line.split('示例: ', 1)[1])
@@ -139,6 +130,49 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
         assert 'expiration' not in example.get('options', {})
         assert 'expired_at' not in example.get('options', {})
         assert 'storage_id' not in example.get('options', {})
+
+
+def test_readme_push_examples_use_current_layout():
+    """README 的推送 YAML 示例可解析，且与当前默认结构一致。"""
+    text = (Path(__file__).resolve().parents[1] / 'README.md').read_text(
+        encoding='utf-8')
+    examples = [YAML(typ='safe').load(block)
+                for block in re.findall(r'```yaml\n(.*?)```', text, re.S)]
+    pushes = [value['push'] for value in examples if 'push' in value]
+    assert pushes
+    assert not any('push_settings' in value for value in examples)
+    channels = [push['push_channel_settings']['channels']
+                for push in pushes if 'push_channel_settings' in push]
+    assert any(len(value) == 1 for value in channels)
+    assert any(len(value) > 1 for value in channels)
+    for push in pushes:
+        assert set(push) <= set(config_module.DEFAULT_VALUES['push'])
+        assert set(push.get('templates', {})) <= set(TEMPLATE_NAMES)
+    assert any('{screenshot}' in template['content']
+               for push in pushes
+               for template in push.get('templates', {}).values())
+
+
+@pytest.mark.parametrize('fragments', [
+    ('push.push_channel_settings.channels', 'push.templates',
+     '包含首次发送', 'on_external', '不自动追加图片'),
+    ('## 截图 CLI', '--output', '--upload', '不读取 config.yaml',
+     '全部图床', 'screenshot_YYYYMMDD_0000.jpg', '退出码', '不覆盖',
+     'WebP 编码器不可用时直接报编码失败，不降级', 'ADB 原始采集失败'),
+    ('### 窗口版本匹配', '@{version}', '@{VERSION}', '@{Version}',
+     '2～4 段', '7～64', 'Launcher', '多个匹配时拒绝截图'),
+    ('### 图床存储与期限', 'expiration', 'options.expired_at',
+     '不存在的储存驱动', 'group', 'profile', '0 不代表永久保存',
+     '本机本地时区', '不重新开始计时'),
+    ('### 无效项与兼容边界', 'push_settings', '--image-host',
+     'is_public', '不会自动迁移', '未知选项不等于生效'),
+])
+def test_readme_documents_runtime_contracts(fragments):
+    """锁定各主题的关键边界，不绑定整段文案。"""
+    text = (Path(__file__).resolve().parents[1] / 'README.md').read_text(
+        encoding='utf-8')
+    for fragment in fragments:
+        assert fragment in text
 
 
 @pytest.mark.parametrize('provider, variable, expiration', [
