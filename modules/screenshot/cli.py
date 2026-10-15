@@ -11,6 +11,9 @@ from modules.image_host.registry import upload_with_fallback
 from modules.operation_trace import trace_item
 from modules.operation_trace import trace_scope
 from modules.operation_trace import trace_skipped
+from modules.operation_trace import trace_slot
+from modules.operation_trace import trace_slots_skipped
+from modules.upload_status import make_status_consumer
 
 from .inline_upload import InlineUploadError
 from .inline_upload import parse_inline_hosts
@@ -287,25 +290,51 @@ def _resolve_output(output, program_dir):
 def _upload_all(data, filename, hosts):
     """独立凭证作用域，所有声明项串行执行且全部成功才成功。"""
     all_success = True
-    for host in hosts:
-        prepared, _ = prepare_cli_host(host)
-        success = False
-        if prepared is not None:
-            try:
-                with UploadContext(
-                        diagnostics=False,
-                        resolved_tokens={0: prepared['token']}) as context:
-                    uploaded = upload_with_fallback(
-                        data, filename, [prepared], context=context)
-                success = uploaded.success
-            except Exception:
+    try:
+        for index, host in enumerate(hosts):
+            # 绑定真实配置项序号，避免每次单站调用的局部序号折叠日志槽位
+            with trace_item(image_index=1, slot_index=index):
+                slot = trace_slot(host.get('provider', ''), index)
+                prepared, prepare_error = prepare_cli_host(host)
                 success = False
-        if success:
-            print(f'{host["provider"]}：上传成功 {uploaded.url}')
-        if not success:
-            print(f'{host["provider"]}：上传失败')
-        all_success = all_success and success
+                if prepared is not None:
+                    try:
+                        with UploadContext(
+                                diagnostics=False,
+                                resolved_tokens={0: prepared['token']}) as context:
+                            uploaded = upload_with_fallback(
+                                data, filename, [prepared], context=context)
+                        success = uploaded.success
+                    except Exception:
+                        success = False
+                if not success:
+                    # 已由上传链收尾的槽位不被改写，仅补齐前置失败与异常槽位
+                    slot.finish('failed',
+                                reason_code=prepare_error or 'upload_failed')
+                if success:
+                    print(f'{host["provider"]}：上传成功 {uploaded.url}')
+                if not success:
+                    print(f'{host["provider"]}：上传失败')
+                all_success = all_success and success
+    except BaseException as exc:
+        trace_slots_skipped(
+            1, len(hosts),
+            reason_code=('batch_cancelled'
+                         if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                         else 'slot_unfinished'))
+        raise
     return all_success
+
+
+def _upload_status(stats):
+    """按所有声明上传槽位的结果给出 CLI 批次业务终态。"""
+    if stats['slots_failed'] and stats['slots_succeeded']:
+        return 'partial_failure'
+    if stats['slots_failed']:
+        return 'failed'
+    if stats['slots_succeeded']:
+        return 'completed'
+    return None
 
 
 def run_screenshot_cli(args, program_dir):
@@ -339,7 +368,9 @@ def run_screenshot_cli(args, program_dir):
         return ARGUMENT_ERROR_CODE
 
     today = date.today()
-    with trace_scope(mode='cli', images_planned=1) as trace:
+    slots_planned = len(hosts) if hosts else 0
+    with trace_scope(mode='cli', images_planned=1, slots_planned=slots_planned,
+                     on_status=make_status_consumer()) as trace:
         with trace_item(image_index=1):
             try:
                 result = capture(
@@ -368,6 +399,9 @@ def run_screenshot_cli(args, program_dir):
             else:
                 trace_skipped('save', reason_code='not_configured')
             if hosts is not None:
-                return 0 if _upload_all(
-                    result.image_bytes, filename, hosts) else 1
-            return 0 if outcome is not None and outcome.path is not None else 1
+                all_success = _upload_all(result.image_bytes, filename, hosts)
+                trace.set_status(_upload_status(trace.summary()))
+                return 0 if all_success else 1
+            saved = outcome is not None and outcome.path is not None
+            trace.set_status('completed' if saved else 'failed')
+            return 0 if saved else 1

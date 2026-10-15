@@ -350,7 +350,15 @@ def spy_trace_scope(monkeypatch, module, events, traces):
     @contextmanager
     def scope(**kwargs):
         """注入状态回调并保留可供断言的真实批次对象。"""
-        kwargs.setdefault('on_status', events.append)
+        inner = kwargs.get('on_status')
+
+        def combined(event):
+            """先记录事件，再交给生产消费者，两条出口互不影响。"""
+            events.append(event)
+            if inner is not None:
+                inner(event)
+
+        kwargs['on_status'] = combined
         with real(**kwargs) as trace:
             traces.append(trace)
             yield trace

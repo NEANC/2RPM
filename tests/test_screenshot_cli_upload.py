@@ -12,6 +12,8 @@ from unittest.mock import Mock
 from PIL import Image
 import pytest
 
+from modules.image_host.core import ImageHostError
+from modules.operation_trace import trace_scope
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import SaveOutcome
 from modules.screenshot import winfs
@@ -295,3 +297,59 @@ def test_upload_all_propagates_control_signals(monkeypatch):
         with pytest.raises(type(signal)) as caught:
             cli._upload_all(b'x', 'a.jpg', hosts)
         assert caught.value is signal
+
+
+def test_upload_all_keeps_real_slot_indices(monkeypatch, tmp_path):
+    """同一图片的两个图床按真实配置项序号生成两个独立槽位。"""
+    cli = cli_module()
+    registry = import_module('modules.image_host.registry')
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    hosts = [{'provider': 'catbox', 'token': 't'},
+             {'provider': 'beeimg', 'token': 't'}]
+
+    def failing(image, filename, token, options):
+        """首项在真实上传链边界返回固定传输失败。"""
+        raise ImageHostError('transport_failed', '')
+
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox', failing)
+    monkeypatch.setitem(
+        registry.UPLOADERS, 'beeimg',
+        lambda image, filename, token, options: URL)
+    events = []
+    with trace_scope(mode='cli', images_planned=1, slots_planned=2,
+                     on_status=events.append) as trace:
+        assert cli._upload_all(b'x', 'a.jpg', hosts) is False
+    summary = trace.summary()
+    assert summary['slots_planned'] == 2
+    assert summary['slots_failed'] == 1
+    assert summary['slots_succeeded'] == 1
+    slots = [event for event in events if event.stage == 'slot']
+    assert sorted({(event.image_index, event.slot_index)
+                   for event in slots}) == [(1, 0), (1, 1)]
+
+
+def test_upload_all_records_prepare_failure_as_one_slot(monkeypatch):
+    """准备失败零 POST，但补记恰好一个槽位失败终态。"""
+    cli = cli_module()
+    hosts = [{'provider': 'catbox', 'options': {}}]
+    monkeypatch.setattr(
+        cli, 'prepare_cli_host',
+        lambda host: (None, 'missing_environment'))
+    created = patch_context(monkeypatch)
+    posts = []
+    monkeypatch.setattr(
+        cli, 'upload_with_fallback',
+        lambda *args, **kwargs: posts.append(args))
+    events = []
+    with trace_scope(mode='cli', images_planned=1, slots_planned=1,
+                     on_status=events.append) as trace:
+        assert cli._upload_all(b'x', 'a.jpg', hosts) is False
+    assert created == []
+    assert posts == []
+    summary = trace.summary()
+    assert summary['upload_post_attempts'] == 0
+    assert summary['slots_failed'] == 1
+    assert summary['slots_succeeded'] == 0
+    slots = [event for event in events if event.stage == 'slot']
+    assert [event.status for event in slots] == ['started', 'failed']
+    assert slots[1].reason_code == 'missing_environment'

@@ -17,6 +17,9 @@ from modules.image_host.registry import upload_with_fallback
 from modules.log_safety import extend_secrets
 from modules.operation_trace import trace_item
 from modules.operation_trace import trace_scope
+from modules.operation_trace import trace_slot_outcome
+from modules.operation_trace import trace_slots_skipped
+from modules.upload_status import make_status_consumer
 from modules.utils import get_program_directory
 
 from .models import CaptureError
@@ -72,11 +75,15 @@ def _upload_failure_summary(failures):
 
 def _prepare_target(item, hosts, warnings, diagnostics, *, context,
                     runtime, event, policy, trace):
-    """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。"""
+    """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。
+
+    Returns:
+        tuple[str, bool]: 目标输出值与“捕获是否成功”的事实。
+    """
     if item['error'] is not None:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
-        return f'截图配置失败：{item["error"]}'
+        return f'截图配置失败：{item["error"]}', False
 
     try:
         result = capture(
@@ -86,11 +93,11 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         trace.finish_image(item['index'], 'failed')
         failure = capture_failure_message(error)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-        return failure
+        return failure, False
     except Exception:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图失败')
-        return '截图失败'
+        return '截图失败', False
 
     trace.finish_image(item['index'], 'succeeded')
     warnings.extend(result.warnings)
@@ -106,12 +113,21 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
             result.image_bytes, item['out'] + '.jpg', hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
-            return markdown_image(item['out'], uploaded.url)
+            return markdown_image(item['out'], uploaded.url), True
         failure = _upload_failure_summary(uploaded.failures)
     except Exception:
         pass
     diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-    return failure
+    return failure, True
+
+
+def _resolve_status(outcomes):
+    """按每张图片是否取得所需结果给出批次业务终态。"""
+    if all(outcomes):
+        return 'completed'
+    if any(outcomes):
+        return 'partial_failure'
+    return 'failed'
 
 
 def prepare_screenshots(section, enabled, reserved_names, *,
@@ -149,18 +165,40 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     )
     if targets:
         hosts = section.get('image_host')
-        with trace_scope(mode='automatic', images_planned=len(targets)) as trace:
+        planned_hosts = len(hosts) if isinstance(hosts, list) and hosts else 0
+        with trace_scope(
+                mode='automatic', images_planned=len(targets),
+                slots_planned=len(targets) * planned_hosts,
+                on_status=make_status_consumer()) as trace:
+            outcomes = []
             with ExitStack() as stack:
                 context = None
-                for index, item in enumerate(targets, start=1):
-                    if context is None and item['error'] is None:
-                        context = stack.enter_context(
-                            UploadContext(diagnostics=False))
-                    with trace_item(image_index=index):
-                        values[item['out']] = _prepare_target(
-                            item, hosts, warnings, diagnostics, context=context,
-                            runtime=runtime, event=event, policy=policy,
-                            trace=trace)
+                try:
+                    for index, item in enumerate(targets, start=1):
+                        if context is None and item['error'] is None:
+                            context = stack.enter_context(
+                                UploadContext(diagnostics=False))
+                        with trace_item(image_index=index):
+                            value, captured = _prepare_target(
+                                item, hosts, warnings, diagnostics,
+                                context=context, runtime=runtime, event=event,
+                                policy=policy, trace=trace)
+                        values[item['out']] = value
+                        trace.skip_unstarted_slots(
+                            index, planned_hosts, reason_code='first_success')
+                        outcome = trace_slot_outcome(index)
+                        outcomes.append(
+                            captured if outcome is None
+                            else outcome == 'succeeded')
+                except BaseException as exc:
+                    reason = ('batch_cancelled'
+                              if isinstance(exc, (KeyboardInterrupt, SystemExit))
+                              else 'slot_unfinished')
+                    for index in range(1, len(targets) + 1):
+                        trace.skip_unstarted_slots(
+                            index, planned_hosts, reason_code=reason)
+                    raise
+            trace.set_status(_resolve_status(outcomes))
         values['screenshot'] = '\n\n'.join(values.values())
     else:
         values['screenshot'] = _CONFIG_FAILURE

@@ -100,8 +100,14 @@ def test_cli_real_multi_host_credentials_and_aggregate_exit(
     assert all(part[1] is files[0][1] for part in files)
     assert all(part[2] == 'image/jpeg' for part in files)
     output = capsys.readouterr()
-    assert output.out.count('上传成功') == (3 if failure == 'http' else 4)
-    assert output.out.count('上传失败') == (0 if failure is None else 1)
+    result_lines = [line for line in output.out.splitlines()
+                    if line.startswith(('catbox：', 'beeimg：'))]
+    assert sum('上传成功' in line for line in result_lines) == (
+        3 if failure == 'http' else 4)
+    assert sum('上传失败' in line for line in result_lines) == (
+        0 if failure is None else 1)
+    assert output.out.count('截图 1：准备上传') == 1
+    assert output.out.count('截图 1 / 图床 1 catbox：正在上传') == 1
     assert ENV_SECRET not in output.out + output.err + caplog.text
     assert DIRECT_SECRET not in output.out + output.err + caplog.text
     assert not list(tmp_path.rglob('*.jpg'))

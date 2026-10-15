@@ -5,6 +5,7 @@ import sys
 import threading
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 import colorama
 
@@ -12,6 +13,9 @@ from modules.log_safety import FORMAT_FAILURE
 from modules.log_safety import redact_text
 
 LOGGER = logging.getLogger(__name__)
+
+# 当前活动的 TTY spinner 句柄，供入口复用外层实例而不新建嵌套 spinner
+_CURRENT_SPINNER = ContextVar('current_spinner', default=None)
 
 # 完成 / 失败 / 致命的定格图标（取自 pixi_alas_install.sh#L47-49）
 _ICON_DONE = "\u2714\ufe0f"  # ✔️
@@ -377,6 +381,7 @@ def spinner_phase(text):
     root_logger = logging.getLogger()
     write_handler = _SpinnerWriteHandler(spinner)
     root_logger.addHandler(write_handler)
+    current_token = _CURRENT_SPINNER.set(handle)
     try:
         yield handle
     except SystemExit as e:
@@ -391,10 +396,20 @@ def spinner_phase(text):
             handle.fail("程序已退出")
         raise
     finally:
+        _CURRENT_SPINNER.reset(current_token)
         root_logger.removeHandler(write_handler)
         spinner.stop(clear_line=False)
         if console_handler is not None:
             console_handler.setLevel(saved_level)
+
+
+def current_spinner():
+    """返回当前活动的 TTY spinner 句柄，无活动 TTY spinner 时为空。
+
+    Returns:
+        _TtySpinner | None: 供入口复用外层实例的安全写入句柄。
+    """
+    return _CURRENT_SPINNER.get()
 
 
 def notify_fail(message, exc_info=False):

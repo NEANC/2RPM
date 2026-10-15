@@ -1758,3 +1758,33 @@ def test_disabled_diagnostics_keeps_lazy_backup_token(notification_http, monkeyp
     assert backup_environment_reads == 0
     assert len(state['requests']) == 4
     assert import_module('modules.log_safety').secret_snapshot() == ()
+
+
+def test_channel_retries_display_upload_status_once(
+        notification_http, monkeypatch, capsys):
+    """同一截图批次的终端状态不随通知通道数量与重试重复输出。"""
+    state = notification_http
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    seen = Counter()
+
+    def notify(title=None, content=None, **params):
+        """各通道首次失败后重试成功，保持既有并发重试规则。"""
+        key = params.get('sckey') or params.get('token') or params.get('webhook')
+        seen[key] += 1
+        return _response(500 if seen[key] == 1 else 200)
+
+    sent, notifier, _ = _install_onepush(monkeypatch, notify)
+    config = _http_config(channels=THREE_CHANNELS,
+                          retry={'interval': '0s', 'max_count': 3})
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+    assert results == [('serverchan', True), ('dingtalk', True), ('lark', True)]
+    assert notifier.notify.call_count == 6
+    assert len({body for _, body in sent}) == 1
+    status_text = capsys.readouterr().out
+    assert status_text.count('截图 1：准备上传') == 1
+    assert status_text.count('截图 2：准备上传') == 1
+    assert status_text.count('上传成功') == 2
+    assert status_text.count('截图 1 / 图床 1 beeimg_cn：正在上传') == 1
+    assert '\x1b' not in status_text
+    assert URL not in status_text

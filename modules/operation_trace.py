@@ -154,6 +154,9 @@ def _event_level(event) -> int:
     if status in ('skipped', 'cancelled'):
         return logging.INFO
     if stage == 'batch':
+        # 完成但带可恢复告警的批次按 WARNING 记录唯一终态
+        if status == 'completed' and event.reason_code:
+            return logging.WARNING
         return {
             'completed': logging.INFO,
             'cancelled': logging.INFO,
@@ -387,6 +390,41 @@ class BatchTrace:
         if index not in self._images:
             self._images[index] = status
 
+    def skip_unstarted_slots(self, image_index: int, count: int, *,
+                             reason_code: str = '') -> None:
+        """把未开始的计划槽位补记为跳过，不触碰已开始或已完成的槽位。"""
+        for slot_index in range(count):
+            if (image_index, slot_index) not in self._slots:
+                self.finish_slot(image_index, slot_index, 'skipped',
+                                 reason_code=reason_code)
+
+    def slot_outcome(self, image_index: int):
+        """汇总某逻辑图片的真实槽位结果，只有跳过时不作为结果。"""
+        statuses = [
+            record['status'] for (index, _), record in self._slots.items()
+            if index == image_index
+            and record['status'] in ('succeeded', 'failed', 'cancelled')]
+        if not statuses:
+            return None
+        if 'succeeded' in statuses:
+            return 'succeeded'
+        if 'failed' in statuses:
+            return 'failed'
+        return 'cancelled'
+
+    def _has_recoverable_warnings(self) -> bool:
+        """判断已完成批次是否带有可恢复告警，用于唯一汇总级别。"""
+        for counter in (
+                'capture_retries', 'capture_format_fallbacks',
+                'preupload_refreshes', 'postupload_recoveries',
+                'boltp_candidate_switches', 'host_failovers'):
+            if self._named.get(counter, 0):
+                return True
+        for stage in ('capture', 'encode', 'save'):
+            if self._stages.get(stage, {}).get('failed', 0):
+                return True
+        return False
+
     def set_status(self, status: str) -> None:
         """由编排层显式指定唯一批次终态。"""
         if status in _BATCH_STATUSES:
@@ -420,9 +458,13 @@ class BatchTrace:
                 self.finish_slot(
                     record['image_index'], record['slot_index'], fallback,
                     reason_code=reason)
+        final_status = self._final_status()
         self._record_event(_create_event(
             event_id=_new_id(), batch_id=self._batch_id, stage='batch',
-            action=self._mode, status=self._final_status(),
+            action=self._mode, status=final_status,
+            reason_code=('recoverable_warning'
+                         if final_status == 'completed'
+                         and self._has_recoverable_warnings() else ''),
             duration_ms=_milliseconds(self._clock() - self._started_at)))
 
     def summary(self):
@@ -581,3 +623,20 @@ def trace_slot(provider: str, fallback_index: int = 0) -> SlotHandle:
 def current_request_id():
     """返回当前作用域内最近一次真实请求的关联标识，无请求时为空。"""
     return _REQUEST.get()
+
+
+def trace_slots_skipped(image_index: int, count: int, *,
+                        reason_code: str = '') -> None:
+    """在活动作用域内把未开始的计划槽位补记为跳过，无作用域时不输出。"""
+    trace = _TRACE.get()
+    if trace is None:
+        return
+    trace.skip_unstarted_slots(image_index, count, reason_code=reason_code)
+
+
+def trace_slot_outcome(image_index: int):
+    """返回活动作用域内某逻辑图片的槽位综合结果，无槽位事实时为空。"""
+    trace = _TRACE.get()
+    if trace is None:
+        return None
+    return trace.slot_outcome(image_index)
