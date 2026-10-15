@@ -5,11 +5,13 @@ import os
 import sys
 import time
 import logging
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import colorama
 
+from modules.log_safety import SafeFormatter
+from modules.log_safety import SafeRotatingFileHandler
+from modules.log_safety import SafeStreamHandler
 from modules.utils import get_program_directory
 
 LOGGER = logging.getLogger(__name__)
@@ -27,7 +29,7 @@ _LOG_MAX_BYTES = 10 * 1024 * 1024
 _FILE_HANDLER = None
 
 
-class ColoredConsoleFormatter(logging.Formatter):
+class ColoredConsoleFormatter(SafeFormatter):
     """带颜色的控制台日志格式化器"""
 
     LEVEL_COLORS = {
@@ -38,40 +40,14 @@ class ColoredConsoleFormatter(logging.Formatter):
         'CRITICAL': colorama.Back.RED + colorama.Fore.BLACK + colorama.Style.BRIGHT,
     }
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, fmt=None, datefmt=None):
+        super().__init__(fmt, datefmt, include_traceback=False)
         colorama.init(autoreset=True)
 
     def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
         color = self.LEVEL_COLORS.get(record.levelname, colorama.Fore.WHITE)
-        result = self._format_without_traceback(record)
-        return f"{color}{result}{colorama.Style.RESET_ALL}"
-
-    def _format_without_traceback(self, record: logging.LogRecord) -> str:
-        """格式化日志且不输出异常堆栈，仅保留异常摘要。
-
-        控制台只展示异常类型与消息（由调用方写入 message），完整 traceback
-        交由文件处理器输出。临时屏蔽 record 的异常字段进行格式化，结束后还原，
-        避免影响其他处理器对同一条记录的格式化。
-
-        Args:
-            record (logging.LogRecord): 待格式化的日志记录。
-
-        Returns:
-            str: 不含 traceback 的日志文本。
-        """
-        saved_exc_info = record.exc_info
-        saved_exc_text = record.exc_text
-        saved_stack_info = record.stack_info
-        record.exc_info = None
-        record.exc_text = None
-        record.stack_info = None
-        try:
-            return super().format(record)
-        finally:
-            record.exc_info = saved_exc_info
-            record.exc_text = saved_exc_text
-            record.stack_info = saved_stack_info
+        return f"{color}{rendered}{colorama.Style.RESET_ALL}"
 
 
 def _cleanup_old_logs(log_dir: str, max_files: int, max_days: int) -> None:
@@ -163,7 +139,7 @@ def _create_file_handler(log_dir: str, prefix: str):
     try:
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, _make_log_filename(prefix))
-        handler = RotatingFileHandler(
+        handler = SafeRotatingFileHandler(
             log_file,
             maxBytes=_LOG_MAX_BYTES,
             backupCount=0,
@@ -171,7 +147,7 @@ def _create_file_handler(log_dir: str, prefix: str):
         )
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
-            logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+            SafeFormatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
         return handler
     except OSError as e:
         LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
@@ -201,7 +177,7 @@ def setup_default_logging() -> None:
 
     # 控制台 handler：双轨制下持久静音（提级到 CRITICAL+1），
     # 保留 ColoredConsoleFormatter 仅为兼容潜在的级别临时调整场景
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = SafeStreamHandler(sys.stdout)
     console_handler.setLevel(logging.CRITICAL + 1)
     console_handler.setFormatter(
         ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
@@ -228,7 +204,7 @@ def _set_console_level(root_logger: logging.Logger, level: int) -> None:
             handler.setLevel(level)
             return
 
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = SafeStreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(
         ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
@@ -245,11 +221,11 @@ def _reopen_file_handler(path: str, backup_count: int):
     Returns:
         RotatingFileHandler: 重新打开的文件处理器。
     """
-    handler = RotatingFileHandler(
+    handler = SafeRotatingFileHandler(
         path, maxBytes=_LOG_MAX_BYTES, backupCount=backup_count, encoding='utf-8')
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(
-        logging.Formatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+        SafeFormatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
     return handler
 
 

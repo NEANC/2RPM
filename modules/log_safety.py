@@ -6,6 +6,7 @@ from contextvars import ContextVar
 import copy
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import re
 import unicodedata
 import urllib.parse
@@ -172,3 +173,44 @@ class SafeFormatter(logging.Formatter):
             return redact_text(rendered)
         except Exception:
             return FORMAT_FAILURE
+
+
+class SafeStreamHandler(logging.StreamHandler):
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        pass
+
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        pass
+
+
+class _DependencyDropFilter(logging.Filter):
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
+@contextmanager
+def guard_dependency_logging(names: tuple[str, ...]):
+    drop = _DependencyDropFilter()
+    guarded = []
+    for name in names:
+        prefix = name + '.'
+        for logger_name, logger in list(logging.Logger.manager.loggerDict.items()):
+            if logger_name != name and not logger_name.startswith(prefix):
+                continue
+            if isinstance(logger, logging.Logger):
+                logger.addFilter(drop)
+                guarded.append(logger)
+        direct = logging.getLogger(name)
+        if direct not in guarded:
+            direct.addFilter(drop)
+            guarded.append(direct)
+    try:
+        yield
+    finally:
+        for logger in guarded:
+            logger.removeFilter(drop)

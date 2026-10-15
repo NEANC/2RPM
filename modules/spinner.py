@@ -8,6 +8,9 @@ from contextlib import contextmanager
 
 import colorama
 
+from modules.log_safety import FORMAT_FAILURE
+from modules.log_safety import redact_text
+
 LOGGER = logging.getLogger(__name__)
 
 # 完成 / 失败 / 致命的定格图标（取自 pixi_alas_install.sh#L47-49）
@@ -36,7 +39,7 @@ class _SimpleTTYSpinner:
             message (str): 初始状态文案
             output: 输出流，默认使用 sys.stdout
         """
-        self._message = message
+        self._message = redact_text(message)
         self._output = output or sys.stdout
         self._frames = _SPINNER_FRAMES
         self._frame_index = 0
@@ -90,7 +93,7 @@ class _SimpleTTYSpinner:
         with self._lock:
             if self._closed:
                 return
-            self._message = message
+            self._message = redact_text(message)
             self._output.write(_CLEAR_LINE)
             self._write_full_line()
 
@@ -192,7 +195,10 @@ class _SpinnerWriteHandler(logging.Handler):
         Args:
             record (logging.LogRecord): 日志记录
         """
-        message = record.getMessage()
+        try:
+            message = redact_text(record.getMessage())
+        except Exception:
+            message = FORMAT_FAILURE
         self._spinner.write(_format_fail(message))
 
 
@@ -242,7 +248,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
-        self._spinner.done(_format_done(message))
+        self._spinner.done(_format_done(redact_text(message)))
         self._closed = True
 
     def fail(self, message):
@@ -253,7 +259,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
-        self._spinner.fail(_format_fail(message))
+        self._spinner.fail(_format_fail(redact_text(message)))
         self._closed = True
 
     def write(self, message):
@@ -264,7 +270,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
-        self._spinner.write(message)
+        self._spinner.write(redact_text(message))
 
     def write_done(self, message):
         """插入打印成功文本后恢复 spinner 行
@@ -274,7 +280,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
-        self._spinner.write(_format_done(message))
+        self._spinner.write(_format_done(redact_text(message)))
 
     def write_fail(self, message):
         """插入打印失败文本后恢复 spinner 行
@@ -284,7 +290,7 @@ class _TtySpinner:
         """
         if self._closed:
             return
-        self._spinner.write(_format_fail(message))
+        self._spinner.write(_format_fail(redact_text(message)))
 
 
 class _LogSpinner:
@@ -419,4 +425,4 @@ def notify_fail(message, exc_info=False):
         if console_handler is not None:
             console_handler.setLevel(saved_level)
     colorama.init(autoreset=True)
-    print(_format_fail(message))
+    print(_format_fail(redact_text(message)))
