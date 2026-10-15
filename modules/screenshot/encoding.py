@@ -7,6 +7,8 @@ import struct
 
 from PIL import Image
 
+from modules.operation_trace import trace_operation
+
 
 def window_image(pixels, width, height):
     """从顶向下 BGRX 像素生成不含 alpha 语义的 RGB 图像。"""
@@ -16,6 +18,21 @@ def window_image(pixels, width, height):
 
 def encode_image(image, image_format):
     """直接从采集像素编码固定格式，不做回读或缩放。"""
+    with trace_operation(
+            'encode', 'encode', image_format=image_format) as operation:
+        try:
+            data = _encode_payload(image, image_format)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception:
+            operation.finish('failed', reason_code='encoding_failed')
+            raise
+        operation.finish('succeeded', byte_count=len(data))
+    return data
+
+
+def _encode_payload(image, image_format):
+    """把像素编码为指定内部格式的唯一实际写入点。"""
     if image_format == 'raw':
         return (struct.pack('<4sIIII', b'2RAW', 1, *image.size, 1)
                 + image.convert('RGBA').tobytes())

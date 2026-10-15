@@ -15,6 +15,8 @@ from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.registry import upload_with_fallback
 from modules.log_safety import extend_secrets
+from modules.operation_trace import trace_item
+from modules.operation_trace import trace_scope
 from modules.utils import get_program_directory
 
 from .models import CaptureError
@@ -143,15 +145,17 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     )
     if targets:
         hosts = section.get('image_host')
-        with ExitStack() as stack:
-            context = None
-            for item in targets:
-                if context is None and item['error'] is None:
-                    context = stack.enter_context(
-                        UploadContext(diagnostics=False))
-                values[item['out']] = _prepare_target(
-                    item, hosts, warnings, diagnostics, context=context,
-                    runtime=runtime, event=event, policy=policy)
+        with trace_scope(mode='automatic', images_planned=len(targets)):
+            with ExitStack() as stack:
+                context = None
+                for index, item in enumerate(targets, start=1):
+                    if context is None and item['error'] is None:
+                        context = stack.enter_context(
+                            UploadContext(diagnostics=False))
+                    with trace_item(image_index=index):
+                        values[item['out']] = _prepare_target(
+                            item, hosts, warnings, diagnostics, context=context,
+                            runtime=runtime, event=event, policy=policy)
         values['screenshot'] = '\n\n'.join(values.values())
     else:
         values['screenshot'] = _CONFIG_FAILURE

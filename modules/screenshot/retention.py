@@ -8,6 +8,9 @@ from datetime import date
 import ntpath
 import re
 
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
+
 from . import winfs
 
 
@@ -101,22 +104,26 @@ def save_cli(result, target, is_file, *, today=None):
     """只有排他冲突递增，普通失败保留最后候选上传名。"""
     today = date.today() if today is None else today
     sequence = 0
-    while True:
-        name = cli_filename(result, target, is_file, today, sequence)
-        path = ntpath.join(ntpath.dirname(target) if is_file else target, name)
-        try:
-            winfs.write_exclusive(path, result.image_bytes)
-        except FileExistsError:
-            if not is_file:
-                sequence += 1
-                continue
-            return SaveOutcome(None, name, ('截图保存失败：目标文件已存在，未覆盖',))
-        except Exception as error:
-            warnings = ['截图保存失败：无法写入输出路径']
-            if '截图半成品清理失败' in getattr(error, '__notes__', ()):
-                warnings.append('截图半成品清理失败')
-            return SaveOutcome(None, name, tuple(warnings))
-        return SaveOutcome(path, name)
+    with trace_operation('save', 'write') as operation:
+        while True:
+            name = cli_filename(result, target, is_file, today, sequence)
+            path = ntpath.join(ntpath.dirname(target) if is_file else target, name)
+            try:
+                winfs.write_exclusive(path, result.image_bytes)
+            except FileExistsError:
+                if not is_file:
+                    sequence += 1
+                    continue
+                operation.finish('failed', reason_code='save_conflict')
+                return SaveOutcome(None, name, ('截图保存失败：目标文件已存在，未覆盖',))
+            except Exception as error:
+                warnings = ['截图保存失败：无法写入输出路径']
+                if '截图半成品清理失败' in getattr(error, '__notes__', ()):
+                    warnings.append('截图半成品清理失败')
+                operation.finish('failed', reason_code='save_failed')
+                return SaveOutcome(None, name, tuple(warnings))
+            operation.finish('succeeded')
+            return SaveOutcome(path, name)
 
 
 def cleanup_retention(program_dir, policy, *, today=None):
@@ -164,31 +171,36 @@ def cli_target_is_managed(path: str, is_file: bool, program_dir: str) -> bool:
 def save_automatic(result, runtime, event, policy, *, today=None):
     """按事件最大序号排他保存自动截图。"""
     if not policy.enabled:
+        trace_skipped('save', reason_code='not_configured')
         return SaveOutcome(None, '', policy.warnings)
     name = 'event_01.jpg'
-    try:
-        today = date.today() if today is None else today
-        event = sanitize_component(event, 'event')
-        folder = ntpath.join(runtime['program_dir'], 'screenshot', today.strftime('%Y_%m_%d'),
-                             runtime['config_stem'])
+    with trace_operation('save', 'write') as operation:
         try:
-            names = winfs.list_names(folder)
-        except FileNotFoundError:
-            names = ()
-        pattern = re.compile(re.escape(event) + r'_([0-9]+)\.jpg', re.I)
-        maximum = max((int(match.group(1)) for item in names
-                       if (match := pattern.fullmatch(item))), default=0)
-        sequence = maximum + 1
-        while True:
-            name = f'{event}_{sequence:02d}.jpg'
-            path = ntpath.join(folder, name)
+            today = date.today() if today is None else today
+            event = sanitize_component(event, 'event')
+            folder = ntpath.join(runtime['program_dir'], 'screenshot', today.strftime('%Y_%m_%d'),
+                                 runtime['config_stem'])
             try:
-                winfs.write_exclusive(path, result.image_bytes)
+                names = winfs.list_names(folder)
+            except FileNotFoundError:
+                names = ()
+            pattern = re.compile(re.escape(event) + r'_([0-9]+)\.jpg', re.I)
+            maximum = max((int(match.group(1)) for item in names
+                           if (match := pattern.fullmatch(item))), default=0)
+            sequence = maximum + 1
+            while True:
+                name = f'{event}_{sequence:02d}.jpg'
+                path = ntpath.join(folder, name)
+                try:
+                    winfs.write_exclusive(path, result.image_bytes)
+                except FileExistsError:
+                    sequence += 1
+                    continue
+                operation.finish('succeeded')
                 return SaveOutcome(path, name, policy.warnings)
-            except FileExistsError:
-                sequence += 1
-    except Exception as error:
-        warnings = policy.warnings + ('截图保存失败：无法写入输出路径',)
-        if '截图半成品清理失败' in getattr(error, '__notes__', ()):
-            warnings += ('截图半成品清理失败',)
-        return SaveOutcome(None, name, warnings)
+        except Exception as error:
+            operation.finish('failed', reason_code='save_failed')
+            warnings = policy.warnings + ('截图保存失败：无法写入输出路径',)
+            if '截图半成品清理失败' in getattr(error, '__notes__', ()):
+                warnings += ('截图半成品清理失败',)
+            return SaveOutcome(None, name, warnings)

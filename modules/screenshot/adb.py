@@ -19,6 +19,8 @@ from adbutils.errors import AdbError
 from adbutils.errors import AdbTimeout
 from PIL import Image
 
+from modules.operation_trace import trace_operation
+
 from .encoding import encode_image
 from .models import CaptureError
 from .models import CaptureResult
@@ -265,13 +267,48 @@ def _encoded_result(image, serial, image_format, warnings=()):
     return CaptureResult(data, 'adb', serial, *image.size, warnings, image_format)
 
 
+def _capture_raw(serial):
+    """把单次 raw 读取与解析记作一个捕获操作。"""
+    with trace_operation('capture', 'read', source='adb') as operation:
+        try:
+            image = _parse_raw(_read_capture(serial, False))
+        except CaptureError as error:
+            operation.finish('failed', reason_code=error.code)
+            raise
+        except ResponseTooLarge:
+            operation.finish('failed', reason_code='response_too_large')
+            raise
+        operation.finish('succeeded', width=image.size[0], height=image.size[1])
+        return image
+
+
+def _capture_retry():
+    """记录一次同格式 raw 重采的回退事实。"""
+    with trace_operation(
+            'fallback', 'capture_retry', source='adb',
+            fallback_kind='capture_retry') as operation:
+        operation.finish('succeeded')
+
+
+def _capture_png_fallback():
+    """记录一次 raw 转 PNG 的格式回退事实。"""
+    with trace_operation(
+            'fallback', 'capture_format', source='adb',
+            fallback_kind='capture_format') as operation:
+        operation.finish('succeeded')
+
+
 def _png_result(serial, automatic, warnings=()):
     """执行唯一 PNG 回退，CLI 保留收到的原始字节。"""
     try:
-        data = _read_capture(serial, True)
+        with trace_operation('capture', 'read', source='adb') as operation:
+            data = _read_capture(serial, True)
+            image = _decode_png(data)
+            operation.finish(
+                'succeeded', width=image.size[0], height=image.size[1])
     except ResponseTooLarge:
         raise _error('adb_image_failed') from None
-    with _decode_png(data) as image:
+    with image:
         if automatic:
             return _encoded_result(image, serial, 'jpeg', warnings)
         return CaptureResult(data, 'adb', serial, *image.size, warnings, 'png')
@@ -290,9 +327,11 @@ def capture_adb(serial: str, *, image_format='jpeg',
     if not automatic and image_format == 'png':
         return _png_result(serial, False)
     reason = '采集或解析失败'
-    for _ in range(2):
+    for attempt in range(2):
+        if attempt:
+            _capture_retry()
         try:
-            image = _parse_raw(_read_capture(serial, False))
+            image = _capture_raw(serial)
         except CaptureError as error:
             reason = '超时' if error.code == 'adb_timeout' else '采集或解析失败'
             if not automatic and error.code == 'adb_timeout':
@@ -309,4 +348,5 @@ def capture_adb(serial: str, *, image_format='jpeg',
             except CaptureError:
                 reason = '采集或编码失败'
     warnings = (() if automatic else (f'ADB raw {reason}，已回退 PNG',))
+    _capture_png_fallback()
     return _png_result(serial, automatic, warnings)

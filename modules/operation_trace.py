@@ -1,0 +1,482 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""结构化阶段事件、关联身份与批次真实操作计数。"""
+
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+import logging
+import time
+import uuid
+
+
+LOGGER = logging.getLogger(__name__)
+
+_TERMINAL_STATUSES = frozenset({'succeeded', 'failed', 'cancelled'})
+_BATCH_STATUSES = frozenset(
+    {'completed', 'partial_failure', 'failed', 'cancelled'})
+
+_INT_FIELDS = frozenset({
+    'image_index', 'slot_index', 'attempt_index', 'http_status', 'storage_id',
+    'candidate_count', 'width', 'height', 'byte_count', 'duration_ms',
+})
+_STR_FIELDS = frozenset({
+    'event_id', 'batch_id', 'operation_id', 'request_id', 'stage', 'action',
+    'status', 'reason_code', 'provider', 'source', 'cache_layer',
+    'selection_source', 'source_operation_id', 'fallback_kind', 'image_format',
+})
+_EVENT_FIELDS = (
+    'event_id', 'batch_id', 'image_index', 'slot_index', 'operation_id',
+    'request_id', 'attempt_index', 'stage', 'action', 'status', 'reason_code',
+    'provider', 'source', 'cache_layer', 'selection_source',
+    'source_operation_id', 'fallback_kind', 'http_status', 'storage_id',
+    'candidate_count', 'width', 'height', 'image_format', 'byte_count',
+    'duration_ms',
+)
+
+_FALLBACK_COUNTERS = {
+    'capture_retry': 'capture_retries',
+    'capture_format': 'capture_format_fallbacks',
+    'preupload_refresh': 'preupload_refreshes',
+    'postupload_recovery': 'postupload_recoveries',
+    'boltp_candidate': 'boltp_candidate_switches',
+    'host_failover': 'host_failovers',
+}
+
+_DEBUG_STAGES = frozenset({
+    'metadata_cache', 'metadata_query', 'storage_select',
+})
+_INFO_STAGES = frozenset({
+    'capture', 'encode', 'save', 'upload_attempt', 'slot',
+})
+
+_TRACE = ContextVar('operation_trace_batch', default=None)
+_ITEM = ContextVar('operation_trace_item', default=None)
+
+
+@dataclass(frozen=True)
+class StageEvent:
+    """保存一条安全阶段事实，字段固定为白名单。"""
+
+    event_id: str = None
+    batch_id: str = None
+    image_index: int = None
+    slot_index: int = None
+    operation_id: str = None
+    request_id: str = None
+    attempt_index: int = None
+    stage: str = None
+    action: str = None
+    status: str = None
+    reason_code: str = None
+    provider: str = None
+    source: str = None
+    cache_layer: str = None
+    selection_source: str = None
+    source_operation_id: str = None
+    fallback_kind: str = None
+    http_status: int = None
+    storage_id: int = None
+    candidate_count: int = None
+    width: int = None
+    height: int = None
+    image_format: str = None
+    byte_count: int = None
+    duration_ms: int = None
+
+
+def _new_id() -> str:
+    """生成不含业务数据的随机关联标识。"""
+    return uuid.uuid4().hex
+
+
+def _milliseconds(delta: float) -> int:
+    """把单调秒差固定为非负毫秒整数。"""
+    return max(0, int(delta * 1000))
+
+
+def _valid_storage_id(provider, value):
+    """按 provider 分支校验存储编号，非法值不予输出。"""
+    if type(value) is not int:
+        return None
+    if provider == 'boltp':
+        return value if value >= 0 else None
+    if provider == 'beeimg_cn':
+        return value if value > 0 else None
+    return None
+
+
+def _create_event(**fields) -> StageEvent:
+    """只保留已知字段及合法简单值，未知键与对象一律丢弃。"""
+    values = {}
+    for name in _EVENT_FIELDS:
+        value = fields.get(name)
+        if value is None:
+            continue
+        if name in _INT_FIELDS:
+            if type(value) is not int:
+                continue
+        elif name in _STR_FIELDS:
+            if type(value) is not str:
+                continue
+        values[name] = value
+    if 'storage_id' in values:
+        storage_id = _valid_storage_id(
+            values.get('provider'), values['storage_id'])
+        if storage_id is None:
+            del values['storage_id']
+        else:
+            values['storage_id'] = storage_id
+    return StageEvent(**values)
+
+
+def _format_event(event) -> str:
+    """把安全字段渲染为不含自由文本的单行记录。"""
+    parts = []
+    for name in _EVENT_FIELDS:
+        value = getattr(event, name)
+        if value is None or value == '':
+            continue
+        parts.append(f'{name}={value}')
+    return 'stage_event ' + ' '.join(parts)
+
+
+def _event_level(event) -> int:
+    """按阶段与结果选择唯一日志级别。"""
+    stage = event.stage
+    status = event.status
+    if status in ('skipped', 'cancelled'):
+        return logging.INFO
+    if stage == 'batch':
+        return {
+            'completed': logging.INFO,
+            'cancelled': logging.INFO,
+            'partial_failure': logging.WARNING,
+            'failed': logging.ERROR,
+        }.get(status, logging.INFO)
+    if status == 'started':
+        return logging.DEBUG
+    if status == 'failed':
+        if stage in _DEBUG_STAGES or stage in ('capture', 'encode'):
+            return logging.DEBUG
+        return logging.WARNING
+    if stage == 'fallback':
+        return logging.WARNING
+    if stage in _INFO_STAGES:
+        return logging.INFO
+    return logging.DEBUG
+
+
+class Operation:
+    """表示一次已开始阶段，首次终态由调用方显式给出。"""
+
+    def __init__(self, trace, stage, action, event, started_at):
+        """保存所属批次引用、开始事件与单调起点。"""
+        self._trace = trace
+        self._stage = stage
+        self._action = action
+        self._event = event
+        self._started_at = started_at
+        self._finished = False
+
+    def finish(self, status, *, reason_code='', **safe_fields) -> None:
+        """仅接受终态一次，重复调用与额外字段被安全忽略。"""
+        if self._finished or self._trace is None:
+            return
+        if status not in _TERMINAL_STATUSES:
+            return
+        self._finished = True
+        self._trace._finish_operation(self, status, reason_code, safe_fields)
+
+    def _auto_finish(self, status) -> None:
+        """在调用方未显式收尾时补充固定终态。"""
+        if self._finished or self._trace is None:
+            return
+        self.finish(status)
+
+
+class BatchTrace:
+    """保存一个批次内的事件事实、阶段计数与终态。"""
+
+    def __init__(self, *, mode, images_planned, slots_planned, clock,
+                 on_status):
+        """初始化唯一批次身份、单调起点与空计数。"""
+        self._mode = mode
+        self._images_planned = images_planned
+        self._slots_planned = 0 if slots_planned is None else slots_planned
+        self._clock = clock
+        self._on_status = on_status
+        self._batch_id = _new_id()
+        self._started_at = clock()
+        self._stages = {}
+        self._named = {}
+        self._images = {}
+        self._slots = {}
+        self._slot_order = []
+        self._status = None
+        self._cancelled = False
+        self._failed = False
+        self._finalized = False
+
+    def _count(self, stage, key, amount=1) -> None:
+        """按阶段累计一个固定计数值。"""
+        bucket = self._stages.setdefault(stage, {})
+        bucket[key] = bucket.get(key, 0) + amount
+
+    def _build_event(self, **fields) -> StageEvent:
+        """补充当前图片上下文、批次身份与事件标识。"""
+        payload = dict(fields)
+        item = _ITEM.get()
+        if item is not None:
+            payload.setdefault('image_index', item[0])
+            payload.setdefault('slot_index', item[1])
+        payload.setdefault('batch_id', self._batch_id)
+        payload.setdefault('event_id', _new_id())
+        return _create_event(**payload)
+
+    def _record_event(self, event) -> None:
+        """先写文件事实，再独立尝试终端消费，互不影响。"""
+        try:
+            LOGGER.log(_event_level(event), '%s', _format_event(event))
+        except Exception:
+            pass
+        if self._on_status is not None:
+            try:
+                self._on_status(event)
+            except Exception:
+                pass
+
+    def _start_operation(self, stage, action, safe_fields) -> Operation:
+        """开始一次阶段操作并记录开始事件。"""
+        self._count(stage, 'started')
+        payload = dict(safe_fields)
+        payload.update(
+            operation_id=_new_id(), stage=stage, action=action,
+            status='started')
+        event = self._build_event(**payload)
+        self._record_event(event)
+        return Operation(self, stage, action, event, self._clock())
+
+    def _finish_operation(self, operation, status, reason_code,
+                          safe_fields) -> None:
+        """产出同一 operation_id 的唯一终态与完整耗时。"""
+        self._count(operation._stage, status)
+        started = operation._event
+        if started.stage == 'fallback':
+            counter = _FALLBACK_COUNTERS.get(started.fallback_kind)
+            if counter is not None:
+                self._named[counter] = self._named.get(counter, 0) + 1
+        payload = {}
+        for name in _EVENT_FIELDS:
+            value = getattr(started, name)
+            if value is not None:
+                payload[name] = value
+        payload.update(safe_fields)
+        payload.update(
+            event_id=_new_id(), status=status, reason_code=reason_code,
+            duration_ms=_milliseconds(self._clock() - operation._started_at))
+        self._record_event(_create_event(**payload))
+
+    def _record_skipped(self, stage, reason_code, safe_fields) -> None:
+        """记录一次未执行的跳过，不伪造开始与耗时。"""
+        self._count(stage, 'skipped')
+        payload = dict(safe_fields)
+        payload.update(
+            operation_id=_new_id(), stage=stage, status='skipped',
+            reason_code=reason_code)
+        self._record_event(self._build_event(**payload))
+
+    def start_slot(self, image_index: int, slot_index: int, *,
+                   provider: str) -> None:
+        """为逻辑槽位生成唯一开始事件，重复开始不再补发。"""
+        key = (image_index, slot_index)
+        if key in self._slots:
+            return
+        record = {
+            'operation_id': _new_id(),
+            'provider': provider,
+            'started_at': self._clock(),
+            'status': None,
+            'image_index': image_index,
+            'slot_index': slot_index,
+        }
+        self._slots[key] = record
+        self._slot_order.append(key)
+        self._record_event(self._build_event(
+            image_index=image_index, slot_index=slot_index,
+            operation_id=record['operation_id'], stage='slot', action='upload',
+            status='started', provider=provider))
+
+    def finish_slot(self, image_index: int, slot_index: int, status: str, *,
+                    reason_code: str = '') -> None:
+        """作为槽位终态的唯一生产者，首次完成即冻结。"""
+        if status not in ('succeeded', 'failed', 'cancelled', 'skipped'):
+            return
+        key = (image_index, slot_index)
+        record = self._slots.get(key)
+        if record is None:
+            record = {
+                'operation_id': _new_id(),
+                'provider': None,
+                'started_at': None,
+                'status': None,
+                'image_index': image_index,
+                'slot_index': slot_index,
+            }
+            self._slots[key] = record
+            self._slot_order.append(key)
+        if record['status'] is not None:
+            return
+        record['status'] = status
+        self._count('slot', status)
+        duration_ms = None
+        if record['started_at'] is not None:
+            duration_ms = _milliseconds(
+                self._clock() - record['started_at'])
+        self._record_event(self._build_event(
+            image_index=image_index, slot_index=slot_index,
+            operation_id=record['operation_id'], stage='slot', action='upload',
+            status=status, reason_code=reason_code, provider=record['provider'],
+            duration_ms=duration_ms))
+
+    def finish_image(self, index: int, status: str) -> None:
+        """只保存逻辑图片状态，不产生额外事件或阶段计数。"""
+        if index not in self._images:
+            self._images[index] = status
+
+    def set_status(self, status: str) -> None:
+        """由编排层显式指定唯一批次终态。"""
+        if status in _BATCH_STATUSES:
+            self._status = status
+
+    def _final_status(self) -> str:
+        """按已记录事实推断批次终态，未指定时才推断。"""
+        if self._status is not None:
+            return self._status
+        if self._cancelled:
+            return 'cancelled'
+        if self._failed:
+            return 'failed'
+        statuses = list(self._images.values())
+        if not statuses or all(item == 'succeeded' for item in statuses):
+            return 'completed'
+        if any(item == 'succeeded' for item in statuses):
+            return 'partial_failure'
+        return 'failed'
+
+    def _finalize(self) -> None:
+        """收尾未完成槽位并输出唯一批次汇总事件。"""
+        if self._finalized:
+            return
+        self._finalized = True
+        fallback = 'cancelled' if self._cancelled else 'failed'
+        reason = 'batch_cancelled' if self._cancelled else 'slot_unfinished'
+        for key in self._slot_order:
+            record = self._slots[key]
+            if record['status'] is None:
+                self.finish_slot(
+                    record['image_index'], record['slot_index'], fallback,
+                    reason_code=reason)
+        self._record_event(_create_event(
+            event_id=_new_id(), batch_id=self._batch_id, stage='batch',
+            action=self._mode, status=self._final_status(),
+            duration_ms=_milliseconds(self._clock() - self._started_at)))
+
+    def summary(self):
+        """汇总已知阶段的真实计数、计划量与批次终态。"""
+        stages = self._stages
+
+        def counted(stage, key):
+            """读取某阶段的固定计数，缺省为零。"""
+            return stages.get(stage, {}).get(key, 0)
+
+        named = self._named
+        return {
+            'mode': self._mode,
+            'status': self._final_status(),
+            'images_planned': self._images_planned,
+            'images_processed': len(self._images),
+            'capture_started': counted('capture', 'started'),
+            'capture_succeeded': counted('capture', 'succeeded'),
+            'capture_failed': counted('capture', 'failed'),
+            'capture_retries': named.get('capture_retries', 0),
+            'capture_format_fallbacks': named.get(
+                'capture_format_fallbacks', 0),
+            'encode_started': counted('encode', 'started'),
+            'encode_succeeded': counted('encode', 'succeeded'),
+            'encode_failed': counted('encode', 'failed'),
+            'group_get_attempts': named.get('group_get_attempts', 0),
+            'profile_get_attempts': named.get('profile_get_attempts', 0),
+            'upload_post_attempts': named.get('upload_post_attempts', 0),
+            'preupload_refreshes': named.get('preupload_refreshes', 0),
+            'postupload_recoveries': named.get('postupload_recoveries', 0),
+            'boltp_candidate_switches': named.get(
+                'boltp_candidate_switches', 0),
+            'host_failovers': named.get('host_failovers', 0),
+            'slots_planned': self._slots_planned,
+            'slots_succeeded': counted('slot', 'succeeded'),
+            'slots_failed': counted('slot', 'failed'),
+            'slots_cancelled': counted('slot', 'cancelled'),
+            'slots_skipped': counted('slot', 'skipped'),
+        }
+
+
+@contextmanager
+def trace_scope(*, mode, images_planned=None, slots_planned=None,
+                clock=time.monotonic, on_status=None):
+    """建立唯一批次作用域，收尾时输出汇总并传播控制信号。"""
+    trace = BatchTrace(
+        mode=mode, images_planned=images_planned, slots_planned=slots_planned,
+        clock=clock, on_status=on_status)
+    trace_token = _TRACE.set(trace)
+    item_token = _ITEM.set(None)
+    try:
+        yield trace
+    except (KeyboardInterrupt, SystemExit):
+        trace._cancelled = True
+        raise
+    except BaseException:
+        trace._failed = True
+        raise
+    finally:
+        trace._finalize()
+        _ITEM.reset(item_token)
+        _TRACE.reset(trace_token)
+
+
+@contextmanager
+def trace_item(*, image_index, slot_index=None):
+    """为当前逻辑图片绑定稳定序号，仅影响关联字段。"""
+    token = _ITEM.set((image_index, slot_index))
+    try:
+        yield
+    finally:
+        _ITEM.reset(token)
+
+
+@contextmanager
+def trace_operation(stage, action, **safe_fields):
+    """在活动作用域内开始一次阶段操作，无作用域时为空操作。"""
+    trace = _TRACE.get()
+    if trace is None:
+        yield Operation(None, stage, action, None, None)
+        return
+    operation = trace._start_operation(stage, action, safe_fields)
+    try:
+        yield operation
+    except (KeyboardInterrupt, SystemExit):
+        operation._auto_finish('cancelled')
+        raise
+    except BaseException:
+        operation._auto_finish('failed')
+        raise
+    else:
+        operation._auto_finish('succeeded')
+
+
+def trace_skipped(stage, *, reason_code='', **safe_fields):
+    """在活动作用域内记录一次预期跳过，无作用域时不产生任何输出。"""
+    trace = _TRACE.get()
+    if trace is None:
+        return
+    trace._record_skipped(stage, reason_code, safe_fields)

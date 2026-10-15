@@ -8,6 +8,9 @@ import os
 
 from modules.image_host.context import UploadContext
 from modules.image_host.registry import upload_with_fallback
+from modules.operation_trace import trace_item
+from modules.operation_trace import trace_scope
+from modules.operation_trace import trace_skipped
 
 from .inline_upload import InlineUploadError
 from .inline_upload import parse_inline_hosts
@@ -336,27 +339,32 @@ def run_screenshot_cli(args, program_dir):
         return ARGUMENT_ERROR_CODE
 
     today = date.today()
-    try:
-        result = capture(
-            source, source_target, image_format=requested, purpose='cli')
-    except CaptureError as error:
-        print(capture_failure_message(error))
-        return CAPTURE_FAILURE_CODE
-    except Exception:
-        print('截图失败')
-        return CAPTURE_FAILURE_CODE
+    with trace_scope(mode='cli', images_planned=1):
+        with trace_item(image_index=1):
+            try:
+                result = capture(
+                    source, source_target, image_format=requested, purpose='cli')
+            except CaptureError as error:
+                print(capture_failure_message(error))
+                return CAPTURE_FAILURE_CODE
+            except Exception:
+                print('截图失败')
+                return CAPTURE_FAILURE_CODE
 
-    for warning in result.warnings:
-        print(warning)
-    filename = cli_filename(result, target, is_file, today)
-    outcome = None
-    if target is not None:
-        outcome = save_cli(result, target, is_file, today=today)
-        filename = outcome.filename
-        for warning in outcome.warnings:
-            print(warning)
-        if outcome.path is not None:
-            print(outcome.path)
-    if hosts is not None:
-        return 0 if _upload_all(result.image_bytes, filename, hosts) else 1
-    return 0 if outcome is not None and outcome.path is not None else 1
+            for warning in result.warnings:
+                print(warning)
+            filename = cli_filename(result, target, is_file, today)
+            outcome = None
+            if target is not None:
+                outcome = save_cli(result, target, is_file, today=today)
+                filename = outcome.filename
+                for warning in outcome.warnings:
+                    print(warning)
+                if outcome.path is not None:
+                    print(outcome.path)
+            else:
+                trace_skipped('save', reason_code='not_configured')
+            if hosts is not None:
+                return 0 if _upload_all(
+                    result.image_bytes, filename, hosts) else 1
+            return 0 if outcome is not None and outcome.path is not None else 1

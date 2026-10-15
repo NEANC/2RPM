@@ -16,6 +16,8 @@ from PIL import ImageStat
 import win32con
 import win32gui
 
+from modules.operation_trace import trace_operation
+
 from .encoding import encode_image
 from .encoding import window_image
 
@@ -226,60 +228,62 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
     """使用完整窗口 DC 和固定 32 位 DIB 执行唯一 PrintWindow 路径。"""
     window_dc = memory_dc = bitmap = old_bitmap = None
     stage = 'window_state_failed'
-    try:
-        _ensure_window(hwnd, title)
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width, height = right - left, bottom - top
-        if not (0 < width <= 0x7fffffff and 0 < height <= 0x7fffffff):
-            raise _error('invalid_dimensions')
-        if width * height > Image.MAX_IMAGE_PIXELS:
-            raise _error('invalid_dimensions')
-        stage = 'gdi_failed'
-        _ensure_window(hwnd, title)
-        window_dc = _user32.GetWindowDC(hwnd)
-        if not window_dc:
-            raise _error(stage)
-        memory_dc = _gdi32.CreateCompatibleDC(window_dc)
-        if not memory_dc:
-            raise _error(stage)
-        info = _BitmapInfo()
-        info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
-        info.bmiHeader.biWidth = width
-        info.bmiHeader.biHeight = -height
-        info.bmiHeader.biPlanes = 1
-        info.bmiHeader.biBitCount = 32
-        info.bmiHeader.biCompression = win32con.BI_RGB
-        bits = ctypes.c_void_p()
-        bitmap = _gdi32.CreateDIBSection(
-            window_dc, ctypes.byref(info), win32con.DIB_RGB_COLORS,
-            ctypes.byref(bits), None, 0)
-        if not bitmap or not bits.value:
-            raise _error(stage)
-        old_bitmap = _gdi32.SelectObject(memory_dc, bitmap)
-        if not old_bitmap:
-            raise _error(stage)
-        stage = 'print_failed'
-        _ensure_window(hwnd, title)
-        printed = _user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT)
-        _ensure_window(hwnd, title)
-        if not printed:
-            raise _error(stage)
-        stage = 'gdi_failed'
-        if not _gdi32.GdiFlush():
-            raise _error(stage)
-        stage = 'image_failed'
-        pixels = ctypes.string_at(bits, width * height * 4)
-        encoded = _encode_pixels(
-            pixels, width, height, warnings, image_format)
-        _ensure_window(hwnd, title)
-        return encoded, width, height
-    except CaptureError:
-        raise
-    except Exception:
-        raise _error(stage) from None
-    finally:
-        _release_gdi(
-            hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings)
+    with trace_operation('capture', 'read', source='window') as operation:
+        try:
+            _ensure_window(hwnd, title)
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width, height = right - left, bottom - top
+            if not (0 < width <= 0x7fffffff and 0 < height <= 0x7fffffff):
+                raise _error('invalid_dimensions')
+            if width * height > Image.MAX_IMAGE_PIXELS:
+                raise _error('invalid_dimensions')
+            stage = 'gdi_failed'
+            _ensure_window(hwnd, title)
+            window_dc = _user32.GetWindowDC(hwnd)
+            if not window_dc:
+                raise _error(stage)
+            memory_dc = _gdi32.CreateCompatibleDC(window_dc)
+            if not memory_dc:
+                raise _error(stage)
+            info = _BitmapInfo()
+            info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            info.bmiHeader.biCompression = win32con.BI_RGB
+            bits = ctypes.c_void_p()
+            bitmap = _gdi32.CreateDIBSection(
+                window_dc, ctypes.byref(info), win32con.DIB_RGB_COLORS,
+                ctypes.byref(bits), None, 0)
+            if not bitmap or not bits.value:
+                raise _error(stage)
+            old_bitmap = _gdi32.SelectObject(memory_dc, bitmap)
+            if not old_bitmap:
+                raise _error(stage)
+            stage = 'print_failed'
+            _ensure_window(hwnd, title)
+            printed = _user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT)
+            _ensure_window(hwnd, title)
+            if not printed:
+                raise _error(stage)
+            stage = 'gdi_failed'
+            if not _gdi32.GdiFlush():
+                raise _error(stage)
+            stage = 'image_failed'
+            pixels = ctypes.string_at(bits, width * height * 4)
+            operation.finish('succeeded', width=width, height=height)
+            encoded = _encode_pixels(
+                pixels, width, height, warnings, image_format)
+            _ensure_window(hwnd, title)
+            return encoded, width, height
+        except CaptureError:
+            raise
+        except Exception:
+            raise _error(stage) from None
+        finally:
+            _release_gdi(
+                hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings)
 
 
 def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
