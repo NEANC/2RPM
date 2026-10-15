@@ -286,6 +286,26 @@ def test_cli_two_hosts_slots_not_folded(monkeypatch, tmp_path, capsys):
     assert f'beeimg：上传成功 {URL}\n' in out
 
 
+def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, capsys):
+    """CLI 无手填遇 profile 403：终端逐字呈现规格 6.1 提示、零 POST 且退出码为 1。"""
+    support = import_module('test_upload_stage_logging')
+    cli = cli_module()
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=capture_result()))
+    transport = support.Transport(monkeypatch, [
+        support.group_reply(), support.profile_reply(status=403)])
+    code = cli.run_screenshot_cli(
+        cli_args(hosts=[{'provider': 'beeimg_cn', 'token': SECRET}]),
+        str(tmp_path))
+    out = capsys.readouterr().out
+    assert code == 1
+    assert transport.posts == []
+    assert terminal_lines(out) == [
+        '上传失败：BeeIMG.cn 账号资料接口无访问权限，'
+        '请为令牌授权资料读取权限，或填写该账号可用的 options.storage_id。']
+    assert 'beeimg_cn：上传失败\n' in out
+    assert SECRET not in out
+
+
 def test_cli_capture_failure_skips_planned_slots(monkeypatch, tmp_path, capsys):
     """CLI 捕获失败且已声明图床时，把计划槽位补记为跳过，等式仍成立。"""
     cli = cli_module()

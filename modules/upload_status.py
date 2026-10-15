@@ -4,7 +4,21 @@
 
 import sys
 
+from modules.image_host.core import ImageHostError
 from modules.spinner import current_spinner
+
+
+# 已裁决为可行动的固定原因，终端须呈现固定中文提示而非裸代码
+_ACTIONABLE_REASONS = frozenset({
+    'profile_forbidden', 'profile_forbidden_invalid_storage',
+})
+
+
+def _failure_text(reason_code):
+    """已裁决可行动原因渲染固定中文提示，其余沿用裸代码。"""
+    if reason_code in _ACTIONABLE_REASONS:
+        return ImageHostError(reason_code, '').message
+    return reason_code
 
 
 def _slot_text(event):
@@ -47,8 +61,8 @@ def make_status_consumer(*, spinner=None, stream=None):
             elif event.status == 'succeeded':
                 show('上传成功')
             elif event.status == 'failed':
-                show('上传失败：' + event.reason_code if event.reason_code
-                     else '上传失败')
+                show('上传失败：' + _failure_text(event.reason_code)
+                     if event.reason_code else '上传失败')
         elif event.stage == 'fallback' and event.fallback_kind == 'host_failover':
             show('上传失败，尝试下一图床')
 
