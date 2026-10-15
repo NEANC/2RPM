@@ -15,6 +15,7 @@ import requests
 
 from modules.image_host.core import ImageHostError
 from modules.operation_trace import StageEvent
+from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import SaveOutcome
 
@@ -283,6 +284,27 @@ def test_cli_two_hosts_slots_not_folded(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'catbox：上传失败\n' in out
     assert f'beeimg：上传成功 {URL}\n' in out
+
+
+def test_cli_capture_failure_skips_planned_slots(monkeypatch, tmp_path, capsys):
+    """CLI 捕获失败且已声明图床时，把计划槽位补记为跳过，等式仍成立。"""
+    cli = cli_module()
+    monkeypatch.setattr(cli, 'capture', Mock(
+        side_effect=CaptureError('window_not_found', '')))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, cli, events, traces)
+    code = cli.run_screenshot_cli(
+        cli_args(hosts=[{'provider': 'catbox', 'token': 't'}]), str(tmp_path))
+    summary = traces[0].summary()
+    assert code == 1
+    assert summary['slots_planned'] == 1
+    assert summary['slots_skipped'] == 1
+    assert summary['slots_planned'] == sum(
+        summary['slots_' + state]
+        for state in ('succeeded', 'failed', 'cancelled', 'skipped'))
+    reasons = [event.reason_code for event in events
+               if event.stage == 'slot' and event.status == 'skipped']
+    assert reasons == ['capture_failed']
 
 
 def test_preupload_failure_displays_one_slot_failure(monkeypatch, capsys):

@@ -377,10 +377,14 @@ def run_screenshot_cli(args, program_dir):
                     source, source_target, image_format=requested, purpose='cli')
             except CaptureError as error:
                 trace.finish_image(1, 'failed')
+                trace_slots_skipped(
+                    1, slots_planned, reason_code='capture_failed')
                 print(capture_failure_message(error))
                 return CAPTURE_FAILURE_CODE
             except Exception:
                 trace.finish_image(1, 'failed')
+                trace_slots_skipped(
+                    1, slots_planned, reason_code='capture_failed')
                 print('截图失败')
                 return CAPTURE_FAILURE_CODE
             trace.finish_image(1, 'succeeded')
