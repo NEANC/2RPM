@@ -43,8 +43,40 @@ _FALLBACK_COUNTERS = {
     'host_failover': 'host_failovers',
 }
 
+# provider 白名单在事件模块内独立定义，避免与 image_host 注册表循环导入；
+# 一致性测试会断言它与 registry.UPLOADERS 的键集合完全相等。
+_PROVIDER_WHITELIST = frozenset({
+    'catbox', 'wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed',
+})
+_UNKNOWN_CATEGORY = 'unknown'
+_CLASSIFICATION_WHITELISTS = {
+    'stage': frozenset({
+        'capture', 'encode', 'save', 'metadata_cache', 'metadata_query',
+        'storage_select', 'upload_attempt', 'fallback', 'slot', 'batch',
+    }),
+    'action': frozenset({
+        'read', 'write', 'encode', 'select', 'load', 'save', 'invalidate',
+        'refresh', 'recover', 'switch', 'failover', 'capture_retry',
+        'capture_format', 'post', 'group', 'profile', 'upload',
+        'automatic', 'cli',
+    }),
+    'status': frozenset({
+        'started', 'succeeded', 'failed', 'cancelled', 'skipped',
+        'completed', 'partial_failure',
+    }),
+    'provider': _PROVIDER_WHITELIST,
+    'source': frozenset({
+        'window', 'adb', 'hit', 'miss', 'expired', 'future',
+    }),
+    'cache_layer': frozenset({'event', 'disk'}),
+    'selection_source': frozenset({
+        'manual', 'default', 'group_first', 'candidate',
+    }),
+    'fallback_kind': frozenset(_FALLBACK_COUNTERS),
+}
+
 _DEBUG_STAGES = frozenset({
-    'metadata_cache', 'metadata_query', 'storage_select',
+    'metadata_query', 'storage_select',
 })
 _INFO_STAGES = frozenset({
     'capture', 'encode', 'save', 'upload_attempt', 'slot',
@@ -113,7 +145,7 @@ def _valid_storage_id(provider, value):
 
 
 def _create_event(**fields) -> StageEvent:
-    """只保留已知字段及合法简单值，未知键与对象一律丢弃。"""
+    """只保留已知字段及合法简单值，未知动态分类归入固定 unknown。"""
     values = {}
     for name in _EVENT_FIELDS:
         value = fields.get(name)
@@ -125,6 +157,9 @@ def _create_event(**fields) -> StageEvent:
         elif name in _STR_FIELDS:
             if type(value) is not str:
                 continue
+            whitelist = _CLASSIFICATION_WHITELISTS.get(name)
+            if whitelist is not None and value not in whitelist:
+                value = _UNKNOWN_CATEGORY
         values[name] = value
     if 'storage_id' in values:
         storage_id = _valid_storage_id(
@@ -168,8 +203,12 @@ def _event_level(event) -> int:
             return logging.INFO
         return logging.DEBUG
     if status == 'failed':
+        # 槽位最终失败表示该图片/上传项已无可用结果，按规格使用 ERROR
+        if stage == 'slot':
+            return logging.ERROR
         if stage in _DEBUG_STAGES or stage in ('capture', 'encode'):
             return logging.DEBUG
+        # 缓存 IO 降级（如 metadata_cache 读写/失效失败）已不在 DEBUG 阶段集合
         return logging.WARNING
     if stage == 'fallback':
         return logging.WARNING
@@ -265,15 +304,24 @@ class BatchTrace:
                 pass
 
     def _start_operation(self, stage, action, safe_fields) -> Operation:
-        """开始一次阶段操作并记录开始事件。"""
+        """开始一次阶段操作并记录开始事件。
+
+        开始事件若因控制信号写出中断，仍为该操作补记唯一取消终态后
+        原样传播控制信号；普通异常由事件写出路径自行吞掉，不影响业务。
+        """
         self._count(stage, 'started')
         payload = dict(safe_fields)
         payload.update(
             operation_id=_new_id(), stage=stage, action=action,
             status='started')
         event = self._build_event(**payload)
-        self._record_event(event)
-        return Operation(self, stage, action, event, self._clock())
+        operation = Operation(self, stage, action, event, self._clock())
+        try:
+            self._record_event(event)
+        except (KeyboardInterrupt, SystemExit):
+            operation._auto_finish('cancelled')
+            raise
+        return operation
 
     def _next_attempt_index(self) -> int:
         """按当前图片槽位累计真实上传尝试序号。"""

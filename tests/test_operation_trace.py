@@ -4,6 +4,7 @@
 
 from importlib import import_module
 import inspect
+import io
 import logging
 import time
 from unittest.mock import Mock
@@ -27,6 +28,28 @@ REQUIRED_SUMMARY_KEYS = (
 def trace_module():
     """加载真实事件模块，使缺失接口成为明确断言失败。"""
     return import_module('modules.operation_trace')
+
+
+def read_handler_bytes(handler):
+    """读取真实文件处理器的最终字节并解码，用于核对落盘事实。"""
+    handler.flush()
+    with open(handler.baseFilename, 'rb') as stream:
+        return stream.read().decode('utf-8')
+
+
+def stage_records(text, stage):
+    """从事件单行日志中提取指定阶段的字段映射，保持发生顺序。"""
+    records = []
+    marker = f' stage={stage} '
+    for line in text.splitlines():
+        if 'stage_event ' not in line or marker not in line + ' ':
+            continue
+        fields = {}
+        for token in line.split('stage_event ', 1)[1].split():
+            key, _, value = token.partition('=')
+            fields[key] = value
+        records.append(fields)
+    return records
 
 
 def test_no_active_scope_is_io_free_noop(monkeypatch):
@@ -236,3 +259,115 @@ def test_stage_fields_never_serialize_private_values(tmp_path):
     assert 'stage=capture' in text and 'stage=slot' in text
     assert 'stage=batch' in text
     assert marker not in text
+
+
+def test_unregistered_provider_falls_back_to_unknown(tmp_path):
+    """未登记 provider 归入固定 unknown，原值不进入事件、文件与终端。"""
+    module = trace_module()
+    upload_status = import_module('modules.upload_status')
+    logger_module = import_module('modules.logger')
+    handler = logger_module._create_file_handler(str(tmp_path / 'logs'), 'app')
+    assert handler is not None
+    target = logging.getLogger('modules.operation_trace')
+    saved_handlers = target.handlers[:]
+    saved_level = target.level
+    saved_propagate = target.propagate
+    target.handlers = [handler]
+    target.setLevel(logging.DEBUG)
+    target.propagate = False
+    marker = 'PRIVATE_HOST_8823'
+    stream = io.StringIO()
+    consume = upload_status.make_status_consumer(stream=stream)
+    events = []
+
+    def on_status(event):
+        """记录事件并转发给真实终端消费者。"""
+        events.append(event)
+        consume(event)
+
+    try:
+        with module.trace_scope(
+                mode='cli', images_planned=1, slots_planned=1,
+                on_status=on_status) as trace:
+            trace.start_slot(1, 1, provider=marker)
+            trace.finish_slot(1, 1, 'succeeded')
+    finally:
+        target.handlers = saved_handlers
+        target.setLevel(saved_level)
+        target.propagate = saved_propagate
+    text = read_handler_bytes(handler)
+    handler.close()
+    terminal = stream.getvalue()
+    slots = [event for event in events if event.stage == 'slot']
+    assert slots and all(event.provider == 'unknown' for event in slots)
+    assert marker not in text and marker not in terminal
+    assert 'unknown' in terminal
+
+
+def test_provider_whitelist_matches_registry_keys():
+    """阶段模块的 provider 白名单必须与注册表键集合一致，防止两处漂移。"""
+    module = trace_module()
+    registry = import_module('modules.image_host.registry')
+    assert module._PROVIDER_WHITELIST == frozenset(registry.UPLOADERS)
+
+
+def test_interrupted_started_event_still_emits_cancelled(tmp_path):
+    """started 事件被控制信号打断时仍产生唯一 cancelled 终态并原样传播。"""
+    module = trace_module()
+    logger_module = import_module('modules.logger')
+    handler = logger_module._create_file_handler(str(tmp_path / 'logs'), 'app')
+    assert handler is not None
+    target = logging.getLogger('modules.operation_trace')
+    saved_handlers = target.handlers[:]
+    saved_level = target.level
+    saved_propagate = target.propagate
+    target.handlers = [handler]
+    target.setLevel(logging.DEBUG)
+    target.propagate = False
+    signal = KeyboardInterrupt('synthetic-stop')
+
+    def on_status(event):
+        """在 capture 开始事件处抛出控制信号，模拟终端消费被中断。"""
+        if event.stage == 'capture' and event.status == 'started':
+            raise signal
+
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            with module.trace_scope(
+                    mode='automatic', images_planned=1, on_status=on_status):
+                with module.trace_operation('capture', 'read', source='adb'):
+                    pass
+    finally:
+        target.handlers = saved_handlers
+        target.setLevel(saved_level)
+        target.propagate = saved_propagate
+    assert caught.value is signal
+    records = stage_records(read_handler_bytes(handler), 'capture')
+    handler.close()
+    started = [item for item in records if item.get('status') == 'started']
+    cancelled = [item for item in records if item.get('status') == 'cancelled']
+    assert len(started) == 1 and len(cancelled) == 1
+    assert started[0]['operation_id'] == cancelled[0]['operation_id']
+
+
+def test_cache_failure_warns_and_slot_failure_errors(caplog):
+    """缓存 IO 降级为 WARNING，槽位最终失败为 ERROR，各只记一次。"""
+    module = trace_module()
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with module.trace_scope(
+                mode='cli', images_planned=1, slots_planned=1) as trace:
+            with module.trace_operation(
+                    'metadata_cache', 'load', cache_layer='disk',
+                    provider='beeimg_cn') as operation:
+                operation.finish('failed', reason_code='invalid')
+            trace.start_slot(1, 1, provider='catbox')
+            trace.finish_slot(1, 1, 'failed', reason_code='upload_failed')
+    levels = {}
+    for record in caplog.records:
+        message = record.getMessage()
+        if 'stage=metadata_cache' in message and 'status=failed' in message:
+            levels['cache'] = record.levelno
+        if 'stage=slot' in message and 'status=failed' in message:
+            levels['slot'] = record.levelno
+    assert levels['cache'] == logging.WARNING
+    assert levels['slot'] == logging.ERROR
