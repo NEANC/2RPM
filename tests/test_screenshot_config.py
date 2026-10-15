@@ -1221,3 +1221,24 @@ def test_default_creation_error_keeps_safe_summary_and_reraises(
     assert 'errno=28' in caplog.text
     assert 'category=ENOSPC' in caplog.text
     assert SECRET not in caplog.text
+
+
+def test_flow_version_marker_and_backtick_token_load_then_write(tmp_path):
+    """裸 flow 版本标记与反引号 token 经真实加载写回为合法 YAML 字符串。"""
+    path = tmp_path / 'scalar-compat.yaml'
+    path.write_text(
+        'monitor:\n  mode: psutil\n  psutil:\n    process_name: ok.exe\n'
+        'push:\n  screenshot:\n'
+        '    targets:\n'
+        '      - {provider: window, target: App@{version}, out: shot}\n'
+        '    image_host:\n'
+        '      - {provider: catbox, token: `a;b`}\n',
+        encoding='utf-8',
+    )
+    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    assert screenshot['targets'][0]['target'] == 'App@{version}'
+    assert screenshot['targets'][0]['out'] == 'shot'
+    assert screenshot['image_host'][0]['token'] == 'a;b'
+    persisted = _read_config(path)['push']['screenshot']
+    assert persisted['targets'][0]['target'] == 'App@{version}'
+    assert persisted['image_host'][0]['token'] == 'a;b'

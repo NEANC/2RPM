@@ -545,3 +545,30 @@ def test_named_screenshot_config_stays_reachable(monkeypatch, tmp_path, argv):
     run_spy.assert_not_called()
     assert config_spy.call_args.args[0] == os.path.join(
         str(tmp_path), 'screenshot.yaml')
+
+
+@pytest.mark.parametrize('marker', ['@{version}', '@{VERSION}', '@{Version}'])
+def test_direct_target_argv_preserves_version_markers(marker):
+    """直接 argv 的 target 不经 YAML，三种版本标记原样保留。"""
+    args = parse_syntax(['--source', 'window', '--target', f'App{marker}'])
+    assert args.target == f'App{marker}'
+
+
+@pytest.mark.parametrize(('inline', 'expected'), [
+    ('provider: catbox, token: `a;b`', 'a;b'),
+    ('{provider: catbox, token: `a;b`}', 'a;b'),
+    ('provider: catbox, token: ${UPLOAD_TOKEN}', '${UPLOAD_TOKEN}'),
+])
+def test_inline_upload_accepts_backtick_and_environment_token(inline, expected):
+    """--upload 顶层 token 支持成对反引号与裸环境引用。"""
+    args = parse(['--source', 'window:title', '--upload', inline])
+    assert args.hosts[0]['token'] == expected
+
+
+def test_inline_upload_broken_backtick_is_parameter_error(capsys):
+    """反引号 token 语法错误在截图前以退出码 2 拒绝且不回显原文。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox, token: `secret'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第1项：mapping_syntax\n'

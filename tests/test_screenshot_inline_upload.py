@@ -264,3 +264,60 @@ def test_non_anonymous_provider_requires_token():
     """不支持匿名的图床省略凭证时拒绝。"""
     with pytest.raises(InlineUploadError):
         parse_inline_hosts('provider: wmimg')
+
+
+@pytest.mark.parametrize(('body', 'expected'), [
+    ('provider: catbox, token: `a;b,#{}\\x`', 'a;b,#{}\\x'),
+    ('{provider: catbox, token: `a;b`}', 'a;b'),
+    ('provider: catbox, token: ${ENV_NAME}', '${ENV_NAME}'),
+    ('{provider: catbox, token: ${IMAGE_TOKEN}}', '${IMAGE_TOKEN}'),
+    ('provider: beeimg_cn, token: `a`; provider: catbox', None),
+])
+def test_backtick_and_environment_tokens_are_literal(body, expected):
+    """顶层 token 的成对反引号与裸环境引用保留为字面字符串。"""
+    hosts = parse_inline_hosts(body)
+    if expected is None:
+        assert len(hosts) == 2 and hosts[0]['token'] == 'a'
+    else:
+        assert len(hosts) == 1 and hosts[0]['token'] == expected
+
+
+@pytest.mark.parametrize('separator', [
+    ', options: {storage_id: 1}', ' # comment\n', '; provider: catbox',
+])
+def test_backtick_token_terminators_do_not_shift(separator):
+    """反引号标量后的合法终止边界不串位到相邻字段或分项。"""
+    hosts = parse_inline_hosts('provider: catbox, token: `a`' + separator)
+    assert hosts[0]['token'] == 'a'
+    if separator.startswith(';'):
+        assert len(hosts) == 2
+    else:
+        assert len(hosts) == 1
+
+
+@pytest.mark.parametrize('body', [
+    'provider: catbox, token: `unclosed',
+    'provider: catbox, token: `multi\nline`',
+    'provider: catbox, token: `a`b',
+])
+def test_broken_backtick_token_is_private_parameter_error(body):
+    """缺失闭合、跨行与尾随垃圾只产生固定错误且不回显原文。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(body)
+    assert caught.value.code == 'mapping_syntax'
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+
+
+def test_backtick_outside_token_is_not_a_wrapper():
+    """非白名单位置的反引号不成为包裹符，交由 YAML 拒绝。"""
+    with pytest.raises(InlineUploadError):
+        parse_inline_hosts('provider: catbox, options: {note: `x`}')
+
+
+def test_merge_default_allows_backtick_override():
+    """合并默认值被反引号显式键覆盖时保留覆盖语义。"""
+    host = parse_inline_hosts(
+        '<<: {provider: catbox, token: base}, token: `override`')[0]
+    assert host['provider'] == 'catbox'
+    assert host['token'] == 'override'

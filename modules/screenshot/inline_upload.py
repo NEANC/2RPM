@@ -13,6 +13,8 @@ from modules.image_host.core import ImageHostError
 from modules.image_host.core import resolve_token
 from modules.image_host.expiration import parse_expiration
 from modules.image_host.registry import UPLOADERS
+from modules.yaml_scalar_compat import ScalarSyntaxError
+from modules.yaml_scalar_compat import normalize_inline_upload
 
 
 _ENV = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\}')
@@ -174,8 +176,16 @@ def _needs_auth(host):
 
 def parse_inline_hosts(text):
     """静态校验全部内联图床项，失败时不返回部分结果。"""
+    normalized = None
+    normalize_failed = False
+    try:
+        normalized = normalize_inline_upload(text)
+    except ScalarSyntaxError:
+        normalize_failed = True
+    if normalize_failed:
+        raise InlineUploadError(1, 'mapping_syntax')
     hosts = []
-    for index, item in enumerate(_split_items(text), 1):
+    for index, item in enumerate(_split_items(normalized), 1):
         host = _load_mapping(item, index)
         provider = host.get('provider')
         if not isinstance(provider, str):

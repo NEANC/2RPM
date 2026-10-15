@@ -24,6 +24,7 @@ from modules.utils import (
     parse_time_string,
     push_channel_signature,
 )
+from modules.yaml_scalar_compat import normalize_config_scalars
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1220,7 +1221,8 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         with open(config_file, 'r', encoding='utf-8') as f:
             stage = 'parse'
             try:
-                user_config = yaml.load(f)
+                source = f.read()
+                user_config = yaml.load(normalize_config_scalars(source))
             except OSError:
                 stage = 'read'
                 raise
