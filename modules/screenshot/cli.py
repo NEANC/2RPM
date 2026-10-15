@@ -339,17 +339,20 @@ def run_screenshot_cli(args, program_dir):
         return ARGUMENT_ERROR_CODE
 
     today = date.today()
-    with trace_scope(mode='cli', images_planned=1):
+    with trace_scope(mode='cli', images_planned=1) as trace:
         with trace_item(image_index=1):
             try:
                 result = capture(
                     source, source_target, image_format=requested, purpose='cli')
             except CaptureError as error:
+                trace.finish_image(1, 'failed')
                 print(capture_failure_message(error))
                 return CAPTURE_FAILURE_CODE
             except Exception:
+                trace.finish_image(1, 'failed')
                 print('截图失败')
                 return CAPTURE_FAILURE_CODE
+            trace.finish_image(1, 'succeeded')
 
             for warning in result.warnings:
                 print(warning)

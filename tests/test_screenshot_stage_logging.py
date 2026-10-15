@@ -2,6 +2,8 @@
 # -_- coding: utf-8 -_-
 """验证截图、编码与保存按真实操作边界记录与计数，全部替身化。"""
 
+from argparse import Namespace
+from contextlib import contextmanager
 from importlib import import_module
 from io import BytesIO
 import logging
@@ -14,6 +16,7 @@ import pytest
 from modules.image_host.core import UploadResult
 from modules.operation_trace import trace_item
 from modules.operation_trace import trace_scope
+from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import RetentionPolicy
 
@@ -338,3 +341,102 @@ def test_stage_log_file_has_no_private_capture_values(monkeypatch, tmp_path):
         text = stream.read().decode('utf-8')
     assert 'stage=capture' in text and 'stage=batch' in text
     assert marker not in text and serial not in text
+
+
+def spy_trace_scope(monkeypatch, module, events, traces):
+    """包装编排入口作用域以读取真实汇总，不改变生产接线。"""
+    real = module.trace_scope
+
+    @contextmanager
+    def scope(**kwargs):
+        """注入状态回调并保留可供断言的真实批次对象。"""
+        kwargs.setdefault('on_status', events.append)
+        with real(**kwargs) as trace:
+            traces.append(trace)
+            yield trace
+
+    monkeypatch.setattr(module, 'trace_scope', scope)
+
+
+def test_cli_capture_failure_batch_is_failed(monkeypatch, tmp_path, caplog):
+    """CLI 截图失败时批次终态为失败，不写出完成的假事实。"""
+    cli = import_module('modules.screenshot.cli')
+    monkeypatch.setattr(
+        cli, 'capture',
+        Mock(side_effect=CaptureError('backend_failed', 'secret')))
+    args = Namespace(source='window', target='窗口',
+                     output=str(tmp_path / 'shot.png'), hosts=None)
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        code = cli.run_screenshot_cli(args, str(tmp_path))
+    assert code == 1
+    batches = [record.getMessage() for record in caplog.records
+               if 'stage=batch' in record.getMessage()]
+    assert len(batches) == 1
+    assert 'status=failed' in batches[0]
+    assert 'status=completed' not in batches[0]
+
+
+def test_pipeline_capture_failure_batch_is_failed(monkeypatch, tmp_path):
+    """自动截图失败时批次终态为失败且实际处理量与目标数一致。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    monkeypatch.setattr(
+        pipeline, 'capture',
+        Mock(side_effect=CaptureError('backend_failed', 'secret')))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    batch = pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    assert batch.values['screenshot_1'].startswith('截图失败')
+    summary = traces[0].summary()
+    assert summary['status'] == 'failed'
+    assert summary['images_processed'] == 1
+    assert next(event for event in events
+                if event.stage == 'batch').status == 'failed'
+
+
+def test_pipeline_success_counts_processed_images(monkeypatch, tmp_path):
+    """自动截图成功时实际处理量等于目标数且批次完成。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    captured = CaptureResult(b'png-bytes', 'window', '窗口', 2, 3)
+    monkeypatch.setattr(pipeline, 'capture', Mock(return_value=captured))
+    monkeypatch.setattr(pipeline, 'upload_with_fallback', Mock(
+        return_value=UploadResult(
+            True, 'catbox', 'https://example.invalid/result', ('catbox',), ())))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'},
+                     {'provider': 'adb', 'target': '设备'}],
+         'image_host': [{'provider': 'catbox'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    summary = traces[0].summary()
+    assert summary['images_processed'] == 2
+    assert summary['status'] == 'completed'
+    assert next(event for event in events
+                if event.stage == 'batch').status == 'completed'
+
+
+def test_pipeline_partial_capture_failure_is_partial(monkeypatch, tmp_path):
+    """部分截图失败时批次为部分失败而非完成。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    monkeypatch.setattr(pipeline, 'capture', Mock(side_effect=[
+        CaptureError('window_not_found', 'secret'),
+        CaptureResult(b'png-bytes', 'adb', '设备', 2, 3)]))
+    monkeypatch.setattr(pipeline, 'upload_with_fallback', Mock(
+        return_value=UploadResult(
+            True, 'catbox', 'https://example.invalid/result', ('catbox',), ())))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'},
+                     {'provider': 'adb', 'target': '设备'}],
+         'image_host': [{'provider': 'catbox'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    summary = traces[0].summary()
+    assert summary['images_processed'] == 2
+    assert summary['status'] == 'partial_failure'

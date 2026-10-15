@@ -71,9 +71,10 @@ def _upload_failure_summary(failures):
 
 
 def _prepare_target(item, hosts, warnings, diagnostics, *, context,
-                    runtime, event, policy):
+                    runtime, event, policy, trace):
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。"""
     if item['error'] is not None:
+        trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
         return f'截图配置失败：{item["error"]}'
 
@@ -82,13 +83,16 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
             item['provider'], item['target'],
             image_format='jpeg', purpose='automatic')
     except CaptureError as error:
+        trace.finish_image(item['index'], 'failed')
         failure = capture_failure_message(error)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
         return failure
     except Exception:
+        trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图失败')
         return '截图失败'
 
+    trace.finish_image(item['index'], 'succeeded')
     warnings.extend(result.warnings)
     try:
         outcome = save_automatic(result, runtime, event, policy)
@@ -145,7 +149,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     )
     if targets:
         hosts = section.get('image_host')
-        with trace_scope(mode='automatic', images_planned=len(targets)):
+        with trace_scope(mode='automatic', images_planned=len(targets)) as trace:
             with ExitStack() as stack:
                 context = None
                 for index, item in enumerate(targets, start=1):
@@ -155,7 +159,8 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                     with trace_item(image_index=index):
                         values[item['out']] = _prepare_target(
                             item, hosts, warnings, diagnostics, context=context,
-                            runtime=runtime, event=event, policy=policy)
+                            runtime=runtime, event=event, policy=policy,
+                            trace=trace)
         values['screenshot'] = '\n\n'.join(values.values())
     else:
         values['screenshot'] = _CONFIG_FAILURE
