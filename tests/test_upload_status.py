@@ -438,6 +438,27 @@ def test_batch_summary_matches_requested_results(
         'completed', 'partial_failure', 'failed', 'cancelled')
 
 
+@pytest.mark.parametrize('error', [
+    CaptureError('window_not_found', ''),
+    RuntimeError('capture-failure-marker'),
+])
+def test_cli_capture_failure_records_save_skip(monkeypatch, tmp_path, error):
+    """CLI 两个捕获失败分支都补齐保存跳过事实，且不伪造保存开始。"""
+    cli = cli_module()
+    monkeypatch.setattr(cli, 'capture', Mock(side_effect=error))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, cli, events, traces)
+    code = cli.run_screenshot_cli(
+        cli_args(hosts=[{'provider': 'catbox', 'token': 't'}]), str(tmp_path))
+    assert code == 1
+    save = [(event.status, event.reason_code, event.image_index)
+            for event in events if event.stage == 'save']
+    assert save == [('skipped', 'capture_failed', 1)]
+    summary = traces[0].summary()
+    assert summary['save_started'] == 0
+    assert summary['save_skipped'] == 1
+
+
 @pytest.mark.parametrize('entry', ['pipeline', 'cli'])
 def test_cancellation_marks_started_slot_and_skips_rest(
         monkeypatch, tmp_path, entry):

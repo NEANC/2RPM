@@ -457,6 +457,27 @@ def test_pipeline_capture_failure_skips_slots_with_real_reason(
     assert save == [('skipped', 'capture_failed')]
 
 
+def test_pipeline_capture_failure_save_skip_carries_image_index(
+        monkeypatch, tmp_path):
+    """捕获失败时的保存跳过带当前图片序号，与同类跳过保持同一归因口径。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    monkeypatch.setattr(pipeline, 'capture', Mock(
+        side_effect=CaptureError('window_not_found', 'secret')))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox', 'token': 't'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    summary = traces[0].summary()
+    save = [(event.status, event.reason_code, event.image_index)
+            for event in events if event.stage == 'save']
+    assert save == [('skipped', 'capture_failed', 1)]
+    assert summary['save_started'] == 0
+    assert summary['save_skipped'] == 1
+
+
 def test_pipeline_first_success_skips_remaining_hosts(monkeypatch, tmp_path):
     """首站成功后自动模式停止剩余图床，未开始槽位跳过原因仍为首成功。"""
     pipeline = import_module('modules.screenshot.pipeline')

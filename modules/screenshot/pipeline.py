@@ -184,14 +184,14 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                                 item, hosts, warnings, diagnostics,
                                 context=context, runtime=runtime, event=event,
                                 policy=policy, trace=trace)
+                            if not captured:
+                                # 捕获或截图配置失败：保存阶段未执行，补齐带图片归因的跳过事实
+                                trace_skipped('save', reason_code='capture_failed')
+                            trace.skip_unstarted_slots(
+                                index, planned_hosts,
+                                reason_code=('first_success' if captured
+                                             else 'capture_failed'))
                         values[item['out']] = value
-                        if not captured:
-                            # 捕获或截图配置失败：保存阶段未执行，补齐真实跳过事实
-                            trace_skipped('save', reason_code='capture_failed')
-                        trace.skip_unstarted_slots(
-                            index, planned_hosts,
-                            reason_code=('first_success' if captured
-                                         else 'capture_failed'))
                         outcome = trace_slot_outcome(index)
                         outcomes.append(
                             captured if outcome is None
