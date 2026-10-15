@@ -171,15 +171,19 @@ def _create_event(**fields) -> StageEvent:
     return StageEvent(**values)
 
 
-def _format_event(event) -> str:
-    """把安全字段渲染为不含自由文本的单行记录。"""
+def _format_event(event, summary=None) -> str:
+    """把安全字段渲染为不含自由文本的单行记录，可附加批次汇总。"""
     parts = []
     for name in _EVENT_FIELDS:
         value = getattr(event, name)
         if value is None or value == '':
             continue
         parts.append(f'{name}={value}')
-    return 'stage_event ' + ' '.join(parts)
+    line = 'stage_event ' + ' '.join(parts)
+    if summary:
+        rendered = ' '.join(f'{key}={value}' for key, value in summary.items())
+        line = f'{line} summary {rendered}'
+    return line
 
 
 def _event_level(event) -> int:
@@ -291,10 +295,11 @@ class BatchTrace:
         payload.setdefault('event_id', _new_id())
         return _create_event(**payload)
 
-    def _record_event(self, event) -> None:
+    def _record_event(self, event, summary=None) -> None:
         """先写文件事实，再独立尝试终端消费，互不影响。"""
         try:
-            LOGGER.log(_event_level(event), '%s', _format_event(event))
+            LOGGER.log(
+                _event_level(event), '%s', _format_event(event, summary))
         except Exception:
             pass
         if self._on_status is not None:
@@ -353,10 +358,14 @@ class BatchTrace:
         elif started.stage == 'upload_attempt':
             self._named['upload_post_attempts'] = self._named.get(
                 'upload_post_attempts', 0) + 1
+            terminal = f'upload_post_{status}'
+            self._named[terminal] = self._named.get(terminal, 0) + 1
         elif started.stage == 'metadata_query' and started.action in (
                 'group', 'profile'):
             counter = f'{started.action}_get_attempts'
             self._named[counter] = self._named.get(counter, 0) + 1
+            terminal = f'{started.action}_get_{status}'
+            self._named[terminal] = self._named.get(terminal, 0) + 1
         payload = {}
         for name in _EVENT_FIELDS:
             value = getattr(started, name)
@@ -513,7 +522,8 @@ class BatchTrace:
             reason_code=('recoverable_warning'
                          if final_status == 'completed'
                          and self._has_recoverable_warnings() else ''),
-            duration_ms=_milliseconds(self._clock() - self._started_at)))
+            duration_ms=_milliseconds(self._clock() - self._started_at)),
+            summary=self.summary())
 
     def summary(self):
         """汇总已知阶段的真实计数、计划量与批次终态。"""
@@ -532,20 +542,39 @@ class BatchTrace:
             'capture_started': counted('capture', 'started'),
             'capture_succeeded': counted('capture', 'succeeded'),
             'capture_failed': counted('capture', 'failed'),
+            'capture_cancelled': counted('capture', 'cancelled'),
+            'capture_skipped': counted('capture', 'skipped'),
             'capture_retries': named.get('capture_retries', 0),
             'capture_format_fallbacks': named.get(
                 'capture_format_fallbacks', 0),
             'encode_started': counted('encode', 'started'),
             'encode_succeeded': counted('encode', 'succeeded'),
             'encode_failed': counted('encode', 'failed'),
+            'encode_cancelled': counted('encode', 'cancelled'),
+            'encode_skipped': counted('encode', 'skipped'),
+            'save_started': counted('save', 'started'),
+            'save_succeeded': counted('save', 'succeeded'),
+            'save_failed': counted('save', 'failed'),
+            'save_cancelled': counted('save', 'cancelled'),
+            'save_skipped': counted('save', 'skipped'),
             'group_get_attempts': named.get('group_get_attempts', 0),
+            'group_get_succeeded': named.get('group_get_succeeded', 0),
+            'group_get_failed': named.get('group_get_failed', 0),
+            'group_get_cancelled': named.get('group_get_cancelled', 0),
             'profile_get_attempts': named.get('profile_get_attempts', 0),
+            'profile_get_succeeded': named.get('profile_get_succeeded', 0),
+            'profile_get_failed': named.get('profile_get_failed', 0),
+            'profile_get_cancelled': named.get('profile_get_cancelled', 0),
             'upload_post_attempts': named.get('upload_post_attempts', 0),
+            'upload_post_succeeded': named.get('upload_post_succeeded', 0),
+            'upload_post_failed': named.get('upload_post_failed', 0),
+            'upload_post_cancelled': named.get('upload_post_cancelled', 0),
             'preupload_refreshes': named.get('preupload_refreshes', 0),
             'postupload_recoveries': named.get('postupload_recoveries', 0),
             'boltp_candidate_switches': named.get(
                 'boltp_candidate_switches', 0),
             'host_failovers': named.get('host_failovers', 0),
+            'fallbacks_skipped': counted('fallback', 'skipped'),
             'slots_planned': self._slots_planned,
             'slots_succeeded': counted('slot', 'succeeded'),
             'slots_failed': counted('slot', 'failed'),

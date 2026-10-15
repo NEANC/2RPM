@@ -2,6 +2,7 @@
 # -_- coding: utf-8 -_-
 """验证阶段事件模型、关联身份、槽位终态与安全字段白名单。"""
 
+from contextlib import contextmanager
 from importlib import import_module
 import inspect
 import io
@@ -371,3 +372,152 @@ def test_cache_failure_warns_and_slot_failure_errors(caplog):
             levels['slot'] = record.levelno
     assert levels['cache'] == logging.WARNING
     assert levels['slot'] == logging.ERROR
+
+
+BATCH_LINE_SUMMARY_KEYS = (
+    'mode', 'status', 'images_planned', 'images_processed',
+    'capture_started', 'capture_succeeded', 'capture_failed',
+    'capture_cancelled', 'capture_skipped',
+    'encode_started', 'encode_succeeded', 'encode_failed',
+    'encode_cancelled', 'encode_skipped',
+    'save_started', 'save_succeeded', 'save_failed', 'save_cancelled',
+    'save_skipped',
+    'group_get_attempts', 'group_get_succeeded', 'group_get_failed',
+    'profile_get_attempts', 'profile_get_succeeded', 'profile_get_failed',
+    'upload_post_attempts', 'upload_post_succeeded', 'upload_post_failed',
+    'preupload_refreshes', 'postupload_recoveries',
+    'boltp_candidate_switches', 'host_failovers', 'fallbacks_skipped',
+    'slots_planned', 'slots_succeeded', 'slots_failed', 'slots_cancelled',
+    'slots_skipped', 'duration_ms',
+)
+
+
+@contextmanager
+def bound_file_handler(tmp_path, name='trace'):
+    """在临时目录建立真实文件处理器并绑定到事件模块 logger。"""
+    logger_module = import_module('modules.logger')
+    handler = logger_module._create_file_handler(str(tmp_path / 'logs'), name)
+    assert handler is not None
+    target = logging.getLogger('modules.operation_trace')
+    saved_handlers = target.handlers[:]
+    saved_level = target.level
+    saved_propagate = target.propagate
+    target.handlers = [handler]
+    target.setLevel(logging.DEBUG)
+    target.propagate = False
+    try:
+        yield handler
+    finally:
+        target.handlers = saved_handlers
+        target.setLevel(saved_level)
+        target.propagate = saved_propagate
+        handler.close()
+
+
+def test_batch_line_carries_required_summary_dimensions(tmp_path):
+    """唯一批次行末尾附加规格汇总维度，取值与真实事实一致。"""
+    module = trace_module()
+    now = [1000.0]
+
+    def clock():
+        """返回可控的单调时间原点。"""
+        return now[0]
+
+    with bound_file_handler(tmp_path) as handler:
+        with module.trace_scope(
+                mode='cli', images_planned=2, slots_planned=3,
+                clock=clock) as trace:
+            with module.trace_operation(
+                    'capture', 'read', source='adb') as operation:
+                now[0] += 0.1
+                operation.finish('succeeded', width=1, height=1)
+            with module.trace_operation(
+                    'encode', 'encode', image_format='jpeg') as operation:
+                now[0] += 0.1
+                operation.finish('succeeded', byte_count=10)
+            module.trace_skipped('save', reason_code='not_configured')
+            with module.trace_request('beeimg_cn', 'group') as request:
+                request.finish('succeeded')
+            with module.trace_request('beeimg_cn', 'profile') as request:
+                request.finish('failed', reason_code='forbidden')
+            with module.trace_request('catbox', 'upload_attempt') as request:
+                request.finish('succeeded')
+            module.trace_skipped('fallback', reason_code='budget_used',
+                                  fallback_kind='postupload_recovery')
+            trace.start_slot(1, 0, provider='catbox')
+            trace.finish_slot(1, 0, 'succeeded')
+            trace.finish_slot(1, 1, 'skipped', reason_code='host_succeeded')
+            trace.finish_slot(1, 2, 'failed', reason_code='upload_failed')
+        text = read_handler_bytes(handler)
+
+    records = stage_records(text, 'batch')
+    assert len(records) == 1
+    fields = records[0]
+    assert 'summary' in fields
+    for key in BATCH_LINE_SUMMARY_KEYS:
+        assert key in fields, key
+    assert fields['mode'] == 'cli'
+    assert fields['images_planned'] == '2'
+    assert (fields['capture_started'], fields['capture_succeeded'],
+            fields['capture_failed']) == ('1', '1', '0')
+    assert (fields['encode_started'], fields['encode_succeeded'],
+            fields['encode_failed']) == ('1', '1', '0')
+    assert (fields['save_started'], fields['save_skipped']) == ('0', '1')
+    assert (fields['group_get_attempts'],
+            fields['group_get_succeeded']) == ('1', '1')
+    assert (fields['profile_get_attempts'],
+            fields['profile_get_failed']) == ('1', '1')
+    assert (fields['upload_post_attempts'],
+            fields['upload_post_succeeded']) == ('1', '1')
+    assert fields['fallbacks_skipped'] == '1'
+    assert (fields['slots_planned'], fields['slots_succeeded'],
+            fields['slots_failed'], fields['slots_skipped']) == (
+                '3', '1', '1', '1')
+    assert fields['duration_ms'] == '200'
+    assert text.count('stage=batch') == 1
+
+
+def test_batch_summary_balances_terminal_counts_on_cancel():
+    """取消收尾时各阶段开始数等于成功、失败与取消数之和。"""
+    module = trace_module()
+    holder = {}
+    with pytest.raises(KeyboardInterrupt):
+        with module.trace_scope(mode='cli', images_planned=1) as trace:
+            holder['trace'] = trace
+            with module.trace_operation(
+                    'capture', 'read', source='adb') as operation:
+                operation.finish('failed', reason_code='no_frame')
+            with module.trace_operation('save', 'save'):
+                raise KeyboardInterrupt('cancel')
+    summary = holder['trace'].summary()
+    for stage in ('capture', 'encode', 'save'):
+        assert summary[f'{stage}_started'] == (
+            summary[f'{stage}_succeeded'] + summary[f'{stage}_failed']
+            + summary[f'{stage}_cancelled'])
+    assert summary['capture_failed'] == 1
+    assert summary['save_cancelled'] == 1
+
+
+def test_batch_finalize_adds_no_requests(monkeypatch, tmp_path):
+    """批次收尾只汇总已有事实，不新增任何真实请求。"""
+    module = trace_module()
+    stage = import_module('test_upload_stage_logging')
+    registry = import_module('modules.image_host.registry')
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    context, cache, transport = stage.build(
+        monkeypatch, tmp_path,
+        replies=[stage.group_reply(), stage.SUCCESS_UPLOAD])
+    with module.trace_scope(
+            mode='cli', images_planned=1, slots_planned=1) as trace:
+        with module.trace_item(image_index=1, slot_index=0):
+            registry.upload_with_fallback(
+                b'image', 'image.png',
+                [{'provider': 'beeimg_cn', 'token': '',
+                  'options': {'storage_id': 13}}], context=context)
+        before = (len(transport.posts), len(transport.gets('group')),
+                  len(transport.gets('profile')))
+    after = (len(transport.posts), len(transport.gets('group')),
+             len(transport.gets('profile')))
+    context.close()
+    assert before[0] == 1
+    assert after == before
