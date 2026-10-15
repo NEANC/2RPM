@@ -17,6 +17,7 @@ from modules.image_host.registry import upload_with_fallback
 from modules.log_safety import extend_secrets
 from modules.operation_trace import trace_item
 from modules.operation_trace import trace_scope
+from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot_outcome
 from modules.operation_trace import trace_slots_skipped
 from modules.upload_status import make_status_consumer
@@ -184,8 +185,13 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                                 context=context, runtime=runtime, event=event,
                                 policy=policy, trace=trace)
                         values[item['out']] = value
+                        if not captured:
+                            # 捕获或截图配置失败：保存阶段未执行，补齐真实跳过事实
+                            trace_skipped('save', reason_code='capture_failed')
                         trace.skip_unstarted_slots(
-                            index, planned_hosts, reason_code='first_success')
+                            index, planned_hosts,
+                            reason_code=('first_success' if captured
+                                         else 'capture_failed'))
                         outcome = trace_slot_outcome(index)
                         outcomes.append(
                             captured if outcome is None

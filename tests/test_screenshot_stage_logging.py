@@ -428,6 +428,92 @@ def test_pipeline_success_counts_processed_images(monkeypatch, tmp_path):
                 if event.stage == 'batch').status == 'completed'
 
 
+def test_pipeline_capture_failure_skips_slots_with_real_reason(
+        monkeypatch, tmp_path):
+    """捕获失败导致未上传时，跳过原因取真实原因并补齐保存跳过。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    monkeypatch.setattr(pipeline, 'capture', Mock(
+        side_effect=CaptureError('window_not_found', 'secret')))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox', 'token': 't'},
+                        {'provider': 'wmimg', 'token': 't'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    summary = traces[0].summary()
+    assert summary['slots_planned'] == 2
+    assert summary['slots_skipped'] == 2
+    assert summary['slots_planned'] == sum(
+        summary['slots_' + state]
+        for state in ('succeeded', 'failed', 'cancelled', 'skipped'))
+    skipped = [event.reason_code for event in events
+               if event.stage == 'slot' and event.status == 'skipped']
+    assert skipped == ['capture_failed', 'capture_failed']
+    assert 'first_success' not in skipped
+    save = [(event.status, event.reason_code) for event in events
+            if event.stage == 'save']
+    assert save == [('skipped', 'capture_failed')]
+
+
+def test_pipeline_first_success_skips_remaining_hosts(monkeypatch, tmp_path):
+    """首站成功后自动模式停止剩余图床，未开始槽位跳过原因仍为首成功。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    registry = import_module('modules.image_host.registry')
+    monkeypatch.setattr(pipeline, 'capture', Mock(
+        return_value=CaptureResult(b'png-bytes', 'window', '窗口', 2, 3)))
+    monkeypatch.setitem(
+        registry.UPLOADERS, 'catbox',
+        lambda image, filename, token, options: 'https://example.invalid/result')
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    batch = pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox', 'token': 't'},
+                        {'provider': 'wmimg', 'token': 't'}]},
+        True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    summary = traces[0].summary()
+    assert batch.values['screenshot_1'].startswith('![')
+    assert summary['slots_succeeded'] == 1
+    assert summary['slots_skipped'] == 1
+    skipped = [event.reason_code for event in events
+               if event.stage == 'slot' and event.status == 'skipped']
+    assert skipped == ['first_success']
+
+
+def test_pipeline_cancellation_skips_remaining_slots_as_batch_cancelled(
+        monkeypatch, tmp_path):
+    """控制信号中断后续图片时，未开始槽位跳过原因仍为批次取消。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    registry = import_module('modules.image_host.registry')
+    signal = KeyboardInterrupt('stop')
+    monkeypatch.setitem(
+        registry.UPLOADERS, 'catbox',
+        lambda image, filename, token, options: 'https://example.invalid/result')
+    monkeypatch.setattr(pipeline, 'capture', Mock(side_effect=[
+        CaptureResult(b'png-bytes', 'window', '窗口', 2, 3), signal]))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    section = {
+        'targets': [{'provider': 'window', 'target': '窗口'},
+                    {'provider': 'adb', 'target': '设备'}],
+        'image_host': [{'provider': 'catbox', 'token': 't'}],
+    }
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pipeline.prepare_screenshots(
+            section, True, (),
+            runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+    assert caught.value is signal
+    summary = traces[0].summary()
+    assert summary['slots_planned'] == 2
+    assert (summary['slots_succeeded'], summary['slots_skipped']) == (1, 1)
+    skipped = [event.reason_code for event in events
+               if event.stage == 'slot' and event.status == 'skipped']
+    assert skipped == ['batch_cancelled']
+
+
 def test_pipeline_partial_capture_failure_is_partial(monkeypatch, tmp_path):
     """部分截图失败时批次为部分失败而非完成。"""
     pipeline = import_module('modules.screenshot.pipeline')
