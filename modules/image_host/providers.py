@@ -109,8 +109,9 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
                     if not 200 <= status_code < 300:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
-                    url = validate_image_url(response.text)
+                    text = response.text
                     attempt.mark_end()
+                    url = validate_image_url(text)
         except requests.exceptions.RequestException:
             pass
         else:
@@ -177,6 +178,7 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
                     payload = response.json()
+                    attempt.mark_end()
                     if (not isinstance(payload, Mapping)
                             or payload.get('status') is not True):
                         raise ImageHostError(
@@ -190,7 +192,6 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
                     url = validate_image_url(links.get('url'))
-                    attempt.mark_end()
         except requests.exceptions.RequestException:
             pass
         else:
@@ -247,6 +248,7 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
                     payload = response.json()
+                    attempt.mark_end()
                     if not isinstance(payload, Mapping):
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
@@ -256,7 +258,6 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
                     url = validate_image_url(result.get('url'))
-                    attempt.mark_end()
         except ImageHostError:
             raise
         except Exception:
@@ -312,8 +313,8 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                             'upload_failed', '', http_status=status_code
                         ) from None
                     payload = response.json()
-                    url, code = _parse_superbed(version, payload)
                     attempt.mark_end()
+                    url, code = _parse_superbed(version, payload)
                     attempt.finish(
                         'succeeded' if code is None else 'failed',
                         reason_code='' if code is None else code,

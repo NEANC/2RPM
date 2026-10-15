@@ -669,3 +669,83 @@ def test_upload_attempt_started_is_info(monkeypatch, tmp_path, caplog):
             levels['query'] = record.levelno
     assert levels['upload'] == logging.INFO
     assert levels['query'] == logging.DEBUG
+
+
+TRANSPORT_SECONDS = 1.0
+BUSINESS_SECONDS = 9.0
+TRANSPORT_MS = 1000
+INVALID_URL = 'not-a-valid-image-url'
+
+# 四个非 v2 适配器的成功正文与业务校验失败正文；superbed 失败会在两个
+# 域名间各发一次真实请求，因此失败队列需要两条合成响应。
+FREEZE_CASES = (
+    ('catbox', {'provider': 'catbox', 'token': ''},
+     (200, URL.encode()),
+     [(200, INVALID_URL.encode())]),
+    ('wmimg', {'provider': 'wmimg', 'token': ''},
+     (200, body({'status': True, 'data': {'links': {'url': URL}}})),
+     [(200, body({'status': True, 'data': {'links': {'url': INVALID_URL}}}))]),
+    ('beeimg', {'provider': 'beeimg', 'token': ''},
+     (200, body({'files': {'status': 'Success', 'url': URL}})),
+     [(200, body({'files': {'status': 'Success', 'url': INVALID_URL}}))]),
+    ('superbed', {'provider': 'superbed', 'token': SECRET},
+     (200, body({'success': True, 'total': 1, 'succeed': 1,
+                 'failed': 0, 'files': [{'url': URL}]})),
+     [(200, body({'success': True, 'total': 1, 'succeed': 1,
+                  'failed': 0, 'files': [{'url': INVALID_URL}]})),
+      (200, body({'success': True, 'total': 1, 'succeed': 1,
+                  'failed': 0, 'files': [{'url': INVALID_URL}]}))]),
+)
+
+
+def run_single_adapter(monkeypatch, tmp_path, host, replies, clock):
+    """在可控时钟的批次作用域内经真实注册表执行一次上传。"""
+    registry = import_module('modules.image_host.registry')
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: clock[0])
+    context = UploadContext(cache=cache, clock=lambda: clock[0])
+    transport = Transport(monkeypatch, replies)
+    events = []
+    with trace_scope(mode='cli', images_planned=1, slots_planned=1,
+                     clock=lambda: clock[0], on_status=events.append):
+        result = registry.upload_with_fallback(
+            b'image', 'image.png', [host], context=context)
+    context.close()
+    return transport, events, result
+
+
+@pytest.mark.parametrize(
+    ('name', 'host', 'success_reply', 'failure_replies'), FREEZE_CASES)
+@pytest.mark.parametrize('outcome', ['success', 'failure'])
+def test_transport_end_freezes_request_duration(
+        name, host, success_reply, failure_replies, outcome,
+        monkeypatch, tmp_path):
+    """上传耗时在读完响应正文时冻结，业务解析与校验的时间不计入。"""
+    module = import_module('modules.image_host.providers')
+    clock = [1000.0]
+    validate = module.validate_image_url
+
+    def slow_validate(value):
+        """模拟业务链接校验耗时后再执行真实校验。"""
+        clock[0] += BUSINESS_SECONDS
+        return validate(value)
+
+    monkeypatch.setattr(module, 'validate_image_url', slow_validate)
+    original_request = requests.sessions.Session.request
+
+    def timed_request(session, method, url, **kwargs):
+        """模拟一次传输耗时后执行真实请求。"""
+        clock[0] += TRANSPORT_SECONDS
+        return original_request(session, method, url, **kwargs)
+
+    monkeypatch.setattr(
+        requests.sessions.Session, 'request', timed_request)
+    replies = (
+        [success_reply] if outcome == 'success' else list(failure_replies))
+    transport, events, result = run_single_adapter(
+        monkeypatch, tmp_path, host, replies, clock)
+    assert result.success is (outcome == 'success')
+    attempts = [event for event in of_stage(events, 'upload_attempt')
+                if event.status != 'started']
+    assert attempts
+    assert all(event.duration_ms == TRANSPORT_MS for event in attempts)
+    assert len(transport.posts) == len(attempts)
