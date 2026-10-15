@@ -178,12 +178,14 @@ def parse_inline_hosts(text):
     """静态校验全部内联图床项，失败时不返回部分结果。"""
     normalized = None
     normalize_failed = False
+    failed_index = 1
     try:
         normalized = normalize_inline_upload(text)
-    except ScalarSyntaxError:
+    except ScalarSyntaxError as error:
         normalize_failed = True
+        failed_index = error.item_index
     if normalize_failed:
-        raise InlineUploadError(1, 'mapping_syntax')
+        raise InlineUploadError(failed_index, 'mapping_syntax')
     hosts = []
     for index, item in enumerate(_split_items(normalized), 1):
         host = _load_mapping(item, index)

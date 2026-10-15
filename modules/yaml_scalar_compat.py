@@ -10,6 +10,8 @@ class ScalarSyntaxError(ValueError):
         self.line = line
         self.column = column
         self.code = code
+        # 内联图床项序号，仅内联扫描失败时由 normalize_inline_upload 填充
+        self.item_index = None
         super().__init__(f'line={line} column={column} code={code}')
         self.__cause__ = None
         self.__context__ = None
@@ -171,6 +173,7 @@ class _InlineScanner(_Scanner):
         self.scalar_start = True
         self.explicit_top = False
         self.seen_content = False
+        self.item_index = 1
 
     def run(self):
         while self.pos < self.length:
@@ -226,6 +229,7 @@ class _InlineScanner(_Scanner):
                 continue
             if char == ';' and not self.stack:
                 self._copy()
+                self.item_index += 1
                 self.explicit_top = False
                 self.seen_content = False
                 self.scalar_start = True
@@ -474,9 +478,6 @@ class _ConfigScanner(_Scanner):
             if char == '#':
                 self._comment()
                 continue
-            if char in '"\'':
-                self._quoted()
-                continue
             frame = self.flow[-1]
             if char in '{[':
                 inner = 'map' if char == '{' else 'sequence'
@@ -518,8 +519,14 @@ class _ConfigScanner(_Scanner):
     def _flow_token(self, frame, path, is_key):
         char = self.text[self.pos]
         if char in '"\'':
+            # 引号内文本仅用于键名判定，输出仍原样复制引号形式
+            key = None
+            if is_key:
+                end = self._quoted_end(self.pos)
+                if end is not None:
+                    key = self.text[self.pos + 1:end - 1]
             self._quoted()
-            self._record(frame, is_key, None)
+            self._record(frame, is_key, key)
             return
         if char == '*':
             self._alias()
@@ -610,4 +617,9 @@ def normalize_inline_upload(text):
         return text
     if '`' not in text and '${' not in text:
         return text
-    return _InlineScanner(text).run()
+    scanner = _InlineScanner(text)
+    try:
+        return scanner.run()
+    except ScalarSyntaxError as error:
+        error.item_index = scanner.item_index
+        raise

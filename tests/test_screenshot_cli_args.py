@@ -572,3 +572,12 @@ def test_inline_upload_broken_backtick_is_parameter_error(capsys):
                'provider: catbox, token: `secret'])
     assert caught.value.code == 2
     assert capsys.readouterr().err == '第1项：mapping_syntax\n'
+
+
+def test_inline_upload_lexical_error_reports_real_item(capsys):
+    """CLI 出口的内联词法错误指向真实出错项且整体以退出码 2 拒绝。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox, token: ok; provider: catbox, token: `secret'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第2项：mapping_syntax\n'

@@ -71,6 +71,66 @@ def test_flow_and_block_version_markers_keep_original_value(marker):
     assert normalize_config_scalars(block) == block
 
 
+@pytest.mark.parametrize('key', ['"target"', "'target'", 'target'])
+def test_quoted_whitelist_target_key_keeps_version_semantics(key):
+    """引号包裹的白名单 target 键与裸键获得同样的版本标记规范化。"""
+    text = (TARGETS_HEAD + '      - {provider: window, ' + key
+            + ': App@{version}, out: shot}\n')
+    normalized = normalize_config_scalars(text)
+    assert key + ": 'App@{version}', out: shot" in normalized
+
+
+@pytest.mark.parametrize('key', ['"token"', "'token'", 'token'])
+def test_quoted_whitelist_token_key_normalizes_like_bare_key(key):
+    """引号包裹的白名单 token 键与裸键同样规范化反引号字面值。"""
+    text = HOSTS_HEAD + '      - {provider: catbox, ' + key + ': `a;b`}\n'
+    assert normalize_config_scalars(text) == (
+        HOSTS_HEAD + '      - {provider: catbox, ' + key + ": 'a;b'}\n")
+
+
+def test_quoted_non_whitelist_key_stays_unmodified():
+    """引号包裹的非白名单键不获得宽松词法，反引号保持原样。"""
+    text = HOSTS_HEAD + '      - {provider: catbox, "note": `x`}\n'
+    assert normalize_config_scalars(text) == text
+
+
+def test_quoted_whitelist_keys_load_to_same_values(tmp_path):
+    """引号包裹的白名单键经真实加载得到与裸键相同的语义值。"""
+    text = (
+        MONITOR_HEAD
+        + PUSH_HEAD
+        + '    targets:\n'
+        + '      - {provider: window, "target": App@{version}, out: shot}\n'
+        + "      - {provider: adb, 'target': `127.0.0.1:16384`, out: device}\n"
+        + '    image_host:\n'
+        + '      - {provider: beeimg_cn, "token": ${IMAGE_TOKEN}, '
+        + 'options: {storage_id: 1}}\n'
+        + "      - {provider: catbox, 'token': `a;b,#{}\\x`}\n"
+    )
+    path = _write_raw(tmp_path, text)
+    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    assert [item['target'] for item in screenshot['targets']] == [
+        'App@{version}', '127.0.0.1:16384',
+    ]
+    assert [item['out'] for item in screenshot['targets']] == ['shot', 'device']
+    assert screenshot['image_host'][0]['token'] == '${IMAGE_TOKEN}'
+    assert screenshot['image_host'][0]['options'] == {'storage_id': 1}
+    assert screenshot['image_host'][1]['token'] == 'a;b,#{}\\x'
+
+
+def test_quoted_non_whitelist_key_is_rejected_overall(tmp_path):
+    """非白名单引号键的反引号值仍使整份配置加载失败。"""
+    path = _write_raw(
+        tmp_path,
+        MONITOR_HEAD
+        + HOSTS_HEAD
+        + '      - {provider: catbox, "note": `x`}\n',
+    )
+    with pytest.raises(SystemExit) as error:
+        config_module.load_config(str(path))
+    assert error.value.code == 1
+
+
 def test_non_whitelist_and_block_scalars_unchanged():
     """白名单之外的字段与块标量正文保持逐字节不变。"""
     text = (
@@ -119,6 +179,36 @@ def test_normalize_inline_upload_rejects_broken_backticks(text, code):
         normalize_inline_upload(text)
     assert caught.value.code == code
     assert text not in ''.join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize('text, index', [
+    ('provider: catbox, token: `unclosed; provider: catbox, token: ok', 1),
+    ('provider: catbox, token: a; provider: catbox, token: `unclosed', 2),
+    ('provider: catbox, token: a; provider: catbox, token: b; '
+     'provider: catbox, token: `x`y', 3),
+])
+def test_inline_lexical_error_index_matches_real_item(text, index):
+    """内联词法错误序号指向真实出错项，整体拒绝且不回显原文。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(text)
+    assert caught.value.code == 'mapping_syntax'
+    assert caught.value.index == index
+    assert text not in ''.join(traceback.format_exception(caught.value))
+
+
+def test_inline_lexical_error_index_ignores_backtick_separators():
+    """前项反引号内的分隔符不改变后续出错项序号。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(
+            'provider: catbox, token: `a;b`; provider: catbox, token: `unclosed')
+    assert caught.value.index == 2
+
+
+def test_backtick_with_separators_is_single_item():
+    """反引号内含分号、逗号与右花括号时不得被误切分为多项或被拒绝。"""
+    hosts = parse_inline_hosts('provider: catbox, token: `a;b,c}d`')
+    assert len(hosts) == 1
+    assert hosts[0]['token'] == 'a;b,c}d'
 
 
 def test_backtick_and_environment_tokens_parse_through_cli_path():
