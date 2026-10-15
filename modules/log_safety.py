@@ -17,6 +17,9 @@ REDACTED = '[已隐藏]'
 LINK_REDACTED = '[链接已隐藏]'
 FORMAT_FAILURE = '日志内容无法安全呈现'
 
+_REDACTED_SENTINEL = '\x00\x01\x00'
+_LINK_SENTINEL = '\x00\x02\x00'
+
 _SECRETS = ContextVar('log_safety_secrets', default=None)
 
 _OSC = re.compile(r'(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)', re.DOTALL)
@@ -144,7 +147,12 @@ def redact_text(text: str, secrets: SecretSnapshot | None = None) -> str:
     result = redact_secrets(text, snapshot)
     result = _CREDENTIAL.sub(REDACTED, result)
     result = _URL.sub(LINK_REDACTED, result)
-    return strip_log_controls(remove_terminal_sequences(result))
+    result = strip_log_controls(remove_terminal_sequences(result))
+    guarded = result.replace(REDACTED, _REDACTED_SENTINEL).replace(
+        LINK_REDACTED, _LINK_SENTINEL)
+    guarded = redact_secrets(guarded, snapshot)
+    return guarded.replace(_REDACTED_SENTINEL, REDACTED).replace(
+        _LINK_SENTINEL, LINK_REDACTED)
 
 
 class SafeFormatter(logging.Formatter):

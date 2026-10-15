@@ -199,3 +199,14 @@ def test_all_levels_share_redaction(synthetic_log_stream, level):
     assert logging.getLevelName(level) in output
     assert SECRET not in output
     assert URL not in output
+
+
+@pytest.mark.parametrize('separator', ['\u200b', '\x1b[0m'])
+def test_secret_split_by_controls_is_redacted_after_cleaning(separator):
+    split = SECRET[:8] + separator + SECRET[8:]
+    result = log_safety.redact_text('甲 ' + split + ' 乙 ' + URL, (SECRET,))
+    assert SECRET not in result
+    assert '甲' in result
+    assert '乙' in result
+    assert log_safety.REDACTED in result
+    assert log_safety.LINK_REDACTED in result
