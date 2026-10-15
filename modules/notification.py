@@ -8,10 +8,17 @@ import time
 import logging
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from json import JSONDecodeError
 from string import Formatter
 
 from onepush import get_notifier
+from modules.log_safety import (
+    extend_secrets,
+    guard_dependency_logging,
+    redact_text,
+    safety_scope,
+)
 from modules.screenshot.pipeline import (
     ScreenshotBatch,
     append_screenshot_notices,
@@ -167,8 +174,8 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
         retry_interval (int): 重试间隔（秒）
         max_count (int): 最大重试次数
         screenshot_count (int): 标题或正文实际引用的截图项数量；大于 0 时
-            成功与失败日志均使用安全摘要，避免签名直链或凭证进入
-            本项目通知日志，不控制第三方库自身的日志。
+            失败原因使用固定分类，避免签名直链或凭证进入本项目通知
+            日志，不控制第三方库自身的日志。
 
     Returns:
         bool: 是否发送成功
@@ -183,8 +190,9 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
 
     for attempt in range(1, max_count + 1):
         try:
-            notifier = get_notifier(provider)
-            response = notifier.notify(title=title, content=content, **params)
+            with guard_dependency_logging(('onepush', 'requests', 'urllib3')):
+                notifier = get_notifier(provider)
+                response = notifier.notify(title=title, content=content, **params)
         except Exception as e:
             # 截图路径不格式化客户端异常，也不向日志 helper 传递原文
             reason = "客户端发送失败" if screenshot_count > 0 else str(e)
@@ -202,13 +210,13 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
         else:
             success, reason = _is_push_successful(response)
         if success:
-            # 标题可能引用含签名直链的截图结果，此时只记录安全摘要
+            # 完整标题正文已由模板日志记录，此处只报告通道结果
             if screenshot_count:
                 LOGGER.info(
                     "通知发送成功 [%s]（含截图结果，截图项 %d）",
                     provider, screenshot_count)
             else:
-                LOGGER.info(f"通知发送成功 [{provider}]: {title}")
+                LOGGER.info("通知发送成功 [%s]", provider)
             return True
 
         if not _handle_attempt_failure(
@@ -395,8 +403,8 @@ def _referenced_screenshot_count(title, content, batch):
 def _log_rendered_notification(template_key, title, content, batch):
     """记录待发送通知
 
-    含截图结果的正文可能携带签名直链，此时只记录安全摘要与计数，
-    绝不打印完整正文、批次内容、链接或凭证。
+    模板渲染与告警追加完成后，记录一次完整的脱敏标题与正文；图片链接在
+    日志副本中替换为固定标记，真实发送对象、批次与配置均不受影响。
 
     Args:
         template_key (str): 模板键
@@ -404,17 +412,10 @@ def _log_rendered_notification(template_key, title, content, batch):
         content (str): 渲染后的正文
         batch (ScreenshotBatch): 本次截图批次
     """
-    if _referenced_screenshot_count(title, content, batch):
-        LOGGER.info(
-            "通知包含截图结果，已省略完整正文: %s（截图项 %d，提示 %d）",
-            template_key,
-            sum(1 for value in batch.values.values() if value),
-            len(batch.warnings),
-        )
-        return
     LOGGER.info(
-        f"通知标题: {title}\r\n"
-        f"通知内容: {content}"
+        "通知标题: %s\r\n通知内容: %s",
+        redact_text(title, ()),
+        redact_text(content, ()),
     )
 
 
@@ -436,144 +437,153 @@ def send_notification(config, template_key, **kwargs):
         list[tuple[str, bool]]: 各通道推送结果，元素为 (provider, 是否成功)
             禁用、模板缺变量、无有效通道等提前返回路径均返回空列表
     """
-    LOGGER.info(f"使用模板: {template_key} 推送报告")
-    push_section = config.get('push', {})
-    templates = push_section.get('templates', {})
-    template = templates.get(template_key, {})
+    with safety_scope(()):
+        LOGGER.info(f"使用模板: {template_key} 推送报告")
+        push_section = config.get('push', {})
+        templates = push_section.get('templates', {})
+        template = templates.get(template_key, {})
 
-    # 检查是否启用了该通知
-    if not template.get('enable', True):
-        LOGGER.warning(f"通知推送已被禁用: {template_key}")
-        return []
+        # 检查是否启用了该通知
+        if not template.get('enable', True):
+            LOGGER.warning(f"通知推送已被禁用: {template_key}")
+            return []
 
-    raw_title = template.get('title', '')
-    raw_content = template.get('content', '')
+        raw_title = template.get('title', '')
+        raw_content = template.get('content', '')
 
-    # 合并为一次 datetime.now() 调用，消除跨秒不一致
-    now = datetime.datetime.now()
-    current_time = now.strftime('%Y/%m/%d %H:%M:%S')
-    short_current_time = now.strftime('%H:%M:%S')
-    host_name = socket.gethostname()
+        # 合并为一次 datetime.now() 调用，消除跨秒不一致
+        now = datetime.datetime.now()
+        current_time = now.strftime('%Y/%m/%d %H:%M:%S')
+        short_current_time = now.strftime('%H:%M:%S')
+        host_name = socket.gethostname()
 
-    kwargs.update({
-        'host_name': host_name,
-        'current_time': current_time,
-        'short_current_time': short_current_time,
-    })
+        kwargs.update({
+            'host_name': host_name,
+            'current_time': current_time,
+            'short_current_time': short_current_time,
+        })
 
-    # 获取推送通道（与截图无关，无通道时直接返回以避免多余副作用）
-    channel_settings = push_section.get('push_channel_settings', {})
-    raw_channels = channel_settings.get('channels')
+        # 获取推送通道（与截图无关，无通道时直接返回以避免多余副作用）
+        channel_settings = push_section.get('push_channel_settings', {})
+        raw_channels = channel_settings.get('channels')
 
-    # 解析为标准通道列表，兼容无参数头、乱序、以 ';' 分割的多通道写法
-    channels = parse_push_channels(raw_channels)
-    if not channels:
-        LOGGER.error("推送通道未配置或格式无效，无法发送通知")
-        return []
+        # 解析为标准通道列表，兼容无参数头、乱序、以 ';' 分割的多通道写法
+        channels = parse_push_channels(raw_channels)
+        if not channels:
+            LOGGER.error("推送通道未配置或格式无效，无法发送通知")
+            return []
 
-    screenshot_section = push_section.get('screenshot', {})
-    reserved_names = _RESERVED_VARIABLES | set(kwargs)
-    configured_names = _configured_screenshot_names(
-        screenshot_section, reserved_names)
+        extend_secrets(tuple(
+            value for channel in channels
+            for key, value in channel.items()
+            if key != 'provider' and type(value) is str and value
+        ))
 
-    # 截图前校验模板语法、普通变量与占位变量字段，避免明知失败仍截图上传
-    fields = _collect_template_fields(
-        kwargs, configured_names, raw_title, raw_content)
-    if fields is None:
-        LOGGER.error("通知模板格式无效，已跳过该条通知模板键: %s", template_key)
-        return []
+        screenshot_section = push_section.get('screenshot', {})
+        reserved_names = _RESERVED_VARIABLES | set(kwargs)
+        configured_names = _configured_screenshot_names(
+            screenshot_section, reserved_names)
 
-    placeholders = {
-        name for name in fields
-        if name not in kwargs and _is_placeholder_root(name, configured_names)
-    }
-    missing = [
-        name for name in fields
-        if name not in kwargs and name not in placeholders
-    ]
-    if missing:
-        LOGGER.error(
-            "通知模板缺少变量: %s，已跳过该条通知模板键: %s",
-            ', '.join(sorted(missing)), template_key
-        )
-        return []
+        # 截图前校验模板语法、普通变量与占位变量字段，避免明知失败仍截图上传
+        fields = _collect_template_fields(
+            kwargs, configured_names, raw_title, raw_content)
+        if fields is None:
+            LOGGER.error("通知模板格式无效，已跳过该条通知模板键: %s", template_key)
+            return []
 
-    # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
-    enabled = _resolve_capture_flag(template)
-    # 模板未引用任何截图变量且无有效目标时按纯禁用路径处理，避免未使用
-    # 截图的既有用户每次通知都产生目标缺失告警
-    if enabled and not placeholders and not _has_valid_screenshot_target(
-            screenshot_section, reserved_names):
-        enabled = False
-    batch, internal_error = _prepare_screenshot_batch(
-        screenshot_section, enabled, reserved_names,
-        runtime=config.get('_runtime'), event=template_key)
-
-    values = dict(batch.values)
-    values.update(kwargs)
-    # 未配置目标与截图内部错误使用各自固定提示，避免提示误导
-    hint = _INTERNAL_SCREENSHOT if internal_error else _UNCONFIGURED_SCREENSHOT
-    fallback = hint if enabled else ''
-    for name in placeholders:
-        values.setdefault(name, fallback)
-
-    try:
-        title = raw_title.format(**values)
-        content = raw_content.format(**values)
-    except KeyError as e:
-        LOGGER.error(
-            f"通知模板缺少变量: {e}，已跳过该条通知模板键: {template_key}"
-        )
-        return []
-
-    # 用原始正文追加一次告警与必要改名结果，不再重复格式化
-    content = append_screenshot_notices(content, raw_content, batch)
-    # 本次通知是否引用截图结果，同一判定同时决定待发送日志与成功日志
-    screenshot_count = _referenced_screenshot_count(title, content, batch)
-    _log_rendered_notification(template_key, title, content, batch)
-
-    retry_settings = push_section.get('retry', {})
-    retry_interval_str = retry_settings.get('interval', '3s')
-    try:
-        retry_interval = parse_time_string(retry_interval_str)
-    except (TypeError, ValueError):
-        LOGGER.warning(
-            "推送重试间隔配置无效，已回退默认值: %s", retry_interval_str
-        )
-        retry_interval = 3
-
-    try:
-        max_count = int(retry_settings.get('max_count', 3))
-    except (TypeError, ValueError):
-        LOGGER.warning(
-            "推送重试次数配置无效，已回退默认值: %s", retry_settings.get('max_count', 3)
-        )
-        max_count = 3
-    if max_count < 1:
-        LOGGER.warning(
-            "推送重试次数必须 >= 1，已回退为 1: %s", max_count
-        )
-        max_count = 1
-
-    # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后回收结果
-    channel_names = ', '.join(c.get('provider', '?') for c in channels)
-    LOGGER.info(f"共解析到 {len(channels)} 个推送通道: {channel_names}")
-    with ThreadPoolExecutor() as executor:
-        futures = [
-            (
-                channel.get('provider', '?'),
-                executor.submit(
-                    _notify_single_channel,
-                    channel,
-                    title,
-                    content,
-                    retry_interval,
-                    max_count,
-                    screenshot_count,
-                ),
-            )
-            for channel in channels
+        placeholders = {
+            name for name in fields
+            if name not in kwargs and _is_placeholder_root(name, configured_names)
+        }
+        missing = [
+            name for name in fields
+            if name not in kwargs and name not in placeholders
         ]
-        # future.result() 会阻塞至各通道完成，从而保证整体同步等待
-        results = [(provider, future.result()) for provider, future in futures]
-    return results
+        if missing:
+            LOGGER.error(
+                "通知模板缺少变量: %s，已跳过该条通知模板键: %s",
+                ', '.join(sorted(missing)), template_key
+            )
+            return []
+
+        # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
+        enabled = _resolve_capture_flag(template)
+        # 模板未引用任何截图变量且无有效目标时按纯禁用路径处理，避免未使用
+        # 截图的既有用户每次通知都产生目标缺失告警
+        if enabled and not placeholders and not _has_valid_screenshot_target(
+                screenshot_section, reserved_names):
+            enabled = False
+        batch, internal_error = _prepare_screenshot_batch(
+            screenshot_section, enabled, reserved_names,
+            runtime=config.get('_runtime'), event=template_key)
+
+        values = dict(batch.values)
+        values.update(kwargs)
+        # 未配置目标与截图内部错误使用各自固定提示，避免提示误导
+        hint = _INTERNAL_SCREENSHOT if internal_error else _UNCONFIGURED_SCREENSHOT
+        fallback = hint if enabled else ''
+        for name in placeholders:
+            values.setdefault(name, fallback)
+
+        try:
+            title = raw_title.format(**values)
+            content = raw_content.format(**values)
+        except KeyError as e:
+            LOGGER.error(
+                f"通知模板缺少变量: {e}，已跳过该条通知模板键: {template_key}"
+            )
+            return []
+
+        # 用原始正文追加一次告警与必要改名结果，不再重复格式化
+        content = append_screenshot_notices(content, raw_content, batch)
+        # 本次通知是否引用截图结果，同一判定同时决定失败摘要与成功日志
+        screenshot_count = _referenced_screenshot_count(title, content, batch)
+        _log_rendered_notification(template_key, title, content, batch)
+
+        retry_settings = push_section.get('retry', {})
+        retry_interval_str = retry_settings.get('interval', '3s')
+        try:
+            retry_interval = parse_time_string(retry_interval_str)
+        except (TypeError, ValueError):
+            LOGGER.warning(
+                "推送重试间隔配置无效，已回退默认值: %s", retry_interval_str
+            )
+            retry_interval = 3
+
+        try:
+            max_count = int(retry_settings.get('max_count', 3))
+        except (TypeError, ValueError):
+            LOGGER.warning(
+                "推送重试次数配置无效，已回退默认值: %s", retry_settings.get('max_count', 3)
+            )
+            max_count = 3
+        if max_count < 1:
+            LOGGER.warning(
+                "推送重试次数必须 >= 1，已回退为 1: %s", max_count
+            )
+            max_count = 1
+
+        # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后回收结果
+        channel_names = ', '.join(c.get('provider', '?') for c in channels)
+        LOGGER.info(f"共解析到 {len(channels)} 个推送通道: {channel_names}")
+        with ThreadPoolExecutor() as executor:
+            futures = [
+                (
+                    channel.get('provider', '?'),
+                    executor.submit(
+                        copy_context().run,
+                        _notify_single_channel,
+                        channel,
+                        title,
+                        content,
+                        retry_interval,
+                        max_count,
+                        screenshot_count,
+                    ),
+                )
+                for channel in channels
+            ]
+            # future.result() 会阻塞至各通道完成，从而保证整体同步等待
+            results = [
+                (provider, future.result()) for provider, future in futures]
+        return results

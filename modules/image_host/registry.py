@@ -23,6 +23,7 @@ from .providers import upload_catbox
 from .providers import upload_superbed
 from .providers import upload_wmimg
 from .providers import validate_v2_options
+from modules.log_safety import extend_secrets
 
 
 # 仅在具体站点契约核验并实现后添加适配器，不预注册空壳。
@@ -255,6 +256,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             _add_warnings(warnings, context.take_warnings())
         attempts.append(provider)
         if url is not None:
+            extend_secrets((url,))
             return UploadResult(True, provider, url, tuple(attempts),
                                 tuple(failures), tuple(warnings))
     return UploadResult(False, None, None, tuple(attempts), tuple(failures),

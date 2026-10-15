@@ -350,3 +350,19 @@ def test_copied_contexts_are_isolated():
     enabled.run(temporarily_disable)
     assert enabled.run(module.safe_current_message, '普通中文') == '普通中文'
     assert disabled.run(module.safe_current_message, '普通中文') is None
+
+
+def test_upload_context_scope_registers_only_resolved_credentials():
+    """诊断关闭仍建立日志安全作用域，仅登记真正解析的凭证并可靠释放。"""
+    context_module = import_module('modules.image_host.context')
+    log_safety = import_module('modules.log_safety')
+    context = context_module.UploadContext(diagnostics=False)
+    try:
+        with context.diagnostic_scope():
+            assert log_safety.secret_snapshot() == ()
+            assert context.resolve_credential(
+                0, {'token': SECOND_SECRET}) == SECOND_SECRET
+            assert log_safety.secret_snapshot() == (SECOND_SECRET,)
+        assert log_safety.secret_snapshot() == ()
+    finally:
+        context.close()

@@ -14,6 +14,7 @@ from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.registry import upload_with_fallback
+from modules.log_safety import extend_secrets
 from modules.utils import get_program_directory
 
 from .models import CaptureError
@@ -50,6 +51,7 @@ def markdown_image(name, url):
         else char
         for index, char in enumerate(url)
     )
+    extend_secrets((destination,))
     return f'![{name}]({destination})'
 
 

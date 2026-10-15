@@ -152,5 +152,19 @@ class TestRunExternalProgramGuard(unittest.TestCase):
             run_external_program(r'C:\path\to\not_exist_script.bat')
 
 
+def test_notify_single_channel_success_log_omits_title(caplog):
+    """成功日志只报告通道结果，不再额外输出原始标题。"""
+    resp = _make_response(status_code=200, json_body={"code": 0})
+    fake_notifier = MagicMock()
+    fake_notifier.notify.return_value = resp
+    with patch.object(notif, 'get_notifier', return_value=fake_notifier):
+        with caplog.at_level(logging.INFO, logger='modules.notification'):
+            assert notif._notify_single_channel(
+                {'provider': 'qmsg'}, 'PRIVATE_TITLE_9090', '正文', 0, 1)
+    assert [record.getMessage() for record in caplog.records] == [
+        '通知发送成功 [qmsg]']
+    assert 'PRIVATE_TITLE_9090' not in caplog.text
+
+
 if __name__ == '__main__':
     unittest.main()

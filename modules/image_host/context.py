@@ -30,6 +30,8 @@ from .storage import select_storage
 from .storage import StorageMetadata
 from .storage import StorageSelection
 from .storage_cache import StorageCache
+from modules.log_safety import extend_secrets
+from modules.log_safety import safety_scope
 
 
 _CACHE_WARNINGS = {
@@ -433,6 +435,8 @@ class UploadContext:
                 if self._diagnostics and token:
                     self._secrets = tuple(dict.fromkeys(
                         self._secrets + (token,)))
+                if token:
+                    extend_secrets((token,))
         return self._credentials[index]
 
     def collect_secrets(self, hosts):
@@ -462,8 +466,9 @@ class UploadContext:
     def diagnostic_scope(self):
         """用不可变秘密快照包装既有作用域，关闭诊断时显式传入 None。"""
         self._ensure_open()
-        with _diagnostic_scope(self._secrets if self._diagnostics else None):
-            yield
+        with safety_scope(self._secrets):
+            with _diagnostic_scope(self._secrets if self._diagnostics else None):
+                yield
 
     def close(self):
         """幂等释放本对象的秘密及事件引用，不承诺 Python 内存安全擦除。

@@ -8,6 +8,7 @@ import netrc
 import os
 import socket
 import sys
+import threading
 from collections import Counter
 from copy import deepcopy
 from importlib import import_module
@@ -766,8 +767,8 @@ def test_screenshot_title_not_leaked_in_success_log(monkeypatch, caplog):
     assert 'FAKE_SIGNED_KEY' not in caplog.text
 
 
-def test_success_log_unchanged_without_screenshot(monkeypatch, caplog):
-    """未使用截图结果时成功日志保持原有逐字格式。"""
+def test_success_log_omits_title_without_screenshot(monkeypatch, caplog):
+    """未使用截图结果时成功日志只报告通道结果，不再额外输出原始标题。"""
     _install_boundaries(monkeypatch)
     sent, _, _ = _install_onepush(monkeypatch)
     config = _base_config()
@@ -775,7 +776,10 @@ def test_success_log_unchanged_without_screenshot(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger='modules.notification'):
         results = notif.send_notification(config, 'on_end', process_name='demo.exe')
     assert results == [('serverchan', True)]
-    assert '通知发送成功 [serverchan]: 标题 demo.exe' in caplog.text
+    successes = [record.getMessage() for record in caplog.records
+                 if record.name == 'modules.notification'
+                 and record.getMessage().startswith('通知发送成功')]
+    assert successes == ['通知发送成功 [serverchan]']
 
 
 class NotificationRaw(BytesIO):
@@ -927,7 +931,7 @@ def test_http_batch_reuses_context_queries_and_channel_retries(
         warning = '存储元数据缓存保存失败'
         assert sent[0][1].count(warning) == 1
         assert sent[0][1].count('截图配置提示') == 1
-        assert caplog.text.count(warning) == 1
+        assert caplog.text.count(warning) == 2
     assert not state['replies']
 
 
@@ -976,7 +980,8 @@ def test_http_registry_warnings_reach_notification_once(
     assert body.count('截图配置提示') == 1
     assert body.index(warnings[0]) < body.index(warnings[1])
     for warning in warnings:
-        assert body.count(warning) == caplog.text.count(warning) == 1
+        assert body.count(warning) == 1
+        assert caplog.text.count(warning) == 2
     assert ('截图上传失败：图床拒绝上传' in body) is not success
     assert (URL in body) is success
     assert len(state['requests']) == 4
@@ -1585,3 +1590,171 @@ def test_screenshot_send_control_signals_propagate_identically(
     assert notifier.notify.call_count == (stage != 'get_notifier')
     sleep.assert_not_called()
     _assert_push_logs_safe(caplog)
+
+
+SAFE_SIGNED_URL = (
+    'https://cdn.example.com/screenshot.png?sig=abcdef&size=large')
+
+
+@pytest.mark.parametrize('use_screenshot', [False, True])
+def test_complete_template_is_logged_once_without_mutation(
+        monkeypatch, caplog, use_screenshot):
+    """模板只在渲染后记录一次脱敏标题正文，真实发送值与各输入对象不变。"""
+    capture, upload = _install_boundaries(
+        monkeypatch, upload_result=UploadResult(
+            True, 'catbox', SAFE_SIGNED_URL, ('catbox',), ()))
+    attempts = Counter()
+
+    def notify(title=None, content=None, **params):
+        """各通道首次失败再次成功，覆盖并发重试不重复生成模板日志。"""
+        key = params.get('sckey') or params.get('token') or params.get('webhook')
+        attempts[key] += 1
+        return _response(500 if attempts[key] == 1 else 200)
+
+    sent, _, _ = _install_onepush(monkeypatch, notify)
+    config = _base_config(
+        channels=deepcopy(THREE_CHANNELS),
+        targets=([{'provider': 'window', 'target': '窗口', 'out': 'screenshot'}]
+                 if use_screenshot else []),
+        retry={'interval': '0s', 'max_count': 2})
+    template = config['push']['templates']['on_end']
+    if use_screenshot:
+        template['title'] = '标题 {process_name:>{width}} {screenshot_1!r}'
+        template['content'] = (
+            '正文 {process_name} {process_name!a}\n\n'
+            '{screenshot_1}\n\n{screenshot}\n\n'
+            '{screenshot_1}{screenshot_1}' + '长正文内容' * 40)
+        markdown = f'![screenshot_1]({SAFE_SIGNED_URL})'
+        original_title = f'标题 demo.exe {markdown!r}'
+        original_content = (
+            f"正文 demo.exe 'demo.exe'\n\n{markdown}\n\n{markdown}\n\n"
+            f'{markdown}{markdown}' + '长正文内容' * 40
+            + '\n\n截图配置提示\n'
+            '截图目标 1：输出名“screenshot”为保留名，已改为“screenshot_1”。')
+    else:
+        template['title'] = '纯文本标题 {process_name:>{width}}'
+        template['content'] = (
+            '纯文本正文 {process_name} {process_name!a}' + '长正文内容' * 40)
+        original_title = '纯文本标题 demo.exe'
+        original_content = (
+            "纯文本正文 demo.exe 'demo.exe'" + '长正文内容' * 40)
+    before = deepcopy(config)
+    captured = []
+    batch_before = []
+    original_log = notif._log_rendered_notification
+
+    def spy_log(template_key, title, content, batch):
+        """记录日志入参并在发送前冻结批次副本。"""
+        captured.append((template_key, title, content, batch))
+        batch_before.append(deepcopy(batch))
+        return original_log(template_key, title, content, batch)
+
+    monkeypatch.setattr(notif, '_log_rendered_notification', spy_log)
+    with caplog.at_level(logging.INFO, logger='modules.notification'):
+        results = notif.send_notification(
+            config, 'on_end', process_name='demo.exe', width=8)
+    assert results == [(channel['provider'], True) for channel in THREE_CHANNELS]
+    assert attempts == {'s1': 2, 't1': 2, 'w1': 2}
+    assert len(sent) == 6 and len(set(sent)) == 1
+    assert sent[0] == (original_title, original_content)
+    assert config == before
+    assert len(captured) == len(batch_before) == 1
+    _, captured_title, captured_content, batch = captured[0]
+    assert captured_title == original_title
+    assert captured_content == original_content
+    assert batch == batch_before[0]
+    expected_calls = 1 if use_screenshot else 0
+    assert capture.call_count == upload.call_count == expected_calls
+    logs = [record.getMessage() for record in caplog.records
+            if record.name == 'modules.notification'
+            and record.getMessage().startswith('通知标题:')]
+    assert len(logs) == 1
+    if use_screenshot:
+        assert '![screenshot_1]([链接已隐藏])' in logs[0]
+        assert SAFE_SIGNED_URL not in logs[0]
+        assert 'cdn.example.com' not in logs[0]
+        assert 'sig=abcdef' not in logs[0]
+    else:
+        assert logs[0] == (f'通知标题: {original_title}\r\n'
+                           f'通知内容: {original_content}')
+
+
+def test_parallel_notifications_keep_secret_scopes_separate(monkeypatch):
+    """并发事件的发送线程各自持有本事件秘密，互不串号且退出后释放。"""
+    log_safety = import_module('modules.log_safety')
+    _install_boundaries(monkeypatch)
+    _install_onepush(monkeypatch)
+    first = 'FAKE_PARALLEL_SECRET_ALPHA_5501'
+    second = 'FAKE_PARALLEL_SECRET_BETA_5502'
+    observed = {}
+    barrier = threading.Barrier(2, timeout=20)
+    real = notif._notify_single_channel
+
+    def observed_notify(channel, title, content, retry_interval, max_count,
+                        screenshot_count=0):
+        """在发送线程内读取本事件秘密快照，并强制两事件同时处于作用域。"""
+        barrier.wait()
+        observed.setdefault(channel['sckey'], []).append(
+            log_safety.secret_snapshot())
+        return real(channel, title, content, retry_interval, max_count,
+                    screenshot_count)
+
+    monkeypatch.setattr(notif, '_notify_single_channel', observed_notify)
+    results = {}
+    failures = []
+
+    def run(key, sckey):
+        """线程内发送一次纯文本通知，异常统一收集避免线程静默失败。"""
+        try:
+            config = _base_config(
+                channels=[{'provider': 'serverchan', 'sckey': sckey}],
+                targets=[])
+            template = config['push']['templates'][key]
+            template['title'] = '标题 {process_name}'
+            template['content'] = '正文 {process_name}'
+            results[key] = notif.send_notification(
+                config, key, process_name='demo')
+        except BaseException as exc:
+            failures.append(exc)
+
+    workers = [threading.Thread(target=run, args=('on_end', first)),
+               threading.Thread(target=run, args=('on_timeout', second))]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(30)
+    assert not failures
+    assert results == {'on_end': [('serverchan', True)],
+                       'on_timeout': [('serverchan', True)]}
+    assert observed == {first: [(first,)], second: [(second,)]}
+    assert log_safety.secret_snapshot() == ()
+
+
+def test_disabled_diagnostics_keeps_lazy_backup_token(notification_http, monkeypatch):
+    """首站成功时不求值备用环境引用，仅注册真正解析的凭证且退出后释放。"""
+    state = notification_http
+    state['replies'] = [_group_response(), _profile_response(),
+                        _upload_response(), _upload_response()]
+    config = _http_config()
+    config['push']['screenshot']['image_host'].append({
+        'provider': 'catbox', 'token': '${UNUSED_SYNTHETIC_BACKUP}'})
+    context_module = import_module('modules.image_host.context')
+    resolve = context_module.resolve_token
+    resolved = []
+    backup_environment_reads = 0
+
+    def observed(value):
+        """统计实际请求解析的凭证项，不读取或展开未尝试的环境引用。"""
+        nonlocal backup_environment_reads
+        if isinstance(value, str) and value.startswith('${'):
+            backup_environment_reads += 1
+        resolved.append(value)
+        return resolve(value)
+
+    monkeypatch.setattr(context_module, 'resolve_token', observed)
+    _install_onepush(monkeypatch)
+    assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert resolved == [SECRET]
+    assert backup_environment_reads == 0
+    assert len(state['requests']) == 4
+    assert import_module('modules.log_safety').secret_snapshot() == ()
