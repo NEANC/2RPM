@@ -115,6 +115,26 @@ def test_handle_error_does_not_dump_record(tmp_path, capsys, monkeypatch):
     assert SYNTHETIC_SECRET not in captured.err
 
 
+def test_spinner_write_handler_silences_write_failure(capsys, monkeypatch):
+    """spinner 输出不可写且 raiseExceptions 时，原始记录不得写到 stderr。"""
+    monkeypatch.setattr(logging, 'raiseExceptions', True)
+
+    def broken_write(message):
+        """模拟关闭的 stdout：写入立即失败。"""
+        raise OSError('stdout closed')
+
+    handler = spinner_mod._SpinnerWriteHandler(
+        SimpleNamespace(write=broken_write))
+    record = _record(level=logging.CRITICAL)
+    with log_safety.safety_scope((SYNTHETIC_SECRET,)):
+        handler.handle(record)
+
+    captured = capsys.readouterr()
+    assert captured.err == ''
+    assert captured.out == ''
+    assert SYNTHETIC_SECRET not in captured.err
+
+
 @pytest.mark.parametrize('propagate', [False, True])
 def test_dependency_handlers_are_controlled(propagate, capsys):
     stream = io.StringIO()

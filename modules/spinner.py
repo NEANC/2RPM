@@ -203,7 +203,15 @@ class _SpinnerWriteHandler(logging.Handler):
             message = redact_text(record.getMessage())
         except Exception:
             message = FORMAT_FAILURE
-        self._spinner.write(_format_fail(message))
+        try:
+            self._spinner.write(_format_fail(message))
+        except Exception:
+            # 交给静默的 handleError，避免 logging 默认实现把原始记录写到 stderr
+            self.handleError(record)
+
+    def handleError(self, record):
+        """静默处理写入异常，绝不复现原始 Message/Arguments。"""
+        pass
 
 
 def _find_console_handler():
