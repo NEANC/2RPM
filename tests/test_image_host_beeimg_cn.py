@@ -108,6 +108,7 @@ class Session:
         self.created = 0
         self.closed = 0
         self.active = False
+        self.profile_status = 200
 
     def create(self):
         """记录构造次数以验证配置错误发生在请求之前。"""
@@ -139,6 +140,7 @@ class Session:
         else:
             assert endpoint == ENDPOINT.rsplit('/', 1)[0] + '/user/profile'
             data = {'options': {'default_storage_id': STORAGE_ID}}
+            response.status_code = self.profile_status
         response.body = json.dumps({'status': 'success', 'data': data})
         self.get_responses.append(response)
         return response
@@ -167,8 +169,9 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, 'Session', fake.create)
     monkeypatch.setattr('modules.image_host.v2_http._V2Session', fake.create)
     yield fake
-    assert all(response.closed == 1 and response.reads == 1
-               for response in fake.get_responses)
+    assert all(response.closed == 1 and response.reads == (
+        1 if response.status_code == 200 else 0)
+        for response in fake.get_responses)
     assert fake.created == fake.closed == len(fake.calls) + len(fake.get_calls)
 
 
@@ -304,6 +307,45 @@ def test_explicit_positive_storage_id_is_forwarded(client, storage_id):
         'storage_id': storage_id, 'is_public': '1',
     }
     assert options == original
+
+
+def test_profile_forbidden_blocks_upload_without_posting(client):
+    """资料 403 且无手填时不发送上传，返回可行动权限提示。"""
+    client.profile_status = 403
+    result = upload(options={})
+    assert not result.success
+    assert result.failures[0].code == 'profile_forbidden'
+    assert result.failures[0].stage == 'profile'
+    assert result.failures[0].http_status == 403
+    assert result.failures[0].message == (
+        'BeeIMG.cn 账号资料接口无访问权限，请为令牌授权资料读取权限，'
+        '或填写该账号可用的 options.storage_id。')
+    assert client.calls == []
+    assert len(client.get_calls) == 2
+
+
+def test_profile_forbidden_accepts_group_verified_manual(client):
+    """资料 403 但手填经组校验合法时继续一次上传，给出固定提示。"""
+    client.profile_status = 403
+    result = upload(options={'storage_id': STORAGE_ID})
+    assert result.success
+    assert result.url == URL
+    assert client.calls[0][1]['data']['storage_id'] == STORAGE_ID
+    assert result.warnings == ('资料读取受限，已验证手填储存驱动并继续上传',)
+    assert len(client.get_calls) == 2
+
+
+def test_profile_forbidden_rejects_manual_outside_group(client):
+    """资料 403 且手填不在组列表时不偷选首项，返回固定提示。"""
+    client.profile_status = 403
+    result = upload(options={'storage_id': 9999})
+    assert not result.success
+    assert result.failures[0].code == 'profile_forbidden_invalid_storage'
+    assert result.failures[0].message == (
+        '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 '
+        'options.storage_id。')
+    assert client.calls == []
+    assert len(client.get_calls) == 2
 
 
 def test_album_id_is_omitted_unless_explicitly_configured(client):

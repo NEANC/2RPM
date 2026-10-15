@@ -2,14 +2,18 @@
 # -_- coding: utf-8 -_-
 """离线验证公开权限类型和上传异常上下文隔离。"""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import PropertyMock
 
 import pytest
 import requests
 
+from modules.image_host import context as context_module
 from modules.image_host import providers
 from modules.image_host.core import ImageHostError
+from modules.image_host.storage import StorageMetadata
+from modules.image_host.storage_cache import StorageCache
 
 
 @pytest.fixture
@@ -59,3 +63,28 @@ def test_upload_error_discards_raw_context(session, provider, stage, error_type)
     assert caught.value.__context__ is None
     client.__exit__.assert_called_once()
     assert client.post.return_value.__exit__.call_count == (stage == 'response')
+
+
+def test_selection_failure_stays_slot_local(monkeypatch, tmp_path):
+    """选择失败只归当前槽位，不写入共享查询失败或阻断后续合法手填。"""
+    forbidden = StorageMetadata((13, 14), None, 3600, 1000.0, 'forbidden')
+    monkeypatch.setattr(
+        context_module, 'fetch_storage_metadata',
+        lambda provider, token, *, now: forbidden)
+    context = context_module.UploadContext(
+        cache=StorageCache(root=Path(tmp_path)))
+    try:
+        image = context.start_image()
+        with pytest.raises(ImageHostError) as caught:
+            context.prepare_storage(image, 0, 'beeimg_cn', 'SYNTHETIC_TOKEN')
+        assert caught.value.code == 'profile_forbidden'
+        assert (caught.value.stage, caught.value.http_status) == ('profile', 403)
+        entry, = context._entries.values()
+        assert entry.failure is None
+        assert entry.metadata is forbidden
+        selected = context.prepare_storage(
+            image, 1, 'beeimg_cn', 'SYNTHETIC_TOKEN',
+            manual_present=True, manual_value=13)
+        assert selected.storage_id == 13
+    finally:
+        context.close()

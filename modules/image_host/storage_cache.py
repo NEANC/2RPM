@@ -216,6 +216,8 @@ class StorageCache:
             if (not isinstance(metadata, StorageMetadata)
                     or type(metadata.storage_ids) is not tuple):
                 raise ValueError
+            if metadata.profile_state == 'forbidden':
+                return False
             payload = {
                 'version': _VERSION,
                 'provider': provider,

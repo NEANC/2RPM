@@ -41,6 +41,8 @@ _CACHE_WARNINGS = {
     'invalidate': '存储元数据缓存失效失败',
 }
 
+_WARN_PROFILE_FORBIDDEN_MANUAL = '资料读取受限，已验证手填储存驱动并继续上传'
+
 
 @dataclass(frozen=True, eq=False)
 class ImageState:
@@ -377,6 +379,9 @@ class UploadContext:
             if entry.from_disk and not used:
                 current = self.get_metadata(provider, token, correction=True)
                 selected = select_storage(current, manual_present, manual)
+        if (manual is not None and not selected.replaced_manual
+                and current.profile_state == 'forbidden'):
+            self._warn(_WARN_PROFILE_FORBIDDEN_MANUAL)
         items[key] = replace(items[key], selection=selected,
                              metadata_version=entry.version)
         return selected

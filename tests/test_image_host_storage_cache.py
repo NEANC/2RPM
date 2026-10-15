@@ -423,6 +423,36 @@ def test_extra_field_rejected_and_missing_file_is_quiet(tmp_path):
     assert cache.take_warnings() == (WARN_READ,)
 
 
+def test_forbidden_partial_result_is_never_persisted(tmp_path):
+    """forbidden 部分结果在写入边界直接拒存且不留任何记录。"""
+    cache, identity, _ = make_cache(tmp_path)
+    forbidden = StorageMetadata((13, 14), None, 3600, 1000.0, 'forbidden')
+    assert cache.save(identity, forbidden) is False
+    assert not record_path(tmp_path, identity).exists()
+    assert cache.take_warnings() == ()
+    assert {path.name for path in tmp_path.iterdir()} == {KEY_NAME}
+
+
+def test_extra_profile_state_disk_field_is_rejected(tmp_path):
+    """带额外 profile_state 字段的磁盘记录仍按严格字段集拒读。"""
+    cache, identity, _ = make_cache(tmp_path)
+    data = payload()
+    data['profile_state'] = 'forbidden'
+    write_payload(tmp_path, identity, data)
+    assert cache.load(identity) is None
+    assert cache.take_warnings() == (WARN_READ,)
+
+
+def test_loaded_v1_record_reports_not_requested(tmp_path):
+    """合法 v1 记录还原为 not_requested，不推断权限或本次请求。"""
+    cache, identity, metadata = make_cache(tmp_path)
+    assert cache.save(identity, metadata)
+    loaded = cache.load(identity)
+    assert loaded.profile_state == 'not_requested'
+    with pytest.raises(FrozenInstanceError):
+        loaded.profile_state = 'forbidden'
+
+
 @pytest.mark.parametrize('extra, hit', [(0, True), (1, False), (50000, False)])
 def test_read_is_bounded_and_closes_real_file(
         tmp_path, monkeypatch, extra, hit):

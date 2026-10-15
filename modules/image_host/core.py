@@ -32,6 +32,8 @@ _ERROR_MESSAGES = {
     'transport_failed': '图床网络传输失败',
     'http_failed': '图床 HTTP 请求失败',
     'business_rejected': '图床拒绝上传',
+    'profile_forbidden': 'BeeIMG.cn 账号资料接口无访问权限，请为令牌授权资料读取权限，或填写该账号可用的 options.storage_id。',
+    'profile_forbidden_invalid_storage': '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 options.storage_id。',
     'invalid_response': '图床响应无效',
 }
 _ERROR_STAGES = frozenset({

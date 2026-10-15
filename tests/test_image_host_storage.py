@@ -14,6 +14,7 @@ from importlib.util import find_spec
 from inspect import signature
 from io import BytesIO
 import json
+from typing import Literal
 
 import pytest
 import requests
@@ -772,12 +773,15 @@ def test_storage_public_contract(client):
     metadata = module.StorageMetadata((13, 14), 14, 0, 1000)
     selection = module.StorageSelection(13, False)
     assert [field.name for field in fields(metadata)] == [
-        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at']
+        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at',
+        'profile_state']
     assert [field.name for field in fields(selection)] == [
         'storage_id', 'replaced_manual']
     assert [field.type for field in fields(metadata)] == [
-        tuple[int, ...], int | None, int | None, float]
+        tuple[int, ...], int | None, int | None, float,
+        Literal['available', 'not_requested', 'forbidden']]
     assert [field.type for field in fields(selection)] == [int, bool]
+    assert metadata.profile_state == 'not_requested'
     for instance in (metadata, selection):
         for field in fields(instance):
             with pytest.raises(FrozenInstanceError):
@@ -838,11 +842,14 @@ def test_storage_fetch_real_transport(storage_http, caplog, provider, token):
     original = deepcopy(payloads)
     result = module.fetch_storage_metadata(provider, token, now=1000)
     assert type(result) is module.StorageMetadata
-    assert result == module.StorageMetadata((14, 13), 13 if token else None, 0, 1000)
+    assert result == module.StorageMetadata(
+        (14, 13), 13 if token else None, 0, 1000,
+        'available' if token else 'not_requested')
     assert type(result.fetched_at) is float
     assert payloads == original
     assert set(vars(result)) == {
-        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at'}
+        'storage_ids', 'default_storage_id', 'file_expire_seconds', 'fetched_at',
+        'profile_state'}
     assert SECRET not in repr(result) + repr(vars(result))
     assert SIGNED_URL not in repr(result) + repr(vars(result))
     assert_storage_requests(storage_http, provider, token,
@@ -968,11 +975,13 @@ def test_storage_preserves_transport_failures(
     queue_storage_success(storage_http)
     index = 0 if stage == 'group' else 1
     storage_http['replies'][index] = failure
-    if provider == 'boltp' and stage == 'profile' and status == 403:
+    if stage == 'profile' and status == 403 and provider in ('boltp', 'beeimg_cn'):
         metadata = storage_module().fetch_storage_metadata(
             provider, SECRET, now=1000)
         assert metadata.storage_ids
         assert metadata.default_storage_id is None
+        assert metadata.profile_state == (
+            'forbidden' if provider == 'beeimg_cn' else 'not_requested')
     else:
         with pytest.raises(ImageHostError) as caught:
             storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
@@ -1094,7 +1103,7 @@ def test_storage_accepts_mapping_without_retaining_payload(monkeypatch):
 
     monkeypatch.setattr(http(), 'request_json', request)
     result = module.fetch_storage_metadata('boltp', SECRET, now=1000)
-    assert result == module.StorageMetadata((14, 13), None, None, 1000)
+    assert result == module.StorageMetadata((14, 13), None, None, 1000, 'available')
     assert (group, profile) == original
     group['data']['storages'].clear()
     assert result.storage_ids == (14, 13)
@@ -1107,3 +1116,82 @@ def test_storage_unsupported_provider(storage_http, provider):
         storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
     assert_safe(caught.value, 'invalid_provider', 'group')
     assert not storage_http['calls']
+
+
+def test_beeimg_cn_profile_forbidden_is_query_fact(storage_http, caplog):
+    """BeeIMG.cn 资料 403 保留组事实并标记 forbidden，不读取响应正文。"""
+    queue_storage_success(storage_http)
+    storage_http['replies'][1] = {'status': 403, 'body': b'never-read-body'}
+    result = storage_module().fetch_storage_metadata(
+        'beeimg_cn', SECRET, now=1000)
+    assert result.storage_ids == (14, 13)
+    assert result.default_storage_id is None
+    assert result.profile_state == 'forbidden'
+    assert_storage_requests(storage_http, 'beeimg_cn', SECRET,
+                            ['group', 'profile'])
+    assert storage_http['raws'][-1].reads == 0
+    assert not caplog.records
+
+
+@pytest.mark.parametrize('reply, code', [
+    ({'status': 401, 'body': b'x'}, 'http_failed'),
+    ({'status': 423, 'body': b'x'}, 'http_failed'),
+    ({'status': 429, 'body': b'x'}, 'http_failed'),
+    ({'status': 500, 'body': b'x'}, 'http_failed'),
+    ({'payload': {'status': 'error', 'message': '普通业务拒绝'}},
+     'business_rejected'),
+    ({'body': b'{bad-json'}, 'invalid_response'),
+    ({'body': b'', 'read_error': requests.exceptions.ReadTimeout(SECRET)},
+     'transport_failed'),
+])
+def test_beeimg_cn_profile_other_errors_not_downgraded(storage_http, reply, code):
+    """BeeIMG.cn 资料 401/429/5xx/网络/畸形仍保留既有分类。"""
+    queue_storage_success(storage_http)
+    storage_http['replies'][1] = reply
+    with pytest.raises(ImageHostError) as caught:
+        storage_module().fetch_storage_metadata('beeimg_cn', SECRET, now=1000)
+    assert (caught.value.code, caught.value.stage) == (code, 'profile')
+    assert_safe(caught.value, code, 'profile',
+                200 if 'status' not in reply else reply['status'])
+
+
+@pytest.mark.parametrize('present, manual, selected, code', [
+    (False, None, None, 'profile_forbidden'),
+    (True, None, None, 'profile_forbidden_invalid_storage'),
+    (True, 0, None, 'profile_forbidden_invalid_storage'),
+    (True, '13', None, 'profile_forbidden_invalid_storage'),
+    (True, True, None, 'profile_forbidden_invalid_storage'),
+    (True, 99, None, 'profile_forbidden_invalid_storage'),
+    (True, 13, 13, None),
+    (True, 14, 14, None),
+])
+def test_forbidden_selection_requires_group_verified_manual(
+        client, present, manual, selected, code):
+    """profile 403 只接受经组校验的手填，否则给出固定权限提示。"""
+    module = storage_module()
+    metadata = module.StorageMetadata((13, 14), None, 0, 1000, 'forbidden')
+    if code is None:
+        result = module.select_storage(metadata, present, manual)
+        assert result == module.StorageSelection(selected, False)
+    else:
+        with pytest.raises(ImageHostError) as caught:
+            module.select_storage(metadata, present, manual)
+        assert_safe(caught.value, code, 'profile', 403)
+    assert not client.sessions
+    assert not client.calls
+
+
+def test_forbidden_prompt_texts_are_verbatim(client):
+    """两条固定权限提示逐字匹配设计表格。"""
+    module = storage_module()
+    metadata = module.StorageMetadata((13,), None, 0, 1000, 'forbidden')
+    with pytest.raises(ImageHostError) as caught:
+        module.select_storage(metadata, False, None)
+    assert str(caught.value) == (
+        'BeeIMG.cn 账号资料接口无访问权限，请为令牌授权资料读取权限，'
+        '或填写该账号可用的 options.storage_id。')
+    with pytest.raises(ImageHostError) as caught:
+        module.select_storage(metadata, True, 99)
+    assert str(caught.value) == (
+        '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 '
+        'options.storage_id。')

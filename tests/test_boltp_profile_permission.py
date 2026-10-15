@@ -72,6 +72,7 @@ def test_profile_permission_does_not_block_boltp_upload(
             assert len(calls) == 2
             assert calls[0].url.endswith('/group')
             assert calls[1].url.endswith('/user/profile')
+            assert result.failures[0].code == 'profile_forbidden'
             assert result.failures[0].stage == 'profile'
             assert result.failures[0].http_status == status
         if expected_success:

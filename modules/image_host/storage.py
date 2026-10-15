@@ -5,6 +5,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+from typing import Literal
 
 from . import v2_http
 from .core import ImageHostError
@@ -18,6 +19,8 @@ class StorageMetadata:
     default_storage_id: int | None
     file_expire_seconds: int | None
     fetched_at: float
+    profile_state: Literal[
+        'available', 'not_requested', 'forbidden'] = 'not_requested'
 
 
 @dataclass(frozen=True)
@@ -134,17 +137,23 @@ def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
         storage_ids, expire = _parse_group(
             v2_http.request_json(provider, stage, token))
         default = None
+        profile_state = 'not_requested'
         if token:
             stage = 'profile'
             try:
                 default = _parse_profile(
                     v2_http.request_json(provider, stage, token))
+                profile_state = 'available'
             except ImageHostError as error:
                 # Boltp 上传令牌可无资料读取权限，默认项缺失不阻断上传。
-                if not (provider == 'boltp' and error.code == 'http_failed'
-                        and error.http_status == 403):
+                tolerant = (error.code == 'http_failed'
+                            and error.http_status == 403)
+                if tolerant and provider == 'beeimg_cn':
+                    profile_state = 'forbidden'
+                elif not (tolerant and provider == 'boltp'):
                     raise
-        return StorageMetadata(storage_ids, default, expire, fetched_at)
+        return StorageMetadata(storage_ids, default, expire, fetched_at,
+                               profile_state)
     except ImageHostError:
         raise
     except Exception:
@@ -160,6 +169,10 @@ def select_storage(metadata, manual_present, manual_value) -> StorageSelection:
     if (manual_present and _positive_integer(manual_value)
             and manual_value in storage_ids):
         return StorageSelection(manual_value, False)
+    if metadata.profile_state == 'forbidden':
+        code = ('profile_forbidden_invalid_storage' if manual_present
+                else 'profile_forbidden')
+        raise ImageHostError(code, '', stage='profile', http_status=403)
     default = metadata.default_storage_id
     selected = default if default in storage_ids else storage_ids[0]
     return StorageSelection(selected, manual_present)

@@ -41,6 +41,11 @@ def metadata(ids=(13, 14), default=14, now=1000):
     return StorageMetadata(ids, default, 3600, now)
 
 
+def forbidden_metadata(ids=(13, 14), now=1000):
+    """构造事件内 forbidden 查询事实，不携带账号默认值。"""
+    return StorageMetadata(ids, None, 3600, now, 'forbidden')
+
+
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch, tmp_path):
     """隔离默认缓存根并禁止任何真实请求及 POST。"""
@@ -775,6 +780,83 @@ def test_distinct_configurations_share_metadata_not_manual_budget(rig):
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize('reverse', [False, True])
+def test_beeimg_forbidden_selection_is_slot_local(rig, reverse):
+    """forbidden 事实按身份复用，手填合法性只影响当前配置槽位。"""
+    _, ctx, _, calls, replies, _ = rig
+    replies.append(forbidden_metadata())
+    order = ([(True, 13), (False, None)] if reverse
+             else [(False, None), (True, 13)])
+    image = ctx.start_image()
+    for index, (present, manual) in enumerate(order):
+        if present:
+            selection = ctx.prepare_storage(
+                image, index, PROVIDER, SECRET,
+                manual_present=True, manual_value=manual)
+            assert selection.storage_id == manual
+            assert not selection.replaced_manual
+        else:
+            with pytest.raises(ImageHostError) as caught:
+                ctx.prepare_storage(image, index, PROVIDER, SECRET)
+            assert_safe(caught.value, 'profile_forbidden')
+            assert (caught.value.stage, caught.value.http_status) == (
+                'profile', 403)
+    assert len(calls) == 1
+
+
+def test_forbidden_fact_shared_across_images_not_manual_selection(rig):
+    """同身份跨图跨槽位共享 forbidden 事实，不同凭证各自独立查询。"""
+    _, ctx, _, calls, replies, _ = rig
+    replies.append(forbidden_metadata())
+    first, second = ctx.start_image(), ctx.start_image()
+    for image in (first, second):
+        for index in (0, 1):
+            with pytest.raises(ImageHostError) as caught:
+                ctx.prepare_storage(image, index, PROVIDER, SECRET)
+            assert_safe(caught.value, 'profile_forbidden')
+    selected = ctx.prepare_storage(
+        first, 0, PROVIDER, SECRET, manual_present=True, manual_value=14)
+    assert selected.storage_id == 14
+    assert len(calls) == 1
+    replies.append(forbidden_metadata((21,)))
+    other = ctx.prepare_storage(
+        first, 0, PROVIDER, BACKUP, manual_present=True, manual_value=21)
+    assert other.storage_id == 21
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('manual', [99, None, 0, -1, '13', [], {}])
+def test_forbidden_invalid_manual_never_selects_first(rig, manual):
+    """forbidden 下非法手填不偷选首项，给出固定权限提示。"""
+    _, ctx, _, calls, replies, _ = rig
+    replies.append(forbidden_metadata())
+    image = ctx.start_image()
+    with pytest.raises(ImageHostError) as caught:
+        ctx.prepare_storage(image, 0, PROVIDER, SECRET,
+                            manual_present=True, manual_value=manual)
+    assert_safe(caught.value, 'profile_forbidden_invalid_storage')
+    assert ctx.storage_state(image, 0, PROVIDER, SECRET).selection is None
+    assert len(calls) == 1
+
+
+def test_forbidden_result_not_reused_across_events(rig):
+    """forbidden 只在本事件复用，下一事件重新查询并在授权后恢复。"""
+    module, ctx, cache, calls, replies, now = rig
+    replies.append(forbidden_metadata())
+    image = ctx.start_image()
+    with pytest.raises(ImageHostError) as caught:
+        ctx.prepare_storage(image, 0, PROVIDER, SECRET,
+                            manual_present=True, manual_value=99)
+    assert_safe(caught.value, 'profile_forbidden_invalid_storage')
+    assert cache.load(cache.identity(PROVIDER, SECRET)) is None
+    ctx.close()
+    replies.append(metadata((13, 14), 14))
+    second = module.UploadContext(cache=cache, clock=lambda: now[0])
+    selected = second.prepare_storage(second.start_image(), 0, PROVIDER, SECRET)
+    assert selected.storage_id == 14
+    assert len(calls) == 2
+
+
 def test_failed_recovery_shared_without_stale_selection_or_extra_query(rig):
     """恢复失败对旧版本图片和新图片复用，任何入口不再返回旧选择。"""
     _, ctx, _, calls, replies, _ = rig
@@ -986,6 +1068,11 @@ def upload_reply():
 def rejection_reply():
     """构造传输层批准的精确存储拒绝白名单样本。"""
     return 200, {'status': 'error', 'message': '不存在的储存驱动'}
+
+
+def forbidden_reply():
+    """构造资料接口 HTTP 403 响应，其正文不应被读取。"""
+    return 403, {}
 
 
 def registry_upload(state, hosts=None, *, owned=False):
@@ -1583,3 +1670,88 @@ def test_registry_cache_warnings_drained_without_loss(integration, monkeypatch):
         '存储元数据缓存失效失败')
     assert state['context'].take_warnings() == ()
     assert SECRET not in repr(result) and BACKUP not in repr(result)
+
+
+@pytest.mark.parametrize('present, manual, success, code, posts', [
+    (False, None, False, 'profile_forbidden', 0),
+    (True, 7, True, None, 1),
+    (True, 99, False, 'profile_forbidden_invalid_storage', 0),
+    (True, '7', False, 'profile_forbidden_invalid_storage', 0),
+])
+def test_registry_profile_forbidden_matrix(
+        integration, present, manual, success, code, posts):
+    """资料 403 逐行覆盖决策表：合法手填才一次 POST，其余零 POST。"""
+    state = integration
+    options = {'storage_id': manual} if present else {}
+    state['replies'] = [group_reply((7,)), forbidden_reply()]
+    if success:
+        state['replies'].append(upload_reply())
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
+                                      'options': options}])
+    assert result.success is success
+    methods = [method for method, _, _ in state['calls']]
+    assert methods == (['GET', 'GET', 'POST'] if success else ['GET', 'GET'])
+    assert len(post_data(state)) == posts
+    if success:
+        assert [data['storage_id'] for data in post_data(state)] == [7]
+    else:
+        assert result.failures[-1].code == code
+        assert result.failures[-1].stage == 'profile'
+        assert result.failures[-1].http_status == 403
+        assert post_data(state) == []
+
+
+def test_registry_forbidden_prompt_texts_are_verbatim(integration):
+    """资料 403 的两条固定提示逐字匹配设计表格。"""
+    state = integration
+    state['replies'] = [group_reply((7,)), forbidden_reply()]
+    blocked = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET}])
+    assert not blocked.success
+    assert blocked.failures[-1].message == (
+        'BeeIMG.cn 账号资料接口无访问权限，请为令牌授权资料读取权限，'
+        '或填写该账号可用的 options.storage_id。')
+    state['replies'] = [group_reply((7,)), forbidden_reply()]
+    invalid = registry_upload(state, [{'provider': PROVIDER, 'token': BACKUP,
+                                       'options': {'storage_id': 99}}])
+    assert not invalid.success
+    assert invalid.failures[-1].message == (
+        '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 '
+        'options.storage_id。')
+
+
+def test_registry_forbidden_manual_warning_is_deduplicated(integration):
+    """资料受限下的合法手填给出固定去重提示，并继续一次 POST。"""
+    state = integration
+    state['replies'] = [group_reply((7,)), forbidden_reply(), upload_reply(),
+                        upload_reply()]
+    hosts = [{'provider': PROVIDER, 'token': SECRET,
+              'options': {'storage_id': 7}}] * 2
+    first = registry_upload(state, hosts)
+    second = registry_upload(state, hosts)
+    assert first.success and second.success
+    assert [method for method, _, _ in state['calls']] == [
+        'GET', 'GET', 'POST', 'POST']
+    assert first.warnings == second.warnings == (
+        '资料读取受限，已验证手填储存驱动并继续上传',)
+
+
+def test_preupload_refresh_spends_post_recovery_budget(integration):
+    """旧缓存离表手填刷新后精确拒绝，预算已消费不再刷新或重传。"""
+    state = integration
+    cache = state['cache']
+    identity = cache.identity(PROVIDER, SECRET)
+    assert cache.save(identity, StorageMetadata(
+        (13,), 13, None, state['clock'][0]))
+    state['replies'] = [group_reply((7,)), profile_reply(7), rejection_reply()]
+    hosts = [{'provider': PROVIDER, 'token': SECRET,
+              'options': {'storage_id': 7}}]
+    result = registry_upload(state, hosts)
+    assert not result.success
+    assert [method for method, _, _ in state['calls']] == [
+        'GET', 'GET', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [7]
+    assert result.failures[-1].code == 'storage_unavailable'
+    image, = state['context']._images
+    assert state['context'].storage_state(
+        image, 0, PROVIDER, SECRET).correction_used is True
+    assert state['context'].begin_recovery(image, 0, PROVIDER, SECRET) is False
