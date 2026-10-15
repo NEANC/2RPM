@@ -5,7 +5,8 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 import re
-import unicodedata
+
+from modules.log_safety import clean_controls, normalize_secrets, redact_secrets
 
 
 _INPUT_LIMIT = 4096
@@ -27,15 +28,6 @@ _ENV_REFERENCE = re.compile(
     r'|%[A-Za-z_][A-Za-z0-9_]*%',
     re.IGNORECASE,
 )
-_OSC = re.compile(r'(?:\x1b\]|\x9d).*?(?:\x07|\x1b\\|\x9c)', re.DOTALL)
-_CONTROL_STRING = re.compile(
-    r'(?:\x1b[PX^_]|[\x90\x98\x9e\x9f]).*?(?:\x1b\\|\x9c)',
-    re.DOTALL,
-)
-_CSI = re.compile(r'(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]')
-_OTHER_ESCAPE = re.compile(r'\x1b(?![\[\]PX^_])[ -/]*[@-~]')
-_UNFINISHED_ESCAPE = re.compile(r'[\x1b\x90\x98\x9b\x9d\x9e\x9f]')
-_CONTROL_CATEGORIES = frozenset({'Cc', 'Cf', 'Cs'})
 # 检测视图仅留下这些可删除控制空白；只在凭证内部跨越它们。
 _CONTROL_GAP = r'[\x09-\x0d\x1c-\x1f\x85]*'
 _SPLIT_CREDENTIAL = re.compile(
@@ -59,38 +51,6 @@ _SPLIT_CREDENTIAL = re.compile(
 )
 
 
-def _secret_snapshot(secrets):
-    """复制非空字符串秘密，按长度降序排列且不改变调用方容器。"""
-    if secrets is None:
-        return ()
-    if type(secrets) is str:
-        secrets = (secrets,)
-    return tuple(sorted(
-        (secret for secret in secrets if type(secret) is str and secret),
-        key=len, reverse=True,
-    ))
-
-
-def _replace_secrets(message, secrets):
-    """先替换长秘密，避免包含关系使较长凭证留下后缀。"""
-    for secret in secrets:
-        message = message.replace(secret, _REDACTED)
-    return message
-
-
-def _clean_controls(message, *, preserve_whitespace=False):
-    """移除终端指令和控制字符，可为危险结构检测保留空白边界。"""
-    for pattern in (_OSC, _CONTROL_STRING, _CSI, _OTHER_ESCAPE):
-        message = pattern.sub('', message)
-    if _UNFINISHED_ESCAPE.search(message) is not None:
-        return None
-    return ''.join(
-        char for char in message
-        if unicodedata.category(char) not in _CONTROL_CATEGORIES
-        or (preserve_whitespace and char.isspace())
-    )
-
-
 def sanitize_message(message, secrets) -> str | None:
     """先脱敏和清理再截断，不推测未知秘密或任意编码。
 
@@ -101,20 +61,20 @@ def sanitize_message(message, secrets) -> str | None:
         return None
     if _UNSAFE_CONTENT.search(_URL.sub(_REDACTED, message)) is not None:
         return None
-    detection_view = _clean_controls(message, preserve_whitespace=True)
+    detection_view = clean_controls(message, preserve_whitespace=True)
     if detection_view is None:
         return None
     detection_view = _URL.sub(_REDACTED, detection_view)
     if (_UNSAFE_CONTENT.search(detection_view) is not None
             or _SPLIT_CREDENTIAL.search(detection_view) is not None):
         return None
-    known_secrets = _secret_snapshot(secrets)
-    cleaned = _clean_controls(message)
+    known_secrets = normalize_secrets(secrets)
+    cleaned = clean_controls(message)
     if cleaned is None:
         return None
-    known_secrets = _secret_snapshot(
-        _clean_controls(secret) for secret in known_secrets)
-    cleaned = _replace_secrets(cleaned, known_secrets)
+    known_secrets = normalize_secrets(
+        clean_controls(secret) for secret in known_secrets)
+    cleaned = redact_secrets(cleaned, known_secrets)
     cleaned = _URL.sub(_REDACTED, cleaned)
     if _UNSAFE_CONTENT.search(cleaned) is not None:
         return None
@@ -130,7 +90,7 @@ def sanitize_message(message, secrets) -> str | None:
 @contextmanager
 def diagnostic_scope(secrets):
     """临时设置秘密快照，区分关闭与空集合开启并可靠恢复外层。"""
-    snapshot = None if secrets is None else _secret_snapshot(secrets)
+    snapshot = None if secrets is None else normalize_secrets(secrets)
     token = _CURRENT_SECRETS.set(snapshot)
     try:
         yield
