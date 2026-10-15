@@ -32,6 +32,9 @@ from .storage import StorageSelection
 from .storage_cache import StorageCache
 from modules.log_safety import extend_secrets
 from modules.log_safety import safety_scope
+from modules.operation_trace import current_request_id
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
 
 
 _CACHE_WARNINGS = {
@@ -42,6 +45,25 @@ _CACHE_WARNINGS = {
 }
 
 _WARN_PROFILE_FORBIDDEN_MANUAL = '资料读取受限，已验证手填储存驱动并继续上传'
+
+
+def _reuse_metadata(reason_code, provider, entry):
+    """记录一次不产生新请求的事件内元数据复用事实。"""
+    trace_skipped('metadata_cache', reason_code=reason_code,
+                  cache_layer='event', provider=provider,
+                  source_operation_id=entry.source_operation_id)
+
+
+def _refresh_event(status, reason_code):
+    """记录一次上传前旧缓存刷新回退的执行或跳过事实。"""
+    if status == 'skipped':
+        trace_skipped('fallback', reason_code=reason_code,
+                      fallback_kind='preupload_refresh')
+        return
+    with trace_operation(
+            'fallback', 'refresh',
+            fallback_kind='preupload_refresh') as operation:
+        operation.finish(status, reason_code=reason_code)
 
 
 @dataclass(frozen=True, eq=False)
@@ -96,6 +118,7 @@ class _MetadataEntry:
     disk_ready: bool = False
     disk_identity: str | None = None
     disk_invalidated: bool = False
+    source_operation_id: str | None = None
 
 
 @dataclass(frozen=True, repr=False)
@@ -271,10 +294,12 @@ class UploadContext:
         """
         entry = self._entry(provider, token)
         if entry.failure is not None:
+            _reuse_metadata('reused_failure', provider, entry)
             raise entry.failure.error()
         if correction and not entry.corrected and not entry.invalidated:
             self.invalidate(provider, token)
         if entry.metadata is not None:
+            _reuse_metadata('reused_metadata', provider, entry)
             return entry.metadata
         if not entry.disk_ready:
             entry.disk_identity = self._cache_call('identity', provider, token)
@@ -286,6 +311,7 @@ class UploadContext:
             if cached is not None:
                 entry.metadata = cached
                 entry.from_disk = True
+                entry.source_operation_id = None
                 return cached
         try:
             with self.diagnostic_scope():
@@ -294,11 +320,13 @@ class UploadContext:
         except Exception as error:
             entry.failure = self._failure(
                 error, fallback='storage_lookup_failed', secrets=(token,))
+            entry.source_operation_id = current_request_id()
         else:
             entry.metadata = fetched
             entry.from_disk = False
             entry.corrected = entry.invalidated
             entry.invalidated = False
+            entry.source_operation_id = current_request_id()
             self._cache_call('save', entry.disk_identity, fetched)
         if entry.failure is not None:
             raise entry.failure.error()
@@ -377,8 +405,11 @@ class UploadContext:
             items[key] = replace(items[key], correction_used=True)
             self._corrected.add(signature)
             if entry.from_disk and not used:
+                _refresh_event('succeeded', 'manual_replaced')
                 current = self.get_metadata(provider, token, correction=True)
                 selected = select_storage(current, manual_present, manual)
+            elif entry.from_disk:
+                _refresh_event('skipped', 'budget_used')
         if (manual is not None and not selected.replaced_manual
                 and current.profile_state == 'forbidden'):
             self._warn(_WARN_PROFILE_FORBIDDEN_MANUAL)

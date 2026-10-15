@@ -1755,3 +1755,40 @@ def test_preupload_refresh_spends_post_recovery_budget(integration):
     assert state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used is True
     assert state['context'].begin_recovery(image, 0, PROVIDER, SECRET) is False
+
+
+def test_registry_recovery_records_two_real_attempts(integration):
+    """精确拒绝后的恢复记两次真实尝试与一次回退，槽位只有一次成功。"""
+    from modules.operation_trace import trace_item
+    from modules.operation_trace import trace_scope
+
+    state = integration
+    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
+                        group_reply(), profile_reply(), upload_reply()]
+    events = []
+    with trace_scope(
+            mode='cli', images_planned=1, slots_planned=1,
+            on_status=events.append) as trace:
+        with trace_item(image_index=1, slot_index=1):
+            result = registry_upload(state, [
+                {'provider': PROVIDER, 'token': SECRET,
+                 'options': {'storage_id': 14}}])
+        summary = trace.summary()
+
+    assert result.success
+    assert [method for method, _, _ in state['calls']] == [
+        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+    assert summary['upload_post_attempts'] == 2
+    assert summary['postupload_recoveries'] == 1
+    assert (summary['group_get_attempts'],
+            summary['profile_get_attempts']) == (2, 2)
+    attempts = [event for event in events if event.stage == 'upload_attempt']
+    assert [event.status for event in attempts] == [
+        'started', 'failed', 'started', 'succeeded']
+    assert attempts[1].request_id != attempts[3].request_id
+    assert (attempts[1].image_index, attempts[1].slot_index) == (1, 1)
+    slot = [event for event in events if event.stage == 'slot']
+    assert [event.status for event in slot] == ['started', 'succeeded']
+    assert summary['slots_succeeded'] == 1
+    assert summary['slots_failed'] == 0
+    assert not state['replies']

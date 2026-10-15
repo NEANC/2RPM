@@ -1,0 +1,671 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""验证缓存查询、真实请求与恢复/回退按真实操作记录与计数。"""
+
+from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import default
+from importlib import import_module
+import json
+import logging
+import socket
+
+import pytest
+import requests
+
+from modules.image_host.context import UploadContext
+from modules.image_host.storage import StorageMetadata
+from modules.image_host.storage_cache import StorageCache
+from modules.operation_trace import trace_item
+from modules.operation_trace import trace_scope
+
+
+URL = 'https://images.example/synthetic.png'
+SECRET = 'FAKE_UPLOAD_SECRET_7319'
+REJECTION = '不存在的储存驱动'
+MISSING_ENV = '${SYNTHETIC_UPLOAD_MISSING_ENV}'
+
+
+def body(payload):
+    """把合成响应编码为 JSON 字节，不含真实服务端内容。"""
+    return json.dumps(payload).encode('utf-8')
+
+
+def group_reply(ids=(13, 14), expire=None, status=200):
+    """构造一次 group 查询响应，可选固定期限。"""
+    if status != 200:
+        return (status, b'')
+    return (200, body({'status': 'success', 'data': {
+        'group': {'options': {'file_expire_seconds': expire}},
+        'storages': [{'id': value} for value in ids]}}))
+
+
+def profile_reply(default=14, status=200):
+    """构造一次 profile 查询响应，可显式返回 403。"""
+    if status != 200:
+        return (status, b'')
+    return (200, body({'status': 'success', 'data': {'options': {
+        'default_storage_id': default}}}))
+
+
+SUCCESS_UPLOAD = (200, body({'status': 'success',
+                             'data': {'public_url': URL}}))
+REJECTED_UPLOAD = (200, body({'status': 'error', 'message': REJECTION}))
+
+
+class Transport:
+    """替换 HTTPAdapter.send，记录真实请求并按队列返回合成响应。"""
+
+    def __init__(self, monkeypatch, replies):
+        """登记真实发送边界并保存有序响应队列。"""
+        self.sent = []
+        self.replies = list(replies)
+
+        def send(adapter, request, **kwargs):
+            """记录一次真实请求，返回预设响应或抛出传输异常。"""
+            self.sent.append(request)
+            reply = self.replies.pop(0)
+            if isinstance(reply, BaseException):
+                raise reply
+            status, content = reply
+            response = requests.Response()
+            response.request = request
+            response.url = request.url
+            response.status_code = status
+            response._content = content
+            response._content_consumed = True
+            return response
+
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+
+    @property
+    def posts(self):
+        """返回按发生顺序记录的真实 POST 请求。"""
+        return [item for item in self.sent if item.method == 'POST']
+
+    def gets(self, stage):
+        """按端点路径返回真实 GET 请求，区分 group 与 profile。"""
+        suffix = '/user/profile' if stage == 'profile' else '/group'
+        return [item for item in self.sent
+                if item.method == 'GET' and item.url.endswith(suffix)]
+
+
+def storage_ids(transport):
+    """从 multipart 请求体读取真实发送的存储编号，保持发送顺序。"""
+    values = []
+    for request in transport.posts:
+        content_type = request.headers.get('Content-Type', '')
+        if not content_type.startswith('multipart/form-data;'):
+            values.append(None)
+            continue
+        message = BytesParser(policy=default).parsebytes(
+            f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()
+            + request.body)
+        part = next(
+            (item for item in message.iter_parts()
+             if item.get_param('name', header='content-disposition')
+             == 'storage_id'), None)
+        values.append(
+            None if part is None else int(part.get_payload(decode=True)))
+    return values
+
+
+@dataclass
+class Run:
+    """保存一次真实上传链的传输替身、事件、汇总与业务结果。"""
+
+    transport: Transport
+    events: list
+    summary: dict
+    results: list
+    trace: object
+
+
+@pytest.fixture(autouse=True)
+def isolate(monkeypatch, tmp_path):
+    """隔离缓存根并禁止任何未替身化的真实网络访问。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.delenv('SYNTHETIC_UPLOAD_MISSING_ENV', raising=False)
+
+    def forbidden(*args, **kwargs):
+        """未替身化网络立即令测试失败。"""
+        pytest.fail('上传阶段测试禁止真实网络')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+
+
+def build(monkeypatch, tmp_path, *, replies, clock=None):
+    """建立共享缓存与事件时钟的普通上传事件。"""
+    moment = clock if clock is not None else [1000.0]
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: moment[0])
+    context = UploadContext(cache=cache, clock=lambda: moment[0])
+    return context, cache, Transport(monkeypatch, replies)
+
+
+def run_chain(monkeypatch, tmp_path, hosts, *, replies, images=(1,),
+              clock=None, slot_index=None, slots_planned=None, mode='cli'):
+    """在真实注册表上传链上执行一次上传并返回真实事实。"""
+    registry = import_module('modules.image_host.registry')
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=replies, clock=clock)
+    events = []
+    results = []
+    planned = (len(hosts) * len(images) if slots_planned is None
+               else slots_planned)
+    with trace_scope(mode=mode, images_planned=len(images),
+                     slots_planned=planned,
+                     on_status=events.append) as trace:
+        for image_index in images:
+            with trace_item(image_index=image_index, slot_index=slot_index):
+                results.append(registry.upload_with_fallback(
+                    b'image', 'image.png', hosts, context=context))
+        summary = trace.summary()
+    context.close()
+    return Run(transport, events, summary, results, trace)
+
+
+def run_metadata(monkeypatch, tmp_path, *, replies, provider='beeimg_cn',
+                 token='', clock=None):
+    """直接经事件上下文执行一次元数据读取并返回真实事实。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=replies, clock=clock)
+    events = []
+    errors = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            try:
+                metadata = context.get_metadata(provider, token)
+            except Exception as error:
+                errors.append(error)
+                metadata = None
+        summary = trace.summary()
+    context.close()
+    return transport, events, summary, metadata, errors
+
+
+def of_stage(events, stage):
+    """按阶段过滤事件，保持真实发生顺序。"""
+    return [event for event in events if event.stage == stage]
+
+
+def slots(events):
+    """返回槽位阶段事件。"""
+    return of_stage(events, 'slot')
+
+
+def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
+    """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'boltp', 'token': '',
+          'options': {'storage_id': 0}}],
+        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, SUCCESS_UPLOAD])
+    assert storage_ids(run.transport) == [0, 2, 3]
+    assert (run.summary['group_get_attempts'],
+            run.summary['profile_get_attempts']) == (0, 0)
+    assert run.summary['upload_post_attempts'] == 3
+    assert run.summary['boltp_candidate_switches'] == 2
+    selection = of_stage(run.events, 'storage_select')
+    assert selection[0].storage_id == 0
+    assert selection[0].selection_source == 'manual'
+    assert run.transport.gets('group') == []
+    assert len(run.transport.posts) == run.summary['upload_post_attempts'] == 3
+    assert run.summary['slots_succeeded'] == 1
+    assert run.summary['slots_failed'] == 0
+
+
+def test_boltp_expiration_get_is_shared(monkeypatch, tmp_path):
+    """同凭证多图在有期限时只共享一次 group 查询且始终零 profile。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'boltp', 'token': '', 'expiration': '1h',
+          'options': {'storage_id': 0}}],
+        replies=[group_reply(expire=60), REJECTED_UPLOAD, SUCCESS_UPLOAD,
+                 SUCCESS_UPLOAD],
+        images=(1, 2))
+    assert (run.summary['group_get_attempts'],
+            run.summary['profile_get_attempts']) == (1, 0)
+    assert len(run.transport.gets('group')) == 1
+    assert run.transport.gets('profile') == []
+    assert run.summary['upload_post_attempts'] == 3
+    assert run.summary['boltp_candidate_switches'] == 1
+
+
+@pytest.mark.parametrize(('manual', 'expected'), [
+    (0, [0, 2, 3]), (2, [2, 3]), (3, [3, 2]), (5, [5, 2, 3]),
+])
+def test_boltp_candidate_order_keeps_dedup(manual, expected, monkeypatch,
+                                            tmp_path):
+    """候选按手填、2、3 保序去重且切换不增加 GET。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'boltp', 'token': '',
+          'options': {'storage_id': manual}}],
+        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, REJECTED_UPLOAD])
+    assert storage_ids(run.transport) == expected
+    assert run.summary['group_get_attempts'] == 0
+    assert run.summary['upload_post_attempts'] == len(expected)
+
+
+@pytest.mark.parametrize('storage_id', [True, -1, 1.5, '0', None, []])
+def test_boltp_invalid_manual_stops_before_post(storage_id, monkeypatch,
+                                                tmp_path):
+    """非法布尔或负数手填在传输前停止且零 POST。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'boltp', 'token': '',
+          'options': {'storage_id': storage_id}}],
+        replies=[])
+    assert run.transport.posts == []
+    assert run.summary['upload_post_attempts'] == 0
+    assert run.summary['slots_failed'] == 1
+
+
+def test_preupload_refresh_and_post_recovery_have_one_budget(
+        monkeypatch, tmp_path):
+    """上传前刷新消费预算后，精确拒绝不再重传且只记跳过。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path,
+        replies=[group_reply(), profile_reply(default=None), REJECTED_UPLOAD])
+    identity = cache.identity('beeimg_cn', SECRET)
+    assert cache.save(identity, StorageMetadata((13, 14), 14, None, 1000.0))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            result = import_module(
+                'modules.image_host.registry').upload_with_fallback(
+                    b'image', 'image.png',
+                    [{'provider': 'beeimg_cn', 'token': SECRET,
+                      'options': {'storage_id': 99}}], context=context)
+        summary = trace.summary()
+    context.close()
+    assert not result.success
+    assert (summary['group_get_attempts'], summary['profile_get_attempts'],
+            summary['upload_post_attempts']) == (1, 1, 1)
+    assert summary['preupload_refreshes'] == 1
+    assert summary['postupload_recoveries'] == 0
+    fallback = [event for event in of_stage(events, 'fallback')
+                if event.status != 'started']
+    assert [(event.fallback_kind, event.status, event.reason_code)
+            for event in fallback] == [
+        ('preupload_refresh', 'succeeded', 'manual_replaced'),
+        ('postupload_recovery', 'skipped', 'budget_used')]
+    assert len(transport.posts) == 1
+    assert [event.status for event in slots(events)] == ['started', 'failed']
+    assert summary['slots_failed'] == 1
+
+
+def test_cached_failure_has_no_request_id(monkeypatch, tmp_path):
+    """事件内共享查询失败只复用一次真实请求，不伪造请求标识。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'beeimg_cn', 'token': SECRET}],
+        replies=[requests.exceptions.Timeout()], images=(1, 2))
+    assert len(run.transport.gets('group')) == 1
+    assert run.summary['group_get_attempts'] == 1
+    assert run.summary['upload_post_attempts'] == 0
+    queries = [event for event in of_stage(run.events, 'metadata_query')
+               if event.status != 'started']
+    assert len(queries) == 1 and queries[0].request_id is not None
+    assert queries[0].status == 'failed'
+    reuse = [event for event in of_stage(run.events, 'metadata_cache')
+             if event.reason_code == 'reused_failure']
+    assert reuse and all(event.request_id is None for event in reuse)
+    assert run.summary['slots_failed'] == 2
+
+
+def test_timeout_counts_once_without_retransmission(monkeypatch, tmp_path):
+    """上传超时只记一次真实尝试且不触发任何恢复。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 13}}],
+        replies=[group_reply(), requests.exceptions.Timeout()])
+    assert run.summary['upload_post_attempts'] == 1
+    assert len(run.transport.posts) == 1
+    assert run.summary['postupload_recoveries'] == 0
+    assert not [event for event in of_stage(run.events, 'fallback')]
+    attempts = of_stage(run.events, 'upload_attempt')
+    assert [event.status for event in attempts] == ['started', 'failed']
+    assert attempts[1].reason_code == 'transport_failed'
+    assert run.summary['slots_failed'] == 1
+
+
+@pytest.mark.parametrize('scenario', [
+    'missing_credential', 'query_failure', 'profile_forbidden',
+    'selection_failure',
+])
+def test_preupload_failure_finishes_slot_without_post(
+        scenario, monkeypatch, tmp_path):
+    """前置失败恰好一个槽位失败、零 POST、无上传尝试事件。"""
+    hosts = [{'provider': 'beeimg_cn', 'token': SECRET,
+              'options': {'storage_id': 13}}]
+    replies = []
+    if scenario == 'missing_credential':
+        hosts = [{'provider': 'beeimg_cn', 'token': MISSING_ENV}]
+    elif scenario == 'query_failure':
+        hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
+        replies = [requests.exceptions.Timeout()]
+    elif scenario == 'profile_forbidden':
+        hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
+        replies = [group_reply(), profile_reply(status=403)]
+    else:
+        hosts = [{'provider': 'beeimg_cn', 'token': SECRET,
+                  'options': {'storage_id': True}}]
+        replies = [group_reply(), profile_reply(status=403)]
+    run = run_chain(monkeypatch, tmp_path, hosts, replies=replies)
+    assert run.transport.posts == []
+    assert run.summary['upload_post_attempts'] == 0
+    assert of_stage(run.events, 'upload_attempt') == []
+    assert run.summary['slots_failed'] == 1
+    assert run.summary['slots_succeeded'] == 0
+    slot = slots(run.events)
+    assert [event.status for event in slot] == ['started', 'failed']
+    assert slot[0].operation_id == slot[1].operation_id
+    assert slot[0].request_id is None and slot[1].attempt_index is None
+    assert not run.results[0].success
+
+
+def test_recovery_success_finishes_slot_once(monkeypatch, tmp_path):
+    """精确拒绝后恢复成功：两次真实请求、槽位仅一次成功终态。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 13}}],
+        replies=[group_reply(), REJECTED_UPLOAD, group_reply(),
+                 SUCCESS_UPLOAD], slot_index=4)
+    assert run.transport.replies == []
+    assert run.results[0].success
+    assert run.summary['upload_post_attempts'] == 2
+    assert run.summary['postupload_recoveries'] == 1
+    assert run.summary['group_get_attempts'] == len(
+        run.transport.gets('group')) == 2
+    attempts = of_stage(run.events, 'upload_attempt')
+    assert [event.status for event in attempts] == [
+        'started', 'failed', 'started', 'succeeded']
+    failed = attempts[1]
+    succeeded = attempts[3]
+    assert failed.request_id != succeeded.request_id
+    assert failed.operation_id != succeeded.operation_id
+    assert (failed.image_index, failed.slot_index) == (1, 4)
+    assert failed.slot_index == succeeded.slot_index
+    assert attempts[0].attempt_index == 1
+    assert attempts[2].attempt_index == 2
+    slot = slots(run.events)
+    assert [event.status for event in slot] == ['started', 'succeeded']
+    assert run.summary['slots_succeeded'] == 1
+    assert run.summary['slots_failed'] == 0
+    assert run.summary['slots_planned'] == 1
+
+
+def test_slot_events_use_bound_indices(monkeypatch, tmp_path):
+    """槽位事件采用编排绑定的图片与槽位序号，且不带请求身份。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'beeimg_cn', 'token': '',
+          'options': {'storage_id': 13}}],
+        replies=[group_reply(), SUCCESS_UPLOAD], slot_index=9, slots_planned=1)
+    slot = slots(run.events)
+    assert [event.status for event in slot] == ['started', 'succeeded']
+    assert all((event.image_index, event.slot_index) == (1, 9)
+               for event in slot)
+    assert all(event.request_id is None and event.attempt_index is None
+               for event in slot)
+
+
+def test_host_failover_counts_each_real_post(monkeypatch, tmp_path):
+    """跨槽位故障转移各记一次真实 POST 与一次回退。"""
+    hosts = [
+        {'provider': 'catbox', 'token': ''},
+        {'provider': 'beeimg', 'token': ''},
+        {'provider': 'wmimg', 'token': ''},
+    ]
+    run = run_chain(
+        monkeypatch, tmp_path, hosts,
+        replies=[(500, b''), (500, b''),
+                 (200, body({'status': True,
+                             'data': {'links': {'url': URL}}}))])
+    assert len(run.transport.posts) == 3
+    assert run.summary['upload_post_attempts'] == 3
+    assert run.summary['host_failovers'] == 2
+    assert run.summary['slots_succeeded'] == 1
+    assert run.summary['slots_failed'] == 2
+    assert run.results[0].success and run.results[0].attempts == (
+        'catbox', 'beeimg', 'wmimg')
+
+
+PROVIDER_POSTS = (
+    ('catbox', {'provider': 'catbox', 'token': ''},
+     [(200, URL.encode())], 1),
+    ('wmimg', {'provider': 'wmimg', 'token': ''},
+     [(200, body({'status': True, 'data': {'links': {'url': URL}}}))], 1),
+    ('beeimg', {'provider': 'beeimg', 'token': ''},
+     [(200, body({'files': {'status': 'Success', 'url': URL}}))], 1),
+    ('superbed', {'provider': 'superbed', 'token': SECRET},
+     [(200, body({'success': True, 'total': 1, 'succeed': 1, 'failed': 0,
+                  'files': [{'url': URL}]}))], 1),
+    ('beeimg_cn', {'provider': 'beeimg_cn', 'token': '',
+                   'options': {'storage_id': 13}},
+     [group_reply(), SUCCESS_UPLOAD], 1),
+    ('boltp', {'provider': 'boltp', 'token': '',
+               'options': {'storage_id': 2}}, [SUCCESS_UPLOAD], 1),
+)
+
+
+@pytest.mark.parametrize(('name', 'host', 'replies', 'posts'), PROVIDER_POSTS)
+def test_each_provider_counts_only_real_posts(
+        name, host, replies, posts, monkeypatch, tmp_path):
+    """各 provider 的上传计数等于传输替身实际收到的 POST 次数。"""
+    run = run_chain(monkeypatch, tmp_path, [host], replies=replies)
+    assert run.results[0].success
+    assert len(run.transport.posts) == posts
+    assert run.summary['upload_post_attempts'] == len(run.transport.posts)
+    assert run.summary['group_get_attempts'] == len(
+        run.transport.gets('group'))
+    assert run.summary['profile_get_attempts'] == len(
+        run.transport.gets('profile'))
+    assert run.summary['slots_succeeded'] == 1
+
+
+def test_superbed_domain_fallback_counts_two_posts(monkeypatch, tmp_path):
+    """Superbed 域名回退的两次真实 POST 分别计数并落在同一槽位。"""
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'superbed', 'token': SECRET}],
+        replies=[requests.exceptions.ConnectionError(),
+                 (200, body({'success': True, 'total': 1, 'succeed': 1,
+                             'failed': 0, 'files': [{'url': URL}]}))])
+    assert run.results[0].success
+    assert len(run.transport.posts) == 2
+    assert run.summary['upload_post_attempts'] == 2
+    assert run.summary['slots_succeeded'] == 1
+    assert run.summary['slots_failed'] == 0
+    assert [event.status for event in slots(run.events)] == [
+        'started', 'succeeded']
+
+
+def test_disk_cache_hit_reuses_without_query(monkeypatch, tmp_path):
+    """磁盘命中不产生任何查询，且日志带命中类别与空请求来源。"""
+    context, cache, transport = build(monkeypatch, tmp_path, replies=[])
+    identity = cache.identity('beeimg_cn', SECRET)
+    assert cache.save(identity, StorageMetadata((13, 14), 14, 3600, 1000.0))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            metadata = context.get_metadata('beeimg_cn', SECRET)
+        summary = trace.summary()
+    context.close()
+    assert metadata.storage_ids == (13, 14)
+    assert transport.sent == []
+    assert (summary['group_get_attempts'],
+            summary['profile_get_attempts']) == (0, 0)
+    hits = [event for event in of_stage(events, 'metadata_cache')
+            if event.source == 'hit']
+    assert len(hits) == 1
+    assert hits[0].cache_layer == 'disk' and hits[0].request_id is None
+
+
+@pytest.mark.parametrize(('fetched_at', 'now', 'source'), [
+    (1000.0, 1000.0 + 86400, 'expired'),
+    (2000.0, 1000.0, 'future'),
+])
+def test_expired_and_future_cache_are_distinct_misses(
+        fetched_at, now, source, monkeypatch, tmp_path):
+    """过期与未来时间的缓存分别记录为不同未命中类别并重新查询。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=[group_reply(ids=(13,))],
+        clock=[now])
+    identity = cache.identity('beeimg_cn', '')
+    assert cache.save(identity, StorageMetadata(
+        (13,), None, None, fetched_at))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            context.get_metadata('beeimg_cn', '')
+        summary = trace.summary()
+    context.close()
+    recorded = [event for event in of_stage(events, 'metadata_cache')
+                if event.source == source]
+    assert len(recorded) == 1
+    assert summary['group_get_attempts'] == 1
+    assert len(transport.gets('group')) == 1
+
+
+def test_disk_cache_miss_queries_once(monkeypatch, tmp_path):
+    """空缓存记为未命中并只执行一次真实查询。"""
+    transport, events, summary, metadata, errors = run_metadata(
+        monkeypatch, tmp_path, replies=[group_reply(ids=(13,))])
+    assert not errors
+    assert metadata.storage_ids == (13,)
+    miss = [event for event in of_stage(events, 'metadata_cache')
+            if event.source == 'miss']
+    assert len(miss) == 1
+    assert (summary['group_get_attempts'],
+            summary['profile_get_attempts']) == (1, 0)
+    assert len(transport.sent) == 1
+
+
+def test_disabled_identity_is_skipped(monkeypatch, tmp_path):
+    """进程内禁用身份不再读取磁盘但仍执行一次真实查询。"""
+    storage_cache = import_module('modules.image_host.storage_cache')
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=[group_reply(ids=(13,))])
+    identity = cache.identity('beeimg_cn', '')
+    assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
+    storage_cache._DISABLED_IDENTITIES.add((str(cache._root), identity))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            context.get_metadata('beeimg_cn', '')
+        summary = trace.summary()
+    context.close()
+    disabled = [event for event in of_stage(events, 'metadata_cache')
+                if event.reason_code == 'disabled']
+    assert len(disabled) == 1
+    assert disabled[0].status == 'skipped'
+    assert disabled[0].duration_ms is None
+    assert summary['group_get_attempts'] == 1
+
+
+def test_invalid_cache_record_is_recorded(monkeypatch, tmp_path):
+    """畸形磁盘记录记为无效并继续真实查询。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=[group_reply(ids=(13,))])
+    identity = cache.identity('beeimg_cn', '')
+    (cache._root / (identity + '.json')).write_bytes(b'{not-json')
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            context.get_metadata('beeimg_cn', '')
+        summary = trace.summary()
+    context.close()
+    invalid = [event for event in of_stage(events, 'metadata_cache')
+               if event.status == 'failed']
+    assert invalid and invalid[0].reason_code == 'invalid'
+    assert summary['group_get_attempts'] == 1
+
+
+def test_save_refuses_forbidden_partial_result(monkeypatch, tmp_path):
+    """forbidden 部分结果拒绝落盘并记录固定跳过。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path,
+        replies=[group_reply(ids=(13,)), profile_reply(status=403)])
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            context.get_metadata('beeimg_cn', SECRET)
+        trace.summary()
+    context.close()
+    assert (transport.gets('profile'))
+    refused = [event for event in of_stage(events, 'metadata_cache')
+               if event.reason_code == 'forbidden']
+    assert len(refused) == 1
+    assert refused[0].status == 'skipped'
+    identity = cache.identity('beeimg_cn', SECRET)
+    assert not (cache._root / (identity + '.json')).exists()
+
+
+def test_invalidate_records_removal_and_failure(monkeypatch, tmp_path):
+    """失效删除成功与删除失败分别记录固定结果。"""
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: 1000.0)
+    identity = cache.identity('beeimg_cn', '')
+    assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append):
+        assert cache.invalidate(identity) is True
+    removed = of_stage(events, 'metadata_cache')
+    assert [event.status for event in removed] == ['started', 'succeeded']
+
+    assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
+    events.clear()
+
+    def fail_unlink(self, *args, **kwargs):
+        """模拟删除磁盘记录失败。"""
+        raise OSError('delete-failure-marker')
+
+    monkeypatch.setattr(type(cache._root), 'unlink', fail_unlink)
+    with trace_scope(mode='cli', on_status=events.append):
+        assert cache.invalidate(identity) is False
+    failed = of_stage(events, 'metadata_cache')
+    assert failed[1].status == 'failed'
+    assert failed[1].reason_code == 'delete_failed'
+
+
+def test_shared_query_source_is_traceable(monkeypatch, tmp_path):
+    """同凭证第二次读取复用来源操作标识而不冒充新的网络查询。"""
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=[group_reply(ids=(13,))])
+    events = []
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with trace_item(image_index=1):
+            context.get_metadata('beeimg_cn', '')
+        with trace_item(image_index=2):
+            context.get_metadata('beeimg_cn', '')
+        summary = trace.summary()
+    context.close()
+    query = of_stage(events, 'metadata_query')[0]
+    reuse = [event for event in of_stage(events, 'metadata_cache')
+             if event.reason_code == 'reused_metadata']
+    assert reuse
+    assert reuse[0].source_operation_id == query.operation_id
+    assert reuse[0].cache_layer == 'event'
+    assert summary['group_get_attempts'] == 1
+    assert len(transport.sent) == 1
+
+
+def test_upload_attempt_started_is_info(monkeypatch, tmp_path, caplog):
+    """upload_attempt 开始为 INFO，而查询与缓存细节仍为 DEBUG。"""
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        run_chain(
+            monkeypatch, tmp_path,
+            [{'provider': 'beeimg_cn', 'token': '',
+              'options': {'storage_id': 13}}],
+            replies=[group_reply(), SUCCESS_UPLOAD])
+    levels = {}
+    for record in caplog.records:
+        message = record.getMessage()
+        if 'stage=upload_attempt' in message and 'status=started' in message:
+            levels['upload'] = record.levelno
+        if 'stage=metadata_query' in message and 'status=started' in message:
+            levels['query'] = record.levelno
+    assert levels['upload'] == logging.INFO
+    assert levels['query'] == logging.DEBUG

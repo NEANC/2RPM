@@ -533,3 +533,50 @@ def test_v2_adapter_requires_explicit_storage_id(upload_adapter, provider_name,
 
     assert caught.value.code == 'invalid_options'
     assert calls == []
+
+
+def test_boltp_candidate_switch_counts_real_posts(monkeypatch, tmp_path):
+    """候选切换只按真实 POST 计数，且不额外产生任何查询。"""
+    from modules.image_host.context import UploadContext
+    from modules.image_host.registry import upload_with_fallback
+    from modules.image_host.storage_cache import StorageCache
+    from modules.operation_trace import trace_item
+    from modules.operation_trace import trace_scope
+
+    sent = []
+    responses = [
+        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
+        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
+    ]
+
+    def send(adapter, request, **kwargs):
+        sent.append(request)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 200
+        response._content = responses.pop(0)
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    context = UploadContext(
+        cache=StorageCache(tmp_path / 'cache', clock=lambda: 1000.0))
+    with trace_scope(mode='cli', images_planned=1,
+                     slots_planned=1) as trace:
+        with trace_item(image_index=1, slot_index=1):
+            result = upload_with_fallback(
+                b'image', 'image.png', [{'provider': 'boltp', 'token': '',
+                                        'options': {'storage_id': 2}}],
+                context=context)
+        summary = trace.summary()
+    context.close()
+
+    assert result.success
+    assert len(sent) == 2
+    assert all(request.method == 'POST' for request in sent)
+    assert summary['upload_post_attempts'] == 2
+    assert (summary['group_get_attempts'],
+            summary['profile_get_attempts']) == (0, 0)
+    assert summary['boltp_candidate_switches'] == 1
+    assert summary['slots_succeeded'] == 1

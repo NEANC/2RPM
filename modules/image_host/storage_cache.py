@@ -14,6 +14,8 @@ import tempfile
 import time
 
 from .storage import StorageMetadata
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
 
 
 _VERSION = 1
@@ -86,6 +88,20 @@ def _remove_owned(path):
         path.unlink()
     except Exception:
         pass
+
+
+def _cache_operation(action, status, *, provider=None, reason_code='',
+                     **fields):
+    """在活动作用域内记录一次缓存真实判定，无作用域时不产生输出。"""
+    with trace_operation('metadata_cache', action, cache_layer='disk',
+                         provider=provider) as operation:
+        operation.finish(status, reason_code=reason_code, **fields)
+
+
+def _cache_skipped(action, reason_code, provider=None):
+    """记录一次未执行的缓存访问，不伪造开始与耗时。"""
+    trace_skipped('metadata_cache', reason_code=reason_code,
+                  cache_layer='disk', provider=provider)
 
 
 class StorageCache:
@@ -176,20 +192,26 @@ class StorageCache:
     def load(self, identity) -> StorageMetadata | None:
         """有界读取并重新校验缓存，过期、未来或进程内禁用均 miss。"""
         if identity is None:
+            _cache_skipped('load', 'unavailable')
             return None
         provider = _provider(identity)
         if provider is None:
+            _cache_skipped('load', 'invalid_identity')
             self._warn(_WARN_READ)
             return None
         if not self._prepare():
+            _cache_skipped('load', 'unavailable', provider)
             return None
         if (str(self._root), identity) in _DISABLED_IDENTITIES:
+            _cache_skipped('load', 'disabled', provider)
             return None
         try:
             now = _timestamp(self._clock())
             try:
                 stream = open(self._root / (identity + '.json'), 'rb')
             except FileNotFoundError:
+                _cache_operation('load', 'succeeded', provider=provider,
+                                 source='miss')
                 return None
             with stream:
                 body = stream.read(_MAX_BYTES + 1)
@@ -197,11 +219,21 @@ class StorageCache:
                 raise ValueError
             metadata = _metadata(json.loads(body), provider)
             age = now - metadata.fetched_at
-            if age < 0 or age >= _TTL_SECONDS:
+            if age < 0:
+                _cache_operation('load', 'succeeded', provider=provider,
+                                 source='future')
                 return None
+            if age >= _TTL_SECONDS:
+                _cache_operation('load', 'succeeded', provider=provider,
+                                 source='expired')
+                return None
+            _cache_operation('load', 'succeeded', provider=provider,
+                             source='hit')
             return metadata
         except Exception:
             self._warn(_WARN_READ)
+            _cache_operation('load', 'failed', provider=provider,
+                             reason_code='invalid')
             return None
 
     def save(self, identity, metadata) -> bool:
@@ -210,6 +242,7 @@ class StorageCache:
             return False
         provider = _provider(identity)
         if provider is None:
+            _cache_operation('save', 'failed', reason_code='invalid_identity')
             self._warn(_WARN_SAVE)
             return False
         try:
@@ -217,6 +250,7 @@ class StorageCache:
                     or type(metadata.storage_ids) is not tuple):
                 raise ValueError
             if metadata.profile_state == 'forbidden':
+                _cache_skipped('save', 'forbidden', provider)
                 return False
             payload = {
                 'version': _VERSION,
@@ -235,11 +269,15 @@ class StorageCache:
                 raise ValueError
             _timestamp(self._clock())
             if not self._prepare():
+                _cache_skipped('save', 'unavailable', provider)
                 return False
             self._write_atomic(self._root / (identity + '.json'), body)
+            _cache_operation('save', 'succeeded', provider=provider)
             return True
         except Exception:
             self._warn(_WARN_SAVE)
+            _cache_operation('save', 'failed', provider=provider,
+                             reason_code='save_failed')
             return False
 
     def _write_atomic(self, destination, body):
@@ -271,12 +309,17 @@ class StorageCache:
         """删除单份记录；删除失败则跨实例禁止本进程读取该身份。"""
         if identity is None:
             return True
-        if _provider(identity) is None:
+        provider = _provider(identity)
+        if provider is None:
+            _cache_operation('invalidate', 'failed',
+                             reason_code='invalid_identity')
             self._warn(_WARN_INVALIDATE)
             return False
         if not self._prepare():
             if self._root is not None:
                 _DISABLED_IDENTITIES.add((str(self._root), identity))
+            _cache_operation('invalidate', 'failed', provider=provider,
+                             reason_code='unavailable')
             self._warn(_WARN_INVALIDATE)
             return False
         try:
@@ -284,8 +327,11 @@ class StorageCache:
                 (self._root / (identity + '.json')).unlink()
             except FileNotFoundError:
                 pass
+            _cache_operation('invalidate', 'succeeded', provider=provider)
             return True
         except Exception:
             _DISABLED_IDENTITIES.add((str(self._root), identity))
+            _cache_operation('invalidate', 'failed', provider=provider,
+                             reason_code='delete_failed')
             self._warn(_WARN_INVALIDATE)
             return False

@@ -50,8 +50,14 @@ _INFO_STAGES = frozenset({
     'capture', 'encode', 'save', 'upload_attempt', 'slot',
 })
 
+_REQUEST_STAGES = {
+    'group': 'metadata_query', 'profile': 'metadata_query',
+    'upload_attempt': 'upload_attempt',
+}
+
 _TRACE = ContextVar('operation_trace_batch', default=None)
 _ITEM = ContextVar('operation_trace_item', default=None)
+_REQUEST = ContextVar('operation_trace_request', default=None)
 
 
 @dataclass(frozen=True)
@@ -155,6 +161,8 @@ def _event_level(event) -> int:
             'failed': logging.ERROR,
         }.get(status, logging.INFO)
     if status == 'started':
+        if stage == 'upload_attempt':
+            return logging.INFO
         return logging.DEBUG
     if status == 'failed':
         if stage in _DEBUG_STAGES or stage in ('capture', 'encode'):
@@ -177,7 +185,13 @@ class Operation:
         self._action = action
         self._event = event
         self._started_at = started_at
+        self._ended_at = None
         self._finished = False
+
+    def mark_end(self):
+        """在传输结束时冻结耗时终点，使后续解析不计入请求耗时。"""
+        if self._ended_at is None and self._trace is not None:
+            self._ended_at = self._trace._clock()
 
     def finish(self, status, *, reason_code='', **safe_fields) -> None:
         """仅接受终态一次，重复调用与额外字段被安全忽略。"""
@@ -213,6 +227,7 @@ class BatchTrace:
         self._images = {}
         self._slots = {}
         self._slot_order = []
+        self._attempts = {}
         self._status = None
         self._cancelled = False
         self._failed = False
@@ -257,6 +272,24 @@ class BatchTrace:
         self._record_event(event)
         return Operation(self, stage, action, event, self._clock())
 
+    def _next_attempt_index(self) -> int:
+        """按当前图片槽位累计真实上传尝试序号。"""
+        key = _ITEM.get()
+        count = self._attempts.get(key, 0) + 1
+        self._attempts[key] = count
+        return count
+
+    def _start_request(self, provider, stage) -> Operation:
+        """进入一次真实请求调用前分配请求身份与实际尝试序号。"""
+        event_stage = _REQUEST_STAGES[stage]
+        action = 'post' if stage == 'upload_attempt' else stage
+        fields = {'provider': provider, 'request_id': _new_id()}
+        if stage == 'upload_attempt':
+            fields['attempt_index'] = self._next_attempt_index()
+        operation = self._start_operation(event_stage, action, fields)
+        _REQUEST.set(operation._event.operation_id)
+        return operation
+
     def _finish_operation(self, operation, status, reason_code,
                           safe_fields) -> None:
         """产出同一 operation_id 的唯一终态与完整耗时。"""
@@ -266,15 +299,25 @@ class BatchTrace:
             counter = _FALLBACK_COUNTERS.get(started.fallback_kind)
             if counter is not None:
                 self._named[counter] = self._named.get(counter, 0) + 1
+        elif started.stage == 'upload_attempt':
+            self._named['upload_post_attempts'] = self._named.get(
+                'upload_post_attempts', 0) + 1
+        elif started.stage == 'metadata_query' and started.action in (
+                'group', 'profile'):
+            counter = f'{started.action}_get_attempts'
+            self._named[counter] = self._named.get(counter, 0) + 1
         payload = {}
         for name in _EVENT_FIELDS:
             value = getattr(started, name)
             if value is not None:
                 payload[name] = value
         payload.update(safe_fields)
+        ended_at = operation._ended_at
+        if ended_at is None:
+            ended_at = self._clock()
         payload.update(
             event_id=_new_id(), status=status, reason_code=reason_code,
-            duration_ms=_milliseconds(self._clock() - operation._started_at))
+            duration_ms=_milliseconds(ended_at - operation._started_at))
         self._record_event(_create_event(**payload))
 
     def _record_skipped(self, stage, reason_code, safe_fields) -> None:
@@ -430,6 +473,7 @@ def trace_scope(*, mode, images_planned=None, slots_planned=None,
         clock=clock, on_status=on_status)
     trace_token = _TRACE.set(trace)
     item_token = _ITEM.set(None)
+    request_token = _REQUEST.set(None)
     try:
         yield trace
     except (KeyboardInterrupt, SystemExit):
@@ -440,6 +484,7 @@ def trace_scope(*, mode, images_planned=None, slots_planned=None,
         raise
     finally:
         trace._finalize()
+        _REQUEST.reset(request_token)
         _ITEM.reset(item_token)
         _TRACE.reset(trace_token)
 
@@ -480,3 +525,59 @@ def trace_skipped(stage, *, reason_code='', **safe_fields):
     if trace is None:
         return
     trace._record_skipped(stage, reason_code, safe_fields)
+
+
+@contextmanager
+def trace_request(provider: str, stage: str):
+    """在活动作用域内记录一次真实请求，无作用域或未知阶段时为空操作。"""
+    trace = _TRACE.get()
+    if trace is None or stage not in _REQUEST_STAGES:
+        yield Operation(None, None, None, None, None)
+        return
+    operation = trace._start_request(provider, stage)
+    try:
+        yield operation
+    except (KeyboardInterrupt, SystemExit):
+        operation._auto_finish('cancelled')
+        raise
+    except BaseException:
+        operation._auto_finish('failed')
+        raise
+    else:
+        operation._auto_finish('succeeded')
+
+
+class SlotHandle:
+    """表示一次逻辑上传槽位，只公开唯一的终态入口。"""
+
+    def __init__(self, trace, image_index, slot_index):
+        """保存所属批次与已绑定的图片及槽位序号。"""
+        self._trace = trace
+        self._image_index = image_index
+        self._slot_index = slot_index
+
+    def finish(self, status, *, reason_code='') -> None:
+        """把槽位终态交给唯一生产者，重复完成被忽略。"""
+        if self._trace is None:
+            return
+        self._trace.finish_slot(
+            self._image_index, self._slot_index, status,
+            reason_code=reason_code)
+
+
+def trace_slot(provider: str, fallback_index: int = 0) -> SlotHandle:
+    """开始当前逻辑槽位；编排未绑定槽位序号时回退到配置项序号。"""
+    trace = _TRACE.get()
+    if trace is None:
+        return SlotHandle(None, None, None)
+    item = _ITEM.get()
+    image_index = 0 if item is None else item[0]
+    slot_index = (fallback_index if item is None or item[1] is None
+                  else item[1])
+    trace.start_slot(image_index, slot_index, provider=provider)
+    return SlotHandle(trace, image_index, slot_index)
+
+
+def current_request_id():
+    """返回当前作用域内最近一次真实请求的关联标识，无请求时为空。"""
+    return _REQUEST.get()

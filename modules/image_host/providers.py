@@ -5,6 +5,7 @@
 """
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import PurePath
 import logging
@@ -18,6 +19,8 @@ from .core import ImageHostError
 from .core import validate_image_url
 from .expiration import PreparedV2Options
 from .v2_http import request_json
+from modules.log_safety import guard_dependency_logging
+from modules.operation_trace import trace_request
 
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +37,23 @@ BOLTP_ENDPOINT = 'https://www.boltp.com/api/v2/upload'
 V2_SUCCESS_STATUS = 'success'
 CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 15
+GUARDED_LOGGERS = ('requests', 'urllib3')
+
+
+@contextmanager
+def _upload_attempt(provider):
+    """把一次真实上传 POST 包进固定请求尝试事实，失败只记固定分类。"""
+    with guard_dependency_logging(GUARDED_LOGGERS):
+        with trace_request(provider, 'upload_attempt') as operation:
+            try:
+                yield operation
+            except ImageHostError as error:
+                operation.finish('failed', reason_code=error.code,
+                                 http_status=error.http_status)
+                raise
+            except Exception:
+                operation.finish('failed', reason_code='upload_failed')
+                raise
 
 
 def _image_mime(filename):
@@ -72,22 +92,31 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
     data = {'reqtype': 'fileupload'}
     if token:
         data['userhash'] = token
-    try:
-        with requests.Session() as session:
-            with session.post(
-                    CATBOX_ENDPOINT,
-                    data=data,
-                    files={'fileToUpload': (filename, image_bytes, _image_mime(filename))},
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    verify=True,
-                    stream=True,
-                    allow_redirects=False) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '')
-                return validate_image_url(response.text)
-    except requests.exceptions.RequestException:
-        pass
-    raise ImageHostError('upload_failed', '')
+    mime = _image_mime(filename)
+    with _upload_attempt('catbox') as attempt:
+        url = None
+        try:
+            with requests.Session() as session:
+                with session.post(
+                        CATBOX_ENDPOINT,
+                        data=data,
+                        files={'fileToUpload': (filename, image_bytes, mime)},
+                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                        verify=True,
+                        stream=True,
+                        allow_redirects=False) as response:
+                    status_code = response.status_code
+                    if not 200 <= status_code < 300:
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    url = validate_image_url(response.text)
+                    attempt.mark_end()
+        except requests.exceptions.RequestException:
+            pass
+        else:
+            attempt.finish('succeeded', http_status=status_code)
+            return url
+        raise ImageHostError('upload_failed', '')
 
 
 def upload_wmimg(image_bytes, filename, token, options) -> str:
@@ -129,33 +158,45 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
     headers = {'Accept': 'application/json'}
     if token:
         headers['Authorization'] = 'Bearer ' + token
-    try:
-        with requests.Session() as session:
-            with session.post(
-                    WMIMG_ENDPOINT,
-                    data=data,
-                    files={'file': (filename, image_bytes, _image_mime(filename))},
-                    headers=headers,
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    verify=True,
-                    stream=True,
-                    allow_redirects=False) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '')
-                payload = response.json()
-                if (not isinstance(payload, Mapping)
-                        or payload.get('status') is not True):
-                    raise ImageHostError('upload_failed', '')
-                result = payload.get('data')
-                if not isinstance(result, Mapping):
-                    raise ImageHostError('upload_failed', '')
-                links = result.get('links')
-                if not isinstance(links, Mapping):
-                    raise ImageHostError('upload_failed', '')
-                return validate_image_url(links.get('url'))
-    except requests.exceptions.RequestException:
-        pass
-    raise ImageHostError('upload_failed', '')
+    mime = _image_mime(filename)
+    with _upload_attempt('wmimg') as attempt:
+        url = None
+        try:
+            with requests.Session() as session:
+                with session.post(
+                        WMIMG_ENDPOINT,
+                        data=data,
+                        files={'file': (filename, image_bytes, mime)},
+                        headers=headers,
+                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                        verify=True,
+                        stream=True,
+                        allow_redirects=False) as response:
+                    status_code = response.status_code
+                    if not 200 <= status_code < 300:
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    payload = response.json()
+                    if (not isinstance(payload, Mapping)
+                            or payload.get('status') is not True):
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    result = payload.get('data')
+                    if not isinstance(result, Mapping):
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    links = result.get('links')
+                    if not isinstance(links, Mapping):
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    url = validate_image_url(links.get('url'))
+                    attempt.mark_end()
+        except requests.exceptions.RequestException:
+            pass
+        else:
+            attempt.finish('succeeded', http_status=status_code)
+            return url
+        raise ImageHostError('upload_failed', '')
 
 
 def upload_beeimg(image_bytes, filename, token, options) -> str:
@@ -188,32 +229,43 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
     if any(name not in {'permission', 'albumid'} for name in options):
         LOGGER.warning('BeeIMG 存在不支持的其他选项，已忽略')
 
-    try:
-        with requests.Session() as session:
-            with session.post(
-                    BEEIMG_ENDPOINT,
-                    data=data,
-                    files={'file': (filename, image_bytes, _image_mime(filename))},
-                    timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                    verify=True,
-                    stream=True,
-                    allow_redirects=False) as response:
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '')
-                payload = response.json()
-                if not isinstance(payload, Mapping):
-                    raise ImageHostError('upload_failed', '')
-                result = payload.get('files')
-                if (not isinstance(result, Mapping)
-                        or result.get('status') != 'Success'):
-                    raise ImageHostError('upload_failed', '')
-                return validate_image_url(result.get('url'))
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
-    raise ImageHostError('upload_failed', '')
+    mime = _image_mime(filename)
+    with _upload_attempt('beeimg') as attempt:
+        url = None
+        try:
+            with requests.Session() as session:
+                with session.post(
+                        BEEIMG_ENDPOINT,
+                        data=data,
+                        files={'file': (filename, image_bytes, mime)},
+                        timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
+                        verify=True,
+                        stream=True,
+                        allow_redirects=False) as response:
+                    status_code = response.status_code
+                    if not 200 <= status_code < 300:
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    payload = response.json()
+                    if not isinstance(payload, Mapping):
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    result = payload.get('files')
+                    if (not isinstance(result, Mapping)
+                            or result.get('status') != 'Success'):
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code)
+                    url = validate_image_url(result.get('url'))
+                    attempt.mark_end()
+        except ImageHostError:
+            raise
+        except Exception:
+            pass
+        else:
+            attempt.finish('succeeded', http_status=status_code)
+            return url
+        # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
+        raise ImageHostError('upload_failed', '')
 
 
 def upload_superbed(image_bytes, filename, token, options) -> str:
@@ -249,13 +301,23 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                 request_options['headers'] = headers
             session = requests.Session()
             response = None
+            status_code = None
             try:
-                response = session.post(
-                    domain + endpoint_path, **request_options)
-                if not 200 <= response.status_code < 300:
-                    raise ImageHostError('upload_failed', '') from None
-                payload = response.json()
-                url, code = _parse_superbed(version, payload)
+                with _upload_attempt('superbed') as attempt:
+                    response = session.post(
+                        domain + endpoint_path, **request_options)
+                    status_code = response.status_code
+                    if not 200 <= status_code < 300:
+                        raise ImageHostError(
+                            'upload_failed', '', http_status=status_code
+                        ) from None
+                    payload = response.json()
+                    url, code = _parse_superbed(version, payload)
+                    attempt.mark_end()
+                    attempt.finish(
+                        'succeeded' if code is None else 'failed',
+                        reason_code='' if code is None else code,
+                        http_status=status_code)
             finally:
                 pending = sys.exc_info()[1]
                 interrupted = pending is not None and not isinstance(

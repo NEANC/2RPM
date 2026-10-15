@@ -24,6 +24,9 @@ from .providers import upload_superbed
 from .providers import upload_wmimg
 from .providers import validate_v2_options
 from modules.log_safety import extend_secrets
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
+from modules.operation_trace import trace_slot
 
 
 # 仅在具体站点契约核验并实现后添加适配器，不预注册空壳。
@@ -32,6 +35,76 @@ UPLOADERS = {
     'beeimg_cn': upload_beeimg_cn, 'boltp': upload_boltp,
     'superbed': upload_superbed,
 }
+
+_FALLBACK_ACTIONS = {
+    'preupload_refresh': 'refresh', 'postupload_recovery': 'recover',
+    'boltp_candidate': 'switch', 'host_failover': 'failover',
+}
+_SELECTION_FAILURES = frozenset({
+    'profile_forbidden', 'profile_forbidden_invalid_storage',
+    'storage_unavailable',
+})
+
+
+def _record_fallback(fallback_kind, reason_code):
+    """记录一次已执行的回退事实，计数只在实际收尾时增加。"""
+    with trace_operation('fallback', _FALLBACK_ACTIONS[fallback_kind],
+                         fallback_kind=fallback_kind) as operation:
+        operation.finish('succeeded', reason_code=reason_code)
+
+
+def _skip_fallback(fallback_kind, reason_code):
+    """记录一次计划但未执行的回退，不伪造开始与耗时。"""
+    trace_skipped('fallback', reason_code=reason_code,
+                  fallback_kind=fallback_kind)
+
+
+def _record_selection(provider, source, storage_id, candidate_count):
+    """记录一次已完成的存储选择事实，不宣称未经校验的编号。"""
+    with trace_operation(
+            'storage_select', 'select', provider=provider,
+            selection_source=source, storage_id=storage_id,
+            candidate_count=candidate_count) as operation:
+        operation.finish('succeeded')
+
+
+def _selection_failed(provider, reason_code):
+    """记录一次未取得合法选择的固定失败类别。"""
+    with trace_operation(
+            'storage_select', 'select', provider=provider) as operation:
+        operation.finish('failed', reason_code=reason_code)
+
+
+def _selection_source(selected, options, metadata):
+    """按既有的手填、账号默认与组首项策略给出固定来源分类。"""
+    manual = options.get('storage_id')
+    if (type(manual) is int and manual > 0 and not selected.replaced_manual
+            and manual == selected.storage_id):
+        return 'manual'
+    if metadata.default_storage_id == selected.storage_id:
+        return 'default'
+    return 'group_first'
+
+
+def _normalize_provider(host, index):
+    """解析配置项白名单站点名，失败时只返回安全标签与固定错误。"""
+    label = f'第{index + 1}项'
+    if not isinstance(host, Mapping):
+        return label, ImageHostError('invalid_host', '')
+    raw = host.get('provider')
+    if not isinstance(raw, str):
+        return label, ImageHostError('invalid_provider', '')
+    normalized = raw.strip().lower()
+    if not normalized or _has_control(normalized):
+        return label, ImageHostError('invalid_provider', '')
+    if normalized not in UPLOADERS:
+        return normalized, ImageHostError('unknown_provider', '')
+    return normalized, None
+
+
+def _slot_reason(failures):
+    """给出槽位失败终态的固定原因分类。"""
+    return failures[-1].code if failures else 'upload_failed'
 
 
 def _failure(provider, code, *, error=None):
@@ -96,11 +169,12 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
     if provider == 'boltp':
         retention = (context.get_boltp_retention(token)
                      if seconds is not None else None)
+        manual_id = options['storage_id'] if 'storage_id' in options else None
         candidates = ([options['storage_id']] if 'storage_id' in options else [])
         candidates.extend(value for value in (2, 3) if value not in candidates)
         failures = []
         state = context.storage_state(image, index, provider, token)
-        for storage_id in candidates:
+        for position, storage_id in enumerate(candidates):
             decision = compute_expiration(
                 seconds, image.started_at, retention,
                 state.previous_deadline, context.now(),
@@ -111,6 +185,9 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
             prepared = PreparedV2Options(
                 deepcopy(options), expired_at=decision.expired_at)
             prepared['storage_id'] = storage_id
+            _record_selection(
+                provider, 'manual' if storage_id == manual_id else 'candidate',
+                storage_id, len(candidates))
             try:
                 result = UPLOADERS[provider](image_bytes, filename, token, prepared)
                 return validate_image_url(result), None
@@ -129,6 +206,8 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                     and failure.stage == 'upload'
                     and failure.http_status == 200):
                 break
+            if position + 1 < len(candidates):
+                _record_fallback('boltp_candidate', 'storage_rejected')
             state = context.storage_state(image, index, provider, token)
         return None, failures
     try:
@@ -136,11 +215,18 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
             image, index, provider, token,
             manual_present='storage_id' in options,
             manual_value=options.get('storage_id'))
+    except ImageHostError as error:
+        if error.code in _SELECTION_FAILURES:
+            _selection_failed(provider, error.code)
+        raise
     finally:
         _add_warnings(warnings, context.take_warnings())
     if selected.replaced_manual:
         _add_warnings(warnings, (_WARN_REPLACED,))
     metadata = context.get_metadata(provider, token)
+    _record_selection(
+        provider, _selection_source(selected, options, metadata),
+        selected.storage_id, len(metadata.storage_ids))
     state = context.storage_state(image, index, provider, token)
     decision = compute_expiration(
         seconds, image.started_at, metadata.file_expire_seconds,
@@ -162,20 +248,12 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
     warnings = []
     _add_warnings(warnings, context.take_warnings())
     for index, host in enumerate(hosts):
-        provider = f'第{index + 1}项'
+        provider, shape_error = _normalize_provider(host, index)
+        slot = trace_slot(provider, index)
         url = None
         try:
-            if not isinstance(host, Mapping):
-                raise ImageHostError('invalid_host', '')
-            raw_provider = host.get('provider')
-            if not isinstance(raw_provider, str):
-                raise ImageHostError('invalid_provider', '')
-            normalized = raw_provider.strip().lower()
-            if not normalized or _has_control(normalized):
-                raise ImageHostError('invalid_provider', '')
-            provider = normalized
-            if provider not in UPLOADERS:
-                raise ImageHostError('unknown_provider', '')
+            if shape_error is not None:
+                raise shape_error
             token = context.resolve_credential(index, host)
             options = _copy_options(host)
             if provider == 'boltp' and 'storage_id' in options:
@@ -246,6 +324,11 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                     context.invalidate(
                         provider, token, version=state.metadata_version,
                         disk_only=not recovery_allowed)
+                    if recovery_allowed:
+                        _record_fallback('postupload_recovery',
+                                         'storage_rejected')
+                    elif transmission == 0:
+                        _skip_fallback('postupload_recovery', 'budget_used')
                 if not recovery_allowed:
                     break
         except ImageHostError as error:
@@ -256,9 +339,13 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             _add_warnings(warnings, context.take_warnings())
         attempts.append(provider)
         if url is not None:
+            slot.finish('succeeded')
             extend_secrets((url,))
             return UploadResult(True, provider, url, tuple(attempts),
                                 tuple(failures), tuple(warnings))
+        slot.finish('failed', reason_code=_slot_reason(failures))
+        if index + 1 < len(hosts):
+            _record_fallback('host_failover', 'slot_failed')
     return UploadResult(False, None, None, tuple(attempts), tuple(failures),
                         tuple(warnings))
 
