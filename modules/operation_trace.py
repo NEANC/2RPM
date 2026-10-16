@@ -51,7 +51,33 @@ _PROVIDER_WHITELIST = frozenset({
     'catbox', 'wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed',
 })
 _UNKNOWN_CATEGORY = 'unknown'
+_MODES = frozenset({'automatic', 'cli'})
 _CLASSIFICATION_WHITELISTS = {
+    'reason_code': frozenset({
+        '', 'invalid_input', 'not_configured', 'invalid_hosts', 'invalid_host',
+        'invalid_provider', 'unknown_provider', 'invalid_token',
+        'invalid_environment_reference', 'missing_environment',
+        'invalid_options', 'invalid_url', 'upload_failed', 'config_error',
+        'storage_lookup_failed', 'storage_unavailable', 'transport_failed',
+        'http_failed', 'business_rejected', 'profile_forbidden',
+        'profile_forbidden_invalid_storage', 'invalid_response',
+        'invalid_source', 'invalid_title', 'window_not_found',
+        'window_ambiguous', 'window_lookup_failed', 'window_gone',
+        'window_state_failed', 'invalid_dimensions', 'dpi_failed',
+        'gdi_failed', 'print_failed', 'image_failed', 'encode_failed',
+        'invalid_serial', 'adb_version_unsupported', 'adb_unavailable',
+        'adb_not_found', 'adb_offline', 'adb_unauthorized', 'adb_timeout',
+        'adb_protocol_failed', 'adb_image_failed', 'adb_encode_failed',
+        'adb_raw_invalid', 'batch_cancelled', 'slot_unfinished',
+        'recoverable_warning', 'budget_used', 'manual_replaced',
+        'reused_failure', 'reused_metadata', 'domain_failed',
+        'operation_failed', 'slot_failed', 'storage_rejected',
+        'delete_failed', 'disabled', 'forbidden', 'invalid',
+        'invalid_identity', 'io_failed', 'save_failed', 'unavailable',
+        'capture_failed', 'encoding_failed', 'encoding_reused',
+        'response_too_large', 'first_success', 'save_conflict',
+    }),
+    'image_format': frozenset({'jpeg', 'png', 'webp', 'raw'}),
     'stage': frozenset({
         'capture', 'encode', 'save', 'metadata_cache', 'metadata_query',
         'storage_select', 'upload_attempt', 'fallback', 'slot', 'batch',
@@ -170,6 +196,10 @@ def _create_event(**fields) -> StageEvent:
             continue
         if name in _INT_FIELDS:
             if type(value) is not int:
+                continue
+            if name == 'http_status' and not 100 <= value <= 599:
+                continue
+            if name in ('width', 'height') and value < 0:
                 continue
         elif name in _STR_FIELDS:
             if type(value) is not str:
@@ -299,7 +329,8 @@ class BatchTrace:
     def __init__(self, *, mode, images_planned, slots_planned, clock,
                  on_status):
         """初始化唯一批次身份、单调起点与空计数。"""
-        self._mode = mode
+        self._mode = (mode if type(mode) is str and mode in _MODES
+                      else _UNKNOWN_CATEGORY)
         self._images_planned = images_planned
         self._slots_planned = slots_planned
         self._clock = clock
@@ -646,8 +677,8 @@ def trace_scope(*, mode, images_planned=None, slots_planned=None,
     request_token = _REQUEST.set(None)
     try:
         trace._record_event(trace._build_event(
-            stage='batch', action=mode, status='started'), summary={
-                'mode': mode, 'images_planned': images_planned,
+            stage='batch', action=trace._mode, status='started'), summary={
+                'mode': trace._mode, 'images_planned': images_planned,
                 'slots_planned': slots_planned})
         yield trace
     except (KeyboardInterrupt, SystemExit):
