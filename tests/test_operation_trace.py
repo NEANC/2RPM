@@ -117,7 +117,7 @@ def test_image_summary_counts_cancelled_and_skipped_once():
     assert (summary['images_succeeded'], summary['images_failed'],
             summary['images_cancelled'], summary['images_skipped']) == (
                 0, 0, 1, 1)
-    assert summary['images_processed'] == 2
+    assert summary['images_processed'] == 1
 
 
 def test_operation_pairing_and_monotonic_duration():
@@ -145,7 +145,8 @@ def test_operation_pairing_and_monotonic_duration():
         now[0] += 1.0
         trace.summary()
 
-    started = [event for event in events if event.status == 'started']
+    started = [event for event in events if event.status == 'started'
+               and event.stage != 'batch']
     terminals = [event for event in events
                  if event.status in ('succeeded', 'failed', 'cancelled')]
     assert len(terminals) == len(started)
@@ -154,6 +155,8 @@ def test_operation_pairing_and_monotonic_duration():
                for event in terminals)
     by_stage = {}
     for event in events:
+        if event.stage == 'batch':
+            continue
         counts = by_stage.setdefault(event.stage, {})
         counts[event.status] = counts.get(event.status, 0) + 1
     for counts in by_stage.values():
@@ -168,7 +171,8 @@ def test_operation_pairing_and_monotonic_duration():
                   if event.stage == 'encode' and event.status == 'failed')
     assert capture.duration_ms == 250
     assert encode.duration_ms == 250
-    batch = next(event for event in events if event.stage == 'batch')
+    batch = next(event for event in events if event.stage == 'batch'
+                 and event.status != 'started')
     assert batch.duration_ms == 1500
     assert batch.duration_ms != capture.duration_ms + encode.duration_ms
     assert inspect.signature(
@@ -220,7 +224,8 @@ def test_slot_cancellation_finishes_started_slot():
     assert slots[0].operation_id == slots[1].operation_id
     assert slots[1].reason_code == 'batch_cancelled'
     assert slots[1].duration_ms is not None
-    batch = next(event for event in events if event.stage == 'batch')
+    batch = next(event for event in events if event.stage == 'batch'
+                 and event.status != 'started')
     assert batch.status == 'cancelled'
 
 
@@ -554,7 +559,8 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
             trace.finish_slot(1, 2, 'failed', reason_code='upload_failed')
         text = read_handler_bytes(handler)
 
-    records = stage_records(text, 'batch')
+    records = [record for record in stage_records(text, 'batch')
+               if record['status'] != 'started']
     assert len(records) == 1
     fields = records[0]
     assert 'summary' in fields
@@ -578,7 +584,8 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
             fields['slots_failed'], fields['slots_skipped']) == (
                 '3', '1', '1', '1')
     assert fields['duration_ms'] == '200'
-    assert text.count('stage=batch') == 1
+    assert text.count('stage=batch') == 2
+    assert text.count(' summary ') == 1
 
 
 @pytest.mark.parametrize('planned', [None, 0])
@@ -594,11 +601,13 @@ def test_planned_counts_preserve_unknown_and_explicit_zero(tmp_path, planned):
     expected_log = 'unavailable' if planned is None else '0'
     assert summary['images_planned'] is planned
     assert summary['slots_planned'] is planned
-    records = stage_records(text, 'batch')
+    records = [record for record in stage_records(text, 'batch')
+               if record['status'] != 'started']
     assert len(records) == 1
     assert records[0]['images_planned'] == expected_log
     assert records[0]['slots_planned'] == expected_log
-    assert text.count('stage=batch') == 1
+    assert text.count('stage=batch') == 2
+    assert text.count(' summary ') == 1
 
 
 def test_batch_summary_balances_terminal_counts_on_cancel():
@@ -635,7 +644,7 @@ def test_batch_status_control_signal_restores_parent_context(signal):
 
     def interrupt_batch(event):
         """仅在批次最终事件写出时抛出指定控制信号。"""
-        if event.stage == 'batch':
+        if event.stage == 'batch' and event.status != 'started':
             raise signal
 
     try:

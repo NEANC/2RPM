@@ -378,7 +378,8 @@ def test_cli_capture_failure_batch_is_failed(monkeypatch, tmp_path, caplog):
         code = cli.run_screenshot_cli(args, str(tmp_path))
     assert code == 1
     batches = [record.getMessage() for record in caplog.records
-               if 'stage=batch' in record.getMessage()]
+               if 'stage=batch' in record.getMessage()
+               and ' summary ' in record.getMessage()]
     assert len(batches) == 1
     assert 'status=failed' in batches[0]
     assert 'status=completed' not in batches[0]
@@ -429,7 +430,8 @@ def test_pipeline_capture_failure_batch_is_failed(monkeypatch, tmp_path):
     assert summary['status'] == 'failed'
     assert summary['images_processed'] == 1
     assert next(event for event in events
-                if event.stage == 'batch').status == 'failed'
+                if event.stage == 'batch'
+                and event.status != 'started').status == 'failed'
 
 
 def test_pipeline_success_counts_processed_images(monkeypatch, tmp_path):
@@ -452,7 +454,8 @@ def test_pipeline_success_counts_processed_images(monkeypatch, tmp_path):
     assert summary['images_processed'] == 2
     assert summary['status'] == 'completed'
     assert next(event for event in events
-                if event.stage == 'batch').status == 'completed'
+                if event.stage == 'batch'
+                and event.status != 'started').status == 'completed'
 
 
 def test_pipeline_capture_failure_skips_slots_with_real_reason(

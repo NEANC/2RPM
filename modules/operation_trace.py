@@ -186,7 +186,8 @@ def _format_event(event, summary=None) -> str:
         rendered = ' '.join(
             f'{key}={"unavailable" if value is None else value}'
             for key, value in summary.items())
-        line = f'{line} summary {rendered}'
+        label = 'plan' if event.status == 'started' else 'summary'
+        line = f'{line} {label} {rendered}'
     return line
 
 
@@ -620,6 +621,10 @@ def trace_scope(*, mode, images_planned=None, slots_planned=None,
     item_token = _ITEM.set(None)
     request_token = _REQUEST.set(None)
     try:
+        trace._record_event(trace._build_event(
+            stage='batch', action=mode, status='started'), summary={
+                'mode': mode, 'images_planned': images_planned,
+                'slots_planned': slots_planned})
         yield trace
     except (KeyboardInterrupt, SystemExit):
         trace._cancelled = True
