@@ -48,3 +48,33 @@ def test_fixed_warning_marks_completed_batch(monkeypatch, tmp_path, caplog, warn
     assert len(records) == 1
     assert 'status=completed' in records[0].getMessage()
     assert records[0].levelno == logging.WARNING
+
+
+@pytest.mark.parametrize('action', ['save', 'invalidate'])
+def test_cache_none_identity_records_skip(tmp_path, action):
+    from modules.image_host.storage_cache import StorageCache
+    from modules.operation_trace import trace_scope
+
+    events = []
+    cache = StorageCache(tmp_path)
+    with trace_scope(mode='cli', on_status=events.append):
+        getattr(cache, action)(None, *([None] if action == 'save' else []))
+    actual = [event for event in events if event.stage == 'metadata_cache']
+    assert [(event.action, event.status, event.reason_code) for event in actual] == [
+        (action, 'skipped', 'unavailable')]
+
+
+@pytest.mark.parametrize('error, reason', [(PermissionError, 'io_failed'), (ValueError, 'invalid')])
+def test_cache_load_failure_classification(monkeypatch, tmp_path, error, reason):
+    from modules.image_host.storage_cache import StorageCache
+    from modules.operation_trace import trace_scope
+
+    cache = StorageCache(tmp_path)
+    identity = cache.identity('beeimg_cn', 'synthetic')
+    monkeypatch.setattr('builtins.open', Mock(side_effect=error('synthetic')))
+    events = []
+    with trace_scope(mode='cli', on_status=events.append):
+        assert cache.load(identity) is None
+    failed = [event for event in events if event.stage == 'metadata_cache' and event.status == 'failed']
+    assert len(failed) == 1
+    assert failed[0].reason_code == reason

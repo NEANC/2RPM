@@ -101,7 +101,7 @@ def _cache_operation(action, status, *, provider=None, reason_code='',
 def _cache_skipped(action, reason_code, provider=None):
     """记录一次未执行的缓存访问，不伪造开始与耗时。"""
     trace_skipped('metadata_cache', reason_code=reason_code,
-                  cache_layer='disk', provider=provider)
+                  action=action, cache_layer='disk', provider=provider)
 
 
 class StorageCache:
@@ -231,14 +231,16 @@ class StorageCache:
                 return None
             operation.finish('succeeded', source='hit')
             return metadata
-        except Exception:
+        except Exception as error:
             self._warn(_WARN_READ)
-            operation.finish('failed', reason_code='invalid')
+            operation.finish('failed', reason_code=(
+                'io_failed' if isinstance(error, OSError) else 'invalid'))
             return None
 
     def save(self, identity, metadata) -> bool:
         """先校验并限制序列化字节，再同步临时文件并原子替换记录。"""
         if identity is None:
+            _cache_skipped('save', 'unavailable')
             return False
         provider = _provider(identity)
         if provider is None:
@@ -313,6 +315,7 @@ class StorageCache:
     def invalidate(self, identity) -> bool:
         """删除单份记录；删除失败则跨实例禁止本进程读取该身份。"""
         if identity is None:
+            _cache_skipped('invalidate', 'unavailable')
             return True
         provider = _provider(identity)
         if provider is None:
