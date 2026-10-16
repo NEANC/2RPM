@@ -146,9 +146,9 @@ def clean_controls(text, *, preserve_whitespace=False):
 def redact_text(text: str, secrets: SecretSnapshot | None = None) -> str:
     snapshot = secret_snapshot() if secrets is None else secrets
     result = redact_secrets(text, snapshot)
+    result = strip_log_controls(remove_terminal_sequences(result))
     result = _CREDENTIAL.sub(REDACTED, result)
     result = _URL.sub(LINK_REDACTED, result)
-    result = strip_log_controls(remove_terminal_sequences(result))
     guarded = result.replace(REDACTED, _REDACTED_SENTINEL).replace(
         LINK_REDACTED, _LINK_SENTINEL)
     guarded = redact_secrets(guarded, snapshot)

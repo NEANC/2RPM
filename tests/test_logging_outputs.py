@@ -92,6 +92,30 @@ def test_startup_reopen_and_spinner_are_safe(sink, tmp_path, capsys):
     assert diagnostic_text.count(SYNTHETIC_EVENT) == 1
 
 
+@pytest.mark.parametrize('sink', ['file', 'console', 'spinner'])
+@pytest.mark.parametrize('split_at', [3, 8, 27, 40])
+def test_final_handlers_redact_ansi_split_url(sink, split_at, tmp_path):
+    """最终出口隐藏被 ANSI 拆分的整条链接，保留 Markdown 和原记录。"""
+    url = 'https://example.invalid/path?sig=PRIVATE_URL_TAIL'
+    split_url = url[:split_at] + '\x1b[31m' + url[split_at:] + '\x1b[0m'
+    record = _record(logging.CRITICAL)
+    record.msg = '正文\n![截图](%s)\n**结束**'
+    record.args = (split_url,)
+    if sink == 'file':
+        handler = logger_mod._create_file_handler(str(tmp_path), 'split-url')
+        output = _emit_file(handler, record).decode('utf-8')
+    elif sink == 'console':
+        stream = io.StringIO()
+        handler = log_safety.SafeStreamHandler(stream)
+        handler.setFormatter(logger_mod.ColoredConsoleFormatter('%(message)s'))
+        output = _emit_stream(handler, stream, record)
+        handler.close()
+    else:
+        output = _emit_spinner(record)
+    assert '正文\n![截图]([链接已隐藏])\n**结束**' in output.replace('\r\n', '\n')
+    assert 'PRIVATE_URL_TAIL' not in output
+
+
 def test_handle_error_does_not_dump_record(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(logging, 'raiseExceptions', True)
     record = _record()
