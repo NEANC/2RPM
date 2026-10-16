@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
+import logging
 import netrc
 import os
 import socket
@@ -613,8 +614,21 @@ def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
     assert batch.values['screenshot_1'] == expected
     assert batch.values['screenshot'] == expected
     assert SECRET not in repr(batch) + caplog.text
-    assert len(caplog.records) == 1
-    assert caplog.records[0].getMessage().count(expected) == 1
+    business = [record for record in caplog.records
+                if record.name == module.LOGGER.name]
+    traces = [record for record in caplog.records
+              if record.name == 'modules.operation_trace']
+    assert len(business) == len(traces) == 1
+    assert len(caplog.records) == len(business) + len(traces)
+    assert business[0].levelno == logging.WARNING
+    assert business[0].getMessage() == '截图目标 1：' + expected
+    assert traces[0].levelno == logging.ERROR
+    assert 'stage=batch action=automatic status=failed ' in traces[0].getMessage()
+    assert 'summary mode=automatic status=failed ' in traces[0].getMessage()
+    for record in caplog.records:
+        assert SECRET not in repr(vars(record))
+        assert URL not in repr(vars(record))
+        assert record.exc_info is None
 
 
 @pytest.mark.parametrize('code', [SECRET, None, [], 'upload_failed'])
@@ -649,9 +663,24 @@ def test_upload_warnings_survive_success_and_failure(monkeypatch, caplog):
     body = module.append_screenshot_notices(
         batch.values['screenshot'], '{screenshot}', batch)
     assert body.count('截图配置提示') == 1
-    assert len(caplog.records) == 1
+    business = [record for record in caplog.records
+                if record.name == module.LOGGER.name]
+    traces = [record for record in caplog.records
+              if record.name == 'modules.operation_trace']
+    assert len(business) == len(traces) == 1
+    assert len(caplog.records) == len(business) + len(traces)
+    assert business[0].levelno == traces[0].levelno == logging.WARNING
+    assert ('stage=batch action=automatic status=partial_failure '
+            in traces[0].getMessage())
+    assert ('summary mode=automatic status=partial_failure '
+            in traces[0].getMessage())
     for warning in batch.warnings:
-        assert body.count(warning) == caplog.text.count(warning) == 1
+        assert body.count(warning) == business[0].getMessage().count(warning) == 1
+        assert warning not in traces[0].getMessage()
+    for record in caplog.records:
+        assert SECRET not in repr(vars(record))
+        assert URL not in repr(vars(record))
+        assert record.exc_info is None
     assert SECRET not in body + caplog.text
     assert URL not in caplog.text
 
