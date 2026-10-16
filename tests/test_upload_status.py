@@ -144,6 +144,18 @@ def test_non_tty_shows_status_with_muted_logger():
     assert '\x1b' not in text
 
 
+def test_host_failover_is_displayed_once_and_domain_is_not_next_host():
+    upload_status = import_module('modules.upload_status')
+    stream = StringIO()
+    consume = upload_status.make_status_consumer(stream=stream)
+    for reason in ('slot_failed', 'domain_failed'):
+        for status in ('started', 'succeeded'):
+            consume(StageEvent(stage='fallback', fallback_kind='host_failover',
+                               status=status, reason_code=reason))
+    assert stream.getvalue().splitlines() == [
+        '上传失败，尝试下一图床', '上传失败，尝试备用域名']
+
+
 def test_display_failure_cannot_reupload(monkeypatch, tmp_path):
     """显示回调抛普通异常被忽略，不造成重新上传。"""
     pipeline = pipeline_module()

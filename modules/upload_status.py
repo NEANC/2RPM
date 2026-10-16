@@ -63,7 +63,9 @@ def make_status_consumer(*, spinner=None, stream=None):
             elif event.status == 'failed':
                 show('上传失败：' + _failure_text(event.reason_code)
                      if event.reason_code else '上传失败')
-        elif event.stage == 'fallback' and event.fallback_kind == 'host_failover':
-            show('上传失败，尝试下一图床')
+        elif (event.stage == 'fallback' and event.fallback_kind == 'host_failover'
+              and event.status == 'started'):
+            show('上传失败，尝试备用域名' if event.reason_code == 'domain_failed'
+                 else '上传失败，尝试下一图床')
 
     return consume
