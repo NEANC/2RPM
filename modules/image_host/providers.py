@@ -7,6 +7,7 @@
 from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime
+import json
 from pathlib import PurePath
 import logging
 import re
@@ -68,6 +69,42 @@ def _image_mime(filename):
     return mime
 
 
+def _read_response_body(response, attempt):
+    """读取完整响应正文，并在读取返回或抛出时立即冻结请求耗时。"""
+    try:
+        return response.content
+    finally:
+        attempt.mark_end()
+
+
+def _read_response_text(response, attempt):
+    """读取文本正文，并在读取返回或抛出时立即冻结请求耗时。"""
+    if not isinstance(response, requests.Response):
+        try:
+            return response.text
+        finally:
+            attempt.mark_end()
+    content = _read_response_body(response, attempt)
+    encoding = response.encoding
+    if encoding is None:
+        encoding = response.apparent_encoding
+    return content.decode(encoding or 'utf-8', errors='replace')
+
+
+def _read_response_json(response, attempt):
+    """在正文读取耗时冻结后按 Requests 的响应编码语义解析 JSON。"""
+    if not isinstance(response, requests.Response):
+        try:
+            return response.json()
+        finally:
+            attempt.mark_end()
+    content = _read_response_body(response, attempt)
+    encoding = response.encoding
+    if encoding is None:
+        encoding = response.apparent_encoding
+    return json.loads(content.decode(encoding or 'utf-8', errors='replace'))
+
+
 def upload_catbox(image_bytes, filename, token, options) -> str:
     """将内存 PNG 上传到 Catbox，返回经核心校验的完整候选链接。
 
@@ -110,8 +147,7 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
                     if not 200 <= status_code < 300:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
-                    text = response.text
-                    attempt.mark_end()
+                    text = _read_response_text(response, attempt)
                     url = validate_image_url(text)
         except requests.exceptions.RequestException:
             pass
@@ -179,8 +215,7 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
                     if not 200 <= status_code < 300:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
-                    payload = response.json()
-                    attempt.mark_end()
+                    payload = _read_response_json(response, attempt)
                     if (not isinstance(payload, Mapping)
                             or payload.get('status') is not True):
                         raise ImageHostError(
@@ -250,8 +285,7 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
                     if not 200 <= status_code < 300:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
-                    payload = response.json()
-                    attempt.mark_end()
+                    payload = _read_response_json(response, attempt)
                     if not isinstance(payload, Mapping):
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code)
@@ -316,8 +350,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                         raise ImageHostError(
                             'upload_failed', '', http_status=status_code
                         ) from None
-                    payload = response.json()
-                    attempt.mark_end()
+                    payload = _read_response_json(response, attempt)
                     url, code = _parse_superbed(version, payload)
                     attempt.finish(
                         'succeeded' if code is None else 'failed',

@@ -675,6 +675,10 @@ TRANSPORT_SECONDS = 1.0
 BUSINESS_SECONDS = 9.0
 TRANSPORT_MS = 1000
 INVALID_URL = 'not-a-valid-image-url'
+REQUEST_SECONDS = 0.01
+BODY_SECONDS = 0.02
+PARSE_SECONDS = 5.0
+REQUEST_BODY_MS = 30
 
 # 四个非 v2 适配器的成功正文与业务校验失败正文；superbed 失败会在两个
 # 域名间各发一次真实请求，因此失败队列需要两条合成响应。
@@ -749,3 +753,178 @@ def test_transport_end_freezes_request_duration(
     assert attempts
     assert all(event.duration_ms == TRANSPORT_MS for event in attempts)
     assert len(transport.posts) == len(attempts)
+
+
+class TimedResponse(requests.Response):
+    """在请求、正文和解析边界推进可控时钟的合成响应。"""
+
+    def __init__(self, clock, status, content, read_error=None):
+        """保存合成正文与可选读取错误。"""
+        super().__init__()
+        self.clock = clock
+        self.status_code = status
+        self._content = content
+        self._content_consumed = True
+        self.read_error = read_error
+
+    @property
+    def content(self):
+        """模拟完整正文读取耗时并传播指定错误。"""
+        self.clock[0] += BODY_SECONDS
+        if self.read_error is not None:
+            raise self.read_error
+        return self._content
+
+    def iter_content(self, chunk_size=1, decode_unicode=False):
+        """模拟 v2 有界正文读取耗时并传播指定错误。"""
+        self.clock[0] += BODY_SECONDS
+        if self.read_error is not None:
+            raise self.read_error
+        yield self._content
+
+
+def install_timed_transport(monkeypatch, clock, replies):
+    """安装按队列返回计时响应的离线传输替身。"""
+    sent = []
+    queue = list(replies)
+
+    def send(adapter, request, **kwargs):
+        """模拟请求传输耗时并返回下一个合成响应。"""
+        sent.append(request)
+        clock[0] += REQUEST_SECONDS
+        reply = queue.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        status, content, *error = reply
+        response = TimedResponse(
+            clock, status, content, error[0] if error else None)
+        response.request = request
+        response.url = request.url
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    return sent
+
+
+def terminal_requests(events):
+    """返回真实请求的终态事件并保持发生顺序。"""
+    return [event for event in events
+            if event.stage in ('metadata_query', 'upload_attempt')
+            and event.status != 'started']
+
+
+def run_timed_adapter(monkeypatch, tmp_path, host, clock):
+    """使用已安装的计时传输执行单个真实适配器。"""
+    registry = import_module('modules.image_host.registry')
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: clock[0])
+    context = UploadContext(cache=cache, clock=lambda: clock[0])
+    events = []
+    with trace_scope(mode='cli', images_planned=1, slots_planned=1,
+                     clock=lambda: clock[0], on_status=events.append):
+        result = registry.upload_with_fallback(
+            b'image', 'image.png', [host], context=context)
+    context.close()
+    return events, result
+
+
+def test_non_v2_duration_excludes_json_parse(monkeypatch, tmp_path):
+    """非 v2 请求耗时只含请求与正文读取，不含五秒 JSON 解析。"""
+    clock = [0.0]
+    sent = install_timed_transport(monkeypatch, clock, [(
+        200, body({'status': True, 'data': {'links': {'url': URL}}}))])
+    original_loads = json.loads
+
+    def slow_loads(value, *args, **kwargs):
+        """模拟远慢于网络的 JSON 解析后执行真实解析。"""
+        clock[0] += PARSE_SECONDS
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(requests.models.complexjson, 'loads', slow_loads)
+    events, result = run_timed_adapter(
+        monkeypatch, tmp_path, {'provider': 'wmimg', 'token': ''}, clock)
+    assert result.success
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS]
+
+
+def test_v2_group_profile_upload_duration_excludes_json_parse(
+        monkeypatch, tmp_path):
+    """v2 组、资料和上传请求均在正文读取后冻结为三十毫秒。"""
+    module = import_module('modules.image_host.v2_http')
+    clock = [0.0]
+    replies = [group_reply(), profile_reply(), SUCCESS_UPLOAD]
+    sent = install_timed_transport(
+        monkeypatch, clock, [(status, content) for status, content in replies])
+    original_loads = json.loads
+
+    def slow_loads(value, *args, **kwargs):
+        """模拟五秒 JSON 解析并保留真实解码行为。"""
+        clock[0] += PARSE_SECONDS
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(module.json, 'loads', slow_loads)
+    events, result = run_timed_adapter(
+        monkeypatch, tmp_path,
+        {'provider': 'beeimg_cn', 'token': SECRET}, clock)
+    assert result.success
+    assert len(sent) == 3
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS, REQUEST_BODY_MS, REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])
+def test_json_parse_failure_keeps_request_body_duration(
+        provider, monkeypatch, tmp_path):
+    """JSON 解析失败仍保持请求与正文读取边界。"""
+    module_name = ('modules.image_host.providers' if provider == 'wmimg'
+                   else 'modules.image_host.v2_http')
+    module = import_module(module_name)
+    clock = [0.0]
+    sent = install_timed_transport(monkeypatch, clock, [(200, b'{invalid')])
+    original_loads = json.loads
+
+    def slow_loads(value, *args, **kwargs):
+        """先推进五秒再触发真实解析错误。"""
+        clock[0] += PARSE_SECONDS
+        return original_loads(value, *args, **kwargs)
+
+    if provider == 'wmimg':
+        monkeypatch.setattr(requests.models.complexjson, 'loads', slow_loads)
+    else:
+        monkeypatch.setattr(module.json, 'loads', slow_loads)
+    host = ({'provider': 'wmimg', 'token': ''} if provider == 'wmimg' else
+            {'provider': 'beeimg_cn', 'token': '',
+             'options': {'storage_id': 13}})
+    events, result = run_timed_adapter(monkeypatch, tmp_path, host, clock)
+    assert not result.success
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('provider', ['catbox', 'beeimg_cn'])
+def test_body_read_failure_freezes_duration_and_propagates_control_signal(
+        provider, monkeypatch, tmp_path):
+    """正文读取控制信号原样传播，终态耗时在读取边界冻结。"""
+    clock = [0.0]
+    signal = KeyboardInterrupt('stop-reading')
+    sent = install_timed_transport(
+        monkeypatch, clock, [(200, b'', signal)])
+    host = ({'provider': 'catbox', 'token': ''} if provider == 'catbox' else
+            {'provider': 'beeimg_cn', 'token': '',
+             'options': {'storage_id': 13}})
+    events = []
+    registry = import_module('modules.image_host.registry')
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: clock[0])
+    context = UploadContext(cache=cache, clock=lambda: clock[0])
+    with pytest.raises(KeyboardInterrupt) as caught:
+        with trace_scope(mode='cli', images_planned=1, slots_planned=1,
+                         clock=lambda: clock[0], on_status=events.append):
+            registry.upload_with_fallback(
+                b'image', 'image.png', [host], context=context)
+    context.close()
+    assert caught.value is signal
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS]

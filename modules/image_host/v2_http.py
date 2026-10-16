@@ -56,15 +56,26 @@ def is_storage_rejection(provider, status_code, payload) -> bool:
     )
 
 
-def _read_payload(response):
-    """累计实际解压字节，超限立即停止且不访问无界响应属性。"""
+def _read_body(response, operation):
+    """累计实际解压字节，并在读取返回或抛出时立即冻结请求耗时。"""
     body = bytearray()
-    for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
-        if not chunk:
-            continue
-        if len(body) + len(chunk) > _BODY_LIMIT:
-            return None
-        body.extend(chunk)
+    try:
+        for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+            if not chunk:
+                continue
+            if len(body) + len(chunk) > _BODY_LIMIT:
+                return None
+            body.extend(chunk)
+    finally:
+        operation.mark_end()
+    return bytes(body)
+
+
+def _read_payload(response, operation):
+    """在正文读取耗时冻结后按固定 UTF-8 BOM 兼容语义解析 JSON。"""
+    body = _read_body(response, operation)
+    if body is None:
+        return None
     try:
         return json.loads(body.decode('utf-8-sig'))
     except (ValueError, RecursionError):
@@ -87,7 +98,7 @@ def _send(provider, stage, kwargs, operation):
                 if not 200 <= status_code < 300:
                     code = 'http_failed'
                 else:
-                    payload = _read_payload(response)
+                    payload = _read_payload(response, operation)
                     code = 'invalid_response'
     except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
         code = 'invalid_response'

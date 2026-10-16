@@ -411,6 +411,35 @@ def test_cache_failure_warns_and_slot_failure_errors(caplog):
     assert levels['slot'] == logging.ERROR
 
 
+def test_recoverable_failures_warn_while_skip_and_cancel_stay_info(caplog):
+    """捕获与编码可恢复失败为 WARNING，跳过和取消仍为 INFO。"""
+    module = trace_module()
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with module.trace_scope(mode='automatic'):
+            with module.trace_operation(
+                    'capture', 'read', source='adb') as operation:
+                operation.finish('failed', reason_code='capture_failed')
+            with module.trace_operation(
+                    'encode', 'encode', image_format='jpeg') as operation:
+                operation.finish('failed', reason_code='encoding_failed')
+            module.trace_skipped('capture', reason_code='not_configured')
+            with pytest.raises(KeyboardInterrupt):
+                with module.trace_operation(
+                        'encode', 'encode', image_format='jpeg'):
+                    raise KeyboardInterrupt('cancel')
+    levels = {}
+    for record in caplog.records:
+        message = record.getMessage()
+        for stage in ('capture', 'encode'):
+            for status in ('failed', 'skipped', 'cancelled'):
+                if f'stage={stage}' in message and f'status={status}' in message:
+                    levels[(stage, status)] = record.levelno
+    assert levels[('capture', 'failed')] == logging.WARNING
+    assert levels[('encode', 'failed')] == logging.WARNING
+    assert levels[('capture', 'skipped')] == logging.INFO
+    assert levels[('encode', 'cancelled')] == logging.INFO
+
+
 BATCH_LINE_SUMMARY_KEYS = (
     'mode', 'status', 'images_planned', 'images_processed',
     'images_succeeded', 'images_failed', 'images_cancelled', 'images_skipped',
