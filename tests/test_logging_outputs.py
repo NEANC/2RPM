@@ -136,6 +136,29 @@ def test_final_file_handler_redacts_parenthesized_url(suffix, template, tmp_path
     assert 'PRIVATE_' not in output
 
 
+@pytest.mark.parametrize('text, expected', [
+    ('![截图](https://example.invalid/a)。上传成功',
+     '![截图]([链接已隐藏])。上传成功'),
+    ('**[链接](https://example.invalid/a(b))**',
+     '**[链接]([链接已隐藏])**'),
+    ('![甲](https://example.invalid/a)![乙](https://example.invalid/b)',
+     '![甲]([链接已隐藏])![乙]([链接已隐藏])'),
+    ('![截图](https://example.invalid/a(b(c))/PRIVATE_PATH?sig=PRIVATE_QUERY'
+     '#PRIVATE_FRAGMENT)。上传成功',
+     '![截图]([链接已隐藏])。上传成功'),
+])
+def test_markdown_url_boundaries_preserve_adjacent_text(text, expected, tmp_path):
+    """精确保留链接外正文和结构，最终文件输出不修改原记录。"""
+    assert log_safety.redact_text(text) == expected
+    record = _record()
+    record.msg = text
+    record.args = ()
+    handler = logger_mod._create_file_handler(str(tmp_path), 'markdown-url')
+    handler.setFormatter(log_safety.SafeFormatter('%(message)s'))
+    output = _emit_file(handler, record).decode('utf-8').replace('\r\n', '\n')
+    assert output == expected + '\n'
+
+
 def test_handle_error_does_not_dump_record(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(logging, 'raiseExceptions', True)
     record = _record()

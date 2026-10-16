@@ -143,12 +143,32 @@ def clean_controls(text, *, preserve_whitespace=False):
     return strip_control_chars(text, preserve_whitespace=preserve_whitespace)
 
 
-def _redact_url(match):
-    """隐藏完整链接，仅保留末尾多出的外层右括号。"""
-    url = match.group()
-    trailing = len(url) - len(url.rstrip(')'))
-    outer = min(trailing, max(0, url.count(')') - url.count('(')))
-    return LINK_REDACTED + ')' * outer
+def _redact_urls(text):
+    """按内部括号深度识别外层闭合，继续隐藏链接路径、查询和片段。"""
+    parts = []
+    cursor = 0
+    while match := _URL.search(text, cursor):
+        end = match.end()
+        depth = 0
+        escaped = False
+        for index in range(match.start(), end):
+            char = text[index]
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '(':
+                depth += 1
+            elif char == ')':
+                if depth:
+                    depth -= 1
+                elif text[index + 1:index + 2] not in ('/', '?', '#'):
+                    end = index
+                    break
+        parts.extend((text[cursor:match.start()], LINK_REDACTED))
+        cursor = end
+    parts.append(text[cursor:])
+    return ''.join(parts)
 
 
 def redact_text(text: str, secrets: SecretSnapshot | None = None) -> str:
@@ -156,7 +176,7 @@ def redact_text(text: str, secrets: SecretSnapshot | None = None) -> str:
     result = redact_secrets(text, snapshot)
     result = strip_log_controls(remove_terminal_sequences(result))
     result = _CREDENTIAL.sub(REDACTED, result)
-    result = _URL.sub(_redact_url, result)
+    result = _redact_urls(result)
     guarded = result.replace(REDACTED, _REDACTED_SENTINEL).replace(
         LINK_REDACTED, _LINK_SENTINEL)
     guarded = redact_secrets(guarded, snapshot)
