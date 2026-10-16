@@ -88,6 +88,30 @@ def test_quoted_whitelist_token_key_normalizes_like_bare_key(key):
         HOSTS_HEAD + '      - {provider: catbox, ' + key + ": 'a;b'}\n")
 
 
+@pytest.mark.parametrize('key', ['"to\\u006ben"', '"\\u0074oken"'])
+def test_flow_double_quoted_token_key_uses_yaml_scalar_semantics(key):
+    """双引号键按 YAML 转义语义命中 token，键文本保持原样。"""
+    text = HOSTS_HEAD + '      - {provider: catbox, ' + key + ': `a;b`}\n'
+    assert normalize_config_scalars(text) == (
+        HOSTS_HEAD + '      - {provider: catbox, ' + key + ": 'a;b'}\n")
+
+
+@pytest.mark.parametrize('key', ['"to\\u006benx"', '"\\u0074oken "', "'to''ken'"])
+def test_flow_quoted_key_with_different_yaml_value_is_not_token(key):
+    """转义解码后不等于 token 的单双引号键不获得宽松语法。"""
+    text = HOSTS_HEAD + '      - {provider: catbox, ' + key + ': `a;b`}\n'
+    assert normalize_config_scalars(text) == text
+
+
+def test_flow_single_quoted_token_key_uses_yaml_single_quote_semantics():
+    """单引号键按 YAML 双单引号规则判定并逐字保留。"""
+    text = (HOSTS_HEAD
+            + "      - {provider: catbox, 'token': `a;b`, 'to''ken': keep}\n")
+    assert normalize_config_scalars(text) == (
+        HOSTS_HEAD
+        + "      - {provider: catbox, 'token': 'a;b', 'to''ken': keep}\n")
+
+
 def test_quoted_non_whitelist_key_stays_unmodified():
     """引号包裹的非白名单键不获得宽松词法，反引号保持原样。"""
     text = HOSTS_HEAD + '      - {provider: catbox, "note": `x`}\n'

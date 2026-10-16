@@ -3,6 +3,9 @@
 
 import re
 
+from ruamel.yaml import YAML
+from ruamel.yaml.tokens import ScalarToken
+
 
 class ScalarSyntaxError(ValueError):
 
@@ -40,6 +43,15 @@ def _is_boundary(text, pos):
 
 def _quoted_literal(value):
     return "'" + value.replace("'", "''") + "'"
+
+
+def _decode_quoted_key(text):
+    """使用 YAML 扫描器解码单个引号键，不构造对象。"""
+    scalars = [token.value for token in YAML(typ='safe').scan(text)
+               if isinstance(token, ScalarToken)]
+    if len(scalars) != 1 or not isinstance(scalars[0], str):
+        return None
+    return scalars[0]
 
 
 class _Scanner:
@@ -523,7 +535,7 @@ class _ConfigScanner(_Scanner):
             if is_key:
                 end = self._quoted_end(self.pos)
                 if end is not None:
-                    key = self.text[self.pos + 1:end - 1]
+                    key = _decode_quoted_key(self.text[self.pos:end])
             self._quoted()
             self._record(frame, is_key, key, False)
             return
