@@ -560,7 +560,7 @@ class BatchTrace:
             'mode': self._mode,
             'status': self._final_status(),
             'images_planned': self._images_planned,
-            'images_processed': len(self._images),
+            'images_processed': len(self._images) - images('skipped'),
             'images_succeeded': images('succeeded'),
             'images_failed': images('failed'),
             'images_cancelled': images('cancelled'),

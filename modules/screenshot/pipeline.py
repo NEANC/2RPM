@@ -90,6 +90,10 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         result = capture(
             item['provider'], item['target'],
             image_format='jpeg', purpose='automatic')
+    except (KeyboardInterrupt, SystemExit):
+        trace.finish_image(item['index'], 'cancelled')
+        trace_skipped('save', reason_code='batch_cancelled')
+        raise
     except CaptureError as error:
         trace.finish_image(item['index'], 'failed')
         failure = capture_failure_message(error)
@@ -200,6 +204,10 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                     reason = ('batch_cancelled'
                               if isinstance(exc, (KeyboardInterrupt, SystemExit))
                               else 'slot_unfinished')
+                    for remaining in range(index + 1, len(targets) + 1):
+                        trace.finish_image(remaining, 'skipped')
+                        with trace_item(image_index=remaining):
+                            trace_skipped('save', reason_code=reason)
                     for index in range(1, len(targets) + 1):
                         trace.skip_unstarted_slots(
                             index, planned_hosts, reason_code=reason)
