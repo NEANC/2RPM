@@ -4,6 +4,7 @@
 
 from collections.abc import Mapping
 from copy import deepcopy
+import sys
 
 from .context import UploadContext
 from .core import ImageHostError
@@ -244,6 +245,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
         provider, shape_error = _normalize_provider(host, index)
         slot = trace_slot(provider, index)
         url = None
+        recovery_scope = None
         try:
             if shape_error is not None:
                 raise shape_error
@@ -286,6 +288,10 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
                     seconds, warnings) if is_v2 else deepcopy(options))
+                if recovery_scope is not None:
+                    recovery.finish('succeeded', reason_code='storage_rejected')
+                    recovery_scope.__exit__(None, None, None)
+                    recovery_scope = None
                 if provider == 'wmimg' and seconds is not None:
                     decision = compute_expiration(
                         seconds, image.started_at, None, None, context.now())
@@ -307,6 +313,13 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                     failure.code == 'storage_unavailable'
                     and failure.stage == 'upload'
                     and failure.http_status == 200)
+                if is_v2 and transmission == 0 and precise_rejection:
+                    state = context.storage_state(image, index, provider, token)
+                    if not state.correction_used and state.selection is not None:
+                        recovery_scope = trace_operation(
+                            'fallback', 'recover',
+                            fallback_kind='postupload_recovery')
+                        recovery = recovery_scope.__enter__()
                 recovery_allowed = (
                     is_v2 and transmission == 0 and precise_rejection
                     and context.begin_recovery(
@@ -317,18 +330,21 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                     context.invalidate(
                         provider, token, version=state.metadata_version,
                         disk_only=not recovery_allowed)
-                    if recovery_allowed:
-                        _record_fallback('postupload_recovery',
-                                         'storage_rejected')
-                    elif transmission == 0:
+                    if not recovery_allowed and transmission == 0:
                         _skip_fallback('postupload_recovery', 'budget_used')
                 if not recovery_allowed:
                     break
         except ImageHostError as error:
+            if recovery_scope is not None:
+                recovery.finish('failed', reason_code=error.code)
             failures.append(_failure(provider, error.code, error=error))
         except Exception:
+            if recovery_scope is not None:
+                recovery.finish('failed', reason_code='operation_failed')
             failures.append(_failure(provider, 'upload_failed'))
         finally:
+            if recovery_scope is not None:
+                recovery_scope.__exit__(*sys.exc_info())
             _add_warnings(warnings, context.take_warnings())
         attempts.append(provider)
         if url is not None:

@@ -405,10 +405,13 @@ class UploadContext:
             items[key] = replace(items[key], correction_used=True)
             self._corrected.add(signature)
             if entry.from_disk and not used:
-                _refresh_event('succeeded', 'manual_replaced')
-                current = self.get_metadata(provider, token, correction=True)
-                selected = self._select_storage(
-                    provider, current, manual_present, manual)
+                with trace_operation(
+                        'fallback', 'refresh',
+                        fallback_kind='preupload_refresh') as operation:
+                    current = self.get_metadata(provider, token, correction=True)
+                    selected = self._select_storage(
+                        provider, current, manual_present, manual)
+                    operation.finish('succeeded', reason_code='manual_replaced')
             elif entry.from_disk:
                 _refresh_event('skipped', 'budget_used')
         if (manual is not None and not selected.replaced_manual

@@ -1195,6 +1195,49 @@ def test_selection_wraps_real_decision(signal_type, monkeypatch, tmp_path):
     context.close()
 
 
+@pytest.mark.parametrize('kind', ['preupload_refresh', 'postupload_recovery'])
+@pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
+def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
+    registry = import_module('modules.image_host.registry')
+    context, cache, transport = build(monkeypatch, tmp_path, replies=[])
+    identity = cache.identity('beeimg_cn', '')
+    assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
+    context.get_metadata('beeimg_cn', '')
+    replies = [group_reply(ids=(14,)), SUCCESS_UPLOAD]
+    if kind == 'postupload_recovery':
+        replies.insert(0, REJECTED_UPLOAD)
+    transport.replies = replies
+    clock = [0.0]
+    signal = signal_type('stop') if signal_type else None
+    original = import_module('modules.image_host.context').fetch_storage_metadata
+
+    def delayed(*args, **kwargs):
+        clock[0] += 2.0
+        if signal:
+            raise signal
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr('modules.image_host.context.fetch_storage_metadata', delayed)
+    events = []
+    host = {'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 14}}
+    if kind == 'postupload_recovery':
+        host['options'] = {}
+    with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
+        if signal:
+            with pytest.raises(signal_type) as caught:
+                registry.upload_with_fallback(b'image', 'image.png', [host],
+                                              context=context)
+            assert caught.value is signal
+        else:
+            assert registry.upload_with_fallback(b'image', 'image.png', [host],
+                                                 context=context).success
+    recorded = [event for event in events if event.fallback_kind == kind]
+    assert [event.status for event in recorded] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    assert recorded[-1].duration_ms == 2000
+    context.close()
+
+
 def test_non_v2_invalid_json_raises_requests_decode_error():
     """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
     module = import_module('modules.image_host.providers')
