@@ -1468,15 +1468,15 @@ def test_screenshot_non_json_2xx_retains_success(monkeypatch):
 
 
 @pytest.mark.parametrize('case, expected', [
-    ('exception', PUSH_FAILURE_TEXT),
-    ('http', 'HTTP 503: ' + json.dumps(PUSH_FAILURE_TEXT, ensure_ascii=False)),
-    ('errcode', 'errcode=1: ' + PUSH_FAILURE_TEXT),
-    ('code', 'code=1: ' + PUSH_FAILURE_TEXT),
-    ('success', 'success=false: ' + PUSH_FAILURE_TEXT),
+    ('exception', '客户端发送失败'),
+    ('http', 'HTTP 请求失败（HTTP 503）'),
+    ('errcode', '业务拒绝'),
+    ('code', '业务拒绝'),
+    ('success', '业务拒绝'),
 ])
-def test_non_screenshot_failure_preserves_legacy_reason_and_log(
+def test_non_screenshot_failure_uses_safe_reason_and_log(
         monkeypatch, caplog, case, expected):
-    """无截图调用保留旧原因和逐字失败日志，不扩展本次安全行为边界。"""
+    """纯文本通知同样仅记录固定失败摘要。"""
     bodies = {
         'errcode': {'errcode': 1, 'errmsg': PUSH_FAILURE_TEXT},
         'code': {'code': 1, 'message': PUSH_FAILURE_TEXT},

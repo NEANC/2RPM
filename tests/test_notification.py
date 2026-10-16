@@ -5,6 +5,7 @@
 import os
 import sys
 import logging
+from json import JSONDecodeError
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -29,7 +30,7 @@ def _make_response(status_code=200, json_body=None, text=''):
     resp.status_code = status_code
     resp.text = text
     if json_body is _RAISE:
-        resp.json.side_effect = ValueError("not json")
+        resp.json.side_effect = JSONDecodeError("not json", "", 0)
     else:
         resp.json.return_value = json_body
     return resp
@@ -68,7 +69,7 @@ class TestIsPushSuccessful(unittest.TestCase):
                        "errmsg": "sending too many messages per minute"})
         ok, reason = notif._is_push_successful(resp)
         self.assertFalse(ok)
-        self.assertIn("660026", reason)
+        self.assertEqual("业务拒绝", reason)
 
     def test_code_nonzero_is_failure(self):
         """Qmsg code=500 KEY不存在：判为失败。"""
@@ -77,7 +78,7 @@ class TestIsPushSuccessful(unittest.TestCase):
             json_body={"success": False, "reason": "KEY不存在", "code": 500})
         ok, reason = notif._is_push_successful(resp)
         self.assertFalse(ok)
-        self.assertIn("500", reason)
+        self.assertEqual("业务拒绝", reason)
 
     def test_success_false_is_failure(self):
         """显式 success=false：判为失败。"""
