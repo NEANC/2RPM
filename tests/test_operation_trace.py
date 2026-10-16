@@ -441,6 +441,7 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
             with module.trace_request('beeimg_cn', 'profile') as request:
                 request.finish('failed', reason_code='forbidden')
             with module.trace_request('catbox', 'upload_attempt') as request:
+                request.mark_transport_started()
                 request.finish('succeeded')
             module.trace_skipped('fallback', reason_code='budget_used',
                                   fallback_kind='postupload_recovery')
@@ -496,6 +497,64 @@ def test_batch_summary_balances_terminal_counts_on_cancel():
             + summary[f'{stage}_cancelled'])
     assert summary['capture_failed'] == 1
     assert summary['save_cancelled'] == 1
+
+
+@pytest.mark.parametrize('signal', [KeyboardInterrupt('stop'), SystemExit(9)])
+def test_batch_status_control_signal_restores_parent_context(signal):
+    """批次最终事件回调抛控制信号时恢复进入作用域前的全部上下文。"""
+    module = trace_module()
+    parent_trace = object()
+    parent_item = (7, 8)
+    parent_request = 'parent-request'
+    trace_token = module._TRACE.set(parent_trace)
+    item_token = module._ITEM.set(parent_item)
+    request_token = module._REQUEST.set(parent_request)
+
+    def interrupt_batch(event):
+        """仅在批次最终事件写出时抛出指定控制信号。"""
+        if event.stage == 'batch':
+            raise signal
+
+    try:
+        with pytest.raises(type(signal)) as caught:
+            with module.trace_scope(mode='cli', on_status=interrupt_batch):
+                pass
+        assert caught.value is signal
+        assert module._TRACE.get() is parent_trace
+        assert module._ITEM.get() == parent_item
+        assert module._REQUEST.get() == parent_request
+    finally:
+        module._REQUEST.reset(request_token)
+        module._ITEM.reset(item_token)
+        module._TRACE.reset(trace_token)
+
+
+@pytest.mark.parametrize('signal', [KeyboardInterrupt('stop'), SystemExit(9)])
+def test_upload_started_control_signal_does_not_count_transport(signal):
+    """上传开始事件写出被控制信号打断时配对取消但不计真实 POST。"""
+    module = trace_module()
+    events = []
+    holder = {}
+
+    def interrupt_upload_start(event):
+        """记录事件并仅在上传开始事件处中断。"""
+        events.append(event)
+        if event.stage == 'upload_attempt' and event.status == 'started':
+            raise signal
+
+    with pytest.raises(type(signal)) as caught:
+        with module.trace_scope(
+                mode='cli', on_status=interrupt_upload_start) as trace:
+            holder['trace'] = trace
+            with module.trace_request('catbox', 'upload_attempt'):
+                raise AssertionError('不得进入真实传输调用')
+    assert caught.value is signal
+    attempts = [event for event in events if event.stage == 'upload_attempt']
+    assert [event.status for event in attempts] == ['started', 'cancelled']
+    assert attempts[0].operation_id == attempts[1].operation_id
+    summary = holder['trace'].summary()
+    assert summary['upload_post_attempts'] == 0
+    assert summary['upload_post_cancelled'] == 0
 
 
 def test_batch_finalize_adds_no_requests(monkeypatch, tmp_path):

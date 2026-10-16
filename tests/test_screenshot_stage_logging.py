@@ -384,6 +384,33 @@ def test_cli_capture_failure_batch_is_failed(monkeypatch, tmp_path, caplog):
     assert 'status=completed' not in batches[0]
 
 
+@pytest.mark.parametrize('signal', [KeyboardInterrupt('stop'), SystemExit(9)])
+def test_cli_capture_control_signal_cancels_image_and_skips_slots(
+        signal, monkeypatch, tmp_path):
+    """CLI 捕获控制信号原样传播，并补齐图片取消与未开始槽位跳过。"""
+    cli = import_module('modules.screenshot.cli')
+    monkeypatch.setattr(cli, 'capture', Mock(side_effect=signal))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, cli, events, traces)
+    args = Namespace(
+        source='window', target='窗口', output=None,
+        hosts=[{'provider': 'catbox'}, {'provider': 'wmimg'}])
+    with pytest.raises(type(signal)) as caught:
+        cli.run_screenshot_cli(args, str(tmp_path))
+    assert caught.value is signal
+    summary = traces[0].summary()
+    assert summary['status'] == 'cancelled'
+    assert summary['images_processed'] == 1
+    assert traces[0]._images == {1: 'cancelled'}
+    assert summary['slots_planned'] == 2
+    assert (summary['slots_succeeded'], summary['slots_failed'],
+            summary['slots_cancelled'], summary['slots_skipped']) == (0, 0, 0, 2)
+    skipped = [(event.status, event.reason_code) for event in events
+               if event.stage == 'slot']
+    assert skipped == [
+        ('skipped', 'batch_cancelled'), ('skipped', 'batch_cancelled')]
+
+
 def test_pipeline_capture_failure_batch_is_failed(monkeypatch, tmp_path):
     """自动截图失败时批次终态为失败且实际处理量与目标数一致。"""
     pipeline = import_module('modules.screenshot.pipeline')

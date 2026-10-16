@@ -97,6 +97,7 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
         url = None
         try:
             with requests.Session() as session:
+                attempt.mark_transport_started()
                 with session.post(
                         CATBOX_ENDPOINT,
                         data=data,
@@ -164,6 +165,7 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
         url = None
         try:
             with requests.Session() as session:
+                attempt.mark_transport_started()
                 with session.post(
                         WMIMG_ENDPOINT,
                         data=data,
@@ -235,6 +237,7 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
         url = None
         try:
             with requests.Session() as session:
+                attempt.mark_transport_started()
                 with session.post(
                         BEEIMG_ENDPOINT,
                         data=data,
@@ -305,6 +308,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
             status_code = None
             try:
                 with _upload_attempt('superbed') as attempt:
+                    attempt.mark_transport_started()
                     response = session.post(
                         domain + endpoint_path, **request_options)
                     status_code = response.status_code

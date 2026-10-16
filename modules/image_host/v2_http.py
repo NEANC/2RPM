@@ -71,7 +71,7 @@ def _read_payload(response):
         return None
 
 
-def _send(provider, stage, kwargs):
+def _send(provider, stage, kwargs, operation):
     """在独立会话中执行一次真实请求，返回状态、映射与固定分类。"""
     status_code = None
     payload = None
@@ -80,6 +80,8 @@ def _send(provider, stage, kwargs):
         with _V2Session() as session:
             session.auth = _ExplicitAuth()
             request = session.post if stage == 'upload' else session.get
+            if stage == 'upload':
+                operation.mark_transport_started()
             with request(_BASES[provider] + _PATHS[stage], **kwargs) as response:
                 status_code = response.status_code
                 if not 200 <= status_code < 300:
@@ -117,7 +119,8 @@ def request_json(provider, stage, token, *, data=None, files=None) -> dict:
     kind = 'upload_attempt' if stage == 'upload' else stage
     with guard_dependency_logging(_GUARDED_LOGGERS):
         with trace_request(provider, kind) as operation:
-            status_code, payload, code = _send(provider, stage, kwargs)
+            status_code, payload, code = _send(
+                provider, stage, kwargs, operation)
             operation.mark_end()
             diagnostic = None
             if code == 'invalid_response' and isinstance(payload, Mapping):

@@ -375,6 +375,12 @@ def run_screenshot_cli(args, program_dir):
             try:
                 result = capture(
                     source, source_target, image_format=requested, purpose='cli')
+            except (KeyboardInterrupt, SystemExit):
+                trace.finish_image(1, 'cancelled')
+                trace_skipped('save', reason_code='batch_cancelled')
+                trace_slots_skipped(
+                    1, slots_planned, reason_code='batch_cancelled')
+                raise
             except CaptureError as error:
                 trace.finish_image(1, 'failed')
                 trace_skipped('save', reason_code='capture_failed')

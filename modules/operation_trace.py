@@ -233,6 +233,16 @@ class Operation:
         self._started_at = started_at
         self._ended_at = None
         self._finished = False
+        self._transport_started = False
+
+    def mark_transport_started(self):
+        """在实际上传传输调用的紧邻边界登记一次 POST。"""
+        if (self._transport_started or self._trace is None
+                or self._stage != 'upload_attempt'):
+            return
+        self._transport_started = True
+        self._trace._named['upload_post_attempts'] = self._trace._named.get(
+            'upload_post_attempts', 0) + 1
 
     def mark_end(self):
         """在传输结束时冻结耗时终点，使后续解析不计入请求耗时。"""
@@ -356,10 +366,9 @@ class BatchTrace:
             if counter is not None:
                 self._named[counter] = self._named.get(counter, 0) + 1
         elif started.stage == 'upload_attempt':
-            self._named['upload_post_attempts'] = self._named.get(
-                'upload_post_attempts', 0) + 1
-            terminal = f'upload_post_{status}'
-            self._named[terminal] = self._named.get(terminal, 0) + 1
+            if operation._transport_started:
+                terminal = f'upload_post_{status}'
+                self._named[terminal] = self._named.get(terminal, 0) + 1
         elif started.stage == 'metadata_query' and started.action in (
                 'group', 'profile'):
             counter = f'{started.action}_get_attempts'
@@ -602,10 +611,16 @@ def trace_scope(*, mode, images_planned=None, slots_planned=None,
         trace._failed = True
         raise
     finally:
-        trace._finalize()
-        _REQUEST.reset(request_token)
-        _ITEM.reset(item_token)
-        _TRACE.reset(trace_token)
+        try:
+            trace._finalize()
+        finally:
+            try:
+                _REQUEST.reset(request_token)
+            finally:
+                try:
+                    _ITEM.reset(item_token)
+                finally:
+                    _TRACE.reset(trace_token)
 
 
 @contextmanager
