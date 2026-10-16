@@ -38,7 +38,7 @@ _CHANNEL_AUTH_FIELDS = frozenset({
     'token', 'accesstoken', 'refreshtoken', 'apikey', 'secret', 'clientsecret',
     'password', 'passwd', 'authorization', 'proxyauthorization', 'cookie',
     'setcookie', 'sckey', 'sctkey', 'pushkey', 'key', 'devicekey',
-    'corpsecret', 'webhook', 'sign',
+    'corpsecret', 'webhook', 'sign', 'cipherkey', 'devicekeys',
 })
 
 # 模板中始终由推送配置提供的截图变量名
@@ -465,10 +465,11 @@ def send_notification(config, template_key, **kwargs):
             return []
 
         extend_secrets(tuple(
-            value for channel in channels
+            secret for channel in channels
             for key, value in channel.items()
             if key.lower().replace('_', '').replace('-', '') in _CHANNEL_AUTH_FIELDS
-            and type(value) is str and value
+            for secret in (value if type(value) is list else (value,))
+            if type(secret) is str and secret
         ))
 
         screenshot_section = push_section.get('screenshot', {})
