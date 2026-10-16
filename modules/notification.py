@@ -13,6 +13,8 @@ from json import JSONDecodeError
 from string import Formatter
 
 from onepush import get_notifier
+from modules.operation_trace import current_event_id
+from modules.operation_trace import notification_event_scope
 from modules.log_safety import (
     extend_secrets,
     guard_dependency_logging,
@@ -127,6 +129,11 @@ def _is_push_successful(response):
     return True, ""
 
 
+def _event_prefix():
+    event_id = current_event_id()
+    return f'event_id={event_id} ' if event_id else ''
+
+
 def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval):
     """记录单次发送失败并决定是否继续重试
 
@@ -141,14 +148,14 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
         bool: True 表示应继续重试；False 表示已达最大重试次数
     """
     LOGGER.error(
-        f"通道 [{provider}] 通知发送失败 (尝试 {attempt}/{max_count}): {reason}"
+        f"{_event_prefix()}通道 [{provider}] 通知发送失败 (尝试 {attempt}/{max_count}): {reason}"
     )
     # 守卫：仍有重试机会则等待后继续
     if attempt < max_count:
         time.sleep(retry_interval)
         return True
     LOGGER.warning(
-        f"通道 [{provider}] 通知发送失败，已超过最大重试次数"
+        f"{_event_prefix()}通道 [{provider}] 通知发送失败，已超过最大重试次数"
     )
     return False
 
@@ -196,10 +203,10 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
             # 完整标题正文已由模板日志记录，此处只报告通道结果
             if screenshot_count:
                 LOGGER.info(
-                    "通知发送成功 [%s]（含截图结果，截图项 %d）",
-                    provider, screenshot_count)
+                    "%s通知发送成功 [%s]（含截图结果，截图项 %d）",
+                    _event_prefix(), provider, screenshot_count)
             else:
-                LOGGER.info("通知发送成功 [%s]", provider)
+                LOGGER.info("%s通知发送成功 [%s]", _event_prefix(), provider)
             return True
 
         if not _handle_attempt_failure(
@@ -396,7 +403,8 @@ def _log_rendered_notification(template_key, title, content, batch):
         batch (ScreenshotBatch): 本次截图批次
     """
     LOGGER.info(
-        "通知标题: %s\r\n通知内容: %s",
+        "event_id=%s 通知标题: %s\r\n通知内容: %s",
+        current_event_id(),
         redact_text(redact_text(title, ())),
         redact_text(redact_text(content, ())),
     )
@@ -420,7 +428,7 @@ def send_notification(config, template_key, **kwargs):
         list[tuple[str, bool]]: 各通道推送结果，元素为 (provider, 是否成功)
             禁用、模板缺变量、无有效通道等提前返回路径均返回空列表
     """
-    with safety_scope(()):
+    with safety_scope(()), notification_event_scope():
         LOGGER.info(f"使用模板: {template_key} 推送报告")
         push_section = config.get('push', {})
         templates = push_section.get('templates', {})

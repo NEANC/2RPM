@@ -159,6 +159,44 @@ def test_prepare_batch_forwards_runtime_and_event(monkeypatch):
     assert batch.values == {'screenshot': ''}
 
 
+def test_logical_event_identity_spans_batch_template_and_retries(monkeypatch, caplog):
+    from modules import operation_trace
+
+    events = []
+    original = operation_trace.BatchTrace._record_event
+
+    def record(self, event, summary=None):
+        events.append(event)
+        return original(self, event, summary)
+
+    monkeypatch.setattr(operation_trace.BatchTrace, '_record_event', record)
+    _install_boundaries(monkeypatch)
+    attempts = []
+
+    def notify(**kwargs):
+        attempts.append(len(attempts))
+        return _response(500 if len(attempts) % 2 else 200)
+
+    _install_onepush(monkeypatch, notify)
+    caplog.set_level(logging.INFO)
+    config = _base_config(retry={'interval': '0s', 'max_count': 2})
+    for _ in range(2):
+        assert notif.send_notification(config, 'on_end', process_name='demo')
+    batches = {event.batch_id for event in events}
+    identities = [{event.event_id for event in events if event.batch_id == batch}
+                  for batch in batches]
+    assert len(identities) == 2
+    assert all(len(identity) == 1 for identity in identities)
+    assert identities[0].isdisjoint(identities[1])
+    for identity in identities:
+        event_id = next(iter(identity))
+        messages = [record.getMessage() for record in caplog.records
+                    if f'event_id={event_id}' in record.getMessage()]
+        assert any('通知标题:' in message for message in messages)
+        assert any('通知发送失败' in message for message in messages)
+        assert any('通知发送成功' in message for message in messages)
+
+
 def test_send_notification_forwards_config_runtime_and_template_key(monkeypatch):
     """send_notification 使用 config['_runtime'] 与真实模板键作为事件。"""
     seen = {}
@@ -776,9 +814,9 @@ def test_success_log_omits_title_without_screenshot(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger='modules.notification'):
         results = notif.send_notification(config, 'on_end', process_name='demo.exe')
     assert results == [('serverchan', True)]
-    successes = [record.getMessage() for record in caplog.records
+    successes = [record.getMessage().split(' ', 1)[1] for record in caplog.records
                  if record.name == 'modules.notification'
-                 and record.getMessage().startswith('通知发送成功')]
+                 and ' 通知发送成功' in record.getMessage()]
     assert successes == ['通知发送成功 [serverchan]']
 
 
@@ -1672,9 +1710,9 @@ def test_complete_template_is_logged_once_without_mutation(
     assert batch == batch_before[0]
     expected_calls = 1 if use_screenshot else 0
     assert capture.call_count == upload.call_count == expected_calls
-    logs = [record.getMessage() for record in caplog.records
+    logs = [record.getMessage().split(' ', 1)[1] for record in caplog.records
             if record.name == 'modules.notification'
-            and record.getMessage().startswith('通知标题:')]
+            and ' 通知标题:' in record.getMessage()]
     assert len(logs) == 1
     if use_screenshot:
         assert '![screenshot_1]([链接已隐藏])' in logs[0]

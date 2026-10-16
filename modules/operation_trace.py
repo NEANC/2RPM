@@ -90,6 +90,7 @@ _REQUEST_STAGES = {
 }
 
 _TRACE = ContextVar('operation_trace_batch', default=None)
+_EVENT = ContextVar('operation_trace_event', default=None)
 _ITEM = ContextVar('operation_trace_item', default=None)
 _REQUEST = ContextVar('operation_trace_request', default=None)
 
@@ -128,6 +129,19 @@ class StageEvent:
 def _new_id() -> str:
     """生成不含业务数据的随机关联标识。"""
     return uuid.uuid4().hex
+
+
+@contextmanager
+def notification_event_scope():
+    token = _EVENT.set(_new_id())
+    try:
+        yield
+    finally:
+        _EVENT.reset(token)
+
+
+def current_event_id():
+    return _EVENT.get()
 
 
 def _milliseconds(delta: float) -> int:
@@ -288,6 +302,7 @@ class BatchTrace:
         self._clock = clock
         self._on_status = on_status
         self._batch_id = _new_id()
+        self._event_id = current_event_id() or _new_id()
         self._started_at = clock()
         self._stages = {}
         self._named = {}
@@ -314,7 +329,7 @@ class BatchTrace:
             payload.setdefault('image_index', item[0])
             payload.setdefault('slot_index', item[1])
         payload.setdefault('batch_id', self._batch_id)
-        payload.setdefault('event_id', _new_id())
+        payload.setdefault('event_id', self._event_id)
         return _create_event(**payload)
 
     def _record_event(self, event, summary=None) -> None:
@@ -395,7 +410,7 @@ class BatchTrace:
         if ended_at is None:
             ended_at = self._clock()
         payload.update(
-            event_id=_new_id(), status=status, reason_code=reason_code,
+            event_id=self._event_id, status=status, reason_code=reason_code,
             duration_ms=_milliseconds(ended_at - operation._started_at))
         self._record_event(_create_event(**payload))
 
@@ -538,7 +553,7 @@ class BatchTrace:
                     reason_code=reason)
         final_status = self._final_status()
         self._record_event(_create_event(
-            event_id=_new_id(), batch_id=self._batch_id, stage='batch',
+            event_id=self._event_id, batch_id=self._batch_id, stage='batch',
             action=self._mode, status=final_status,
             reason_code=('recoverable_warning'
                          if final_status == 'completed'
