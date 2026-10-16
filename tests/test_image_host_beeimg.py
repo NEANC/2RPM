@@ -16,6 +16,7 @@ import traceback
 import pytest
 import requests
 
+from test_screenshot_cli_host_integration import assert_prepared_multipart
 
 IMAGE = b'\x89PNG\r\n\x1a\nlocal-synthetic-image'
 FILENAME = '本地截图.png'
@@ -106,10 +107,28 @@ class Session:
         self.active = False
         self.closed += 1
 
-    def post(self, endpoint, **kwargs):
+    def prepare_request(self, request):
+        """实际编码 multipart 并保留原始参数供契约断言。"""
+        self.request = request
+        return request.prepare()
+
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        """固定离线传输设置，不读取本机代理及账号。"""
+        assert url == self.request.url
+        assert proxies == {} and cert is None
+        return {'stream': stream, 'verify': verify}
+
+    def send(self, prepared, **kwargs):
         """记录参数并返回当前合成响应或抛出指定异常。"""
         assert self.active
-        self.calls.append((endpoint, kwargs))
+        request = self.request
+        assert prepared.url == request.url
+        assert_prepared_multipart(
+            prepared, request.data, request.files, request.headers)
+        kwargs.update(data=request.data, files=request.files)
+        if request.headers:
+            kwargs['headers'] = request.headers
+        self.calls.append((prepared.url, kwargs))
         if self.error is not None:
             raise self.error
         if self.responses:
@@ -126,6 +145,8 @@ def client(monkeypatch):
 
     fake = Session()
     monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
+    monkeypatch.setattr(requests.sessions.Session, 'send', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
     monkeypatch.setattr(requests, 'Session', fake.create)
     return fake
 

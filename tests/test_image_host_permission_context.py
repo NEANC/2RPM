@@ -21,10 +21,20 @@ def session(monkeypatch):
     """替换会话工厂，确保测试不产生真实网络请求。"""
     client = MagicMock()
     client.__enter__.return_value = client
-    response = client.post.return_value.__enter__.return_value
+    client.prepare_request.side_effect = lambda request: request.prepare()
+    client.merge_environment_settings.return_value = {
+        'stream': True, 'verify': True}
+    response = client.send.return_value.__enter__.return_value
     response.status_code = 200
     response.text = 'https://example.com/test.png'
     factory = MagicMock(return_value=client)
+    def forbidden(*args, **kwargs):
+        """拒绝绕过替身的真实传输。"""
+        pytest.fail('测试禁止访问真实网络')
+
+    monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
+    monkeypatch.setattr(requests.sessions.Session, 'send', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
     monkeypatch.setattr(requests, 'Session', factory)
     return factory, client, response
 
@@ -51,7 +61,7 @@ def test_upload_error_discards_raw_context(session, provider, stage, error_type)
     _, client, response = session
     error = error_type('SYNTHETIC_SECRET')
     if stage == 'post':
-        client.post.side_effect = error
+        client.send.side_effect = error
     elif provider == 'wmimg':
         response.json.side_effect = error
     else:
@@ -62,7 +72,12 @@ def test_upload_error_discards_raw_context(session, provider, stage, error_type)
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
     client.__exit__.assert_called_once()
-    assert client.post.return_value.__exit__.call_count == (stage == 'response')
+    client.send.assert_called_once()
+    prepared = client.send.call_args.args[0]
+    assert isinstance(prepared, requests.PreparedRequest)
+    assert prepared.method == 'POST'
+    assert b'png' in prepared.body
+    assert client.send.return_value.__exit__.call_count == (stage == 'response')
 
 
 def test_selection_failure_stays_slot_local(monkeypatch, tmp_path):

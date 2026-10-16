@@ -72,6 +72,11 @@ def test_retained_notification_retries_share_capture_save_and_upload(
     assert part[0] == 'screenshot_1.jpg'
     assert part[1] is save.call_args.args[0].image_bytes
     assert part[2] == 'image/jpeg'
+    prepared = http_calls[0][2]['prepared']
+    assert prepared.method == 'POST'
+    assert prepared.url == http_calls[0][1]
+    assert part[1] in prepared.body
+    assert 'Authorization' not in prepared.headers
     files = list(tmp_path.rglob('*.jpg'))
     assert files == [tmp_path / 'screenshot' / today.strftime('%Y_%m_%d')
                      / 'PRIVATE_RUNTIME_STEM' / (event + '_01.jpg')]
