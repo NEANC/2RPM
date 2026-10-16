@@ -40,6 +40,7 @@ def make_status_consumer(*, spinner=None, stream=None):
     """
     handle = spinner if spinner is not None else current_spinner()
     prepared = set()
+    failovers = set()
 
     def show(message):
         """优先复用外层 spinner 的安全写入，否则输出无 ANSI 的普通行。"""
@@ -65,6 +66,11 @@ def make_status_consumer(*, spinner=None, stream=None):
                      if event.reason_code else '上传失败')
         elif (event.stage == 'fallback' and event.fallback_kind == 'host_failover'
               and event.status == 'started'):
+            key = (event.batch_id, event.operation_id, event.image_index,
+                   event.slot_index, event.reason_code)
+            if key in failovers:
+                return
+            failovers.add(key)
             show('上传失败，尝试备用域名' if event.reason_code == 'domain_failed'
                  else '上传失败，尝试下一图床')
 

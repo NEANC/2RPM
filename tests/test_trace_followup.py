@@ -134,3 +134,25 @@ def test_capture_failure_has_fixed_reason_and_encode_skip(monkeypatch, source):
     assert trace.summary()['encode_started'] == 0
     assert trace.summary()['encode_skipped'] == 1
     assert trace.summary()['capture_retries'] == 0
+
+
+def test_failover_terminal_deduplicates_without_filtering_file(caplog):
+    from io import StringIO
+    from modules.operation_trace import trace_scope, trace_fallback
+    from modules.upload_status import make_status_consumer
+
+    stream = StringIO()
+    consume = make_status_consumer(stream=stream)
+    events = []
+
+    def duplicated(event):
+        events.append(event)
+        consume(event)
+        consume(event)
+
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with trace_scope(mode='cli', on_status=duplicated):
+            with trace_fallback('host_failover', 'failover', reason_code='slot_failed'):
+                pass
+    assert stream.getvalue().count('尝试下一图床') == 1
+    assert sum('stage=fallback' in record.getMessage() for record in caplog.records) == 2
