@@ -41,10 +41,6 @@ _FALLBACK_ACTIONS = {
     'preupload_refresh': 'refresh', 'postupload_recovery': 'recover',
     'boltp_candidate': 'switch', 'host_failover': 'failover',
 }
-_SELECTION_FAILURES = frozenset({
-    'profile_forbidden', 'profile_forbidden_invalid_storage',
-    'storage_unavailable',
-})
 
 
 def _record_fallback(fallback_kind, reason_code):
@@ -58,33 +54,6 @@ def _skip_fallback(fallback_kind, reason_code):
     """记录一次计划但未执行的回退，不伪造开始与耗时。"""
     trace_skipped('fallback', reason_code=reason_code,
                   fallback_kind=fallback_kind)
-
-
-def _record_selection(provider, source, storage_id, candidate_count):
-    """记录一次已完成的存储选择事实，不宣称未经校验的编号。"""
-    with trace_operation(
-            'storage_select', 'select', provider=provider,
-            selection_source=source, storage_id=storage_id,
-            candidate_count=candidate_count) as operation:
-        operation.finish('succeeded')
-
-
-def _selection_failed(provider, reason_code):
-    """记录一次未取得合法选择的固定失败类别。"""
-    with trace_operation(
-            'storage_select', 'select', provider=provider) as operation:
-        operation.finish('failed', reason_code=reason_code)
-
-
-def _selection_source(selected, options, metadata):
-    """按既有的手填、账号默认与组首项策略给出固定来源分类。"""
-    manual = options.get('storage_id')
-    if (type(manual) is int and manual > 0 and not selected.replaced_manual
-            and manual == selected.storage_id):
-        return 'manual'
-    if metadata.default_storage_id == selected.storage_id:
-        return 'default'
-    return 'group_first'
 
 
 def _normalize_provider(host, index):
@@ -185,10 +154,17 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                 _add_warnings(warnings, (_WARN_SHORTENED,))
             prepared = PreparedV2Options(
                 deepcopy(options), expired_at=decision.expired_at)
-            prepared['storage_id'] = storage_id
-            _record_selection(
-                provider, 'manual' if storage_id == manual_id else 'candidate',
-                storage_id, len(candidates))
+            with trace_operation(
+                    'storage_select', 'select', provider=provider,
+                    storage_id=storage_id,
+                    selection_source=('manual' if storage_id == manual_id
+                                      else 'candidate'),
+                    candidate_count=len(candidates)) as operation:
+                prepared['storage_id'] = storage_id
+                operation.finish(
+                    'succeeded', storage_id=storage_id,
+                    selection_source=('manual' if storage_id == manual_id
+                                      else 'candidate'))
             try:
                 result = UPLOADERS[provider](image_bytes, filename, token, prepared)
                 return validate_image_url(result), None

@@ -1266,6 +1266,38 @@ def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, capl
     assert records[0].levelno == logging.WARNING
 
 
+@pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
+def test_boltp_selection_wraps_option_assignment(signal_type, monkeypatch, tmp_path):
+    registry = import_module('modules.image_host.registry')
+    original = registry.PreparedV2Options.__setitem__
+    clock = [0.0]
+    signal = signal_type('stop') if signal_type else None
+
+    def delayed(options, key, value):
+        if key == 'storage_id':
+            clock[0] += 2.0
+            if signal:
+                raise signal
+        return original(options, key, value)
+
+    monkeypatch.setattr(registry.PreparedV2Options, '__setitem__', delayed)
+    context, _, _ = build(monkeypatch, tmp_path, replies=[SUCCESS_UPLOAD])
+    events = []
+    with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
+        if signal:
+            with pytest.raises(signal_type):
+                registry.upload_with_fallback(b'image', 'image.png', [
+                    {'provider': 'boltp', 'token': ''}], context=context)
+        else:
+            assert registry.upload_with_fallback(b'image', 'image.png', [
+                {'provider': 'boltp', 'token': ''}], context=context).success
+    selected = of_stage(events, 'storage_select')
+    assert [event.status for event in selected] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    assert selected[-1].duration_ms == 2000
+    context.close()
+
+
 def test_non_v2_invalid_json_raises_requests_decode_error():
     """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
     module = import_module('modules.image_host.providers')
