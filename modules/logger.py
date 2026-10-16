@@ -5,6 +5,8 @@ import os
 import sys
 import time
 import logging
+from contextlib import ExitStack
+from contextlib import contextmanager
 from pathlib import Path
 
 import colorama
@@ -12,6 +14,7 @@ import colorama
 from modules.log_safety import SafeFormatter
 from modules.log_safety import SafeRotatingFileHandler
 from modules.log_safety import SafeStreamHandler
+from modules.screenshot import winfs
 from modules.utils import get_program_directory
 
 LOGGER = logging.getLogger(__name__)
@@ -152,6 +155,51 @@ def _create_file_handler(log_dir: str, prefix: str):
     except OSError as e:
         LOGGER.warning(f"无法创建日志文件，仅启用控制台输出: {e}")
         return None
+
+
+class _ScreenshotFileHandler(logging.Handler):
+    """向已锚定的独占文件写入安全格式化日志。"""
+
+    def __init__(self, write):
+        """保存当前日志作用域拥有的写入函数。"""
+        super().__init__(logging.DEBUG)
+        self.write = write
+        self.setFormatter(
+            SafeFormatter(_LOG_FILE_FORMAT, datefmt=_LOG_FILE_DATEFMT))
+
+    def emit(self, record):
+        """文件不可写时不改变截图结果，也不向 stderr 泄露原始记录。"""
+        try:
+            self.write((self.format(record) + '\n').encode('utf-8'))
+        except OSError:
+            pass
+
+
+@contextmanager
+def screenshot_logging(program_dir):
+    """独立建立仅文件日志，退出时释放文件并恢复 root 级别。"""
+    root = logging.getLogger()
+    previous_level = root.level
+    stack = ExitStack()
+    handler = logging.NullHandler()
+    try:
+        path = os.path.join(program_dir, 'logs', _make_log_filename('2RPM'))
+        write = stack.enter_context(winfs.exclusive_writer(path))
+        handler = _ScreenshotFileHandler(write)
+    except OSError:
+        print('截图日志文件无法创建，继续执行截图', file=sys.stderr)
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        yield
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous_level)
+        handler.close()
+        try:
+            stack.close()
+        except OSError:
+            pass
 
 
 def setup_default_logging() -> None:

@@ -458,7 +458,7 @@ def test_entry_dispatches_screenshot_command(monkeypatch, tmp_path):
     config_spy.assert_not_called()
     for spy in spies.values():
         spy.assert_not_called()
-    assert list(tmp_path.iterdir()) == []
+    assert [item.name for item in tmp_path.iterdir()] == ['logs']
 
 
 def test_entry_propagates_screenshot_exit_code(monkeypatch, tmp_path):
@@ -479,7 +479,7 @@ def test_entry_propagates_screenshot_exit_code(monkeypatch, tmp_path):
 
 
 def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
-    """入口分流使用真实解析与真实分派，不读取配置，仅写出截图产物。"""
+    """入口分流使用真实解析与分派，不读取配置，写出截图及独立日志。"""
     entry, spies = _capture_entry_environment(monkeypatch, tmp_path)
     config_spy = _patch_entry_config(monkeypatch, entry)
     result = CaptureResult(_png_bytes((8, 6)), 'window', 'MuMu模拟器 1', 8, 6,
@@ -498,7 +498,7 @@ def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
     config_spy.assert_not_called()
     for spy in spies.values():
         spy.assert_not_called()
-    assert [item.name for item in tmp_path.iterdir()] == ['screenshot']
+    assert sorted(item.name for item in tmp_path.iterdir()) == ['logs', 'screenshot']
     saved = list((tmp_path / 'screenshot').glob('*.png'))
     assert len(saved) == 1
     with Image.open(saved[0]) as image:

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 
 from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
+from modules.logger import screenshot_logging
 from modules.monitor import monitor_processes
 from modules.screenshot.cli import parse_screenshot_args, run_screenshot_cli
 from modules.screenshot.retention import cleanup_retention
@@ -74,10 +75,11 @@ def main():
     """
     global CONFIG, LOGGER
 
-    # 截图调试分流：只解析截图参数并执行一次截图，不加载配置、不初始化日志、不运行监视
     if _is_screenshot_command():
         screenshot_args = parse_screenshot_args(sys.argv[2:])
-        sys.exit(run_screenshot_cli(screenshot_args, get_program_directory()))
+        program_dir = get_program_directory()
+        with screenshot_logging(program_dir):
+            sys.exit(run_screenshot_cli(screenshot_args, program_dir))
 
     print_info()
     

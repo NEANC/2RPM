@@ -283,6 +283,17 @@ def _write(handle, data):
         offset += written.value
 
 
+@contextmanager
+def exclusive_writer(path):
+    """持续固定祖先与新建文件句柄，供日志逐条写入。"""
+    parent, name = ntpath.split(path)
+    with _open_path(parent, create_dirs=True) as directory:
+        with ExitStack() as stack:
+            handle = _open_child(directory, name, False, True)
+            stack.callback(_close_owned, handle)
+            yield lambda data: _write(handle, data)
+
+
 def write_exclusive(path, data):
     """相对父句柄排他创建并写入，失败时按原句柄清理半成品。"""
     parent, name = ntpath.split(path)
