@@ -20,6 +20,8 @@ from adbutils.errors import AdbTimeout
 from PIL import Image
 
 from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_fallback
+from modules.operation_trace import current_capture_operation_id
 from modules.operation_trace import trace_skipped
 
 from .encoding import encode_image
@@ -283,22 +285,6 @@ def _capture_raw(serial):
         return image
 
 
-def _capture_retry(reason_code):
-    """记录一次同格式 raw 重采的回退事实。"""
-    with trace_operation(
-            'fallback', 'capture_retry', source='adb',
-            fallback_kind='capture_retry') as operation:
-        operation.finish('succeeded', reason_code=reason_code)
-
-
-def _capture_png_fallback(reason_code):
-    """记录一次 raw 转 PNG 的格式回退事实。"""
-    with trace_operation(
-            'fallback', 'capture_format', source='adb',
-            fallback_kind='capture_format') as operation:
-        operation.finish('succeeded', reason_code=reason_code)
-
-
 def _png_result(serial, automatic, warnings=()):
     """执行唯一 PNG 回退，CLI 保留收到的原始字节。"""
     try:
@@ -330,11 +316,24 @@ def capture_adb(serial: str, *, image_format='jpeg',
         return _png_result(serial, False)
     reason = '采集或解析失败'
     for attempt in range(2):
-        if attempt:
-            _capture_retry(reason_code)
         try:
-            image = _capture_raw(serial)
+            with ExitStack() as stack:
+                if attempt:
+                    stack.enter_context(trace_fallback(
+                        'capture_retry', 'capture_retry', source='adb',
+                        reason_code=reason_code,
+                        source_operation_id=current_capture_operation_id()))
+                image = _capture_raw(serial)
+                with image:
+                    return _encoded_result(
+                        image, serial, 'jpeg' if automatic else image_format)
         except CaptureError as error:
+            if error.code == 'adb_encode_failed':
+                if not automatic:
+                    raise
+                reason_code = 'encoding_failed'
+                reason = '采集或编码失败'
+                continue
             reason_code = error.code
             reason = '超时' if error.code == 'adb_timeout' else '采集或解析失败'
             if not automatic and error.code == 'adb_timeout':
@@ -344,14 +343,9 @@ def capture_adb(serial: str, *, image_format='jpeg',
             reason_code = 'response_too_large'
             reason = '响应超限'
             break
-        with image:
-            if not automatic:
-                return _encoded_result(image, serial, image_format)
-            try:
-                return _encoded_result(image, serial, 'jpeg')
-            except CaptureError:
-                reason_code = 'encoding_failed'
-                reason = '采集或编码失败'
     warnings = (() if automatic else (f'ADB raw {reason}，已回退 PNG',))
-    _capture_png_fallback(reason_code)
-    return _png_result(serial, automatic, warnings)
+    with trace_fallback(
+            'capture_format', 'capture_format', source='adb',
+            reason_code=reason_code,
+            source_operation_id=current_capture_operation_id()):
+        return _png_result(serial, automatic, warnings)

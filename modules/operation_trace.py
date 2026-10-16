@@ -311,6 +311,7 @@ class BatchTrace:
         self._slots = {}
         self._slot_order = []
         self._attempts = {}
+        self._last_capture_operation = None
         self._status = None
         self._cancelled = False
         self._failed = False
@@ -390,6 +391,8 @@ class BatchTrace:
         """产出同一 operation_id 的唯一终态与完整耗时。"""
         self._count(operation._stage, status)
         started = operation._event
+        if started.stage in ('capture', 'encode'):
+            self._last_capture_operation = started.operation_id
         if started.stage == 'fallback':
             counter = _FALLBACK_COUNTERS.get(started.fallback_kind)
             if counter is not None:
@@ -783,6 +786,11 @@ def trace_warning():
 def current_request_id():
     """返回当前作用域内最近一次真实请求的关联标识，无请求时为空。"""
     return _REQUEST.get()
+
+
+def current_capture_operation_id():
+    trace = _TRACE.get()
+    return trace._last_capture_operation if trace is not None else None
 
 
 def trace_slots_skipped(image_index: int, count: int, *,

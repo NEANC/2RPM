@@ -83,6 +83,24 @@ def test_two_raw_then_png_counts_three_captures(monkeypatch):
         (SERIAL, False), (SERIAL, False), (SERIAL, True)]
 
 
+@pytest.mark.parametrize('kind', ['capture_retry', 'capture_format'])
+@pytest.mark.parametrize('signal', [KeyboardInterrupt, SystemExit])
+def test_capture_fallback_tracks_source_target_and_cancel(monkeypatch, kind, signal):
+    backend = adb_backend()
+    outcomes = ([b'bad', signal()] if kind == 'capture_retry' else
+                [backend.ResponseTooLarge(), signal()])
+    monkeypatch.setattr(backend, '_read_capture', Mock(side_effect=outcomes))
+    events = []
+    with pytest.raises(signal):
+        with trace_scope(mode='automatic', on_status=events.append):
+            backend.capture_adb(SERIAL)
+    fallback = [event for event in events if event.stage == 'fallback']
+    captures = [event for event in events if event.stage == 'capture']
+    assert [event.status for event in fallback] == ['started', 'cancelled']
+    assert fallback[0].source_operation_id == captures[0].operation_id
+    assert captures[2].source_operation_id == fallback[0].operation_id
+
+
 def test_encoding_retry_does_not_rewrite_capture_success(monkeypatch):
     """raw 采集成功但编码失败仍重采：三次捕获成功、两次编码失败。"""
     backend = adb_backend()
