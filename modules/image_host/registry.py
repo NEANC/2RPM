@@ -223,6 +223,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
     failures = []
     warnings = []
     _add_warnings(warnings, context.take_warnings())
+    source_slot_id = None
     for index, host in enumerate(hosts):
         provider, shape_error = _normalize_provider(host, index)
         slot = trace_slot(provider, index)
@@ -235,7 +236,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             if index:
                 failover_scope = trace_fallback(
                     'host_failover', 'failover', reason_code='slot_failed',
-                    provider=provider)
+                    provider=provider, source_operation_id=source_slot_id)
                 failover = failover_scope.__enter__()
             if shape_error is not None:
                 raise shape_error
@@ -356,6 +357,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             return UploadResult(True, provider, url, tuple(attempts),
                                 tuple(failures), tuple(warnings))
         slot.finish('failed', reason_code=_slot_reason(failures))
+        source_slot_id = slot.operation_id
     return UploadResult(False, None, None, tuple(attempts), tuple(failures),
                         tuple(warnings))
 

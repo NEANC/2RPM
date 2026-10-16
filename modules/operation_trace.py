@@ -747,6 +747,12 @@ class SlotHandle:
         self._image_index = image_index
         self._slot_index = slot_index
 
+    @property
+    def operation_id(self):
+        if self._trace is None:
+            return None
+        return self._trace._slots[(self._image_index, self._slot_index)]['operation_id']
+
     @contextmanager
     def scope(self):
         if self._trace is None:

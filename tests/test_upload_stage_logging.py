@@ -297,6 +297,14 @@ def test_chain_fallback_links_target_and_cancellation(monkeypatch, tmp_path, kin
     assert len(transport.posts) == 2
 
 
+def test_preupload_failover_uses_failed_slot_as_source(monkeypatch, tmp_path):
+    run = run_chain(monkeypatch, tmp_path, [
+        {'provider': 'beeimg_cn', 'token': MISSING_ENV},
+        {'provider': 'boltp'}], replies=[SUCCESS_UPLOAD])
+    fallback = of_stage(run.events, 'fallback')[0]
+    assert fallback.source_operation_id == slots(run.events)[0].operation_id
+
+
 def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
     """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
     run = run_chain(
