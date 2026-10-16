@@ -20,6 +20,7 @@ from .core import validate_image_url
 from .expiration import PreparedV2Options
 from .v2_http import request_json
 from modules.log_safety import guard_dependency_logging
+from modules.operation_trace import current_request_id
 from modules.operation_trace import trace_request
 from modules.operation_trace import trace_fallback
 
@@ -336,12 +337,13 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     version, headers, data, file_key, mime = materials
     domains = SUPERBED_DOMAINS
     endpoint_path = SUPERBED_CONTRACTS[version][0]
+    source_operation_id = None
     for position, domain in enumerate(domains):
         fallback_scope = None
         if position:
             fallback_scope = trace_fallback(
                 'host_failover', 'failover', reason_code='domain_failed',
-                provider='superbed')
+                provider='superbed', source_operation_id=source_operation_id)
             fallback = fallback_scope.__enter__()
         try:
             session = requests.Session()
@@ -352,6 +354,7 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                     session, domain + endpoint_path, data=data, headers=headers,
                     files={file_key: (filename, image_bytes, mime)})
                 with _upload_attempt('superbed') as attempt:
+                    source_operation_id = current_request_id()
                     try:
                         attempt.mark_transport_started()
                         response = session.send(prepared, **settings)

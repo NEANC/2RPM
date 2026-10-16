@@ -242,6 +242,55 @@ def test_non_v2_prepare_failure_has_no_attempt(monkeypatch, tmp_path, provider):
     assert of_stage(run.events, 'upload_attempt') == []
 
 
+@pytest.mark.parametrize('image_index, slot_index', [(2, 0), (1, 1)])
+@pytest.mark.parametrize('backup_prepares', [True, False])
+def test_superbed_prepare_failure_does_not_inherit_previous_request(
+        monkeypatch, image_index, slot_index, backup_prepares):
+    """主域未发请求时，域名回退不继承前图片或前槽位的请求来源。"""
+    registry = import_module('modules.image_host.registry')
+    prepare = requests.Session.prepare_request
+
+    def prepare_request(session, request):
+        """仅阻断 Superbed 主域及指定的备用域请求准备。"""
+        if ('api.superbed.cc' in request.url
+                or (not backup_prepares and 'api.superbed.cn' in request.url)):
+            raise requests.exceptions.InvalidHeader('synthetic')
+        return prepare(session, request)
+
+    monkeypatch.setattr(requests.Session, 'prepare_request', prepare_request)
+    replies = [(200, URL.encode())]
+    if backup_prepares:
+        replies.append((200, body({
+            'success': True, 'total': 1, 'succeed': 1, 'failed': 0,
+            'files': [{'url': URL}]})))
+    transport = Transport(monkeypatch, replies)
+    events = []
+    with trace_scope(mode='automatic', on_status=events.append) as trace:
+        with trace_item(image_index=1, slot_index=0):
+            assert registry.upload_with_fallback(
+                b'image', 'image.png', [{'provider': 'catbox'}]).success
+        with trace_item(image_index=image_index, slot_index=slot_index):
+            result = registry.upload_with_fallback(
+                b'image', 'image.png',
+                [{'provider': 'superbed', 'token': SECRET}])
+    assert result.success is backup_prepares
+    fallbacks = of_stage(events, 'fallback')
+    assert [event.status for event in fallbacks] == [
+        'started', 'succeeded' if backup_prepares else 'failed']
+    assert all(event.source_operation_id is None for event in fallbacks)
+    assert all((event.image_index, event.slot_index) == (image_index, slot_index)
+               for event in fallbacks)
+    attempts = [event for event in of_stage(events, 'upload_attempt')
+                if event.status == 'started']
+    assert len(attempts) == len(transport.posts) == 1 + int(backup_prepares)
+    assert trace.summary()['upload_post_attempts'] == len(transport.posts)
+    assert trace.summary()['host_failovers'] == 1
+    assert not transport.replies
+    if backup_prepares:
+        assert attempts[1].source_operation_id == fallbacks[0].operation_id
+        assert transport.posts[1].url.startswith('https://api.superbed.cn/')
+
+
 @pytest.mark.parametrize('signal', [None, KeyboardInterrupt, SystemExit])
 def test_superbed_domain_fallback_links_real_terminal(monkeypatch, tmp_path, signal):
     registry = import_module('modules.image_host.registry')
