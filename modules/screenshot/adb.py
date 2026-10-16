@@ -287,14 +287,20 @@ def _capture_raw(serial):
 
 def _png_result(serial, automatic, warnings=()):
     """执行唯一 PNG 回退，CLI 保留收到的原始字节。"""
-    try:
-        with trace_operation('capture', 'read', source='adb') as operation:
+    with trace_operation('capture', 'read', source='adb') as operation:
+        try:
             data = _read_capture(serial, True)
             image = _decode_png(data)
-            operation.finish(
-                'succeeded', width=image.size[0], height=image.size[1])
-    except ResponseTooLarge:
-        raise _error('adb_image_failed') from None
+        except CaptureError as error:
+            operation.finish('failed', reason_code=error.code)
+            trace_skipped('encode', reason_code='capture_failed')
+            raise
+        except ResponseTooLarge:
+            operation.finish('failed', reason_code='response_too_large')
+            trace_skipped('encode', reason_code='capture_failed')
+            raise _error('adb_image_failed') from None
+        operation.finish(
+            'succeeded', width=image.size[0], height=image.size[1])
     with image:
         if automatic:
             return _encoded_result(image, serial, 'jpeg', warnings)

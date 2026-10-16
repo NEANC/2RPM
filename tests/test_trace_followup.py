@@ -105,3 +105,32 @@ def test_beeimg_no_same_slot_second_metadata_reuse(monkeypatch, tmp_path):
     reused = [event for event in run.events if event.cache_layer == 'event']
     assert len(reused) == 1
     assert reused[0].image_index == 2
+
+
+@pytest.mark.parametrize('source', ['window', 'png'])
+def test_capture_failure_has_fixed_reason_and_encode_skip(monkeypatch, source):
+    from modules.operation_trace import trace_scope
+    from modules.screenshot.models import CaptureError
+
+    events = []
+    if source == 'window':
+        backend = import_module('modules.screenshot.window')
+        support = import_module('test_screenshot_window')
+        support.WindowEnvironment(backend, monkeypatch)
+        monkeypatch.setattr(backend._user32, 'PrintWindow', Mock(return_value=0))
+        invoke = lambda: backend.capture_window('测试窗口')
+        reason = 'print_failed'
+    else:
+        backend = import_module('modules.screenshot.adb')
+        monkeypatch.setattr(backend, '_read_capture', Mock(return_value=b'invalid'))
+        invoke = lambda: backend.capture_adb('synthetic', purpose='cli', image_format='png')
+        reason = 'adb_image_failed'
+    with trace_scope(mode='cli', on_status=events.append) as trace:
+        with pytest.raises(CaptureError):
+            invoke()
+    failed = [event for event in events if event.stage == 'capture' and event.status == 'failed']
+    assert len(failed) == 1
+    assert failed[0].reason_code == reason
+    assert trace.summary()['encode_started'] == 0
+    assert trace.summary()['encode_skipped'] == 1
+    assert trace.summary()['capture_retries'] == 0

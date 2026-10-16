@@ -17,6 +17,7 @@ import win32con
 import win32gui
 
 from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
 
 from .encoding import encode_image
 from .encoding import window_image
@@ -227,6 +228,7 @@ def _encode_pixels(pixels, width, height, warnings, image_format):
 def _capture_bitmap(hwnd, title, warnings, image_format):
     """使用完整窗口 DC 和固定 32 位 DIB 执行唯一 PrintWindow 路径。"""
     window_dc = memory_dc = bitmap = old_bitmap = None
+    captured = False
     stage = 'window_state_failed'
     with trace_operation('capture', 'read', source='window') as operation:
         try:
@@ -273,13 +275,20 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
             stage = 'image_failed'
             pixels = ctypes.string_at(bits, width * height * 4)
             operation.finish('succeeded', width=width, height=height)
+            captured = True
             encoded = _encode_pixels(
                 pixels, width, height, warnings, image_format)
             _ensure_window(hwnd, title)
             return encoded, width, height
-        except CaptureError:
+        except CaptureError as error:
+            if not captured:
+                operation.finish('failed', reason_code=error.code)
+                trace_skipped('encode', reason_code='capture_failed')
             raise
         except Exception:
+            if not captured:
+                operation.finish('failed', reason_code=stage)
+                trace_skipped('encode', reason_code='capture_failed')
             raise _error(stage) from None
         finally:
             _release_gdi(
