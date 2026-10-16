@@ -78,3 +78,30 @@ def test_cache_load_failure_classification(monkeypatch, tmp_path, error, reason)
     failed = [event for event in events if event.stage == 'metadata_cache' and event.status == 'failed']
     assert len(failed) == 1
     assert failed[0].reason_code == reason
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_boltp_retention_reuse_has_query_source(monkeypatch, tmp_path, failed):
+    from test_upload_stage_logging import group_reply, run_chain, SUCCESS_UPLOAD
+
+    run = run_chain(monkeypatch, tmp_path,
+                    [{'provider': 'boltp', 'token': 'synthetic', 'expiration': '1d'}],
+                    images=(1, 2), replies=([group_reply(status=500)] if failed else
+                                           [group_reply(), SUCCESS_UPLOAD, SUCCESS_UPLOAD]))
+    reused = [event for event in run.events if event.cache_layer == 'event']
+    query = next(event for event in run.events if event.stage == 'metadata_query')
+    assert len(reused) == 1
+    assert reused[0].source_operation_id == query.operation_id
+    assert reused[0].reason_code == ('reused_failure' if failed else 'reused_metadata')
+    assert len(run.transport.gets('group')) == 1
+
+
+def test_beeimg_no_same_slot_second_metadata_reuse(monkeypatch, tmp_path):
+    from test_upload_stage_logging import group_reply, profile_reply, run_chain, SUCCESS_UPLOAD
+
+    run = run_chain(monkeypatch, tmp_path,
+                    [{'provider': 'beeimg_cn', 'token': 'synthetic'}], images=(1, 2),
+                    replies=[group_reply(), profile_reply(), SUCCESS_UPLOAD, SUCCESS_UPLOAD])
+    reused = [event for event in run.events if event.cache_layer == 'event']
+    assert len(reused) == 1
+    assert reused[0].image_index == 2

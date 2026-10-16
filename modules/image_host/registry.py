@@ -204,7 +204,7 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
         _add_warnings(warnings, context.take_warnings())
     if selected.replaced_manual:
         _add_warnings(warnings, (_WARN_REPLACED,))
-    metadata = context.get_metadata(provider, token)
+    metadata = context.get_metadata(provider, token, record_reuse=False)
     state = context.storage_state(image, index, provider, token)
     decision = compute_expiration(
         seconds, image.started_at, metadata.file_expire_seconds,

@@ -287,7 +287,7 @@ class UploadContext:
         entry.disk_invalidated = False
         self._delete_record(entry)
 
-    def get_metadata(self, provider, token, *, correction=False):
+    def get_metadata(self, provider, token, *, correction=False, record_reuse=True):
         """先复用事件结果，再读有效磁盘，最后进行一次元数据查询。
 
         correction 首次绕过旧成功和磁盘；同次已成功或失败的纠错
@@ -301,7 +301,8 @@ class UploadContext:
         if correction and not entry.corrected and not entry.invalidated:
             self.invalidate(provider, token)
         if entry.metadata is not None:
-            _reuse_metadata('reused_metadata', provider, entry)
+            if record_reuse:
+                _reuse_metadata('reused_metadata', provider, entry)
             return entry.metadata
         if not entry.disk_ready:
             entry.disk_identity = self._cache_call('identity', provider, token)
@@ -341,11 +342,17 @@ class UploadContext:
             try:
                 value = storage.fetch_boltp_retention(token)
             except Exception as error:
-                self._retentions[identity] = self._failure(
+                value = self._failure(
                     error, fallback='storage_lookup_failed', secrets=(token,))
-            else:
-                self._retentions[identity] = value
-        result = self._retentions[identity]
+            self._retentions[identity] = (value, current_request_id())
+        else:
+            value, source = self._retentions[identity]
+            trace_skipped(
+                'metadata_cache', cache_layer='event', provider='boltp',
+                source_operation_id=source,
+                reason_code=('reused_failure' if isinstance(value, _Failure)
+                             else 'reused_metadata'))
+        result, source = self._retentions[identity]
         if isinstance(result, _Failure):
             raise result.error()
         return result
