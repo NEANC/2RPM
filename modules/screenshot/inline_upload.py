@@ -14,6 +14,7 @@ from modules.image_host.core import resolve_token
 from modules.image_host.expiration import parse_expiration
 from modules.image_host.registry import UPLOADERS
 from modules.yaml_scalar_compat import ScalarSyntaxError
+from modules.yaml_scalar_compat import YAML_LINE_BREAKS
 from modules.yaml_scalar_compat import normalize_inline_upload
 
 
@@ -49,7 +50,7 @@ def _split_items(text):
     while index < len(text):
         char = text[index]
         if comment:
-            if char in '\r\n\x85\u2028\u2029':
+            if char in YAML_LINE_BREAKS:
                 comment = False
             index += 1
             continue

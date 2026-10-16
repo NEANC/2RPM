@@ -29,7 +29,8 @@ _CONFIG_WHITELIST = frozenset({
 })
 _TARGET_PATHS = frozenset({('push', 'screenshot', 'targets', 'target')})
 _TOKEN_PATHS = frozenset({('push', 'screenshot', 'image_host', 'token')})
-_BOUNDARY = ' \t\r\n,;}]'
+YAML_LINE_BREAKS = '\r\n\x85\u2028\u2029'
+_BOUNDARY = ' \t,;}]' + YAML_LINE_BREAKS
 _ALIAS = re.compile(r'\*[^\s,\[\]{}]+')
 _ANCHOR = re.compile(r'&[^\s,\[\]{}]+')
 _TAG = re.compile(r'![^\s,\[\]{};]*')
@@ -65,11 +66,14 @@ class _Scanner:
         self.output = []
 
     def _copy(self):
+        """原样复制字符，按 YAML 换行计数且不重复计算 CRLF。"""
         char = self.text[self.pos]
         self.output.append(char)
         self.pos += 1
-        if char == '\n':
-            self.line += 1
+        if char in YAML_LINE_BREAKS:
+            if not (char == '\n' and self.pos > 1
+                    and self.text[self.pos - 2] == '\r'):
+                self.line += 1
             self.column = 1
         else:
             self.column += 1
@@ -83,18 +87,15 @@ class _Scanner:
         self.column += count
 
     def _newline(self):
+        """保留原始换行，统一通过字符复制更新坐标。"""
         if (self.text[self.pos] == '\r' and self.pos + 1 < self.length
                 and self.text[self.pos + 1] == '\n'):
-            self.output.append('\r\n')
-            self.pos += 2
+            self._copy_many(2)
         else:
-            self.output.append(self.text[self.pos])
-            self.pos += 1
-        self.line += 1
-        self.column = 1
+            self._copy()
 
     def _comment(self):
-        while self.pos < self.length and self.text[self.pos] not in '\r\n':
+        while self.pos < self.length and self.text[self.pos] not in YAML_LINE_BREAKS:
             self._copy()
 
     def _quoted(self):
@@ -115,7 +116,7 @@ class _Scanner:
             if char == quote:
                 self._copy()
                 return
-            if char in '\r\n':
+            if char in YAML_LINE_BREAKS:
                 self._newline()
                 continue
             self._copy()
@@ -161,7 +162,7 @@ class _Scanner:
         start = self.pos
         index = start + 1
         while index < self.length and self.text[index] != '`':
-            if self.text[index] in '\r\n':
+            if self.text[index] in YAML_LINE_BREAKS:
                 raise ScalarSyntaxError(
                     self.line, self.column, 'backtick_multiline')
             index += 1
@@ -192,7 +193,7 @@ class _InlineScanner(_Scanner):
             char = self.text[self.pos]
             if self.comment:
                 self._copy()
-                if char in '\r\n':
+                if char in YAML_LINE_BREAKS:
                     self.comment = False
                 continue
             if self.quote is not None:
@@ -310,7 +311,7 @@ class _InlineScanner(_Scanner):
         while index >= 0 and self.text[index] in ' \t':
             index -= 1
         end = index + 1
-        while index >= 0 and self.text[index] not in ',;{\r\n':
+        while index >= 0 and self.text[index] not in ',;{' + YAML_LINE_BREAKS:
             index -= 1
         key = self.text[index + 1:end].strip()
         if key.startswith(('"', "'")):
@@ -328,7 +329,7 @@ class _ConfigScanner(_Scanner):
     def run(self):
         while self.pos < self.length:
             char = self.text[self.pos]
-            if char in '\r\n':
+            if char in YAML_LINE_BREAKS:
                 self._newline()
                 continue
             if char in ' \t':
@@ -339,7 +340,7 @@ class _ConfigScanner(_Scanner):
                 continue
             if char == '-' and (
                     self.pos + 1 >= self.length
-                    or self.text[self.pos + 1] in ' \t\r\n'):
+                    or self.text[self.pos + 1] in ' \t' + YAML_LINE_BREAKS):
                 self._copy()
                 continue
             if char in '{[':
@@ -388,10 +389,10 @@ class _ConfigScanner(_Scanner):
             return None
         else:
             start = index
-            while index < self.length and self.text[index] not in '\r\n':
+            while index < self.length and self.text[index] not in YAML_LINE_BREAKS:
                 if self.text[index] == ':' and (
                         index + 1 >= self.length
-                        or self.text[index + 1] in ' \t\r\n'):
+                        or self.text[index + 1] in ' \t' + YAML_LINE_BREAKS):
                     break
                 if (self.text[index] == '#' and index > start
                         and self.text[index - 1] in ' \t'):
@@ -421,7 +422,7 @@ class _ConfigScanner(_Scanner):
             self._copy_many(end - self.pos)
             while self.pos < self.length and self.text[self.pos] in ' \t':
                 self._copy()
-        if self.pos >= self.length or self.text[self.pos] in '\r\n#':
+        if self.pos >= self.length or self.text[self.pos] in '#' + YAML_LINE_BREAKS:
             self.keys.append([indent, key])
             return
         char = self.text[self.pos]
@@ -446,7 +447,7 @@ class _ConfigScanner(_Scanner):
         self._copy()
         while self.pos < self.length and self.text[self.pos] in '+-0123456789':
             self._copy()
-        while self.pos < self.length and self.text[self.pos] not in '\r\n':
+        while self.pos < self.length and self.text[self.pos] not in YAML_LINE_BREAKS:
             self._copy()
         if self.pos < self.length:
             self._newline()
@@ -458,20 +459,20 @@ class _ConfigScanner(_Scanner):
                 spaces += 1
             if index >= self.length:
                 break
-            if self.text[index] in '\r\n':
-                while self.pos < self.length and self.text[self.pos] not in '\r\n':
+            if self.text[index] in YAML_LINE_BREAKS:
+                while self.pos < self.length and self.text[self.pos] not in YAML_LINE_BREAKS:
                     self._copy()
                 self._newline()
                 continue
             if spaces <= parent_indent:
                 break
-            while self.pos < self.length and self.text[self.pos] not in '\r\n':
+            while self.pos < self.length and self.text[self.pos] not in YAML_LINE_BREAKS:
                 self._copy()
             if self.pos < self.length:
                 self._newline()
 
     def _plain_block(self):
-        while self.pos < self.length and self.text[self.pos] not in '\r\n':
+        while self.pos < self.length and self.text[self.pos] not in YAML_LINE_BREAKS:
             if (self.text[self.pos] == '#' and self.pos > 0
                     and self.text[self.pos - 1] in ' \t'):
                 break
@@ -485,7 +486,7 @@ class _ConfigScanner(_Scanner):
                           'expect_key': kind == 'map'})
         while self.flow and self.pos < self.length:
             char = self.text[self.pos]
-            if char in '\r\n':
+            if char in YAML_LINE_BREAKS:
                 self._newline()
                 continue
             if char in ' \t':
@@ -576,11 +577,11 @@ class _ConfigScanner(_Scanner):
         chunks = []
         while self.pos < self.length:
             char = self.text[self.pos]
-            if char in ',\r\n]}':
+            if char in ',]}' + YAML_LINE_BREAKS:
                 break
             if char == ':' and (
                     self.pos + 1 >= self.length
-                    or self.text[self.pos + 1] in ' \t\r\n,]}'):
+                    or self.text[self.pos + 1] in ' \t,]}' + YAML_LINE_BREAKS):
                 break
             if char == ' ':
                 following = (self.text[self.pos + 1]
