@@ -297,12 +297,11 @@ class _InlineScanner(_Scanner):
         index -= 1
         while index >= 0 and self.text[index] in ' \t':
             index -= 1
-        if index < 4 or self.text[index - 4:index + 1] != 'token':
-            return False
-        if index >= 5 and (self.text[index - 5].isalnum()
-                           or self.text[index - 5] in '_-'):
-            return False
-        return True
+        end = index + 1
+        while index >= 0 and self.text[index] not in ',;{\r\n':
+            index -= 1
+        key = self.text[index + 1:end].strip()
+        return key in ('token', '"token"', "'token'")
 
 
 class _ConfigScanner(_Scanner):
@@ -526,7 +525,7 @@ class _ConfigScanner(_Scanner):
                 if end is not None:
                     key = self.text[self.pos + 1:end - 1]
             self._quoted()
-            self._record(frame, is_key, key)
+            self._record(frame, is_key, key, False)
             return
         if char == '*':
             self._alias()
@@ -544,11 +543,13 @@ class _ConfigScanner(_Scanner):
         token = self._flow_plain(path, is_key)
         self._record(frame, is_key, token)
 
-    def _record(self, frame, is_key, token):
+    def _record(self, frame, is_key, token, strip_key=True):
         if frame['kind'] != 'map':
             return
         if is_key:
-            frame['key'] = token.strip() if token else None
+            if token and strip_key:
+                token = token.strip()
+            frame['key'] = token or None
             frame['expect_key'] = False
         else:
             frame['key'] = None

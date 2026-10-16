@@ -221,6 +221,73 @@ def test_backtick_and_environment_tokens_parse_through_cli_path():
     assert literal['token'] == 'a;b,#{}\\x'
 
 
+@pytest.mark.parametrize('key', ['"token"', "'token'", 'token'])
+@pytest.mark.parametrize('value', ['`a;b,c}d`', '${IMAGE_TOKEN}'])
+def test_inline_top_level_token_key_forms_share_relaxed_values(key, value):
+    """CLI 顶层单双引号 token 键与裸键共享受限宽松值语法。"""
+    host = parse_inline_hosts(f'provider: catbox, {key}: {value}')[0]
+    assert host == {
+        'provider': 'catbox',
+        'token': value[1:-1] if value.startswith('`') else value,
+        'options': {},
+    }
+
+
+@pytest.mark.parametrize('body', [
+    'provider: catbox, x.token: `secret`',
+    'provider: catbox, x.token: ${IMAGE_TOKEN}',
+    'provider: catbox, options: {token: `secret`}',
+    'provider: catbox, options: {"token": ${IMAGE_TOKEN}}',
+])
+def test_inline_non_top_level_token_names_reject_relaxed_values(body):
+    """CLI 非顶层同名键不能取得 token 的宽松值语法。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(body)
+    assert caught.value.code == 'mapping_syntax'
+    assert caught.value.index == 1
+    assert body not in ''.join(traceback.format_exception(caught.value))
+
+
+def test_inline_rejected_item_index_ignores_quoted_token_separators():
+    """引号 token 的反引号分隔符不干扰后续拒绝项序号。"""
+    text = ('provider: catbox, "token": `a;b,c}d`; '
+            'provider: catbox, x.token: `secret`')
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(text)
+    assert caught.value.code == 'mapping_syntax'
+    assert caught.value.index == 2
+    assert text not in ''.join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize('key', ['" token "', "' token '"])
+@pytest.mark.parametrize('value', ['`secret`', '${IMAGE_TOKEN}'])
+def test_config_quoted_whitespace_token_key_is_not_whitelisted(
+        tmp_path, caplog, key, value):
+    """配置 flow 引号键按 YAML 值精确匹配，不折叠键内空白。"""
+    text = (MONITOR_HEAD + HOSTS_HEAD
+            + f'      - {{provider: catbox, {key}: {value}}}\n')
+    path = _write_raw(tmp_path, text)
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_config(str(path))
+    assert caught.value.code == 1
+    assert path.read_text(encoding='utf-8') == text
+    assert text not in caplog.text + ''.join(
+        traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize('value', ['`secret`', '${IMAGE_TOKEN}'])
+def test_config_nested_token_key_is_not_whitelisted(tmp_path, value):
+    """配置 flow 嵌套 options.token 不继承图床顶层 token 白名单。"""
+    text = (MONITOR_HEAD + HOSTS_HEAD
+            + '      - {provider: catbox, token: ok, '
+            + f'options: {{token: {value}}}}}\n')
+    path = _write_raw(tmp_path, text)
+    with pytest.raises(SystemExit) as caught:
+        config_module.load_config(str(path))
+    assert caught.value.code == 1
+    assert path.read_text(encoding='utf-8') == text
+
+
 @pytest.mark.parametrize('body', [
     'provider: catbox, token: a, token: b',
     '<<: {provider: catbox}, <<: {token: base}',
