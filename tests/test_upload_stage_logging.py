@@ -682,9 +682,13 @@ CLOSE_SECONDS = 0.5
 REQUEST_BODY_MS = 375
 REQUEST_MS = 125
 SLOW_SESSION_SECONDS = 5.0
+SLOW_AUTH_SECONDS = 5.0
 SLOW_REQUEST_SECONDS = 1.0
 SLOW_BODY_SECONDS = 2.0
 SLOW_REQUEST_BODY_MS = 3000
+AUTH_REQUEST_SECONDS = 0.4
+AUTH_BODY_SECONDS = 0.6
+AUTH_REQUEST_BODY_MS = 1000
 
 # 四个非 v2 适配器的成功正文与业务校验失败正文；superbed 失败会在两个
 # 域名间各发一次真实请求，因此失败队列需要两条合成响应。
@@ -934,6 +938,56 @@ def test_request_duration_excludes_slow_session_construction(
     assert len(sent) == 1
     assert [event.duration_ms for event in terminal_requests(events)] == [
         SLOW_REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile', 'upload'])
+@pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
+def test_v2_request_timing_excludes_slow_auth_preparation(
+        stage, signal_type, monkeypatch):
+    """认证准备五秒不进入请求起点，传输与正文一秒构成完整耗时。"""
+    module = import_module('modules.image_host.v2_http')
+    clock = [0.0]
+    original_auth = module._ExplicitAuth.__call__
+
+    def slow_auth(auth, request):
+        """模拟本地认证回调耗时后保留真实认证语义。"""
+        clock[0] += SLOW_AUTH_SECONDS
+        return original_auth(auth, request)
+
+    monkeypatch.setattr(module._ExplicitAuth, '__call__', slow_auth)
+    monkeypatch.setattr(
+        import_module(__name__), 'REQUEST_SECONDS', AUTH_REQUEST_SECONDS)
+    monkeypatch.setattr(
+        import_module(__name__), 'BODY_SECONDS', AUTH_BODY_SECONDS)
+    signal = None if signal_type is None else signal_type('stop-request')
+    sent = install_timed_transport(
+        monkeypatch, clock,
+        [(200, body({'status': 'success', 'data': {}}), signal)])
+    events = []
+
+    def record(event):
+        """记录事件及其发出时刻以核对请求起点。"""
+        events.append((event, clock[0]))
+
+    kwargs = {'data': {}, 'files': {}} if stage == 'upload' else {}
+    if signal is None:
+        with trace_scope(mode='cli', clock=lambda: clock[0], on_status=record):
+            result = module.request_json('beeimg_cn', stage, SECRET, **kwargs)
+        assert result['status'] == 'success'
+    else:
+        with pytest.raises(signal_type) as caught:
+            with trace_scope(
+                    mode='cli', clock=lambda: clock[0], on_status=record):
+                module.request_json('beeimg_cn', stage, SECRET, **kwargs)
+        assert caught.value is signal
+    request_events = [item for item in events if item[0].stage in (
+        'metadata_query', 'upload_attempt')]
+    assert len(sent) == 1
+    assert request_events[0][0].status == 'started'
+    assert request_events[0][1] == SLOW_AUTH_SECONDS
+    assert request_events[-1][0].duration_ms == AUTH_REQUEST_BODY_MS
+    assert request_events[-1][0].status == (
+        'succeeded' if signal is None else 'cancelled')
 
 
 @pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])

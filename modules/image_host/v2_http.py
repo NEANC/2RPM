@@ -91,14 +91,23 @@ def _send(provider, stage, kwargs):
     try:
         with _V2Session() as session:
             session.auth = _ExplicitAuth()
-            request = session.post if stage == 'upload' else session.get
+            method = 'POST' if stage == 'upload' else 'GET'
+            url = _BASES[provider] + _PATHS[stage]
+            request = requests.Request(
+                method, url, headers=kwargs['headers'],
+                data=kwargs.get('data'), files=kwargs.get('files'))
+            prepared = session.prepare_request(request)
+            settings = session.merge_environment_settings(
+                prepared.url, {}, kwargs['stream'], kwargs['verify'], None)
+            send_kwargs = dict(
+                settings, timeout=kwargs['timeout'],
+                allow_redirects=kwargs['allow_redirects'])
             kind = 'upload_attempt' if stage == 'upload' else stage
             with trace_request(provider, kind) as operation:
                 try:
                     if stage == 'upload':
                         operation.mark_transport_started()
-                    with request(
-                            _BASES[provider] + _PATHS[stage], **kwargs) as response:
+                    with session.send(prepared, **send_kwargs) as response:
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
                             operation.mark_end()

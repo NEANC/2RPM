@@ -49,6 +49,7 @@ def test_remaining_providers_multipart_contract(
         auth, suffix, mime):
     """每个适配器断言路径、认证、文件契约、MIME 和同一字节对象。"""
     original = requests.sessions.Session.request
+    original_prepare = requests.sessions.Session.prepare_request
 
     def response_for_provider(session, method, url, **kwargs):
         """只替换 HTTP 响应，同时保留实际 v2 流式 JSON 解码。"""
@@ -71,7 +72,32 @@ def test_remaining_providers_multipart_contract(
         response._content = json.dumps(payload).encode()
         return response
 
-    monkeypatch.setattr(requests.sessions.Session, 'request', response_for_provider)
+    if provider in ('beeimg_cn', 'boltp'):
+        def prepare(session, request):
+            """在真实准备前记录 v2 请求的原始 multipart 参数。"""
+            http_calls.append((request.method, request.url, {
+                'headers': request.headers, 'data': request.data,
+                'files': request.files}))
+            return original_prepare(session, request)
+
+        def send(adapter, request, **kwargs):
+            """在适配器边界返回 v2 合成响应。"""
+            response = requests.Response()
+            response.request = request
+            response.url = request.url
+            response.status_code = 200
+            response._content = json.dumps({
+                'status': 'success',
+                'data': {'public_url': URL},
+            }).encode()
+            response._content_consumed = True
+            return response
+
+        monkeypatch.setattr(requests.sessions.Session, 'prepare_request', prepare)
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    else:
+        monkeypatch.setattr(
+            requests.sessions.Session, 'request', response_for_provider)
     data = bytes(bytearray(b'format-contract-payload'))
     filename = 'capture.' + suffix
     uploader = getattr(providers, 'upload_' + provider)

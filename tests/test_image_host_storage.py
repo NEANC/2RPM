@@ -112,18 +112,25 @@ class Session:
         self.closed += 1
         self.factory.events.append('session')
 
-    def get(self, url, **kwargs):
-        """记录单次 GET 的固定端点和参数。"""
-        return self.send('GET', url, kwargs)
+    def prepare_request(self, request):
+        """保留待发送请求字段供传输边界核对。"""
+        return request
 
-    def post(self, url, **kwargs):
-        """记录单次 POST 的固定端点和参数。"""
-        return self.send('POST', url, kwargs)
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        """返回调用方显式传输设置，不读取真实环境。"""
+        return {'proxies': proxies, 'stream': stream, 'verify': verify,
+                'cert': cert}
 
-    def send(self, method, url, kwargs):
+    def send(self, request, **kwargs):
         """在唯一网络替换边界返回合成响应。"""
         assert self.active
-        self.factory.calls.append((method, url, kwargs))
+        recorded = {'headers': request.headers, 'timeout': kwargs['timeout'],
+                    'verify': kwargs['verify'],
+                    'allow_redirects': kwargs['allow_redirects'],
+                    'stream': kwargs['stream']}
+        if request.method == 'POST':
+            recorded.update(data=request.data, files=request.files)
+        self.factory.calls.append((request.method, request.url, recorded))
         if self.factory.request_error is not None:
             raise self.factory.request_error
         return self.response
