@@ -84,7 +84,7 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
     if item['error'] is not None:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
-        return f'截图配置失败：{item["error"]}', False
+        return f'截图配置失败：{item["error"]}', False, False
 
     try:
         result = capture(
@@ -98,11 +98,11 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         trace.finish_image(item['index'], 'failed')
         failure = capture_failure_message(error)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-        return failure, False
+        return failure, False, False
     except Exception:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图失败')
-        return '截图失败', False
+        return '截图失败', False, False
 
     trace.finish_image(item['index'], 'succeeded')
     warnings.extend(result.warnings)
@@ -118,12 +118,12 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
             result.image_bytes, item['out'] + '.jpg', hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
-            return markdown_image(item['out'], uploaded.url), True
+            return markdown_image(item['out'], uploaded.url), True, True
         failure = _upload_failure_summary(uploaded.failures)
     except Exception:
         pass
     diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-    return failure, True
+    return failure, True, False
 
 
 def _resolve_status(outcomes):
@@ -184,7 +184,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                             context = stack.enter_context(
                                 UploadContext(diagnostics=False))
                         with trace_item(image_index=index):
-                            value, captured = _prepare_target(
+                            value, captured, succeeded = _prepare_target(
                                 item, hosts, warnings, diagnostics,
                                 context=context, runtime=runtime, event=event,
                                 policy=policy, trace=trace)
@@ -198,7 +198,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                         values[item['out']] = value
                         outcome = trace_slot_outcome(index)
                         outcomes.append(
-                            captured if outcome is None
+                            succeeded if outcome is None
                             else outcome == 'succeeded')
                 except BaseException as exc:
                     reason = ('batch_cancelled'
