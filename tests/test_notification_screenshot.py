@@ -1230,8 +1230,15 @@ def test_notification_keeps_backup_credentials_lazy(notification_http, monkeypat
         return resolve(value)
 
     monkeypatch.setattr(module, 'resolve_token', observed)
-    _install_onepush(monkeypatch)
+    snapshots = []
+
+    def notify(**kwargs):
+        snapshots.append(import_module('modules.log_safety').secret_snapshot())
+        return _response()
+
+    _install_onepush(monkeypatch, notify)
     assert notif.send_notification(config, 'on_end', process_name='demo')
+    assert snapshots and all(SECRET in snapshot for snapshot in snapshots)
     assert values == [SECRET]
     assert len(state['requests']) == 4
 

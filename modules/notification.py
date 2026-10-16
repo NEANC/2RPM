@@ -390,8 +390,8 @@ def _log_rendered_notification(template_key, title, content, batch):
     """
     LOGGER.info(
         "通知标题: %s\r\n通知内容: %s",
-        redact_text(title, ()),
-        redact_text(content, ()),
+        redact_text(redact_text(title, ())),
+        redact_text(redact_text(content, ())),
     )
 
 

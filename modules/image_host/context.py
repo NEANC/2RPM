@@ -489,7 +489,7 @@ class UploadContext:
                 self._credentials[index] = _Credential(None, failure)
             else:
                 self._credentials[index] = _Credential(token, None)
-                if self._diagnostics and token:
+                if token:
                     self._secrets = tuple(dict.fromkeys(
                         self._secrets + (token,)))
                 if token:
@@ -523,9 +523,12 @@ class UploadContext:
     def diagnostic_scope(self):
         """用不可变秘密快照包装既有作用域，关闭诊断时显式传入 None。"""
         self._ensure_open()
-        with safety_scope(self._secrets):
-            with _diagnostic_scope(self._secrets if self._diagnostics else None):
-                yield
+        try:
+            with safety_scope(self._secrets):
+                with _diagnostic_scope(self._secrets if self._diagnostics else None):
+                    yield
+        finally:
+            extend_secrets(self._secrets)
 
     def close(self):
         """幂等释放本对象的秘密及事件引用，不承诺 Python 内存安全擦除。
