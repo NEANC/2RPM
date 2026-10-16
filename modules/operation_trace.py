@@ -93,6 +93,7 @@ _TRACE = ContextVar('operation_trace_batch', default=None)
 _EVENT = ContextVar('operation_trace_event', default=None)
 _ITEM = ContextVar('operation_trace_item', default=None)
 _REQUEST = ContextVar('operation_trace_request', default=None)
+_FALLBACK = ContextVar('operation_trace_fallback', default=None)
 
 
 @dataclass(frozen=True)
@@ -330,6 +331,7 @@ class BatchTrace:
             payload.setdefault('slot_index', item[1])
         payload.setdefault('batch_id', self._batch_id)
         payload.setdefault('event_id', self._event_id)
+        payload.setdefault('source_operation_id', _FALLBACK.get())
         return _create_event(**payload)
 
     def _record_event(self, event, summary=None) -> None:
@@ -698,6 +700,19 @@ def trace_skipped(stage, *, reason_code='', **safe_fields):
     if trace is None:
         return
     trace._record_skipped(stage, reason_code, safe_fields)
+
+
+@contextmanager
+def trace_fallback(kind, action, *, reason_code, **fields):
+    fields.setdefault('source_operation_id', current_request_id())
+    with trace_operation('fallback', action, fallback_kind=kind,
+                         reason_code=reason_code, **fields) as operation:
+        token = _FALLBACK.set(
+            operation._event.operation_id if operation._event else None)
+        try:
+            yield operation
+        finally:
+            _FALLBACK.reset(token)
 
 
 @contextmanager

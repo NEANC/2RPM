@@ -242,6 +242,33 @@ def test_non_v2_prepare_failure_has_no_attempt(monkeypatch, tmp_path, provider):
     assert of_stage(run.events, 'upload_attempt') == []
 
 
+@pytest.mark.parametrize('signal', [None, KeyboardInterrupt, SystemExit])
+def test_superbed_domain_fallback_links_real_terminal(monkeypatch, tmp_path, signal):
+    registry = import_module('modules.image_host.registry')
+    success = (200, body({'success': True, 'total': 1, 'succeed': 1,
+                          'failed': 0, 'files': [{'url': URL}]}))
+    transport = Transport(monkeypatch, [(503, b''), signal() if signal else success])
+    events = []
+    with trace_scope(mode='automatic', on_status=events.append) as trace:
+        if signal:
+            with pytest.raises(signal):
+                registry.upload_with_fallback(b'image', 'image.png', [
+                    {'provider': 'superbed', 'token': SECRET}])
+        else:
+            assert registry.upload_with_fallback(b'image', 'image.png', [
+                {'provider': 'superbed', 'token': SECRET}]).success
+    fallbacks = of_stage(events, 'fallback')
+    assert [event.status for event in fallbacks] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    attempts = of_stage(events, 'upload_attempt')
+    assert fallbacks[0].source_operation_id == attempts[0].operation_id
+    assert attempts[2].source_operation_id == fallbacks[0].operation_id
+    assert trace.summary()['host_failovers'] == 1
+    assert len(transport.posts) == 2
+    if not signal:
+        assert events[-1].reason_code == 'recoverable_warning'
+
+
 def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
     """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
     run = run_chain(

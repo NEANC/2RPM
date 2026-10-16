@@ -21,6 +21,7 @@ from .expiration import PreparedV2Options
 from .v2_http import request_json
 from modules.log_safety import guard_dependency_logging
 from modules.operation_trace import trace_request
+from modules.operation_trace import trace_fallback
 
 
 LOGGER = logging.getLogger(__name__)
@@ -335,7 +336,13 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     version, headers, data, file_key, mime = materials
     domains = SUPERBED_DOMAINS
     endpoint_path = SUPERBED_CONTRACTS[version][0]
-    for domain in domains:
+    for position, domain in enumerate(domains):
+        fallback_scope = None
+        if position:
+            fallback_scope = trace_fallback(
+                'host_failover', 'failover', reason_code='domain_failed',
+                provider='superbed')
+            fallback = fallback_scope.__enter__()
         try:
             session = requests.Session()
             response = None
@@ -383,6 +390,14 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
                     raise ImageHostError('upload_failed', '') from None
         except Exception:
             code = 'upload_failed'
+        except BaseException:
+            if fallback_scope is not None:
+                fallback_scope.__exit__(*sys.exc_info())
+            raise
+        if fallback_scope is not None:
+            fallback.finish('succeeded' if code is None else 'failed',
+                            reason_code='domain_failed')
+            fallback_scope.__exit__(None, None, None)
         if code is None:
             return url
     raise ImageHostError(code, '')
