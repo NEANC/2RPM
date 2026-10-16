@@ -149,6 +149,15 @@ def _redact_urls(text):
     cursor = 0
     while match := _URL.search(text, cursor):
         end = match.end()
+        prefix = text[:match.start()]
+        if not prefix.endswith(']('):
+            url = match.group()
+            if (prefix.endswith('(') and url.endswith(')')
+                    and url.count(')') > url.count('(')):
+                end -= 1
+            parts.extend((text[cursor:match.start()], LINK_REDACTED))
+            cursor = end
+            continue
         depth = 0
         escaped = False
         for index in range(match.start(), end):

@@ -159,6 +159,47 @@ def test_markdown_url_boundaries_preserve_adjacent_text(text, expected, tmp_path
     assert output == expected + '\n'
 
 
+@pytest.mark.parametrize('sink', ['file', 'console', 'spinner'])
+@pytest.mark.parametrize('ansi', [False, True])
+@pytest.mark.parametrize('suffix', [
+    '/a?sig=x)PRIVATE_QUERY',
+    '/a)PRIVATE_PATH',
+    '/#x)PRIVATE_FRAGMENT',
+    '/a)PRIVATE_PATH/#x)PRIVATE_FRAGMENT',
+    '/a?sig=x)PRIVATE_QUERY)',
+])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_final_handlers_keep_bare_url_candidate_private(
+        sink, ansi, suffix, wrapped, tmp_path):
+    url = 'https://example.invalid' + suffix
+    if ansi:
+        url = url[:3] + '\x1b[31m' + url[3:]
+        url = url.replace(')PRIVATE', ')\x1b[0mPRIVATE')
+    text = '(' + url + ')' if wrapped else url
+    expected = '([链接已隐藏])' if wrapped else '[链接已隐藏]'
+    record = _record(logging.CRITICAL)
+    record.msg = '正文\n%s\n结束'
+    record.args = (text,)
+    expected = '正文\n' + expected + '\n结束'
+    if sink == 'file':
+        handler = logger_mod._create_file_handler(str(tmp_path), 'bare-url')
+        handler.setFormatter(log_safety.SafeFormatter('%(message)s'))
+        output = _emit_file(handler, record).decode('utf-8')
+        expected += '\n'
+    elif sink == 'console':
+        stream = io.StringIO()
+        handler = log_safety.SafeStreamHandler(stream)
+        handler.setFormatter(logger_mod.ColoredConsoleFormatter('%(message)s'))
+        output = _emit_stream(handler, stream, record)
+        handler.close()
+        expected += '\n'
+    else:
+        output = _emit_spinner(record)
+        expected = '❌ ' + expected
+    output = log_safety.remove_terminal_sequences(output).replace('\r\n', '\n')
+    assert output == expected
+
+
 def test_handle_error_does_not_dump_record(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(logging, 'raiseExceptions', True)
     record = _record()
