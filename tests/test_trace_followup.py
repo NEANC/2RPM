@@ -176,3 +176,24 @@ def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, c
     assert ImageHostError('profile_forbidden', '').message in capsys.readouterr().out
     assert 'reason_code=profile_forbidden' in caplog.text
     assert not transport.posts
+
+
+@pytest.mark.parametrize('saved', [True, False])
+def test_cli_save_only_uses_actual_save_and_warning(monkeypatch, tmp_path, caplog, saved):
+    from argparse import Namespace
+    from modules.screenshot.retention import SaveOutcome
+
+    cli = import_module('modules.screenshot.cli')
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=CaptureResult(
+        b'image', 'window', 'synthetic', 2, 2, ('固定捕获告警',))))
+    monkeypatch.setattr(cli, 'save_cli', Mock(return_value=SaveOutcome(
+        str(tmp_path / 'image.jpg') if saved else None, 'image.jpg')))
+    args = Namespace(source='window', target='synthetic', hosts=None,
+                     output=str(tmp_path / 'image.jpg'))
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        assert cli.run_screenshot_cli(args, str(tmp_path)) == (0 if saved else 1)
+    final = next(record for record in caplog.records
+                 if 'stage=batch' in record.getMessage() and ' summary ' in record.getMessage())
+    assert ('status=completed' if saved else 'status=failed') in final.getMessage()
+    assert final.levelno == (logging.WARNING if saved else logging.ERROR)
+    assert 'slots_planned=0' in final.getMessage()

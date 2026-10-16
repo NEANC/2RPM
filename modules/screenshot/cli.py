@@ -14,6 +14,7 @@ from modules.operation_trace import trace_scope
 from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot
 from modules.operation_trace import trace_slots_skipped
+from modules.operation_trace import trace_warning
 from modules.upload_status import make_status_consumer
 
 from .inline_upload import InlineUploadError
@@ -407,6 +408,7 @@ def run_screenshot_cli(args, program_dir):
             trace.finish_image(1, 'succeeded')
 
             for warning in result.warnings:
+                trace_warning()
                 print(warning)
             filename = cli_filename(result, target, is_file, today)
             outcome = None
@@ -415,6 +417,7 @@ def run_screenshot_cli(args, program_dir):
                     outcome = save_cli(result, target, is_file, today=today)
                     filename = outcome.filename
                     for warning in outcome.warnings:
+                        trace_warning()
                         print(warning)
                     if outcome.path is not None:
                         print(outcome.path)
