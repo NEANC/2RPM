@@ -131,10 +131,10 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
     if token:
         data['userhash'] = token
     mime = _image_mime(filename)
-    with _upload_attempt('catbox') as attempt:
-        url = None
-        try:
-            with requests.Session() as session:
+    url = None
+    try:
+        with requests.Session() as session:
+            with _upload_attempt('catbox') as attempt:
                 try:
                     attempt.mark_transport_started()
                     with session.post(
@@ -156,12 +156,11 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
                 except BaseException:
                     attempt.mark_end()
                     raise
-        except requests.exceptions.RequestException:
-            pass
-        else:
-            attempt.finish('succeeded', http_status=status_code)
-            return url
-        raise ImageHostError('upload_failed', '')
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except requests.exceptions.RequestException:
+        pass
+    raise ImageHostError('upload_failed', '')
 
 
 def upload_wmimg(image_bytes, filename, token, options) -> str:
@@ -204,10 +203,10 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
     if token:
         headers['Authorization'] = 'Bearer ' + token
     mime = _image_mime(filename)
-    with _upload_attempt('wmimg') as attempt:
-        url = None
-        try:
-            with requests.Session() as session:
+    url = None
+    try:
+        with requests.Session() as session:
+            with _upload_attempt('wmimg') as attempt:
                 try:
                     attempt.mark_transport_started()
                     with session.post(
@@ -241,12 +240,11 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
                 except BaseException:
                     attempt.mark_end()
                     raise
-        except requests.exceptions.RequestException:
-            pass
-        else:
-            attempt.finish('succeeded', http_status=status_code)
-            return url
-        raise ImageHostError('upload_failed', '')
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except requests.exceptions.RequestException:
+        pass
+    raise ImageHostError('upload_failed', '')
 
 
 def upload_beeimg(image_bytes, filename, token, options) -> str:
@@ -280,10 +278,10 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
         LOGGER.warning('BeeIMG 存在不支持的其他选项，已忽略')
 
     mime = _image_mime(filename)
-    with _upload_attempt('beeimg') as attempt:
-        url = None
-        try:
-            with requests.Session() as session:
+    url = None
+    try:
+        with requests.Session() as session:
+            with _upload_attempt('beeimg') as attempt:
                 try:
                     attempt.mark_transport_started()
                     with session.post(
@@ -312,15 +310,14 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
                 except BaseException:
                     attempt.mark_end()
                     raise
-        except ImageHostError:
-            raise
-        except Exception:
-            pass
-        else:
-            attempt.finish('succeeded', http_status=status_code)
-            return url
-        # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
-        raise ImageHostError('upload_failed', '')
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except ImageHostError:
+        raise
+    except Exception:
+        pass
+    # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
+    raise ImageHostError('upload_failed', '')
 
 
 def upload_superbed(image_bytes, filename, token, options) -> str:

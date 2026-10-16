@@ -313,7 +313,9 @@ class _InlineScanner(_Scanner):
         while index >= 0 and self.text[index] not in ',;{\r\n':
             index -= 1
         key = self.text[index + 1:end].strip()
-        return key in ('token', '"token"', "'token'")
+        if key.startswith(('"', "'")):
+            key = _decode_quoted_key(key)
+        return key == 'token'
 
 
 class _ConfigScanner(_Scanner):
@@ -374,10 +376,13 @@ class _ConfigScanner(_Scanner):
             return None
         char = self.text[index]
         if char in '"\'':
+            start = index
             end = self._quoted_end(index)
             if end is None:
                 return None
-            key = self.text[index + 1:end - 1]
+            key = _decode_quoted_key(self.text[start:end])
+            if key is None:
+                return None
             index = end
         elif char in '{}[]*':
             return None

@@ -401,19 +401,25 @@ def run_screenshot_cli(args, program_dir):
                 print(warning)
             filename = cli_filename(result, target, is_file, today)
             outcome = None
-            if target is not None:
-                outcome = save_cli(result, target, is_file, today=today)
-                filename = outcome.filename
-                for warning in outcome.warnings:
-                    print(warning)
-                if outcome.path is not None:
-                    print(outcome.path)
-            else:
-                trace_skipped('save', reason_code='not_configured')
-            if hosts is not None:
-                all_success = _upload_all(result.image_bytes, filename, hosts)
-                trace.set_status(_upload_status(trace.summary()))
-                return 0 if all_success else 1
+            try:
+                if target is not None:
+                    outcome = save_cli(result, target, is_file, today=today)
+                    filename = outcome.filename
+                    for warning in outcome.warnings:
+                        print(warning)
+                    if outcome.path is not None:
+                        print(outcome.path)
+                else:
+                    trace_skipped('save', reason_code='not_configured')
+                if hosts is not None:
+                    all_success = _upload_all(
+                        result.image_bytes, filename, hosts)
+                    trace.set_status(_upload_status(trace.summary()))
+                    return 0 if all_success else 1
+            except (KeyboardInterrupt, SystemExit):
+                trace_slots_skipped(
+                    1, slots_planned, reason_code='batch_cancelled')
+                raise
             saved = outcome is not None and outcome.path is not None
             trace.set_status('completed' if saved else 'failed')
             return 0 if saved else 1

@@ -214,6 +214,8 @@ def _event_level(event) -> int:
         # 槽位最终失败表示该图片/上传项已无可用结果，按规格使用 ERROR
         if stage == 'slot':
             return logging.ERROR
+        if stage == 'metadata_query':
+            return logging.WARNING
         if stage in _DEBUG_STAGES:
             return logging.DEBUG
         # 缓存 IO 降级（如 metadata_cache 读写/失效失败）已不在 DEBUG 阶段集合

@@ -14,6 +14,8 @@ import pytest
 
 from modules.image_host.core import ImageHostError
 from modules.operation_trace import trace_scope
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_slot
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import SaveOutcome
 from modules.screenshot import winfs
@@ -297,6 +299,89 @@ def test_upload_all_propagates_control_signals(monkeypatch):
         with pytest.raises(type(signal)) as caught:
             cli._upload_all(b'x', 'a.jpg', hosts)
         assert caught.value is signal
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_save_control_signal_keeps_image_and_cancels_unstarted_uploads(
+        signal_type, monkeypatch, tmp_path):
+    """保存控制信号保留图片成功事实，并取消保存和跳过全部上传槽位。"""
+    cli = cli_module()
+    signal = signal_type('stop-save')
+    hosts = load_hosts('provider: catbox; provider: beeimg')
+
+    def save(*args, **kwargs):
+        """在真实保存阶段边界传播指定控制信号。"""
+        with trace_operation('save', 'write'):
+            raise signal
+
+    monkeypatch.setattr(cli, 'save_cli', save)
+    upload = Mock()
+    monkeypatch.setattr(cli, '_upload_all', upload)
+    events = []
+    monkeypatch.setattr(
+        cli, 'make_status_consumer', lambda: events.append)
+
+    with pytest.raises(signal_type) as caught:
+        run_cli(
+            monkeypatch, tmp_path, str(tmp_path / 'shot.jpg'), hosts,
+            image_format='jpeg')
+
+    assert caught.value is signal
+    upload.assert_not_called()
+    image = [event for event in events if event.stage == 'batch'
+             and event.status == 'cancelled'][0]
+    slots = [event for event in events if event.stage == 'slot']
+    saves = [event for event in events if event.stage == 'save']
+    assert image.status == 'cancelled'
+    assert [event.status for event in saves] == ['started', 'cancelled']
+    assert [(event.status, event.reason_code) for event in slots] == [
+        ('skipped', 'batch_cancelled'), ('skipped', 'batch_cancelled')]
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_upload_control_signal_keeps_completed_slot_and_skips_remaining(
+        signal_type, monkeypatch):
+    """上传控制信号不改写已完成槽位，仅跳过尚未开始的槽位。"""
+    cli = cli_module()
+    signal = signal_type('stop-upload')
+    hosts = [
+        {'provider': 'catbox', 'options': {}},
+        {'provider': 'beeimg', 'options': {}},
+        {'provider': 'wmimg', 'options': {}},
+    ]
+    monkeypatch.setattr(
+        cli, 'prepare_cli_host', lambda host: (dict(host, token=''), None))
+    patch_context(monkeypatch)
+    results = iter([SimpleNamespace(success=True, url=URL), signal])
+
+    def upload(*args, **kwargs):
+        """首槽成功，次槽传播指定控制信号。"""
+        result = next(results)
+        if isinstance(result, BaseException):
+            raise result
+        trace_slot('catbox', 0).finish('succeeded')
+        return result
+
+    monkeypatch.setattr(cli, 'upload_with_fallback', upload)
+    events = []
+    with pytest.raises(signal_type) as caught:
+        with trace_scope(mode='cli', images_planned=1, slots_planned=3,
+                         on_status=events.append) as trace:
+            cli._upload_all(b'x', 'a.jpg', hosts)
+    assert caught.value is signal
+    summary = trace.summary()
+    assert summary['slots_planned'] == 3
+    assert summary['slots_succeeded'] == 1
+    assert summary['slots_cancelled'] == 1
+    assert summary['slots_skipped'] == 1
+    terminals = {event.slot_index: (event.status, event.reason_code)
+                 for event in events
+                 if event.stage == 'slot' and event.status != 'started'}
+    assert terminals == {
+        0: ('succeeded', ''),
+        1: ('cancelled', 'batch_cancelled'),
+        2: ('skipped', 'batch_cancelled'),
+    }
 
 
 def test_upload_all_keeps_real_slot_indices(monkeypatch, tmp_path):

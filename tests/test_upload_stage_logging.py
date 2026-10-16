@@ -681,6 +681,10 @@ PARSE_SECONDS = 5.0
 CLOSE_SECONDS = 0.5
 REQUEST_BODY_MS = 375
 REQUEST_MS = 125
+SLOW_SESSION_SECONDS = 5.0
+SLOW_REQUEST_SECONDS = 1.0
+SLOW_BODY_SECONDS = 2.0
+SLOW_REQUEST_BODY_MS = 3000
 
 # 四个非 v2 适配器的成功正文与业务校验失败正文；superbed 失败会在两个
 # 域名间各发一次真实请求，因此失败队列需要两条合成响应。
@@ -891,6 +895,45 @@ def test_v2_group_profile_upload_duration_excludes_json_parse(
     assert len(sent) == 3
     assert [event.duration_ms for event in terminal_requests(events)] == [
         REQUEST_BODY_MS, REQUEST_BODY_MS, REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])
+def test_request_duration_excludes_slow_session_construction(
+        provider, monkeypatch, tmp_path):
+    """五秒会话准备不计时，请求与正文三秒构成完整请求耗时。"""
+    clock = [0.0]
+    original_init = requests.sessions.Session.__init__
+
+    def slow_init(session):
+        """模拟本地会话构造耗时后执行真实初始化。"""
+        clock[0] += SLOW_SESSION_SECONDS
+        original_init(session)
+
+    monkeypatch.setattr(requests.sessions.Session, '__init__', slow_init)
+    monkeypatch.setattr(
+        import_module(__name__), 'REQUEST_SECONDS', SLOW_REQUEST_SECONDS)
+    monkeypatch.setattr(
+        import_module(__name__), 'BODY_SECONDS', SLOW_BODY_SECONDS)
+    replies = ([SUCCESS_UPLOAD] if provider == 'beeimg_cn' else [(
+        200, body({'status': True, 'data': {'links': {'url': URL}}}))])
+    sent = install_timed_transport(monkeypatch, clock, replies)
+    host = ({'provider': 'wmimg', 'token': ''} if provider == 'wmimg' else
+            {'provider': 'beeimg_cn', 'token': '',
+             'options': {'storage_id': 13}})
+    if provider == 'wmimg':
+        events, result = run_timed_adapter(monkeypatch, tmp_path, host, clock)
+    else:
+        module = import_module('modules.image_host.v2_http')
+        events = []
+        with trace_scope(mode='cli', clock=lambda: clock[0],
+                         on_status=events.append):
+            payload = module.request_json(
+                'beeimg_cn', 'upload', '', data={}, files={})
+        result = type('Result', (), {'success': payload['status'] == 'success'})()
+    assert result.success
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        SLOW_REQUEST_BODY_MS]
 
 
 @pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])

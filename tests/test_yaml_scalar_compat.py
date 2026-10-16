@@ -112,6 +112,24 @@ def test_flow_single_quoted_token_key_uses_yaml_single_quote_semantics():
         + "      - {provider: catbox, 'token': 'a;b', 'to''ken': keep}\n")
 
 
+@pytest.mark.parametrize('key', ['"to\\u006ben"', "'token'"])
+def test_block_quoted_token_key_uses_yaml_scalar_semantics(key):
+    """块映射引号键按 YAML 语义命中 token，同时保持键原文。"""
+    text = (HOSTS_HEAD + '      - provider: catbox\n'
+            + f'        {key}: `a;b`\n')
+    assert normalize_config_scalars(text) == (
+        HOSTS_HEAD + '      - provider: catbox\n'
+        + f"        {key}: 'a;b'\n")
+
+
+@pytest.mark.parametrize('key', ['"to\\u006benx"', "'to''ken'"])
+def test_block_quoted_non_token_key_keeps_original_value(key):
+    """块映射引号键解码后非 token 时不获得宽松值语法。"""
+    text = (HOSTS_HEAD + '      - provider: catbox\n'
+            + f'        {key}: `a;b`\n')
+    assert normalize_config_scalars(text) == text
+
+
 def test_quoted_non_whitelist_key_stays_unmodified():
     """引号包裹的非白名单键不获得宽松词法，反引号保持原样。"""
     text = HOSTS_HEAD + '      - {provider: catbox, "note": `x`}\n'
@@ -255,6 +273,23 @@ def test_inline_top_level_token_key_forms_share_relaxed_values(key, value):
         'token': value[1:-1] if value.startswith('`') else value,
         'options': {},
     }
+
+
+@pytest.mark.parametrize('key', ['"to\\u006ben"', "'token'"])
+def test_inline_quoted_token_key_uses_yaml_scalar_semantics(key):
+    """CLI 引号键按 YAML 语义命中 token。"""
+    host = parse_inline_hosts(
+        f'provider: catbox, {key}: `a;b,c}}d`')[0]
+    assert host['token'] == 'a;b,c}d'
+
+
+@pytest.mark.parametrize('key', ['"to\\u006benx"', "'to''ken'"])
+def test_inline_quoted_non_token_key_rejects_relaxed_value(key):
+    """CLI 引号键解码后非 token 时仍拒绝宽松值语法。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts(f'provider: catbox, {key}: `secret`')
+    assert caught.value.code == 'mapping_syntax'
+    assert caught.value.index == 1
 
 
 @pytest.mark.parametrize('body', [

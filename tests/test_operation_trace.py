@@ -411,6 +411,36 @@ def test_cache_failure_warns_and_slot_failure_errors(caplog):
     assert levels['slot'] == logging.ERROR
 
 
+def test_metadata_query_levels_keep_details_debug_and_failure_warning(caplog):
+    """元数据查询开始与成功为 DEBUG，失败为 WARNING，取消为 INFO。"""
+    module = trace_module()
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with module.trace_scope(mode='cli'):
+            with module.trace_operation(
+                    'metadata_query', 'group', provider='beeimg_cn') as operation:
+                operation.finish('succeeded')
+            with module.trace_operation(
+                    'metadata_query', 'profile', provider='beeimg_cn') as operation:
+                operation.finish('failed', reason_code='transport_failed')
+            with pytest.raises(KeyboardInterrupt):
+                with module.trace_operation(
+                        'metadata_query', 'group', provider='beeimg_cn'):
+                    raise KeyboardInterrupt('cancel')
+    levels = {}
+    for record in caplog.records:
+        message = record.getMessage()
+        if 'stage=metadata_query' not in message:
+            continue
+        status = next(candidate for candidate in (
+            'started', 'succeeded', 'failed', 'cancelled')
+                      if f'status={candidate}' in message)
+        levels.setdefault(status, []).append(record.levelno)
+    assert levels['started'] == [logging.DEBUG] * 3
+    assert levels['succeeded'] == [logging.DEBUG]
+    assert levels['failed'] == [logging.WARNING]
+    assert levels['cancelled'] == [logging.INFO]
+
+
 def test_recoverable_failures_warn_while_skip_and_cancel_stay_info(caplog):
     """捕获与编码可恢复失败为 WARNING，跳过和取消仍为 INFO。"""
     module = trace_module()

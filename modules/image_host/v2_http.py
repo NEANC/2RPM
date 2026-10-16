@@ -82,35 +82,62 @@ def _read_payload(response, operation):
         return None
 
 
-def _send(provider, stage, kwargs, operation):
+def _send(provider, stage, kwargs):
     """在独立会话中执行一次真实请求，返回状态、映射与固定分类。"""
     status_code = None
     payload = None
     code = 'transport_failed'
+    diagnostic = None
     try:
         with _V2Session() as session:
-            try:
-                session.auth = _ExplicitAuth()
-                request = session.post if stage == 'upload' else session.get
-                if stage == 'upload':
-                    operation.mark_transport_started()
-                with request(
-                        _BASES[provider] + _PATHS[stage], **kwargs) as response:
-                    status_code = response.status_code
-                    if not 200 <= status_code < 300:
-                        operation.mark_end()
-                        code = 'http_failed'
-                    else:
-                        payload = _read_payload(response, operation)
-                        code = 'invalid_response'
-            except BaseException:
+            session.auth = _ExplicitAuth()
+            request = session.post if stage == 'upload' else session.get
+            kind = 'upload_attempt' if stage == 'upload' else stage
+            with trace_request(provider, kind) as operation:
+                try:
+                    if stage == 'upload':
+                        operation.mark_transport_started()
+                    with request(
+                            _BASES[provider] + _PATHS[stage], **kwargs) as response:
+                        status_code = response.status_code
+                        if not 200 <= status_code < 300:
+                            operation.mark_end()
+                            code = 'http_failed'
+                        else:
+                            payload = _read_payload(response, operation)
+                            code = 'invalid_response'
+                except (KeyboardInterrupt, SystemExit):
+                    operation.mark_end()
+                    raise
+                except (json.JSONDecodeError,
+                        requests.exceptions.JSONDecodeError):
+                    operation.mark_end()
+                    code = 'invalid_response'
+                except Exception:
+                    operation.mark_end()
+                    code = 'transport_failed'
                 operation.mark_end()
-                raise
+                if code == 'invalid_response' and isinstance(payload, Mapping):
+                    status = payload.get('status')
+                    if isinstance(status, str) and status == 'success':
+                        operation.finish('succeeded', http_status=status_code)
+                        return status_code, payload, code, diagnostic
+                    if isinstance(status, str) and status == 'error':
+                        diagnostic = safe_current_message(payload.get('message'))
+                        code = (
+                            'storage_unavailable'
+                            if stage == 'upload'
+                            and is_storage_rejection(
+                                provider, status_code, payload)
+                            else 'business_rejected'
+                        )
+                operation.finish('failed', reason_code=code,
+                                 http_status=status_code)
     except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
         code = 'invalid_response'
     except Exception:
         code = 'transport_failed'
-    return status_code, payload, code
+    return status_code, payload, code, diagnostic
 
 
 def request_json(provider, stage, token, *, data=None, files=None) -> dict:
@@ -133,29 +160,14 @@ def request_json(provider, stage, token, *, data=None, files=None) -> dict:
                   allow_redirects=False, stream=True)
     if stage == 'upload':
         kwargs.update(data=data, files=files)
-    kind = 'upload_attempt' if stage == 'upload' else stage
     with guard_dependency_logging(_GUARDED_LOGGERS):
-        with trace_request(provider, kind) as operation:
-            status_code, payload, code = _send(
-                provider, stage, kwargs, operation)
-            operation.mark_end()
-            diagnostic = None
-            if code == 'invalid_response' and isinstance(payload, Mapping):
-                status = payload.get('status')
-                if isinstance(status, str) and status == 'success':
-                    operation.finish('succeeded', http_status=status_code)
-                    return payload
-                if isinstance(status, str) and status == 'error':
-                    diagnostic = safe_current_message(payload.get('message'))
-                    code = (
-                        'storage_unavailable'
-                        if stage == 'upload'
-                        and is_storage_rejection(provider, status_code, payload)
-                        else 'business_rejected'
-                    )
-            operation.finish('failed', reason_code=code,
-                             http_status=status_code)
-            # 离开底层异常处理器后构造错误，不保存敏感原始异常链。
-            raise ImageHostError(code, '', stage=stage,
-                                 http_status=status_code,
-                                 diagnostic=diagnostic)
+        status_code, payload, code, diagnostic = _send(
+            provider, stage, kwargs)
+        if code == 'invalid_response' and isinstance(payload, Mapping):
+            status = payload.get('status')
+            if isinstance(status, str) and status == 'success':
+                return payload
+        # 离开底层异常处理器后构造错误，不保存敏感原始异常链。
+        raise ImageHostError(code, '', stage=stage,
+                             http_status=status_code,
+                             diagnostic=diagnostic)
