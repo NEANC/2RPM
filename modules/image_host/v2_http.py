@@ -89,17 +89,23 @@ def _send(provider, stage, kwargs, operation):
     code = 'transport_failed'
     try:
         with _V2Session() as session:
-            session.auth = _ExplicitAuth()
-            request = session.post if stage == 'upload' else session.get
-            if stage == 'upload':
-                operation.mark_transport_started()
-            with request(_BASES[provider] + _PATHS[stage], **kwargs) as response:
-                status_code = response.status_code
-                if not 200 <= status_code < 300:
-                    code = 'http_failed'
-                else:
-                    payload = _read_payload(response, operation)
-                    code = 'invalid_response'
+            try:
+                session.auth = _ExplicitAuth()
+                request = session.post if stage == 'upload' else session.get
+                if stage == 'upload':
+                    operation.mark_transport_started()
+                with request(
+                        _BASES[provider] + _PATHS[stage], **kwargs) as response:
+                    status_code = response.status_code
+                    if not 200 <= status_code < 300:
+                        operation.mark_end()
+                        code = 'http_failed'
+                    else:
+                        payload = _read_payload(response, operation)
+                        code = 'invalid_response'
+            except BaseException:
+                operation.mark_end()
+                raise
     except (json.JSONDecodeError, requests.exceptions.JSONDecodeError):
         code = 'invalid_response'
     except Exception:

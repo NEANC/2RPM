@@ -675,10 +675,12 @@ TRANSPORT_SECONDS = 1.0
 BUSINESS_SECONDS = 9.0
 TRANSPORT_MS = 1000
 INVALID_URL = 'not-a-valid-image-url'
-REQUEST_SECONDS = 0.01
-BODY_SECONDS = 0.02
+REQUEST_SECONDS = 0.125
+BODY_SECONDS = 0.25
 PARSE_SECONDS = 5.0
-REQUEST_BODY_MS = 30
+CLOSE_SECONDS = 0.5
+REQUEST_BODY_MS = 375
+REQUEST_MS = 125
 
 # 四个非 v2 适配器的成功正文与业务校验失败正文；superbed 失败会在两个
 # 域名间各发一次真实请求，因此失败队列需要两条合成响应。
@@ -758,7 +760,7 @@ def test_transport_end_freezes_request_duration(
 class TimedResponse(requests.Response):
     """在请求、正文和解析边界推进可控时钟的合成响应。"""
 
-    def __init__(self, clock, status, content, read_error=None):
+    def __init__(self, clock, status, content, read_error=None, headers=None):
         """保存合成正文与可选读取错误。"""
         super().__init__()
         self.clock = clock
@@ -766,6 +768,8 @@ class TimedResponse(requests.Response):
         self._content = content
         self._content_consumed = True
         self.read_error = read_error
+        self.headers.update(headers or {})
+        self.encoding = requests.utils.get_encoding_from_headers(self.headers)
 
     @property
     def content(self):
@@ -782,6 +786,11 @@ class TimedResponse(requests.Response):
             raise self.read_error
         yield self._content
 
+    def close(self):
+        """模拟响应资源释放耗时。"""
+        self.clock[0] += CLOSE_SECONDS
+        super().close()
+
 
 def install_timed_transport(monkeypatch, clock, replies):
     """安装按队列返回计时响应的离线传输替身。"""
@@ -795,14 +804,25 @@ def install_timed_transport(monkeypatch, clock, replies):
         reply = queue.pop(0)
         if isinstance(reply, BaseException):
             raise reply
-        status, content, *error = reply
+        status, content, *extras = reply
+        error = extras[0] if extras else None
+        headers = extras[1] if len(extras) > 1 else None
         response = TimedResponse(
-            clock, status, content, error[0] if error else None)
+            clock, status, content, error, headers)
         response.request = request
         response.url = request.url
         return response
 
     monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+
+    original_close = requests.sessions.Session.close
+
+    def close(session):
+        """模拟会话资源释放耗时。"""
+        clock[0] += CLOSE_SECONDS
+        original_close(session)
+
+    monkeypatch.setattr(requests.sessions.Session, 'close', close)
     return sent
 
 
@@ -928,3 +948,78 @@ def test_body_read_failure_freezes_duration_and_propagates_control_signal(
     assert len(sent) == 1
     assert [event.duration_ms for event in terminal_requests(events)] == [
         REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])
+@pytest.mark.parametrize('outcome', ['http', 'request_error'])
+def test_no_body_duration_excludes_resource_close(
+        provider, outcome, monkeypatch, tmp_path):
+    """不读正文路径在响应和会话关闭前冻结请求耗时。"""
+    clock = [0.0]
+    reply = ((503, b'') if outcome == 'http'
+             else requests.exceptions.ConnectionError('offline'))
+    sent = install_timed_transport(monkeypatch, clock, [reply])
+    host = ({'provider': 'wmimg', 'token': ''} if provider == 'wmimg' else
+            {'provider': 'beeimg_cn', 'token': '',
+             'options': {'storage_id': 13}})
+    events, result = run_timed_adapter(monkeypatch, tmp_path, host, clock)
+    assert not result.success
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_MS]
+
+
+@pytest.mark.parametrize('encoding', ['utf-16', 'utf-32'])
+def test_non_v2_json_preserves_requests_unicode_detection(
+        encoding, monkeypatch, tmp_path):
+    """非 v2 JSON 对无 charset 的 UTF-16/32 正文保持 Requests 语义。"""
+    clock = [0.0]
+    content = json.dumps(
+        {'status': True, 'data': {'links': {'url': URL}}}).encode(encoding)
+    sent = install_timed_transport(monkeypatch, clock, [(200, content)])
+    events, result = run_timed_adapter(
+        monkeypatch, tmp_path, {'provider': 'wmimg', 'token': ''}, clock)
+    assert result.success
+    assert result.url == URL
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS]
+
+
+def test_non_v2_json_unknown_charset_uses_requests_text_fallback(
+        monkeypatch, tmp_path):
+    """未知 charset 经 Requests text 回退解析且不改变 URL 与请求数。"""
+    clock = [0.0]
+    content = body({'status': True, 'data': {'links': {'url': URL}}})
+    headers = {'Content-Type': 'application/json; charset=unknown-synthetic'}
+    sent = install_timed_transport(
+        monkeypatch, clock, [(200, content, None, headers)])
+    events, result = run_timed_adapter(
+        monkeypatch, tmp_path, {'provider': 'wmimg', 'token': ''}, clock)
+    assert result.success
+    assert result.url == URL
+    assert len(sent) == 1
+    assert [event.duration_ms for event in terminal_requests(events)] == [
+        REQUEST_BODY_MS]
+
+
+def test_non_v2_invalid_json_raises_requests_decode_error():
+    """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
+    module = import_module('modules.image_host.providers')
+    response = requests.Response()
+    response._content = b'{invalid'
+    response._content_consumed = True
+
+    class Attempt:
+        """记录正文读取边界。"""
+
+        ended = False
+
+        def mark_end(self):
+            """登记正文读取结束。"""
+            self.ended = True
+
+    attempt = Attempt()
+    with pytest.raises(requests.exceptions.JSONDecodeError):
+        module._read_response_json(response, attempt)
+    assert attempt.ended

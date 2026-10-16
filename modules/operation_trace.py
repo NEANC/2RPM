@@ -132,7 +132,7 @@ def _new_id() -> str:
 
 def _milliseconds(delta: float) -> int:
     """把单调秒差固定为非负毫秒整数。"""
-    return max(0, round(delta * 1000))
+    return max(0, int(delta * 1000))
 
 
 def _valid_storage_id(provider, value):

@@ -440,6 +440,12 @@ def test_recoverable_failures_warn_while_skip_and_cancel_stay_info(caplog):
     assert levels[('encode', 'cancelled')] == logging.INFO
 
 
+def test_milliseconds_truncates_fractional_millisecond():
+    """全局指标保持原有 int 截断口径。"""
+    module = trace_module()
+    assert module._milliseconds(0.0019) == 1
+
+
 BATCH_LINE_SUMMARY_KEYS = (
     'mode', 'status', 'images_planned', 'images_processed',
     'images_succeeded', 'images_failed', 'images_cancelled', 'images_skipped',
