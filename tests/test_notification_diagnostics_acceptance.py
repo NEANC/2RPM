@@ -20,6 +20,8 @@ from modules.screenshot.retention import SaveOutcome
 
 
 MARKER = 'SYNTHETIC_ACCEPT_MARKER_5521'
+HOST_SECRET = 'SYNTHETIC_HOST_SECRET_6632'
+CHANNEL_SECRET = 'SYNTHETIC_CHANNEL_SECRET_7743'
 TARGET = 'SYNTHETIC_WINDOW_TARGET_7788'
 URL = 'https://images.example/synthetic.png'
 
@@ -111,7 +113,7 @@ def notification_config():
         'push': {
             'screenshot': {
                 'targets': [{'provider': 'window', 'target': TARGET}],
-                'image_host': [{'provider': 'beeimg_cn', 'token': MARKER}],
+                'image_host': [{'provider': 'beeimg_cn', 'token': HOST_SECRET}],
             },
             'templates': {
                 'on_end': {
@@ -122,14 +124,14 @@ def notification_config():
                 },
             },
             'push_channel_settings': {
-                'channels': [{'provider': 'serverchan', 'sckey': MARKER}],
+                'channels': [{'provider': 'serverchan', 'sckey': CHANNEL_SECRET}],
             },
             'retry': {'interval': '0s', 'max_count': 1},
         },
     }
 
 
-def run_notification(monkeypatch, root_dir, *, handler):
+def run_notification(monkeypatch, root_dir, *, handler, failed=False):
     """执行一次真实通知链路并把最终字节与真实事实一并返回。"""
     notif = _notif()
     pipeline = _pipeline()
@@ -141,13 +143,17 @@ def run_notification(monkeypatch, root_dir, *, handler):
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
     transport = stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(), stage.SUCCESS_UPLOAD])
+        stage.group_reply(), stage.profile_reply(),
+        (200, (HOST_SECRET + ' ' + CHANNEL_SECRET).encode())
+        if failed else stage.SUCCESS_UPLOAD])
 
     sent = []
     notifier = Mock()
 
     def notify(title=None, content=None, **params):
         """记录待发送标题正文并返回合成成功响应。"""
+        assert params['sckey'] == CHANNEL_SECRET
+        logging.getLogger().warning('合成凭证 %s %s', HOST_SECRET, CHANNEL_SECRET)
         sent.append((title, content))
         response = Mock()
         response.status_code = 200
@@ -188,12 +194,15 @@ def run_notification(monkeypatch, root_dir, *, handler):
 
 def private_markers(outcome, root_dir):
     """给出本次注入的私有标记：凭证、target、路径、缓存键与完整链接。"""
-    return (MARKER, TARGET, str(root_dir), outcome['cache_keys'][0], URL)
+    return (HOST_SECRET, CHANNEL_SECRET, TARGET, str(root_dir),
+            outcome['cache_keys'][0], URL)
 
 
-def test_notification_to_upload_safe_final_bytes(monkeypatch, tmp_path):
+@pytest.mark.parametrize('failed', [False, True])
+def test_notification_to_upload_safe_final_bytes(monkeypatch, tmp_path, failed):
     """通知到上传链路：最终字节无私有标记，批次唯一，计数与交付逐字一致。"""
-    outcome = run_notification(monkeypatch, tmp_path, handler=file_sink(tmp_path))
+    outcome = run_notification(
+        monkeypatch, tmp_path, handler=file_sink(tmp_path), failed=failed)
     summary = outcome['traces'][0].summary()
     final_file_text = outcome['file_text']
     transport = outcome['transport']
@@ -209,10 +218,19 @@ def test_notification_to_upload_safe_final_bytes(monkeypatch, tmp_path):
     assert actual_get_count == summary['group_get_attempts'] + summary[
         'profile_get_attempts']
     assert actual_post_count == summary['upload_post_attempts']
+    assert transport.posts[0].headers['Authorization'] == 'Bearer ' + HOST_SECRET
+    assert CHANNEL_SECRET not in str(transport.posts[0].headers)
     sent_payload = outcome['sent'][0]
-    expected_original_payload = (
-        f'标题 {MARKER}', f'正文 {MARKER}\n\n![screenshot_1]({URL})')
-    assert sent_payload == expected_original_payload
+    assert sent_payload[0] == f'标题 {MARKER}'
+    assert sent_payload[1].startswith(f'正文 {MARKER}\n\n')
+    if failed:
+        assert '截图上传失败：' in sent_payload[1]
+        assert '![' not in sent_payload[1]
+        assert (summary['slots_failed'], summary['slots_succeeded']) == (1, 0)
+    else:
+        assert sent_payload[1] == f'正文 {MARKER}\n\n![screenshot_1]({URL})'
+    assert HOST_SECRET not in sent_payload[1]
+    assert CHANNEL_SECRET not in sent_payload[1]
 
 
 def test_acceptance_detects_missing_safety_layer(monkeypatch, tmp_path):
@@ -226,7 +244,7 @@ def test_acceptance_detects_missing_safety_layer(monkeypatch, tmp_path):
         outcome = run_notification(
             broken, tmp_path / 'broken',
             handler=file_sink(tmp_path / 'broken'))
-        assert MARKER in outcome['file_text']
+        assert HOST_SECRET in outcome['file_text']
         with pytest.raises(AssertionError):
             assert all(marker not in outcome['file_text']
                        for marker in private_markers(outcome, tmp_path / 'broken'))
@@ -526,3 +544,88 @@ def test_review_regressions_run_jointly(monkeypatch, tmp_path):
     assert host['token'] == 'override' and host['provider'] == 'catbox'
     with pytest.raises(InlineUploadError):
         parse_inline_hosts('provider: catbox, token: a, token: b')
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize('boundary', [
+    'profile', 'storage_select', 'metadata_cache', 'postupload_recovery',
+])
+def test_joint_started_cancellation(monkeypatch, tmp_path, boundary, signal_type):
+    """真实链路在查询、选择、缓存或恢复开始取消，保留已发请求与槽位事实。"""
+    stage = _stage()
+    error = signal_type('synthetic-cancel')
+    replies = [] if boundary == 'metadata_cache' else [
+        stage.group_reply(), stage.profile_reply()]
+    if boundary == 'profile':
+        replies = [stage.group_reply()]
+    if boundary == 'postupload_recovery':
+        replies.append(stage.REJECTED_UPLOAD)
+    transport = stage.Transport(monkeypatch, replies)
+    pipeline = _pipeline()
+    monkeypatch.setattr(pipeline, 'capture', Mock(return_value=_support().capture_result()))
+    monkeypatch.setattr(pipeline, 'save_automatic', Mock(
+        return_value=SaveOutcome(None, 'shot.jpg')))
+    events, traces = [], []
+
+    def consume(event):
+        """只在指定真实阶段开始时抛出同一个控制信号。"""
+        match = (event.stage == boundary or
+                 boundary == 'profile' and event.stage == 'metadata_query'
+                 and event.action == 'profile' or
+                 event.fallback_kind == boundary)
+        if match and event.status == 'started':
+            raise error
+
+    monkeypatch.setattr(pipeline, 'make_status_consumer', lambda **kwargs: consume)
+    _support().spy_trace_scope(monkeypatch, pipeline, events, traces)
+    with pytest.raises(signal_type) as caught:
+        pipeline.prepare_screenshots({
+            'targets': [{'provider': 'window', 'target': TARGET}],
+            'image_host': [{'provider': 'beeimg_cn', 'token': HOST_SECRET},
+                           {'provider': 'catbox', 'token': CHANNEL_SECRET}],
+        }, True, ())
+    assert caught.value is error
+    assert not transport.replies
+    summary = traces[0].summary()
+    assert summary['group_get_attempts'] == len(transport.gets('group'))
+    assert summary['profile_get_attempts'] == len(transport.gets('profile'))
+    assert summary['upload_post_attempts'] == len(transport.posts)
+    assert summary['slots_cancelled'] == 1
+    assert summary['slots_skipped'] == 1
+    assert summary['slots_failed'] == summary['slots_succeeded'] == 0
+    assert [event.status for event in events if event.stage == 'batch'] == [
+        'started', 'cancelled']
+    cancelled = [event for event in events if event.status == 'cancelled'
+                 and event.stage != 'batch']
+    assert cancelled
+    for event in cancelled:
+        assert sum(item.status == 'started' and item.operation_id == event.operation_id
+                   for item in events) == 1
+    if boundary == 'profile':
+        assert summary['profile_get_attempts'] == 0
+        assert summary['profile_get_cancelled'] == 0
+
+
+def test_joint_automatic_slots_reuse_existing_transport(monkeypatch, tmp_path):
+    """复用真实传输辅助，核对自动模式两图槽位和尝试号独立复位。"""
+    stage = _stage()
+    pipeline = _pipeline()
+    monkeypatch.setattr(pipeline, 'capture', Mock(return_value=_support().capture_result()))
+    monkeypatch.setattr(pipeline, 'save_automatic', Mock(
+        return_value=SaveOutcome(None, 'shot.jpg')))
+    transport = stage.Transport(monkeypatch, [stage.REJECTED_UPLOAD,
+        stage.REJECTED_UPLOAD, stage.SUCCESS_UPLOAD, stage.SUCCESS_UPLOAD])
+    events, traces = [], []
+    _support().spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots({
+        'targets': [{'provider': 'window', 'target': TARGET}] * 2,
+        'image_host': [{'provider': 'boltp'}, {'provider': 'boltp'}],
+    }, True, ())
+    started = [event for event in events if event.stage == 'upload_attempt'
+               and event.status == 'started']
+    assert [(event.image_index, event.slot_index, event.attempt_index)
+            for event in started] == [(1, 0, 1), (1, 0, 2), (1, 1, 1), (2, 0, 1)]
+    summary = traces[0].summary()
+    assert len(transport.posts) == summary['upload_post_attempts'] == 4
+    assert (summary['slots_planned'], summary['slots_failed'],
+            summary['slots_succeeded'], summary['slots_skipped']) == (4, 1, 2, 1)

@@ -700,6 +700,12 @@ def test_batch_finalize_adds_no_requests(monkeypatch, tmp_path):
     context, cache, transport = stage.build(
         monkeypatch, tmp_path,
         replies=[stage.group_reply(), stage.SUCCESS_UPLOAD])
+    guards = []
+
+    def forbidden(*args, **kwargs):
+        """收尾阶段的额外业务 IO 或凭证读取必须立即失败。"""
+        pytest.fail('批次收尾不得新增 IO 或凭证读取')
+
     with module.trace_scope(
             mode='cli', images_planned=1, slots_planned=1) as trace:
         with module.trace_item(image_index=1, slot_index=0):
@@ -709,8 +715,20 @@ def test_batch_finalize_adds_no_requests(monkeypatch, tmp_path):
                   'options': {'storage_id': 13}}], context=context)
         before = (len(transport.posts), len(transport.gets('group')),
                   len(transport.gets('profile')))
+        for owner, names in (
+                (cache, ('identity', 'load', 'save', 'invalidate')),
+                (context, ('_credential', 'get_metadata')),
+                (import_module('modules.image_host.context'), ('resolve_token',)),
+                (import_module('builtins'), ('open',)),
+                (import_module('requests.adapters').HTTPAdapter, ('send',))):
+            for name in names:
+                guard = Mock(side_effect=forbidden)
+                guards.append(guard)
+                monkeypatch.setattr(owner, name, guard)
     after = (len(transport.posts), len(transport.gets('group')),
              len(transport.gets('profile')))
     context.close()
     assert before[0] == 1
     assert after == before
+    for guard in guards:
+        guard.assert_not_called()
