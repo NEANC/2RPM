@@ -11,6 +11,7 @@ from importlib import import_module
 from inspect import signature
 import json
 import logging
+import socket
 from threading import Thread
 import traceback
 
@@ -116,15 +117,37 @@ class FakeSession:
 
 @pytest.fixture(autouse=True)
 def forbid_network(monkeypatch):
-    """阻止意外联网，保留原方法供严格限定端点的回环测试使用。"""
-    original_request = requests.sessions.Session.request
+    """准备前隔离环境，发送和 socket 边界只放行登记的回环端点。"""
+    allowed = {}
+    original_prepare = requests.sessions.Session.prepare_request
+    original_send = requests.sessions.Session.send
+    original_connect = socket.socket.connect
 
-    def forbidden(*args, **kwargs):
-        """立即拒绝真实请求。"""
-        raise AssertionError('测试禁止访问网络')
+    def prepare(session, request):
+        """在 netrc 认证准备前禁用环境读取。"""
+        session.trust_env = False
+        return original_prepare(session, request)
 
-    monkeypatch.setattr(requests.sessions.Session, 'request', forbidden)
-    return original_request
+    def send(session, request, **kwargs):
+        """无白名单时拒绝所有发送，包括直接传入 PreparedRequest。"""
+        if request.url != allowed.get('endpoint'):
+            raise AssertionError('测试禁止访问网络')
+        assert request.method == 'POST'
+        assert session.trust_env is False
+        assert 'Authorization' not in request.headers
+        assert not kwargs.get('proxies')
+        return original_send(session, request, **kwargs)
+
+    def connect(sock, address):
+        """真实连接仅限本用例服务器，拒绝其他端口与主机。"""
+        if address != allowed.get('address'):
+            raise AssertionError('测试禁止访问网络')
+        return original_connect(sock, address)
+
+    monkeypatch.setattr(requests.sessions.Session, 'prepare_request', prepare)
+    monkeypatch.setattr(requests.sessions.Session, 'send', send)
+    monkeypatch.setattr(socket.socket, 'connect', connect)
+    return allowed
 
 
 @pytest.fixture
@@ -133,6 +156,47 @@ def client(monkeypatch):
     fake = FakeSession()
     monkeypatch.setattr(requests, 'Session', fake.create)
     return fake
+
+
+def test_network_guard_blocks_prepared_send(monkeypatch):
+    """直接 send 也必须在触及 adapter 之前拒绝外部请求。"""
+    calls = []
+
+    def unexpected_send(*args, **kwargs):
+        """以本地替身记录穿透，失败测试也不连接网络。"""
+        calls.append(True)
+        response = requests.Response()
+        response.status_code = 200
+        response._content = b''
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', unexpected_send)
+    with requests.Session() as session:
+        request = session.prepare_request(requests.Request('POST', ENDPOINT))
+        with pytest.raises(AssertionError, match='测试禁止访问网络'):
+            session.send(request)
+    assert calls == []
+
+
+def test_environment_is_disabled_before_prepare(monkeypatch):
+    """请求准备不得读取 netrc，环境代理和 CA 也不参与合并。"""
+    calls = []
+
+    def netrc_auth(*args, **kwargs):
+        """仅返回合成凭证以检测环境读取。"""
+        calls.append(True)
+        return ('synthetic-user', SECRET)
+
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', netrc_auth)
+    monkeypatch.setenv('HTTPS_PROXY', 'http://synthetic-proxy.invalid:8080')
+    monkeypatch.setenv('REQUESTS_CA_BUNDLE', 'synthetic-ca.pem')
+    with requests.Session() as session:
+        request = session.prepare_request(requests.Request('POST', ENDPOINT))
+        settings = session.merge_environment_settings(ENDPOINT, {}, True, True, None)
+        assert calls == []
+        assert 'Authorization' not in request.headers
+        assert settings['proxies'] == {}
+        assert settings['verify'] is True
 
 
 def test_only_implemented_providers_are_registered():
@@ -325,13 +389,6 @@ def test_real_response_cleanup(
     thread.daemon = True
     original_send = requests.adapters.HTTPAdapter.send
 
-    def local_request(session, method, url, **kwargs):
-        """仅允许指定回环 POST，且不读取本机会话代理或认证配置。"""
-        assert method.upper() == 'POST'
-        assert url == endpoint
-        session.trust_env = False
-        return forbid_network(session, method, url, **kwargs)
-
     def observe_send(adapter, request, **kwargs):
         """保留真实传输及解压行为，在预读取之前记录响应所有权。"""
         response = original_send(adapter, request, **kwargs)
@@ -361,7 +418,8 @@ def test_real_response_cleanup(
 
     try:
         monkeypatch.setattr(providers(), 'CATBOX_ENDPOINT', endpoint)
-        monkeypatch.setattr(requests.sessions.Session, 'request', local_request)
+        forbid_network.update(endpoint=endpoint,
+                              address=('127.0.0.1', server.server_port))
         monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', observe_send)
         thread.start()
         result = upload(SECRET)
