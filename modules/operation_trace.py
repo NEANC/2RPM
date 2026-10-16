@@ -13,6 +13,8 @@ import uuid
 LOGGER = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset({'succeeded', 'failed', 'cancelled'})
+_IMAGE_TERMINAL_STATUSES = frozenset(
+    {'succeeded', 'failed', 'cancelled', 'skipped'})
 _BATCH_STATUSES = frozenset(
     {'completed', 'partial_failure', 'failed', 'cancelled'})
 
@@ -181,7 +183,9 @@ def _format_event(event, summary=None) -> str:
         parts.append(f'{name}={value}')
     line = 'stage_event ' + ' '.join(parts)
     if summary:
-        rendered = ' '.join(f'{key}={value}' for key, value in summary.items())
+        rendered = ' '.join(
+            f'{key}={"unavailable" if value is None else value}'
+            for key, value in summary.items())
         line = f'{line} summary {rendered}'
     return line
 
@@ -273,7 +277,7 @@ class BatchTrace:
         """初始化唯一批次身份、单调起点与空计数。"""
         self._mode = mode
         self._images_planned = images_planned
-        self._slots_planned = 0 if slots_planned is None else slots_planned
+        self._slots_planned = slots_planned
         self._clock = clock
         self._on_status = on_status
         self._batch_id = _new_id()
@@ -453,7 +457,7 @@ class BatchTrace:
 
     def finish_image(self, index: int, status: str) -> None:
         """只保存逻辑图片状态，不产生额外事件或阶段计数。"""
-        if index not in self._images:
+        if status in _IMAGE_TERMINAL_STATUSES and index not in self._images:
             self._images[index] = status
 
     def skip_unstarted_slots(self, image_index: int, count: int, *,
@@ -542,12 +546,20 @@ class BatchTrace:
             """读取某阶段的固定计数，缺省为零。"""
             return stages.get(stage, {}).get(key, 0)
 
+        def images(status):
+            """按逻辑图片首次终态计数。"""
+            return sum(item == status for item in self._images.values())
+
         named = self._named
         return {
             'mode': self._mode,
             'status': self._final_status(),
             'images_planned': self._images_planned,
             'images_processed': len(self._images),
+            'images_succeeded': images('succeeded'),
+            'images_failed': images('failed'),
+            'images_cancelled': images('cancelled'),
+            'images_skipped': images('skipped'),
             'capture_started': counted('capture', 'started'),
             'capture_succeeded': counted('capture', 'succeeded'),
             'capture_failed': counted('capture', 'failed'),

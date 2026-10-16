@@ -14,7 +14,8 @@ import pytest
 
 
 REQUIRED_SUMMARY_KEYS = (
-    'images_processed',
+    'images_processed', 'images_succeeded', 'images_failed',
+    'images_cancelled', 'images_skipped',
     'capture_started', 'capture_succeeded', 'capture_failed',
     'capture_retries', 'capture_format_fallbacks',
     'encode_started', 'encode_succeeded', 'encode_failed',
@@ -81,6 +82,42 @@ def test_summary_exposes_all_required_keys():
     assert summary['slots_planned'] == 4
     assert summary['mode'] == 'automatic'
     assert isinstance(summary['status'], str)
+
+
+def test_image_summary_counts_logical_terminal_states_independently():
+    """逻辑图片终态独立计数，不以捕获操作次数替代图片结果。"""
+    module = trace_module()
+    with module.trace_scope(mode='automatic', images_planned=2) as trace:
+        for _ in range(3):
+            with module.trace_operation(
+                    'capture', 'read', source='adb') as operation:
+                operation.finish('succeeded', width=1, height=1)
+        trace.finish_image(1, 'succeeded')
+        trace.finish_image(2, 'failed')
+        summary = trace.summary()
+    assert (summary['images_succeeded'], summary['images_failed'],
+            summary['images_cancelled'], summary['images_skipped']) == (
+                1, 1, 0, 0)
+    assert summary['images_processed'] == 2
+    assert summary['images_processed'] == sum(
+        summary['images_' + state]
+        for state in ('succeeded', 'failed', 'cancelled', 'skipped'))
+    assert summary['capture_succeeded'] == 3
+
+
+def test_image_summary_counts_cancelled_and_skipped_once():
+    """取消与跳过均为图片终态，重复收尾不改写首次结果。"""
+    module = trace_module()
+    with module.trace_scope(mode='automatic', images_planned=2) as trace:
+        trace.finish_image(1, 'cancelled')
+        trace.finish_image(1, 'succeeded')
+        trace.finish_image(2, 'skipped')
+        trace.finish_image(3, 'invalid')
+        summary = trace.summary()
+    assert (summary['images_succeeded'], summary['images_failed'],
+            summary['images_cancelled'], summary['images_skipped']) == (
+                0, 0, 1, 1)
+    assert summary['images_processed'] == 2
 
 
 def test_operation_pairing_and_monotonic_duration():
@@ -376,6 +413,7 @@ def test_cache_failure_warns_and_slot_failure_errors(caplog):
 
 BATCH_LINE_SUMMARY_KEYS = (
     'mode', 'status', 'images_planned', 'images_processed',
+    'images_succeeded', 'images_failed', 'images_cancelled', 'images_skipped',
     'capture_started', 'capture_succeeded', 'capture_failed',
     'capture_cancelled', 'capture_skipped',
     'encode_started', 'encode_succeeded', 'encode_failed',
@@ -475,6 +513,26 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
             fields['slots_failed'], fields['slots_skipped']) == (
                 '3', '1', '1', '1')
     assert fields['duration_ms'] == '200'
+    assert text.count('stage=batch') == 1
+
+
+@pytest.mark.parametrize('planned', [None, 0])
+def test_planned_counts_preserve_unknown_and_explicit_zero(tmp_path, planned):
+    """未知计划量保留 None 并固定落盘为 unavailable，显式零仍为零。"""
+    module = trace_module()
+    with bound_file_handler(tmp_path, f'planned-{planned}') as handler:
+        with module.trace_scope(
+                mode='cli', images_planned=planned,
+                slots_planned=planned) as trace:
+            summary = trace.summary()
+        text = read_handler_bytes(handler)
+    expected_log = 'unavailable' if planned is None else '0'
+    assert summary['images_planned'] is planned
+    assert summary['slots_planned'] is planned
+    records = stage_records(text, 'batch')
+    assert len(records) == 1
+    assert records[0]['images_planned'] == expected_log
+    assert records[0]['slots_planned'] == expected_log
     assert text.count('stage=batch') == 1
 
 
