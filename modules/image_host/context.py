@@ -399,7 +399,7 @@ class UploadContext:
             items[key] = replace(items[key], correction_used=True)
         current = self.get_metadata(provider, token)
         entry = self._entries[key[1]]
-        selected = select_storage(current, manual_present, manual)
+        selected = self._select_storage(provider, current, manual_present, manual)
         if selected.replaced_manual:
             used = items[key].correction_used
             items[key] = replace(items[key], correction_used=True)
@@ -407,7 +407,8 @@ class UploadContext:
             if entry.from_disk and not used:
                 _refresh_event('succeeded', 'manual_replaced')
                 current = self.get_metadata(provider, token, correction=True)
-                selected = select_storage(current, manual_present, manual)
+                selected = self._select_storage(
+                    provider, current, manual_present, manual)
             elif entry.from_disk:
                 _refresh_event('skipped', 'budget_used')
         if (manual is not None and not selected.replaced_manual
@@ -416,6 +417,21 @@ class UploadContext:
         items[key] = replace(items[key], selection=selected,
                              metadata_version=entry.version)
         return selected
+
+    def _select_storage(self, provider, metadata, manual_present, manual):
+        with trace_operation('storage_select', 'select', provider=provider,
+                             candidate_count=len(metadata.storage_ids)) as operation:
+            try:
+                selected = select_storage(metadata, manual_present, manual)
+            except ImageHostError as error:
+                operation.finish('failed', reason_code=error.code)
+                raise
+            source = ('manual' if manual_present and not selected.replaced_manual
+                      else 'default' if metadata.default_storage_id == selected.storage_id
+                      else 'group_first')
+            operation.finish('succeeded', selection_source=source,
+                             storage_id=selected.storage_id)
+            return selected
 
     def begin_recovery(self, image, index, provider, token) -> bool:
         """消费一次预算并按本图已用版本失效，不查询或执行 POST。

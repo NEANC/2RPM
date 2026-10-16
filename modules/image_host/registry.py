@@ -215,18 +215,11 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
             image, index, provider, token,
             manual_present='storage_id' in options,
             manual_value=options.get('storage_id'))
-    except ImageHostError as error:
-        if error.code in _SELECTION_FAILURES:
-            _selection_failed(provider, error.code)
-        raise
     finally:
         _add_warnings(warnings, context.take_warnings())
     if selected.replaced_manual:
         _add_warnings(warnings, (_WARN_REPLACED,))
     metadata = context.get_metadata(provider, token)
-    _record_selection(
-        provider, _selection_source(selected, options, metadata),
-        selected.storage_id, len(metadata.storage_ids))
     state = context.storage_state(image, index, provider, token)
     decision = compute_expiration(
         seconds, image.started_at, metadata.file_expire_seconds,

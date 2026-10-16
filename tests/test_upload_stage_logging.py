@@ -1160,6 +1160,41 @@ def test_cache_trace_wraps_real_io(action, signal_type, monkeypatch, tmp_path):
     assert recorded[1].duration_ms == 2000
 
 
+@pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
+def test_selection_wraps_real_decision(signal_type, monkeypatch, tmp_path):
+    module = import_module('modules.image_host.context')
+    registry = import_module('modules.image_host.registry')
+    context, _, _ = build(monkeypatch, tmp_path,
+                          replies=[group_reply(), SUCCESS_UPLOAD])
+    context.get_metadata('beeimg_cn', '')
+    clock = [0.0]
+    events = []
+    original = module.select_storage
+    signal = signal_type('stop') if signal_type else None
+
+    def delayed(*args):
+        clock[0] += 2.0
+        if signal:
+            raise signal
+        return original(*args)
+
+    monkeypatch.setattr(module, 'select_storage', delayed)
+    with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
+        if signal:
+            with pytest.raises(signal_type) as caught:
+                registry.upload_with_fallback(b'image', 'image.png', [
+                    {'provider': 'beeimg_cn', 'token': ''}], context=context)
+            assert caught.value is signal
+        else:
+            assert registry.upload_with_fallback(b'image', 'image.png', [
+                {'provider': 'beeimg_cn', 'token': ''}], context=context).success
+    selected = of_stage(events, 'storage_select')
+    assert [event.status for event in selected] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    assert selected[-1].duration_ms == 2000
+    context.close()
+
+
 def test_non_v2_invalid_json_raises_requests_decode_error():
     """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
     module = import_module('modules.image_host.providers')
