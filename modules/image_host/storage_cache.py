@@ -205,13 +205,17 @@ class StorageCache:
         if (str(self._root), identity) in _DISABLED_IDENTITIES:
             _cache_skipped('load', 'disabled', provider)
             return None
+        with trace_operation('metadata_cache', 'load', cache_layer='disk',
+                             provider=provider) as operation:
+            return self._load(identity, provider, operation)
+
+    def _load(self, identity, provider, operation):
         try:
             now = _timestamp(self._clock())
             try:
                 stream = open(self._root / (identity + '.json'), 'rb')
             except FileNotFoundError:
-                _cache_operation('load', 'succeeded', provider=provider,
-                                 source='miss')
+                operation.finish('succeeded', source='miss')
                 return None
             with stream:
                 body = stream.read(_MAX_BYTES + 1)
@@ -220,20 +224,16 @@ class StorageCache:
             metadata = _metadata(json.loads(body), provider)
             age = now - metadata.fetched_at
             if age < 0:
-                _cache_operation('load', 'succeeded', provider=provider,
-                                 source='future')
+                operation.finish('succeeded', source='future')
                 return None
             if age >= _TTL_SECONDS:
-                _cache_operation('load', 'succeeded', provider=provider,
-                                 source='expired')
+                operation.finish('succeeded', source='expired')
                 return None
-            _cache_operation('load', 'succeeded', provider=provider,
-                             source='hit')
+            operation.finish('succeeded', source='hit')
             return metadata
         except Exception:
             self._warn(_WARN_READ)
-            _cache_operation('load', 'failed', provider=provider,
-                             reason_code='invalid')
+            operation.finish('failed', reason_code='invalid')
             return None
 
     def save(self, identity, metadata) -> bool:
@@ -245,13 +245,19 @@ class StorageCache:
             _cache_operation('save', 'failed', reason_code='invalid_identity')
             self._warn(_WARN_SAVE)
             return False
+        if (isinstance(metadata, StorageMetadata)
+                and metadata.profile_state == 'forbidden'):
+            _cache_skipped('save', 'forbidden', provider)
+            return False
+        with trace_operation('metadata_cache', 'save', cache_layer='disk',
+                             provider=provider) as operation:
+            return self._save(identity, metadata, provider, operation)
+
+    def _save(self, identity, metadata, provider, operation):
         try:
             if (not isinstance(metadata, StorageMetadata)
                     or type(metadata.storage_ids) is not tuple):
                 raise ValueError
-            if metadata.profile_state == 'forbidden':
-                _cache_skipped('save', 'forbidden', provider)
-                return False
             payload = {
                 'version': _VERSION,
                 'provider': provider,
@@ -269,15 +275,14 @@ class StorageCache:
                 raise ValueError
             _timestamp(self._clock())
             if not self._prepare():
-                _cache_skipped('save', 'unavailable', provider)
+                operation.finish('failed', reason_code='unavailable')
                 return False
             self._write_atomic(self._root / (identity + '.json'), body)
-            _cache_operation('save', 'succeeded', provider=provider)
+            operation.finish('succeeded')
             return True
         except Exception:
             self._warn(_WARN_SAVE)
-            _cache_operation('save', 'failed', provider=provider,
-                             reason_code='save_failed')
+            operation.finish('failed', reason_code='save_failed')
             return False
 
     def _write_atomic(self, destination, body):
@@ -315,11 +320,15 @@ class StorageCache:
                              reason_code='invalid_identity')
             self._warn(_WARN_INVALIDATE)
             return False
+        with trace_operation('metadata_cache', 'invalidate', cache_layer='disk',
+                             provider=provider) as operation:
+            return self._invalidate(identity, operation)
+
+    def _invalidate(self, identity, operation):
         if not self._prepare():
             if self._root is not None:
                 _DISABLED_IDENTITIES.add((str(self._root), identity))
-            _cache_operation('invalidate', 'failed', provider=provider,
-                             reason_code='unavailable')
+            operation.finish('failed', reason_code='unavailable')
             self._warn(_WARN_INVALIDATE)
             return False
         try:
@@ -327,11 +336,10 @@ class StorageCache:
                 (self._root / (identity + '.json')).unlink()
             except FileNotFoundError:
                 pass
-            _cache_operation('invalidate', 'succeeded', provider=provider)
+            operation.finish('succeeded')
             return True
         except Exception:
             _DISABLED_IDENTITIES.add((str(self._root), identity))
-            _cache_operation('invalidate', 'failed', provider=provider,
-                             reason_code='delete_failed')
+            operation.finish('failed', reason_code='delete_failed')
             self._warn(_WARN_INVALIDATE)
             return False

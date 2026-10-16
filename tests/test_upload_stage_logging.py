@@ -1120,6 +1120,46 @@ def test_v2_required_structure_precedes_request_terminal(stage, monkeypatch):
     assert summary[prefix + '_failed'] == 1
 
 
+@pytest.mark.parametrize('action', ['load', 'save', 'invalidate'])
+@pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
+def test_cache_trace_wraps_real_io(action, signal_type, monkeypatch, tmp_path):
+    from pathlib import Path
+    import builtins
+
+    cache = StorageCache(tmp_path, clock=lambda: 1000.0)
+    identity = cache.identity('beeimg_cn', '')
+    metadata = StorageMetadata((13,), None, None, 1000.0)
+    assert cache.save(identity, metadata)
+    clock = [0.0]
+    events = []
+    signal = signal_type('stop') if signal_type else None
+    owner, name = {'load': (builtins, 'open'),
+                   'save': (cache, '_write_atomic'),
+                   'invalidate': (Path, 'unlink')}[action]
+    original = getattr(owner, name)
+
+    def delayed(*args, **kwargs):
+        clock[0] += 2.0
+        if signal is not None:
+            raise signal
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, name, delayed)
+    args = (identity, metadata) if action == 'save' else (identity,)
+    with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
+        if signal is None:
+            getattr(cache, action)(*args)
+        else:
+            with pytest.raises(signal_type) as caught:
+                getattr(cache, action)(*args)
+            assert caught.value is signal
+    recorded = of_stage(events, 'metadata_cache')
+    assert [event.status for event in recorded] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    assert recorded[0].operation_id == recorded[1].operation_id
+    assert recorded[1].duration_ms == 2000
+
+
 def test_non_v2_invalid_json_raises_requests_decode_error():
     """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
     module = import_module('modules.image_host.providers')
