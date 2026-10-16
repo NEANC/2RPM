@@ -156,3 +156,23 @@ def test_failover_terminal_deduplicates_without_filtering_file(caplog):
                 pass
     assert stream.getvalue().count('尝试下一图床') == 1
     assert sum('stage=fallback' in record.getMessage() for record in caplog.records) == 2
+
+
+def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, caplog):
+    from argparse import Namespace
+    from modules.image_host.core import ImageHostError
+    from test_upload_stage_logging import Transport, group_reply, profile_reply
+
+    cli = import_module('modules.screenshot.cli')
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setattr(cli, 'make_status_consumer', lambda: None)
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=CaptureResult(
+        b'image', 'window', 'synthetic', 2, 2)))
+    transport = Transport(monkeypatch, [group_reply(), profile_reply(status=403)])
+    args = Namespace(source='window', target='synthetic', output=None,
+                     hosts=[{'provider': 'beeimg_cn', 'token': 'synthetic'}])
+    with caplog.at_level(logging.DEBUG):
+        assert cli.run_screenshot_cli(args, str(tmp_path)) == 1
+    assert ImageHostError('profile_forbidden', '').message in capsys.readouterr().out
+    assert 'reason_code=profile_forbidden' in caplog.text
+    assert not transport.posts

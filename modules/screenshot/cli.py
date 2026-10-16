@@ -7,6 +7,7 @@ from datetime import date
 import os
 
 from modules.image_host.context import UploadContext
+from modules.image_host.core import ImageHostError
 from modules.image_host.registry import upload_with_fallback
 from modules.operation_trace import trace_item
 from modules.operation_trace import trace_scope
@@ -297,6 +298,7 @@ def _upload_all(data, filename, hosts):
                 slot = trace_slot(host.get('provider', ''), index)
                 prepared, prepare_error = prepare_cli_host(host)
                 success = False
+                permission_message = ''
                 if prepared is not None:
                     try:
                         with UploadContext(
@@ -305,6 +307,11 @@ def _upload_all(data, filename, hosts):
                             uploaded = upload_with_fallback(
                                 data, filename, [prepared], context=context)
                         success = uploaded.success
+                        if not success and uploaded.failures:
+                            code = uploaded.failures[-1].code
+                            if code in ('profile_forbidden',
+                                        'profile_forbidden_invalid_storage'):
+                                permission_message = ImageHostError(code, '').message
                     except Exception:
                         success = False
                 if not success:
@@ -315,6 +322,8 @@ def _upload_all(data, filename, hosts):
                     print(f'{host["provider"]}：上传成功 {uploaded.url}')
                 if not success:
                     print(f'{host["provider"]}：上传失败')
+                    if permission_message:
+                        print(permission_message)
                 all_success = all_success and success
     except BaseException as exc:
         trace_slots_skipped(
