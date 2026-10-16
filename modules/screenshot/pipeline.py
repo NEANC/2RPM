@@ -20,6 +20,7 @@ from modules.operation_trace import trace_scope
 from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot_outcome
 from modules.operation_trace import trace_slots_skipped
+from modules.operation_trace import trace_warning
 from modules.upload_status import make_status_consumer
 from modules.utils import get_program_directory
 
@@ -212,6 +213,8 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                         trace.skip_unstarted_slots(
                             index, planned_hosts, reason_code=reason)
                     raise
+            if warnings:
+                trace_warning()
             trace.set_status(_resolve_status(outcomes))
         values['screenshot'] = '\n\n'.join(values.values())
     else:

@@ -30,6 +30,7 @@ from modules.operation_trace import trace_operation
 from modules.operation_trace import trace_fallback
 from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot
+from modules.operation_trace import trace_warning
 
 
 # 仅在具体站点契约核验并实现后添加适配器，不预注册空壳。
@@ -114,6 +115,7 @@ _WARN_UNSUPPORTED = '该图床不支持保存期限，已忽略'
 def _add_warnings(warnings, values):
     """按发生顺序合并固定告警，不重复展示同一条提醒。"""
     for value in values:
+        trace_warning()
         if value not in warnings:
             warnings.append(value)
 

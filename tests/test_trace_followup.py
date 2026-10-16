@@ -1,5 +1,6 @@
 from importlib import import_module
 from unittest.mock import Mock
+import logging
 
 import pytest
 
@@ -22,3 +23,28 @@ def test_automatic_missing_hosts_is_failed_without_slots(monkeypatch, tmp_path, 
     assert summary['status'] == 'failed'
     assert summary['slots_planned'] == 0
     assert not [event for event in events if event.stage == 'slot']
+
+
+@pytest.mark.parametrize('warning_source', ['capture', 'config', 'expiration'])
+def test_fixed_warning_marks_completed_batch(monkeypatch, tmp_path, caplog, warning_source):
+    pipeline = import_module('modules.screenshot.pipeline')
+    registry = import_module('modules.image_host.registry')
+    monkeypatch.setattr(pipeline, 'capture', Mock(return_value=CaptureResult(
+        b'image', 'window', 'synthetic', 2, 2,
+        ('图像为纯色或低方差，可能未正确渲染或未更新',)
+        if warning_source == 'capture' else ())))
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox', lambda *args: 'https://example.invalid/a')
+    section = {'targets': [{'provider': 'window', 'target': 'synthetic'}],
+               'image_host': [{'provider': 'catbox'}]}
+    if warning_source == 'config':
+        section['retention'] = 'invalid'
+    if warning_source == 'expiration':
+        section['image_host'][0]['expiration'] = '1d'
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        pipeline.prepare_screenshots(section, True, (), runtime={
+            'program_dir': str(tmp_path), 'config_stem': 'synthetic'})
+    records = [record for record in caplog.records
+               if 'stage=batch' in record.getMessage() and ' summary ' in record.getMessage()]
+    assert len(records) == 1
+    assert 'status=completed' in records[0].getMessage()
+    assert records[0].levelno == logging.WARNING
