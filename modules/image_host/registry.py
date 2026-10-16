@@ -222,6 +222,8 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
         slot = trace_slot(provider, index)
         url = None
         recovery_scope = None
+        slot_scope = slot.scope()
+        slot_scope.__enter__()
         try:
             if shape_error is not None:
                 raise shape_error
@@ -319,9 +321,12 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 recovery.finish('failed', reason_code='operation_failed')
             failures.append(_failure(provider, 'upload_failed'))
         finally:
-            if recovery_scope is not None:
-                recovery_scope.__exit__(*sys.exc_info())
-            _add_warnings(warnings, context.take_warnings())
+            try:
+                if recovery_scope is not None:
+                    recovery_scope.__exit__(*sys.exc_info())
+                _add_warnings(warnings, context.take_warnings())
+            finally:
+                slot_scope.__exit__(*sys.exc_info())
         attempts.append(provider)
         if url is not None:
             slot.finish('succeeded')

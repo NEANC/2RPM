@@ -729,6 +729,14 @@ class SlotHandle:
         self._image_index = image_index
         self._slot_index = slot_index
 
+    @contextmanager
+    def scope(self):
+        if self._trace is None:
+            yield
+            return
+        with trace_item(image_index=self._image_index, slot_index=self._slot_index):
+            yield
+
     def finish(self, status, *, reason_code='') -> None:
         """把槽位终态交给唯一生产者，重复完成被忽略。"""
         if self._trace is None:

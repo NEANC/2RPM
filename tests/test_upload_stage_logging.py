@@ -216,6 +216,19 @@ def slots(events):
     return of_stage(events, 'slot')
 
 
+def test_automatic_slots_bind_requests_and_reset_attempts(monkeypatch, tmp_path):
+    run = run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'boltp'}, {'provider': 'boltp'}],
+        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, SUCCESS_UPLOAD],
+        mode='automatic')
+    requests_started = [event for event in run.events
+                        if event.stage == 'upload_attempt'
+                        and event.status == 'started']
+    assert [(event.slot_index, event.attempt_index) for event in requests_started] == [
+        (0, 1), (0, 2), (1, 1)]
+
+
 def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
     """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
     run = run_chain(
