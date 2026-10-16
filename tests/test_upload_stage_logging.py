@@ -189,6 +189,28 @@ def of_stage(events, stage):
     return [event for event in events if event.stage == stage]
 
 
+@pytest.mark.parametrize('stage', ['group', 'profile'])
+def test_get_cancelled_at_started_has_zero_transport(monkeypatch, stage):
+    from modules.image_host.v2_http import request_json
+
+    transport = Transport(monkeypatch, [])
+    events = []
+
+    def cancel(event):
+        events.append(event)
+        if event.stage == 'metadata_query' and event.status == 'started':
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        with trace_scope(mode='automatic', on_status=cancel) as trace:
+            request_json('beeimg_cn', stage, SECRET)
+    assert transport.sent == []
+    assert trace.summary()[f'{stage}_get_attempts'] == 0
+    assert trace.summary()[f'{stage}_get_cancelled'] == 0
+    assert [event.status for event in events
+            if event.stage == 'metadata_query'] == ['started', 'cancelled']
+
+
 def slots(events):
     """返回槽位阶段事件。"""
     return of_stage(events, 'slot')

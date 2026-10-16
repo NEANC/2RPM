@@ -545,8 +545,10 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
                 operation.finish('succeeded', byte_count=10)
             module.trace_skipped('save', reason_code='not_configured')
             with module.trace_request('beeimg_cn', 'group') as request:
+                request.mark_transport_started()
                 request.finish('succeeded')
             with module.trace_request('beeimg_cn', 'profile') as request:
+                request.mark_transport_started()
                 request.finish('failed', reason_code='forbidden')
             with module.trace_request('catbox', 'upload_attempt') as request:
                 request.mark_transport_started()

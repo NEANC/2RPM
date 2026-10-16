@@ -243,13 +243,17 @@ class Operation:
         self._transport_started = False
 
     def mark_transport_started(self):
-        """在实际上传传输调用的紧邻边界登记一次 POST。"""
-        if (self._transport_started or self._trace is None
-                or self._stage != 'upload_attempt'):
+        """在实际传输调用的紧邻边界登记一次请求。"""
+        if self._transport_started or self._trace is None:
+            return
+        if self._stage == 'upload_attempt':
+            counter = 'upload_post_attempts'
+        elif self._stage == 'metadata_query' and self._action in ('group', 'profile'):
+            counter = f'{self._action}_get_attempts'
+        else:
             return
         self._transport_started = True
-        self._trace._named['upload_post_attempts'] = self._trace._named.get(
-            'upload_post_attempts', 0) + 1
+        self._trace._named[counter] = self._trace._named.get(counter, 0) + 1
 
     def mark_end(self):
         """在传输结束时冻结耗时终点，使后续解析不计入请求耗时。"""
@@ -377,10 +381,8 @@ class BatchTrace:
             if operation._transport_started:
                 terminal = f'upload_post_{status}'
                 self._named[terminal] = self._named.get(terminal, 0) + 1
-        elif started.stage == 'metadata_query' and started.action in (
+        elif operation._transport_started and started.stage == 'metadata_query' and started.action in (
                 'group', 'profile'):
-            counter = f'{started.action}_get_attempts'
-            self._named[counter] = self._named.get(counter, 0) + 1
             terminal = f'{started.action}_get_{status}'
             self._named[terminal] = self._named.get(terminal, 0) + 1
         payload = {}

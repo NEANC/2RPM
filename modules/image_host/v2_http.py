@@ -125,8 +125,7 @@ def _send(provider, stage, kwargs):
             kind = 'upload_attempt' if stage == 'upload' else stage
             with trace_request(provider, kind) as operation:
                 try:
-                    if stage == 'upload':
-                        operation.mark_transport_started()
+                    operation.mark_transport_started()
                     with session.send(prepared, **send_kwargs) as response:
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
