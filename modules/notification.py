@@ -32,6 +32,13 @@ from modules.utils import (
 
 LOGGER = logging.getLogger(__name__)
 
+_CHANNEL_AUTH_FIELDS = frozenset({
+    'token', 'accesstoken', 'refreshtoken', 'apikey', 'secret', 'clientsecret',
+    'password', 'passwd', 'authorization', 'proxyauthorization', 'cookie',
+    'setcookie', 'sckey', 'sctkey', 'pushkey', 'key', 'devicekey',
+    'corpsecret', 'webhook', 'sign',
+})
+
 # 模板中始终由推送配置提供的截图变量名
 _AGGREGATE_VARIABLE = 'screenshot'
 # 仅按位置编号的截图变量允许进入截图占位处理
@@ -452,7 +459,8 @@ def send_notification(config, template_key, **kwargs):
         extend_secrets(tuple(
             value for channel in channels
             for key, value in channel.items()
-            if key != 'provider' and type(value) is str and value
+            if key.lower().replace('_', '').replace('-', '') in _CHANNEL_AUTH_FIELDS
+            and type(value) is str and value
         ))
 
         screenshot_section = push_section.get('screenshot', {})

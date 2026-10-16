@@ -64,3 +64,37 @@ def test_template_log_uses_current_credentials(caplog):
         notif._log_rendered_notification('on_end', secret, secret, None)
     assert secret not in caplog.text
     assert log_safety.REDACTED in caplog.text
+
+
+@pytest.mark.parametrize('key', [
+    'token', 'access_token', 'refresh-token', 'api_key', 'API-KEY',
+    'secret', 'client_secret', 'password', 'passwd', 'authorization',
+    'cookie', 'sckey', 'sctkey', 'pushkey', 'key', 'device_key',
+    'corpsecret', 'webhook', 'sign',
+])
+def test_channel_collects_only_authentication_aliases(monkeypatch, caplog, key):
+    secret = 'SYNTHETIC_CHANNEL_AUTH_9313'
+    ordinary = '普通参数保留9314'
+    channel = {'provider': 'qmsg', key: secret, 'topic': ordinary,
+               'userid': ordinary, 'agentid': ordinary, 'host': ordinary,
+               'username': ordinary, 'priority': ordinary, 'mode': ordinary}
+    config = {'push': {
+        'templates': {'on_end': {'title': secret, 'content': ordinary}},
+        'push_channel_settings': {'channels': [channel]},
+        'retry': {'interval': '0s', 'max_count': 1},
+    }}
+    snapshots = []
+
+    def notify(**kwargs):
+        snapshots.append(log_safety.secret_snapshot())
+        assert kwargs['title'] == secret
+        assert kwargs['content'] == ordinary
+        return Mock(status_code=200, json=Mock(return_value={'code': 0}))
+
+    monkeypatch.setattr(notif, 'get_notifier', lambda provider: Mock(notify=notify))
+    with caplog.at_level(logging.INFO):
+        assert notif.send_notification(config, 'on_end') == [('qmsg', True)]
+    assert snapshots == [(secret,)]
+    assert secret not in caplog.text
+    assert ordinary in caplog.text
+    assert log_safety.secret_snapshot() == ()
