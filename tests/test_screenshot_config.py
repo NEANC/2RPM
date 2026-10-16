@@ -153,26 +153,62 @@ def test_readme_push_examples_use_current_layout():
                for template in push.get('templates', {}).values())
 
 
-@pytest.mark.parametrize('fragments', [
-    ('push.push_channel_settings.channels', 'push.templates',
-     '包含首次发送', 'on_external', '不自动追加图片'),
-    ('## 截图 CLI', '--output', '--upload', '不读取 config.yaml',
-     '全部图床', 'screenshot_YYYYMMDD_0000.jpg', '退出码', '不覆盖',
-     'WebP 编码器不可用时直接报编码失败，不降级', 'ADB 原始采集失败'),
-    ('### 窗口版本匹配', '@{version}', '@{VERSION}', '@{Version}',
-     '2～4 段', '7～64', 'Launcher', '多个匹配时拒绝截图'),
-    ('### 图床存储与期限', 'expiration', 'options.expired_at',
-     '不存在的储存驱动', 'group', 'profile', '0 不代表永久保存',
-     '本机本地时区', '不重新开始计时'),
-    ('### 无效项与兼容边界', 'push_settings', '--image-host',
-     'is_public', '不会自动迁移', '未知选项不等于生效'),
+@pytest.mark.parametrize('contracts', [
+    [('README.md', '通知与推送', ('push.templates', '包含首次发送', 'on_external')),
+     ('README.md', '截图变量', ('模板不会自动附带截图变量', '自行写入 `content`')),
+     ('README.md', '快速开始', ('push.push_channel_settings.channels',))],
+    [('README.md', '截图 CLI', ('--output', '--upload', '全部图床',
+       'screenshot_YYYYMMDD_0000.jpg', '退出码', '不覆盖',
+       'WebP 编码器不可用时直接报编码失败，不降级', 'ADB 原始采集失败')),
+     ('docs/开发者文档.md', '6. CLI 与通知行为对照', ('不读配置文件',))],
+    [('README.md', '截图变量', ('@{version}', '@{VERSION}', '@{Version}',
+       'Launcher', '多个匹配窗口时会拒绝截图')),
+     ('docs/开发者文档.md', '窗口版本匹配边界', ('2～4 段', '7～64',
+       '1.2.3.4.5', '哈希不接受自由尾部'))],
+    [('docs/开发者文档.md', '4. 保存期限与缓存', ('expiration',
+       'options.expired_at', '不代表永久', '本机本地时间', '绝不延长期限')),
+     ('docs/开发者文档.md', '5. 故障转移与请求预算',
+      ('不存在的储存驱动', 'group', 'profile', '共用'))],
+    [('docs/开发者文档.md', '9. 无效项与兼容边界', ('push_settings',
+       '--image-host', 'is_public', '不会自动迁移', '未知选项不等于生效'))],
+], ids=['notification', 'cli', 'version', 'storage', 'compatibility'])
+def test_readme_documents_runtime_contracts(contracts):
+    """沿现有导航检查正式章节语义，不要求恢复已撤销的 README 段落。"""
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    assert '[开发者文档](docs/开发者文档.md)' in readme
+    assert '[截图变量](#截图变量)' in readme
+    for filename, heading, fragments in contracts:
+        text = (root / filename).read_text(encoding='utf-8')
+        match = re.search(r'(?m)^(#{1,6}) ' + re.escape(heading) + r'\s*$', text)
+        assert match is not None, (filename, heading)
+        remaining = text[match.end():]
+        end = re.search(r'(?m)^#{1,' + str(len(match[1])) + r'} ', remaining)
+        section = remaining[:end.start()] if end else remaining
+        for fragment in fragments:
+            assert fragment in section, (filename, heading, fragment)
+
+
+@pytest.mark.parametrize('heading, fragments', [
+    ('BeeIMG.cn', ('HTTP 403', '合法手填', 'profile_state', 'forbidden',
+                  'profile_forbidden_invalid_storage', '缓存')),
+    ('6. CLI 与通知行为对照', ('准备上传', '正在上传', '非 TTY',
+                           'diagnostics=False', '固定中文', '不额外读取凭证')),
+    ('限定标量与 PowerShell 转义', ('push.screenshot.targets[].target',
+        'push.screenshot.image_host[].token', '顶层 `token`', '单引号',
+        '反引号', '不递归', '跨行', 'options')),
 ])
-def test_readme_documents_runtime_contracts(fragments):
-    """锁定各主题的关键边界，不绑定整段文案。"""
-    text = (Path(__file__).resolve().parents[1] / 'README.md').read_text(
+def test_developer_document_describes_current_boundaries(heading, fragments):
+    """先锁定本次校正的正式文档边界。"""
+    text = (Path(__file__).resolve().parents[1] / 'docs/开发者文档.md').read_text(
         encoding='utf-8')
+    match = re.search(r'(?m)^(#{1,6}) ' + re.escape(heading) + r'\s*$', text)
+    assert match is not None
+    remaining = text[match.end():]
+    end = re.search(r'(?m)^#{1,' + str(len(match[1])) + r'} ', remaining)
+    section = remaining[:end.start()] if end else remaining
     for fragment in fragments:
-        assert fragment in text
+        assert fragment in section
 
 
 @pytest.mark.parametrize('provider, variable, expiration', [
