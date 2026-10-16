@@ -229,6 +229,19 @@ def test_automatic_slots_bind_requests_and_reset_attempts(monkeypatch, tmp_path)
         (0, 1), (0, 2), (1, 1)]
 
 
+@pytest.mark.parametrize('provider', ['catbox', 'wmimg', 'beeimg', 'superbed'])
+def test_non_v2_prepare_failure_has_no_attempt(monkeypatch, tmp_path, provider):
+    def fail(*args, **kwargs):
+        raise requests.exceptions.InvalidHeader('synthetic')
+
+    monkeypatch.setattr(requests.Session, 'prepare_request', fail)
+    run = run_chain(monkeypatch, tmp_path,
+                    [{'provider': provider, 'token': SECRET}], replies=[])
+    assert run.transport.sent == []
+    assert run.summary['upload_post_attempts'] == 0
+    assert of_stage(run.events, 'upload_attempt') == []
+
+
 def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
     """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
     run = run_chain(
@@ -779,15 +792,15 @@ def test_transport_end_freezes_request_duration(
         return validate(value)
 
     monkeypatch.setattr(module, 'validate_image_url', slow_validate)
-    original_request = requests.sessions.Session.request
+    original_request = requests.sessions.Session.send
 
-    def timed_request(session, method, url, **kwargs):
+    def timed_request(session, request, **kwargs):
         """模拟一次传输耗时后执行真实请求。"""
         clock[0] += TRANSPORT_SECONDS
-        return original_request(session, method, url, **kwargs)
+        return original_request(session, request, **kwargs)
 
     monkeypatch.setattr(
-        requests.sessions.Session, 'request', timed_request)
+        requests.sessions.Session, 'send', timed_request)
     replies = (
         [success_reply] if outcome == 'success' else list(failure_replies))
     transport, events, result = run_single_adapter(

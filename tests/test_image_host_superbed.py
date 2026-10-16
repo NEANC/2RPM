@@ -106,10 +106,22 @@ def client(monkeypatch, tmp_path):
             self.closed = False
             self.acquired = False
             self.cookies = {}
-            self.post = Mock(side_effect=self.send)
+            self.post = Mock(side_effect=self.transmit)
             self.close = Mock(side_effect=self.release)
 
-        def send(self, url, **kwargs):
+        def prepare_request(self, request):
+            return request
+
+        def merge_environment_settings(self, url, proxies, stream, verify, cert):
+            return {'stream': stream, 'verify': verify}
+
+        def send(self, request, **kwargs):
+            kwargs.update(data=request.data, files=request.files)
+            if request.headers:
+                kwargs['headers'] = request.headers
+            return self.post(request.url, **kwargs)
+
+        def transmit(self, url, **kwargs):
             assert not self.closed
             assert not self.cookies
             self.cookies['local'] = self.index

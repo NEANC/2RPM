@@ -101,6 +101,18 @@ class FakeSession:
             raise self.error
         return self.response
 
+    def prepare_request(self, request):
+        return request
+
+    def merge_environment_settings(self, url, proxies, stream, verify, cert):
+        return {'stream': stream, 'verify': verify}
+
+    def send(self, request, **kwargs):
+        kwargs.update(data=request.data, files=request.files)
+        if request.headers:
+            kwargs['headers'] = request.headers
+        return self.post(request.url, **kwargs)
+
 
 @pytest.fixture(autouse=True)
 def forbid_network(monkeypatch):

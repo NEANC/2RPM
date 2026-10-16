@@ -56,6 +56,16 @@ def _upload_attempt(provider):
                 raise
 
 
+def _prepare_post(session, url, *, data, files, headers=None):
+    with guard_dependency_logging(GUARDED_LOGGERS):
+        prepared = session.prepare_request(requests.Request(
+            'POST', url, data=data, files=files, headers=headers))
+        settings = session.merge_environment_settings(
+            prepared.url, {}, True, True, None)
+    settings.update(timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), allow_redirects=False)
+    return prepared, settings
+
+
 def _image_mime(filename):
     """从与图像载荷匹配的文件名后缀选择固定 MIME。"""
     suffix = PurePath(filename).suffix.lower()
@@ -134,18 +144,13 @@ def upload_catbox(image_bytes, filename, token, options) -> str:
     url = None
     try:
         with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, CATBOX_ENDPOINT, data=data,
+                files={'fileToUpload': (filename, image_bytes, mime)})
             with _upload_attempt('catbox') as attempt:
                 try:
                     attempt.mark_transport_started()
-                    with session.post(
-                            CATBOX_ENDPOINT,
-                            data=data,
-                            files={
-                                'fileToUpload': (filename, image_bytes, mime)},
-                            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                            verify=True,
-                            stream=True,
-                            allow_redirects=False) as response:
+                    with session.send(prepared, **settings) as response:
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
                             attempt.mark_end()
@@ -206,18 +211,13 @@ def upload_wmimg(image_bytes, filename, token, options) -> str:
     url = None
     try:
         with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, WMIMG_ENDPOINT, data=data, headers=headers,
+                files={'file': (filename, image_bytes, mime)})
             with _upload_attempt('wmimg') as attempt:
                 try:
                     attempt.mark_transport_started()
-                    with session.post(
-                            WMIMG_ENDPOINT,
-                            data=data,
-                            files={'file': (filename, image_bytes, mime)},
-                            headers=headers,
-                            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                            verify=True,
-                            stream=True,
-                            allow_redirects=False) as response:
+                    with session.send(prepared, **settings) as response:
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
                             attempt.mark_end()
@@ -281,17 +281,13 @@ def upload_beeimg(image_bytes, filename, token, options) -> str:
     url = None
     try:
         with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, BEEIMG_ENDPOINT, data=data,
+                files={'file': (filename, image_bytes, mime)})
             with _upload_attempt('beeimg') as attempt:
                 try:
                     attempt.mark_transport_started()
-                    with session.post(
-                            BEEIMG_ENDPOINT,
-                            data=data,
-                            files={'file': (filename, image_bytes, mime)},
-                            timeout=(CONNECT_TIMEOUT, READ_TIMEOUT),
-                            verify=True,
-                            stream=True,
-                            allow_redirects=False) as response:
+                    with session.send(prepared, **settings) as response:
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
                             attempt.mark_end()
@@ -341,25 +337,17 @@ def upload_superbed(image_bytes, filename, token, options) -> str:
     endpoint_path = SUPERBED_CONTRACTS[version][0]
     for domain in domains:
         try:
-            request_options = {
-                'data': data,
-                'files': {file_key: (filename, image_bytes, mime)},
-                'timeout': (CONNECT_TIMEOUT, READ_TIMEOUT),
-                'verify': True,
-                'stream': True,
-                'allow_redirects': False,
-            }
-            if headers is not None:
-                request_options['headers'] = headers
             session = requests.Session()
             response = None
             status_code = None
             try:
+                prepared, settings = _prepare_post(
+                    session, domain + endpoint_path, data=data, headers=headers,
+                    files={file_key: (filename, image_bytes, mime)})
                 with _upload_attempt('superbed') as attempt:
                     try:
                         attempt.mark_transport_started()
-                        response = session.post(
-                            domain + endpoint_path, **request_options)
+                        response = session.send(prepared, **settings)
                         status_code = response.status_code
                         if not 200 <= status_code < 300:
                             attempt.mark_end()
