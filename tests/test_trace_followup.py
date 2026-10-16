@@ -197,3 +197,28 @@ def test_cli_save_only_uses_actual_save_and_warning(monkeypatch, tmp_path, caplo
     assert ('status=completed' if saved else 'status=failed') in final.getMessage()
     assert final.levelno == (logging.WARNING if saved else logging.ERROR)
     assert 'slots_planned=0' in final.getMessage()
+
+
+def test_shortened_expiration_batch_warning_in_file(monkeypatch, tmp_path):
+    from test_upload_stage_logging import group_reply, run_chain, SUCCESS_UPLOAD
+
+    path = tmp_path / 'stage.log'
+    logger = logging.getLogger('modules.operation_trace')
+    previous = logger.level
+    handler = logging.FileHandler(path, encoding='utf-8')
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        run = run_chain(monkeypatch, tmp_path,
+                        [{'provider': 'boltp', 'token': 'synthetic', 'expiration': '1d'}],
+                        replies=[group_reply(expire=60), SUCCESS_UPLOAD])
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+        handler.close()
+    text = path.read_text(encoding='utf-8')
+    assert run.results[0].success
+    assert run.results[0].warnings == ('保存期限已按图床上限缩短',)
+    assert 'status=completed reason_code=recoverable_warning' in text
+    assert text.count(' summary ') == 1
+    assert 'synthetic' not in text
