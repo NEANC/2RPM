@@ -220,6 +220,9 @@ def test_acceptance_detects_missing_safety_layer(monkeypatch, tmp_path):
     with monkeypatch.context() as broken:
         broken.setattr(
             _log_safety(), 'redact_text', lambda text, secrets=None: text)
+        broken.setattr(
+            import_module('modules.notification'), 'redact_text',
+            lambda text, secrets=None: text)
         outcome = run_notification(
             broken, tmp_path / 'broken',
             handler=file_sink(tmp_path / 'broken'))
