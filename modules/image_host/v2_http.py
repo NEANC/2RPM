@@ -8,6 +8,7 @@ import json
 import requests
 
 from .core import ImageHostError
+from .core import validate_image_url
 from .diagnostics import safe_current_message
 from modules.log_safety import guard_dependency_logging
 from modules.operation_trace import trace_request
@@ -82,6 +83,25 @@ def _read_payload(response, operation):
         return None
 
 
+def _validate_payload(provider, stage, payload):
+    from .storage import _parse_group, _parse_profile, _parse_retention
+
+    if stage == 'upload':
+        data = payload.get('data')
+        if not isinstance(data, Mapping):
+            raise ImageHostError('invalid_response', '', stage=stage)
+        try:
+            validate_image_url(data.get('public_url'))
+        except ImageHostError:
+            raise ImageHostError('invalid_response', '', stage=stage) from None
+    elif stage == 'profile':
+        _parse_profile(payload)
+    elif provider == 'boltp':
+        _parse_retention(payload)
+    else:
+        _parse_group(payload)
+
+
 def _send(provider, stage, kwargs):
     """在独立会话中执行一次真实请求，返回状态、映射与固定分类。"""
     status_code = None
@@ -129,8 +149,15 @@ def _send(provider, stage, kwargs):
                 if code == 'invalid_response' and isinstance(payload, Mapping):
                     status = payload.get('status')
                     if isinstance(status, str) and status == 'success':
-                        operation.finish('succeeded', http_status=status_code)
-                        return status_code, payload, code, diagnostic
+                        try:
+                            _validate_payload(provider, stage, payload)
+                        except ImageHostError as error:
+                            operation.finish('failed', reason_code=error.code,
+                                             http_status=status_code)
+                            return status_code, payload, 'success', diagnostic
+                        else:
+                            operation.finish('succeeded', http_status=status_code)
+                            return status_code, payload, 'success', diagnostic
                     if isinstance(status, str) and status == 'error':
                         diagnostic = safe_current_message(payload.get('message'))
                         code = (
@@ -172,10 +199,8 @@ def request_json(provider, stage, token, *, data=None, files=None) -> dict:
     with guard_dependency_logging(_GUARDED_LOGGERS):
         status_code, payload, code, diagnostic = _send(
             provider, stage, kwargs)
-        if code == 'invalid_response' and isinstance(payload, Mapping):
-            status = payload.get('status')
-            if isinstance(status, str) and status == 'success':
-                return payload
+        if code == 'success':
+            return payload
         # 离开底层异常处理器后构造错误，不保存敏感原始异常链。
         raise ImageHostError(code, '', stage=stage,
                              http_status=status_code,

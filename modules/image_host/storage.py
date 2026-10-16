@@ -99,10 +99,8 @@ def _parse_profile(payload):
     return default
 
 
-def fetch_boltp_retention(token):
-    """只查询 Boltp 组期限，安全映射响应结构错误。"""
+def _parse_retention(payload):
     try:
-        payload = v2_http.request_json('boltp', 'group', token)
         data = payload.get('data')
         if not isinstance(data, Mapping):
             raise ValueError
@@ -118,6 +116,16 @@ def fetch_boltp_retention(token):
                 or expire < 0):
             raise ValueError
         return expire
+    except ImageHostError:
+        raise
+    except Exception:
+        pass
+    raise ImageHostError('storage_lookup_failed', '', stage='group')
+
+
+def fetch_boltp_retention(token):
+    try:
+        return _parse_retention(v2_http.request_json('boltp', 'group', token))
     except ImageHostError:
         raise
     except Exception:

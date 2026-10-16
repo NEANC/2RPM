@@ -960,9 +960,10 @@ def test_v2_request_timing_excludes_slow_auth_preparation(
     monkeypatch.setattr(
         import_module(__name__), 'BODY_SECONDS', AUTH_BODY_SECONDS)
     signal = None if signal_type is None else signal_type('stop-request')
+    reply = {'group': group_reply(), 'profile': profile_reply(),
+             'upload': SUCCESS_UPLOAD}[stage]
     sent = install_timed_transport(
-        monkeypatch, clock,
-        [(200, body({'status': 'success', 'data': {}}), signal)])
+        monkeypatch, clock, [(*reply, signal)])
     events = []
 
     def record(event):
@@ -1098,6 +1099,25 @@ def test_non_v2_json_unknown_charset_uses_requests_text_fallback(
     assert len(sent) == 1
     assert [event.duration_ms for event in terminal_requests(events)] == [
         REQUEST_BODY_MS]
+
+
+@pytest.mark.parametrize('stage', ['group', 'profile', 'upload'])
+def test_v2_required_structure_precedes_request_terminal(stage, monkeypatch):
+    module = import_module('modules.image_host.v2_http')
+    clock = [0.0]
+    sent = install_timed_transport(
+        monkeypatch, clock, [(200, body({'status': 'success', 'data': {}}))])
+    events = []
+    with trace_scope(mode='cli', clock=lambda: clock[0],
+                     on_status=events.append) as trace:
+        module.request_json('beeimg_cn', stage, '')
+        summary = trace.summary()
+    terminal = terminal_requests(events)
+    assert len(sent) == len(terminal) == 1
+    assert terminal[0].status == 'failed'
+    assert terminal[0].duration_ms == REQUEST_BODY_MS
+    prefix = 'upload_post' if stage == 'upload' else stage + '_get'
+    assert summary[prefix + '_failed'] == 1
 
 
 def test_non_v2_invalid_json_raises_requests_decode_error():
