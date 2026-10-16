@@ -294,6 +294,7 @@ class BatchTrace:
         self._cancelled = False
         self._failed = False
         self._finalized = False
+        self._recoverable_warning = False
 
     def _count(self, stage, key, amount=1) -> None:
         """按阶段累计一个固定计数值。"""
@@ -486,6 +487,8 @@ class BatchTrace:
 
     def _has_recoverable_warnings(self) -> bool:
         """判断已完成批次是否带有可恢复告警，用于唯一汇总级别。"""
+        if self._recoverable_warning:
+            return True
         for counter in (
                 'capture_retries', 'capture_format_fallbacks',
                 'preupload_refreshes', 'postupload_recoveries',
@@ -724,6 +727,12 @@ def trace_slot(provider: str, fallback_index: int = 0) -> SlotHandle:
                   else item[1])
     trace.start_slot(image_index, slot_index, provider=provider)
     return SlotHandle(trace, image_index, slot_index)
+
+
+def trace_warning():
+    trace = _TRACE.get()
+    if trace is not None:
+        trace._recoverable_warning = True
 
 
 def current_request_id():

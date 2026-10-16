@@ -35,6 +35,7 @@ from modules.log_safety import safety_scope
 from modules.operation_trace import current_request_id
 from modules.operation_trace import trace_operation
 from modules.operation_trace import trace_skipped
+from modules.operation_trace import trace_warning
 
 
 _CACHE_WARNINGS = {
@@ -209,6 +210,7 @@ class UploadContext:
 
     def _warn(self, warning):
         """保序去重固定告警，不接受动态错误文本。"""
+        trace_warning()
         if warning not in self._warnings:
             self._warnings.append(warning)
 

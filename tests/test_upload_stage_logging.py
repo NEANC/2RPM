@@ -1238,6 +1238,34 @@ def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
     context.close()
 
 
+@pytest.mark.parametrize('cause', ['profile', 'identity', 'load', 'save'])
+def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, caplog):
+    if cause != 'profile':
+        name = {'identity': '_prepare_key', 'load': '_load',
+                'save': '_write_atomic'}[cause]
+
+        def broken(*args, **kwargs):
+            raise OSError('synthetic')
+
+        monkeypatch.setattr(StorageCache, name, broken)
+    with caplog.at_level(logging.INFO, logger='modules.operation_trace'):
+        run = run_chain(monkeypatch, tmp_path, [
+            {'provider': 'beeimg_cn', 'token': SECRET,
+             'options': {'storage_id': 13}}], replies=[
+                group_reply(), profile_reply(status=403) if cause == 'profile'
+                else profile_reply(), SUCCESS_UPLOAD])
+    assert run.results[0].success
+    assert len(run.transport.posts) == 1
+    final = of_stage(run.events, 'batch')[-1]
+    assert final.status == 'completed'
+    assert final.reason_code == 'recoverable_warning'
+    records = [record for record in caplog.records
+               if 'stage=batch' in record.getMessage()
+               and 'status=completed' in record.getMessage()]
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+
+
 def test_non_v2_invalid_json_raises_requests_decode_error():
     """已读取的无效 JSON 仍包装为 Requests JSONDecodeError。"""
     module = import_module('modules.image_host.providers')
