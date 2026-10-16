@@ -3,6 +3,7 @@
 """提供静态适配器注册表和每张图片独立的顺序故障转移。"""
 
 from collections.abc import Mapping
+from contextlib import ExitStack
 from copy import deepcopy
 import sys
 
@@ -26,6 +27,7 @@ from .providers import upload_wmimg
 from .providers import validate_v2_options
 from modules.log_safety import extend_secrets
 from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_fallback
 from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot
 
@@ -145,33 +147,39 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
         failures = []
         state = context.storage_state(image, index, provider, token)
         for position, storage_id in enumerate(candidates):
-            decision = compute_expiration(
-                seconds, image.started_at, retention,
-                state.previous_deadline, context.now(),
-                previous_shortened=state.previous_shortened)
-            context.record_expiration(image, index, provider, token, decision)
-            if decision.shortened:
-                _add_warnings(warnings, (_WARN_SHORTENED,))
-            prepared = PreparedV2Options(
-                deepcopy(options), expired_at=decision.expired_at)
-            with trace_operation(
-                    'storage_select', 'select', provider=provider,
-                    storage_id=storage_id,
-                    selection_source=('manual' if storage_id == manual_id
-                                      else 'candidate'),
-                    candidate_count=len(candidates)) as operation:
-                prepared['storage_id'] = storage_id
-                operation.finish(
-                    'succeeded', storage_id=storage_id,
-                    selection_source=('manual' if storage_id == manual_id
-                                      else 'candidate'))
-            try:
-                result = UPLOADERS[provider](image_bytes, filename, token, prepared)
-                return validate_image_url(result), None
-            except ImageHostError as error:
-                failure = _failure(provider, error.code, error=error)
-            except Exception:
-                failure = _failure(provider, 'upload_failed')
+            with ExitStack() as stack:
+                fallback = (stack.enter_context(trace_fallback(
+                    'boltp_candidate', 'switch', reason_code='storage_rejected',
+                    provider=provider, storage_id=storage_id)) if position else None)
+                decision = compute_expiration(
+                    seconds, image.started_at, retention,
+                    state.previous_deadline, context.now(),
+                    previous_shortened=state.previous_shortened)
+                context.record_expiration(image, index, provider, token, decision)
+                if decision.shortened:
+                    _add_warnings(warnings, (_WARN_SHORTENED,))
+                prepared = PreparedV2Options(
+                    deepcopy(options), expired_at=decision.expired_at)
+                with trace_operation(
+                        'storage_select', 'select', provider=provider,
+                        storage_id=storage_id,
+                        selection_source=('manual' if storage_id == manual_id
+                                          else 'candidate'),
+                        candidate_count=len(candidates)) as operation:
+                    prepared['storage_id'] = storage_id
+                    operation.finish(
+                        'succeeded', storage_id=storage_id,
+                        selection_source=('manual' if storage_id == manual_id
+                                          else 'candidate'))
+                try:
+                    result = UPLOADERS[provider](image_bytes, filename, token, prepared)
+                    return validate_image_url(result), None
+                except ImageHostError as error:
+                    failure = _failure(provider, error.code, error=error)
+                except Exception:
+                    failure = _failure(provider, 'upload_failed')
+                if fallback is not None:
+                    fallback.finish('failed', reason_code=failure.code)
             failures.append(failure)
             if (storage_id == options.get('storage_id')
                     and 'storage_id' in options
@@ -183,8 +191,6 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                     and failure.stage == 'upload'
                     and failure.http_status == 200):
                 break
-            if position + 1 < len(candidates):
-                _record_fallback('boltp_candidate', 'storage_rejected')
             state = context.storage_state(image, index, provider, token)
         return None, failures
     try:
@@ -224,7 +230,13 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
         recovery_scope = None
         slot_scope = slot.scope()
         slot_scope.__enter__()
+        failover_scope = None
         try:
+            if index:
+                failover_scope = trace_fallback(
+                    'host_failover', 'failover', reason_code='slot_failed',
+                    provider=provider)
+                failover = failover_scope.__enter__()
             if shape_error is not None:
                 raise shape_error
             token = context.resolve_credential(index, host)
@@ -320,13 +332,23 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             if recovery_scope is not None:
                 recovery.finish('failed', reason_code='operation_failed')
             failures.append(_failure(provider, 'upload_failed'))
+        except (KeyboardInterrupt, SystemExit):
+            slot.finish('cancelled', reason_code='batch_cancelled')
+            raise
         finally:
             try:
                 if recovery_scope is not None:
                     recovery_scope.__exit__(*sys.exc_info())
                 _add_warnings(warnings, context.take_warnings())
             finally:
-                slot_scope.__exit__(*sys.exc_info())
+                try:
+                    if failover_scope is not None:
+                        if sys.exc_info()[0] is None:
+                            failover.finish('succeeded' if url else 'failed',
+                                            reason_code='slot_failed')
+                        failover_scope.__exit__(*sys.exc_info())
+                finally:
+                    slot_scope.__exit__(*sys.exc_info())
         attempts.append(provider)
         if url is not None:
             slot.finish('succeeded')
@@ -334,8 +356,6 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
             return UploadResult(True, provider, url, tuple(attempts),
                                 tuple(failures), tuple(warnings))
         slot.finish('failed', reason_code=_slot_reason(failures))
-        if index + 1 < len(hosts):
-            _record_fallback('host_failover', 'slot_failed')
     return UploadResult(False, None, None, tuple(attempts), tuple(failures),
                         tuple(warnings))
 

@@ -269,6 +269,34 @@ def test_superbed_domain_fallback_links_real_terminal(monkeypatch, tmp_path, sig
         assert events[-1].reason_code == 'recoverable_warning'
 
 
+@pytest.mark.parametrize('kind', ['boltp_candidate', 'host_failover'])
+@pytest.mark.parametrize('signal', [None, KeyboardInterrupt, SystemExit])
+def test_chain_fallback_links_target_and_cancellation(monkeypatch, tmp_path, kind, signal):
+    hosts = ([{'provider': 'boltp'}] if kind == 'boltp_candidate' else
+             [{'provider': 'catbox'}, {'provider': 'boltp'}])
+    first = REJECTED_UPLOAD if kind == 'boltp_candidate' else (503, b'')
+    registry = import_module('modules.image_host.registry')
+    transport = Transport(monkeypatch, [first, signal() if signal else SUCCESS_UPLOAD])
+    events = []
+    with trace_scope(mode='automatic', on_status=events.append):
+        if signal:
+            with pytest.raises(signal):
+                registry.upload_with_fallback(b'image', 'image.png', hosts)
+        else:
+            assert registry.upload_with_fallback(b'image', 'image.png', hosts).success
+    fallback = of_stage(events, 'fallback')
+    assert [event.status for event in fallback] == [
+        'started', 'cancelled' if signal else 'succeeded']
+    requests_started = [event for event in of_stage(events, 'upload_attempt')
+                        if event.status == 'started']
+    assert fallback[0].source_operation_id is not None
+    assert requests_started[1].source_operation_id == fallback[0].operation_id
+    assert fallback[0].slot_index == (0 if kind == 'boltp_candidate' else 1)
+    if signal:
+        assert slots(events)[-1].status == 'cancelled'
+    assert len(transport.posts) == 2
+
+
 def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
     """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
     run = run_chain(
