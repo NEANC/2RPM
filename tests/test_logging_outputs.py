@@ -116,6 +116,26 @@ def test_final_handlers_redact_ansi_split_url(sink, split_at, tmp_path):
     assert 'PRIVATE_URL_TAIL' not in output
 
 
+@pytest.mark.parametrize('suffix', [
+    '/a(b)',
+    '/a(b(c))',
+    '/a(b)/PRIVATE_PATH?sig=PRIVATE_QUERY#PRIVATE_FRAGMENT',
+    '/a(b(c))/PRIVATE_PATH?sig=PRIVATE_QUERY#PRIVATE_FRAGMENT',
+    '/a)?sig=PRIVATE_QUERY#PRIVATE_FRAGMENT',
+])
+@pytest.mark.parametrize('template', ['%s', '(%s)', '![截图](%s)', '[链接](%s)'])
+def test_final_file_handler_redacts_parenthesized_url(suffix, template, tmp_path):
+    """括号后的链接内容不泄漏，外层括号及原记录保持不变。"""
+    record = _record()
+    record.msg = '正文\n' + template + '\n**结束**'
+    record.args = ('https://example.invalid' + suffix,)
+    handler = logger_mod._create_file_handler(str(tmp_path), 'parenthesis-url')
+    output = _emit_file(handler, record).decode('utf-8').replace('\r\n', '\n')
+    expected = '正文\n' + template % log_safety.LINK_REDACTED + '\n**结束**'
+    assert expected in output
+    assert 'PRIVATE_' not in output
+
+
 def test_handle_error_does_not_dump_record(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(logging, 'raiseExceptions', True)
     record = _record()

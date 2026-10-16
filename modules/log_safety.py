@@ -41,7 +41,7 @@ _CREDENTIAL = re.compile(
     r'[\"\']?\s*[:=]\s*[\"\']?[^\s,;\"\']+',
     re.IGNORECASE,
 )
-_URL = re.compile(r"https?://[^\s<>\"')\x00-\x1f\x7f-\x9f]*", re.IGNORECASE)
+_URL = re.compile(r"https?://[^\s<>\"'\x00-\x1f\x7f-\x9f]*", re.IGNORECASE)
 
 
 def normalize_secrets(secrets):
@@ -143,12 +143,20 @@ def clean_controls(text, *, preserve_whitespace=False):
     return strip_control_chars(text, preserve_whitespace=preserve_whitespace)
 
 
+def _redact_url(match):
+    """隐藏完整链接，仅保留末尾多出的外层右括号。"""
+    url = match.group()
+    trailing = len(url) - len(url.rstrip(')'))
+    outer = min(trailing, max(0, url.count(')') - url.count('(')))
+    return LINK_REDACTED + ')' * outer
+
+
 def redact_text(text: str, secrets: SecretSnapshot | None = None) -> str:
     snapshot = secret_snapshot() if secrets is None else secrets
     result = redact_secrets(text, snapshot)
     result = strip_log_controls(remove_terminal_sequences(result))
     result = _CREDENTIAL.sub(REDACTED, result)
-    result = _URL.sub(LINK_REDACTED, result)
+    result = _URL.sub(_redact_url, result)
     guarded = result.replace(REDACTED, _REDACTED_SENTINEL).replace(
         LINK_REDACTED, _LINK_SENTINEL)
     guarded = redact_secrets(guarded, snapshot)
