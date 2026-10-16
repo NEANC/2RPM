@@ -3,6 +3,7 @@
 """解析截图 CLI 参数并执行一次截图、可选保存和上传。"""
 
 import argparse
+from contextlib import nullcontext
 from datetime import date
 import os
 
@@ -347,8 +348,8 @@ def _upload_status(stats):
     return None
 
 
-def run_screenshot_cli(args, program_dir):
-    """先完成无副作用校验，单次截图后独立保存与全部上传。"""
+def run_screenshot_cli(args, program_dir, *, logging_scope=None):
+    """先完成无副作用校验，再进入可选日志作用域执行截图、保存与上传。"""
     source = getattr(args, 'source', None)
     source_target = getattr(args, 'target', None)
     output = getattr(args, 'output', None)
@@ -379,8 +380,9 @@ def run_screenshot_cli(args, program_dir):
 
     today = date.today()
     slots_planned = len(hosts) if hosts else 0
-    with trace_scope(mode='cli', images_planned=1, slots_planned=slots_planned,
-                     on_status=make_status_consumer()) as trace:
+    with (logging_scope if logging_scope is not None else nullcontext()), \
+            trace_scope(mode='cli', images_planned=1, slots_planned=slots_planned,
+                        on_status=make_status_consumer()) as trace:
         with trace_item(image_index=1):
             try:
                 result = capture(

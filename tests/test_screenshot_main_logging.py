@@ -93,6 +93,49 @@ def test_main_invalid_args_do_not_create_logs(
     assert capsys.readouterr().err == '截图参数无效\n'
 
 
+@pytest.mark.parametrize('case', ['raw_upload', 'managed_file', 'managed_dir'])
+@pytest.mark.parametrize('existing', [False, True])
+def test_main_output_validation_precedes_logging(
+        entry_environment, monkeypatch, tmp_path, capsys, case, existing):
+    """完整输出校验先于日志创建，错误保持退出码与输出通道。"""
+    entry, cli, root = entry_environment
+    capture = Mock(side_effect=AssertionError)
+    monkeypatch.setattr(cli, 'capture', capture)
+    managed = tmp_path / 'screenshot' / '2026_10_07'
+    target = tmp_path / 'shot.raw'
+    extra = ['--upload', '{provider: catbox}']
+    if case != 'raw_upload':
+        target = managed / ('shot.png' if case == 'managed_file' else 'shots')
+        extra = []
+    if existing:
+        if case == 'managed_dir':
+            target.mkdir(parents=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'keep')
+    before = set(tmp_path.rglob('*'))
+    monkeypatch.setattr(sys, 'argv', [
+        '2RPM.py', 'screenshot', '--source', 'window:test',
+        '--output', str(target), *extra])
+    monkeypatch.setattr(root, 'handlers', [])
+
+    with pytest.raises(SystemExit) as caught:
+        entry.main()
+
+    assert caught.value.code == 2
+    capture.assert_not_called()
+    assert not (tmp_path / 'logs').exists()
+    assert set(tmp_path.rglob('*')) == before
+    if existing and case != 'managed_dir':
+        assert target.read_bytes() == b'keep'
+    assert root.handlers == []
+    assert root.level == logging.WARNING
+    entry.load_config.assert_not_called()
+    output = capsys.readouterr()
+    assert output.out == '截图参数无效\n'
+    assert output.err == ''
+
+
 @pytest.mark.parametrize('failure', ['blocked', 'collision', 'reparse'])
 def test_main_log_failure_keeps_cli_result(
         entry_environment, monkeypatch, tmp_path, capsys, failure):

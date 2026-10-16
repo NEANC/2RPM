@@ -458,7 +458,9 @@ def test_entry_dispatches_screenshot_command(monkeypatch, tmp_path):
     config_spy.assert_not_called()
     for spy in spies.values():
         spy.assert_not_called()
-    assert [item.name for item in tmp_path.iterdir()] == ['logs']
+    assert list(tmp_path.iterdir()) == []
+    with run_spy.call_args.kwargs['logging_scope']:
+        assert [item.name for item in tmp_path.iterdir()] == ['logs']
 
 
 def test_entry_propagates_screenshot_exit_code(monkeypatch, tmp_path):

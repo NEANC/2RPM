@@ -180,7 +180,10 @@ def test_screenshot_command_skips_config_logging_and_cleanup(
 
     assert exit_info.value.code == 0
     parse.assert_called_once_with(['--source', 'adb:serial'])
-    run.assert_called_once_with(parse.return_value, str(tmp_path))
+    run.assert_called_once_with(
+        parse.return_value, str(tmp_path),
+        logging_scope=run.call_args.kwargs['logging_scope'])
+    assert list(tmp_path.iterdir()) == []
     assert events == []
     entry.load_config.assert_not_called()
     entry.setup_logging.assert_not_called()

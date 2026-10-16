@@ -78,8 +78,9 @@ def main():
     if _is_screenshot_command():
         screenshot_args = parse_screenshot_args(sys.argv[2:])
         program_dir = get_program_directory()
-        with screenshot_logging(program_dir):
-            sys.exit(run_screenshot_cli(screenshot_args, program_dir))
+        sys.exit(run_screenshot_cli(
+            screenshot_args, program_dir,
+            logging_scope=screenshot_logging(program_dir)))
 
     print_info()
     
