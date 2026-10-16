@@ -28,10 +28,13 @@ def test_adb_fallback_records_fixed_trigger(monkeypatch, failure):
         with trace_item(image_index=1):
             backend.capture_adb(SERIAL)
     fallbacks = [event for event in events if event.stage == 'fallback'
-                 and event.status == 'succeeded']
+                 and event.status != 'started']
     assert [event.fallback_kind for event in fallbacks] == (
         ['capture_format'] if failure == 'response_too_large'
         else ['capture_retry', 'capture_format'])
+    assert [event.status for event in fallbacks] == (
+        ['succeeded'] if failure == 'response_too_large'
+        else ['failed', 'succeeded'])
     assert [event.reason_code for event in fallbacks] == [failure] * len(fallbacks)
 
 

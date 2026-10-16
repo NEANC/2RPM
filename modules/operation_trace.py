@@ -288,7 +288,9 @@ class Operation:
         """在调用方未显式收尾时补充固定终态。"""
         if self._finished or self._trace is None:
             return
-        self.finish(status)
+        reason_code = (self._event.reason_code
+                       if self._stage == 'fallback' else '')
+        self.finish(status, reason_code=reason_code)
 
 
 class BatchTrace:
