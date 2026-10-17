@@ -179,8 +179,13 @@ def test_mixed_empty_target_aggregate_modes(mode, case):
 
 @pytest.mark.parametrize('mode', AGGREGATE_MODES)
 def test_whitespace_target_is_preserved(mode):
-    """仅含空白的受控值不是禁用空字符串，必须原样保留。"""
-    values = {'empty': '', 'space': ' \t', 'screenshot': ' \t'}
+    """仅含空白的受控值不是禁用空字符串，必须原样保留。
+
+    聚合值取 `''` 且与空白项 `' \\t'` 不同：若按 strip()/isspace()
+    过滤空白项，则无保留项并回退到 `''`，断言失败；只有精确排除
+    `''` 时才会保留空白项并返回 `' \\t'`。
+    """
+    values = {'empty': '', 'space': ' \t', 'screenshot': ''}
     batch = ScreenshotBatch(dict(values), (), ())
 
     assert render_screenshot_template(
