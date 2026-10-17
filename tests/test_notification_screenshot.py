@@ -13,7 +13,7 @@ from collections import Counter
 from copy import deepcopy
 from importlib import import_module
 from io import BytesIO
-from unittest.mock import MagicMock, Mock, PropertyMock
+from unittest.mock import MagicMock, Mock, PropertyMock, call
 
 import pytest
 import requests
@@ -27,6 +27,7 @@ from modules.image_host.core import UploadFailure
 from modules.image_host.core import UploadResult
 from modules.image_host.diagnostics import safe_current_message
 from modules.image_host.storage_cache import StorageCache
+from modules.notification_rendering import prepare_channel
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
 
@@ -1736,13 +1737,13 @@ def test_parallel_notifications_keep_secret_scopes_separate(monkeypatch):
     real = notif._notify_single_channel
 
     def observed_notify(channel, title, content, retry_interval, max_count,
-                        screenshot_count=0):
+                        screenshot_count=0, *, render_context=None):
         """在发送线程内读取本事件秘密快照，并强制两事件同时处于作用域。"""
         barrier.wait()
         observed.setdefault(channel['sckey'], []).append(
             log_safety.secret_snapshot())
         return real(channel, title, content, retry_interval, max_count,
-                    screenshot_count)
+                    screenshot_count, render_context=render_context)
 
     monkeypatch.setattr(notif, '_notify_single_channel', observed_notify)
     results = {}
@@ -1833,3 +1834,244 @@ def test_channel_retries_display_upload_status_once(
     assert status_text.count('截图 1 / 图床 1 beeimg_cn：正在上传') == 1
     assert '\x1b' not in status_text
     assert URL not in status_text
+
+
+def _smtp_channel(**overrides):
+    """构造最小 SMTP 通道，仅用于本次通知接入测试。"""
+    channel = {
+        'provider': 'smtp',
+        'subject': '标题',
+        'From': 'sender@example.test',
+        'To': 'recipient@example.test',
+        'user': 'user@example.test',
+        'host': 'smtp.example.test',
+        'password': 'secret',
+    }
+    channel.update(overrides)
+    return channel
+
+
+def test_channel_preparation_is_once_per_channel(monkeypatch):
+    """每个通道只准备一次，重试复用同一份 MIME 与渲染结果。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    attempts = Counter()
+    sent = {'discord': [], 'smtp': []}
+
+    def notify(title=None, content=None, **params):
+        """记录每次发送内容，首次 HTTP 503 后成功以触发重试。"""
+        provider = 'smtp' if 'host' in params else 'discord'
+        sent[provider].append((title, content, params))
+        attempts[provider] += 1
+        return _response(503 if attempts[provider] == 1 else 200)
+
+    _install_onepush(monkeypatch, notify)
+    config = _base_config(
+        channels=[{'provider': 'discord'}, _smtp_channel()],
+        retry={'interval': '2s', 'max_count': 3})
+    before_config = deepcopy(config)
+    previews = []
+    original_log = notif._log_rendered_notification
+
+    def spy_log(template_key, title, content, batch):
+        """记录基准日志入参，并在发送前冻结批次内容副本。"""
+        previews.append((deepcopy(batch.values), batch))
+        return original_log(template_key, title, content, batch)
+
+    monkeypatch.setattr(notif, '_log_rendered_notification', spy_log)
+    prepare_spy = Mock(wraps=prepare_channel)
+    monkeypatch.setattr(notif, 'prepare_channel', prepare_spy)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('discord', True), ('smtp', True)]
+    assert capture.call_count == upload.call_count == 1
+    assert prepare_spy.call_count == 2
+    assert attempts == Counter({'discord': 2, 'smtp': 2})
+    assert sent['smtp'][0][2]['msg'] is sent['smtp'][1][2]['msg']
+    assert sent['discord'][0][:2] == sent['discord'][1][:2]
+    assert sleep.call_args_list == [call(2), call(2)]
+    assert config == before_config
+    assert len(previews) == 1
+    before_values, batch = previews[0]
+    assert batch.values == before_values
+
+
+@pytest.mark.parametrize('mode', ('exception', 'invalid_header'))
+def test_preparation_failure_is_local(monkeypatch, caplog, mode):
+    """单通道准备失败只返回 False，零发送、零等待且不泄露异常原文。"""
+    _install_boundaries(monkeypatch)
+    smtp = _smtp_channel()
+    if mode == 'invalid_header':
+        smtp['subject'] = 'bad\r' + SECRET
+    _, notifier, getter = _install_onepush(monkeypatch)
+    if mode == 'exception':
+        def failing_prepare(channel, title, content, context):
+            """仅让 SMTP 通道抛出携带合成秘密的准备异常。"""
+            if channel.get('provider') == 'smtp':
+                raise ValueError(SECRET)
+            return prepare_channel(channel, title, content, context)
+
+        monkeypatch.setattr(notif, 'prepare_channel', failing_prepare)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+    config = _base_config(
+        channels=[smtp, {'provider': 'discord'}],
+        retry={'interval': '2s', 'max_count': 3})
+
+    with caplog.at_level(logging.DEBUG):
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('smtp', False), ('discord', True)]
+    assert notifier.notify.call_count == 1
+    assert getter.call_count == 1
+    sleep.assert_not_called()
+    assert '通道消息准备失败' in caplog.text
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize('signal_type', (KeyboardInterrupt, SystemExit))
+def test_preparation_control_signal_propagates(monkeypatch, signal_type):
+    """准备阶段控制信号保持原对象，由 Future.result 向上传播。"""
+    _install_boundaries(monkeypatch)
+    signal = signal_type('prepare-stop')
+
+    def interrupting_prepare(channel, title, content, context):
+        """在通道准备阶段抛出同一控制信号对象。"""
+        raise signal
+
+    monkeypatch.setattr(notif, 'prepare_channel', interrupting_prepare)
+    _, notifier, getter = _install_onepush(monkeypatch)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+
+    with pytest.raises(signal_type) as caught:
+        notif.send_notification(_base_config(), 'on_end', process_name='demo')
+
+    assert caught.value is signal
+    assert notifier.notify.call_count == 0
+    assert getter.call_count == 0
+    sleep.assert_not_called()
+
+
+LEGACY_CONFLICT_CASES = (
+    ({'provider': 'dingtalk', 'markdown': False,
+      'title': 'dup', 'content': 'dup'}, False),
+    ({'provider': 'wechatworkapp', 'media_id': 'id',
+      'title': 'dup', 'content': 'dup'}, True),
+    ({'provider': 'smtp', 'msg': object(),
+      'title': 'dup', 'content': 'dup'}, True),
+    ({'provider': 'bark', 'ciphertext': 'sealed',
+      'title': 'dup', 'content': 'dup'}, True),
+)
+
+
+@pytest.mark.parametrize('channel, reference', LEGACY_CONFLICT_CASES)
+def test_legacy_conflicts_remain(monkeypatch, caplog, channel, reference):
+    """未触发或保留分支保留 title/content 重复键，仍走旧发送异常重试。"""
+    _install_boundaries(monkeypatch)
+    _, notifier, getter = _install_onepush(monkeypatch)
+    config = _base_config(
+        channels=[deepcopy(channel)],
+        retry={'interval': '2s', 'max_count': 3})
+    template = config['push']['templates']['on_end']
+    if not reference:
+        template['title'] = '标题 {process_name}'
+        template['content'] = '正文 {process_name}'
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+
+    with caplog.at_level(logging.DEBUG):
+        result = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert result == [(channel['provider'], False)]
+    assert getter.call_count == 3
+    assert notifier.notify.call_count == 0
+    assert sleep.call_count == 2
+    assert sleep.call_args_list == [call(2), call(2)]
+    assert '通道消息准备失败' not in caplog.text
+    assert '客户端发送失败' in caplog.text
+
+
+def test_render_context_trigger_independence(monkeypatch):
+    """触发只由原始模板直接引用决定，与截图结果及变量来源无关。"""
+    for case in ('disabled', 'no_targets', 'all_failed'):
+        if case == 'all_failed':
+            _install_boundaries(
+                monkeypatch,
+                upload_result=UploadResult(False, None, None, ('catbox',), ()))
+        else:
+            _install_boundaries(monkeypatch)
+        _install_onepush(monkeypatch)
+        config = _base_config(
+            channels=[{'provider': 'dingtalk', 'markdown': False}])
+        if case == 'disabled':
+            config['push']['templates']['on_end']['capture_screenshot'] = False
+        if case == 'no_targets':
+            config['push']['screenshot']['targets'] = []
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+        assert results == [('dingtalk', True)]
+        assert notif.get_notifier.return_value.notify.call_args.kwargs[
+            'markdown'] is True
+
+    _install_boundaries(monkeypatch)
+    sent, notifier, _ = _install_onepush(monkeypatch)
+    config = _base_config(channels=[{'provider': 'dingtalk', 'markdown': False}])
+    results = notif.send_notification(
+        config, 'on_end', process_name='demo', screenshot='ordinary')
+    assert results == [('dingtalk', True)]
+    assert sent == [('标题 demo', '正文 demo\n\nordinary')]
+    assert notifier.notify.call_args.kwargs['markdown'] is False
+
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, notifier, _ = _install_onepush(monkeypatch)
+    config = _base_config(channels=[{'provider': 'dingtalk', 'markdown': False}])
+    template = config['push']['templates']['on_end']
+    template['title'] = '纯标题 {process_name}'
+    template['content'] = '纯正文 {process_name}'
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+    assert results == [('dingtalk', True)]
+    assert capture.call_count == upload.call_count == 1
+    assert sent == [('纯标题 demo', '纯正文 demo')]
+    assert notifier.notify.call_args.kwargs['markdown'] is False
+
+    variants = (
+        ('标题 {process_name} {screenshot}', '正文 {process_name}'),
+        ('标题 {process_name}', '正文 {process_name}\n\n{screenshot}'),
+        ('标题 {screenshot} {screenshot}',
+         '正文 {process_name}\n\n{screenshot}\n{screenshot}'),
+    )
+    for title_template, content_template in variants:
+        capture, upload = _install_boundaries(monkeypatch)
+        _install_onepush(monkeypatch)
+        config = _base_config(
+            channels=[{'provider': 'dingtalk', 'markdown': False}])
+        template = config['push']['templates']['on_end']
+        template['title'] = title_template
+        template['content'] = content_template
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+        assert results == [('dingtalk', True)]
+        assert capture.call_count == 1
+        assert upload.call_count == 1
+
+    _install_boundaries(monkeypatch)
+    _install_onepush(monkeypatch)
+    config = _base_config(channels=[_smtp_channel()])
+    captured = []
+    original_log = notif._log_rendered_notification
+
+    def spy_log(template_key, title, content, batch):
+        """记录基准日志入参供派生内容隔离断言。"""
+        captured.append((title, content))
+        return original_log(template_key, title, content, batch)
+
+    monkeypatch.setattr(notif, '_log_rendered_notification', spy_log)
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+    assert results == [('smtp', True)]
+    assert len(captured) == 1
+    logged_title, logged_content = captured[0]
+    assert logged_title == '标题 demo'
+    assert '![screenshot_1](' in logged_content
+    assert 'screenshot_1: ' not in logged_content
+    assert 'multipart/alternative' not in logged_content

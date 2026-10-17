@@ -21,6 +21,11 @@ from modules.log_safety import (
     redact_text,
     safety_scope,
 )
+from modules.notification_rendering import (
+    ScreenshotRenderContext,
+    has_direct_screenshot,
+    prepare_channel,
+)
 from modules.screenshot.pipeline import (
     ScreenshotBatch,
     append_screenshot_notices,
@@ -161,7 +166,8 @@ def _handle_attempt_failure(provider, attempt, max_count, reason, retry_interval
 
 
 def _notify_single_channel(channel, title, content, retry_interval, max_count,
-                           screenshot_count=0):
+                           screenshot_count=0, *,
+                           render_context=None):
     """向单个推送通道发送通知，失败时按配置重试
 
     Args:
@@ -171,16 +177,31 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
         retry_interval (int): 重试间隔（秒）
         max_count (int): 最大重试次数
         screenshot_count (int): 标题或正文实际引用的截图项数量。
+        render_context (ScreenshotRenderContext | None): 本次截图上下文。
 
     Returns:
         bool: 是否发送成功
     """
-    params = dict(channel)
-    provider = params.pop('provider', '')
+    provider = channel.get('provider', '')
 
     # 守卫：缺少 provider 无法发送
     if not provider:
         LOGGER.error("推送通道缺少 provider 键，已跳过该通道")
+        return False
+
+    # 本次参数与渲染结果在重试循环外准备，失败重试复用同一份结果
+    try:
+        title, content, params = prepare_channel(
+            channel, title, content, render_context)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception:
+        # 固定摘要且不输出异常原文；日志自身异常也不阻断其他通道
+        try:
+            LOGGER.error(
+                "%s通道 [%s] 通道消息准备失败", _event_prefix(), provider)
+        except Exception:
+            pass
         return False
 
     for attempt in range(1, max_count + 1):
@@ -533,6 +554,14 @@ def send_notification(config, template_key, **kwargs):
         screenshot_count = _referenced_screenshot_count(title, content, batch)
         _log_rendered_notification(template_key, title, content, batch)
 
+        # 仅当模板直接引用聚合占位且该值仍属于截图批次时启用通道适配
+        render_context = None
+        if 'screenshot' not in kwargs and (
+                has_direct_screenshot(raw_title)
+                or has_direct_screenshot(raw_content)):
+            render_context = ScreenshotRenderContext(
+                raw_title, raw_content, values, batch, True)
+
         retry_settings = push_section.get('retry', {})
         retry_interval_str = retry_settings.get('interval', '3s')
         try:
@@ -572,6 +601,7 @@ def send_notification(config, template_key, **kwargs):
                         retry_interval,
                         max_count,
                         screenshot_count,
+                        render_context=render_context,
                     ),
                 )
                 for channel in channels
