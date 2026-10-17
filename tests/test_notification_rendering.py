@@ -7,6 +7,7 @@ import pytest
 from modules.notification_rendering import (
     ScreenshotRenderContext,
     has_direct_screenshot,
+    prepare_channel,
     render_screenshot_content,
     render_screenshot_template,
 )
@@ -125,3 +126,378 @@ def test_notice_order_and_fallback(fallback):
 
     assert values == before_values
     assert batch == before_batch
+
+
+M = IMAGE
+CONTEXT = ScreenshotRenderContext('T', '{screenshot}', VALUES, BATCH, True)
+EMPTY_BATCH = ScreenshotBatch({'screenshot': ''}, (), ())
+EMPTY_CONTEXT = ScreenshotRenderContext(
+    'T', '{screenshot}', dict(EMPTY_BATCH.values), EMPTY_BATCH, True)
+FAILED_BATCH = ScreenshotBatch({'screenshot': '截图失败'}, (), ())
+FAILED_CONTEXT = ScreenshotRenderContext(
+    'T', '{screenshot}', dict(FAILED_BATCH.values), FAILED_BATCH, True)
+CONTEXT_CASES = (
+    (CONTEXT, IMAGE),
+    (EMPTY_CONTEXT, ''),
+    (FAILED_CONTEXT, '截图失败'),
+)
+DISCORD_CONTEXT = ScreenshotRenderContext(
+    'T', '![manual](u)\n{screenshot}', VALUES, BATCH, True)
+DISCORD_EMPTY_CONTEXT = ScreenshotRenderContext(
+    'T', '![manual](u)\n{screenshot}', dict(EMPTY_BATCH.values), EMPTY_BATCH,
+    True)
+
+
+def _params_without_provider(channel):
+    """返回通道参数去掉 provider 后的完整副本，用于原样返回断言。"""
+    return {key: value for key, value in channel.items() if key != 'provider'}
+
+
+@pytest.mark.parametrize('context, expected', CONTEXT_CASES)
+@pytest.mark.parametrize(
+    'provider', ('dingtalk', 'pushplus', 'wechatworkapp', 'ntfy'))
+def test_channel_policy_markdown_true(provider, context, expected):
+    """普通 Markdown 通道覆盖 markdown=True，并移除 title/content。"""
+    channel = {
+        'provider': provider,
+        'markdown': False,
+        'title': 'old',
+        'content': 'old',
+        'proxies': {'https': 'http://127.0.0.1:7890'},
+        'route': 'primary',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, context)
+
+    assert channel == before
+    assert params['markdown'] is True
+    assert 'title' not in params
+    assert 'content' not in params
+    assert title == 'T'
+    assert content == expected
+    for key in ('proxies', 'route'):
+        assert params[key] == before[key]
+
+
+@pytest.mark.parametrize(
+    'markdown, expected', ((0, 1), (1, 1), (2, 2), (3, 1)))
+def test_channel_policy_wechatworkbot(markdown, expected):
+    """企业微信机器人只保留 2，其余 0/1/3 统一为 1。"""
+    channel = {
+        'provider': 'wechatworkbot',
+        'markdown': markdown,
+        'title': 'old',
+        'content': 'old',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, CONTEXT)
+
+    assert channel == before
+    assert params['markdown'] == expected
+    assert 'title' not in params
+    assert 'content' not in params
+    assert title == 'T'
+    assert content == M
+
+
+def test_channel_policy_pushdeer():
+    """PushDeer 由 text 切换为 markdown。"""
+    channel = {
+        'provider': 'pushdeer',
+        'type': 'text',
+        'title': 'old',
+        'content': 'old',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, CONTEXT)
+
+    assert channel == before
+    assert params['type'] == 'markdown'
+    assert 'title' not in params
+    assert 'content' not in params
+    assert content == M
+
+
+@pytest.mark.parametrize(
+    'parse_mode, expected',
+    ((None, 'Markdown'), ('HTML', 'Markdown'), ('MarkdownV2', 'MarkdownV2')))
+def test_channel_policy_telegram(parse_mode, expected):
+    """Telegram 只保留 MarkdownV2，移除显式 text，保留预览开关。"""
+    channel = {
+        'provider': 'telegram',
+        'text': 'old',
+        'title': 'old',
+        'content': 'old',
+        'disable_web_page_preview': True,
+    }
+    if parse_mode is not None:
+        channel['parse_mode'] = parse_mode
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, CONTEXT)
+
+    assert channel == before
+    assert params['parse_mode'] == expected
+    assert 'text' not in params
+    assert 'title' not in params
+    assert 'content' not in params
+    assert params['disable_web_page_preview'] is True
+    assert content == M
+
+
+@pytest.mark.parametrize('context, expected', CONTEXT_CASES)
+def test_channel_policy_bark(context, expected):
+    """Bark 删除 body，markdown 与正文都是本次渲染字符串。"""
+    channel = {
+        'provider': 'bark',
+        'body': 'old',
+        'markdown': True,
+        'title': 'old',
+        'content': 'old',
+        'cipherkey': 'secret',
+        'ciphermethod': 'cbc',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, context)
+
+    assert channel == before
+    assert 'body' not in params
+    assert params['markdown'] == expected
+    assert content == expected
+    assert 'title' not in params
+    assert 'content' not in params
+    for key in ('cipherkey', 'ciphermethod'):
+        assert params[key] == before[key]
+
+
+@pytest.mark.parametrize(
+    'context, expected',
+    ((DISCORD_CONTEXT, '![manual](u)\n' + URL),
+     (DISCORD_EMPTY_CONTEXT, '![manual](u)\n')))
+def test_channel_policy_discord(context, expected):
+    """Discord 只把截图节点变成裸 URL，手写图片语法保持原样。"""
+    channel = {
+        'provider': 'discord',
+        'title': 'old',
+        'content': 'old',
+        'username': 'bot',
+        'avatar_url': 'https://example.test/a.png',
+        'color': '16478873',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, context)
+
+    assert channel == before
+    assert content == expected
+    assert title == 'T'
+    assert 'title' not in params
+    assert 'content' not in params
+    for key in ('username', 'avatar_url', 'color'):
+        assert params[key] == before[key]
+
+
+SKIP_CHANNELS = (
+    {
+        'provider': 'wechatworkapp',
+        'media_id': '',
+        'title': 'old',
+        'content': 'old',
+        'body': 'old',
+        'text': 'old',
+        'markdown': False,
+    },
+    {
+        'provider': 'wechatworkapp',
+        'media_id': 'id',
+        'title': 'old',
+        'content': 'old',
+        'body': 'old',
+        'text': 'old',
+        'markdown': False,
+    },
+    {
+        'provider': 'smtp',
+        'msg': object(),
+        'title': 'old',
+        'content': 'old',
+        'body': 'old',
+        'text': 'old',
+        'markdown': False,
+    },
+    {
+        'provider': 'smtp',
+        'msg': '',
+        'title': 'old',
+        'content': 'old',
+        'body': 'old',
+        'text': 'old',
+        'markdown': False,
+    },
+    {
+        'provider': 'bark',
+        'ciphertext': 'sealed',
+        'title': 'old',
+        'content': 'old',
+        'body': 'old',
+        'text': 'old',
+        'markdown': False,
+    },
+)
+
+
+@pytest.mark.parametrize('channel', SKIP_CHANNELS)
+def test_skip_precedes_overrides(channel):
+    """保留分支原样返回完整参数副本，跳过全部适配。"""
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, CONTEXT)
+
+    assert channel == before
+    assert (title, content, params) == (
+        'T', M, _params_without_provider(before))
+    if before['provider'] == 'smtp':
+        assert params['msg'] is before['msg']
+
+
+def test_skip_precedes_overrides_none_does_not_skip():
+    """None 不触发 media_id/msg 跳过，空 ciphertext 不触发 Bark 跳过。"""
+    app_channel = {
+        'provider': 'wechatworkapp',
+        'media_id': None,
+        'markdown': False,
+        'title': 'old',
+        'content': 'old',
+    }
+    _, _, app_params = prepare_channel(app_channel, 'T', M, CONTEXT)
+    assert app_params['media_id'] is None
+    assert app_params['markdown'] is True
+    assert 'title' not in app_params
+
+    smtp_channel = {
+        'provider': 'smtp',
+        'msg': None,
+        'markdown': False,
+        'title': 'old',
+        'content': 'old',
+    }
+    title, content, smtp_params = prepare_channel(smtp_channel, 'T', M, CONTEXT)
+    assert (title, content, smtp_params) == (
+        'T', M, _params_without_provider(smtp_channel))
+
+    bark_channel = {
+        'provider': 'bark',
+        'ciphertext': '',
+        'body': 'old',
+        'markdown': True,
+        'title': 'old',
+        'content': 'old',
+    }
+    _, content, bark_params = prepare_channel(bark_channel, 'T', M, CONTEXT)
+    assert 'body' not in bark_params
+    assert bark_params['markdown'] == M
+    assert content == M
+
+
+NO_TRIGGER_CHANNELS = (
+    {
+        'provider': 'dingtalk',
+        'markdown': False,
+        'title': 'old',
+        'content': 'old',
+    },
+    {
+        'provider': 'wechatworkbot',
+        'markdown': 0,
+        'title': 'old',
+        'content': 'old',
+    },
+    {
+        'provider': 'bark',
+        'body': 'old',
+        'markdown': True,
+        'title': 'old',
+        'content': 'old',
+    },
+    {
+        'provider': 'discord',
+        'title': 'old',
+        'content': 'old',
+    },
+)
+
+
+@pytest.mark.parametrize('template', NON_DIRECT_TEMPLATES)
+@pytest.mark.parametrize('channel', NO_TRIGGER_CHANNELS)
+def test_no_trigger_and_unsupported_are_unchanged_not_owned(channel, template):
+    """非直接模板未拥有截图来源时保持原三元组。"""
+    context = ScreenshotRenderContext('T', template, VALUES, BATCH, False)
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, context)
+
+    assert channel == before
+    assert (title, content, params) == (
+        'T', M, _params_without_provider(before))
+    assert 'title' in params
+    assert 'content' in params
+
+
+@pytest.mark.parametrize('channel', NO_TRIGGER_CHANNELS)
+def test_no_trigger_and_unsupported_are_unchanged_context_none(channel):
+    """缺少渲染上下文时保持原三元组。"""
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, None)
+
+    assert channel == before
+    assert (title, content, params) == (
+        'T', M, _params_without_provider(before))
+    assert 'title' in params
+    assert 'content' in params
+
+
+@pytest.mark.parametrize('channel', NO_TRIGGER_CHANNELS)
+def test_no_trigger_and_unsupported_are_unchanged_screenshot_owned_false(
+        channel):
+    """截图来源不属于本次模板时保持原三元组。"""
+    context = ScreenshotRenderContext('T', '{screenshot}', VALUES, BATCH, False)
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, context)
+
+    assert channel == before
+    assert (title, content, params) == (
+        'T', M, _params_without_provider(before))
+    assert 'title' in params
+    assert 'content' in params
+
+
+@pytest.mark.parametrize(
+    'provider',
+    ('gotify', 'serverchan', 'serverchanturbo', 'gocqhttp', 'custom', 'qmsg',
+     'lark', 'wpush'))
+def test_no_trigger_and_unsupported_are_unchanged_unsupported(provider):
+    """不支持与排除名单完全走基线，不移除 title/content。"""
+    channel = {
+        'provider': provider,
+        'markdown': False,
+        'type': 'text',
+        'body': 'old',
+        'text': 'old',
+        'title': 'old',
+        'content': 'old',
+    }
+    before = dict(channel)
+
+    title, content, params = prepare_channel(channel, 'T', M, CONTEXT)
+
+    assert channel == before
+    assert (title, content, params) == (
+        'T', M, _params_without_provider(before))
+    assert 'title' in params
+    assert 'content' in params

@@ -13,6 +13,12 @@ from modules.screenshot.pipeline import append_screenshot_notices
 _AGGREGATE_VARIABLE = 'screenshot'
 _DIRECT_CONVERSIONS = frozenset((None, 's'))
 _FORMATTER = Formatter()
+_MARKDOWN_CHANNELS = frozenset(
+    ('dingtalk', 'pushplus', 'wechatworkapp', 'ntfy'))
+_WECHATWORKBOT_MARKDOWN = {0: 1, 1: 1, 2: 2, 3: 1}
+_ADAPTED_CHANNELS = frozenset(
+    ('dingtalk', 'pushplus', 'wechatworkapp', 'wechatworkbot', 'pushdeer',
+     'telegram', 'ntfy', 'bark', 'discord'))
 
 
 @dataclass(frozen=True)
@@ -188,3 +194,73 @@ def render_screenshot_content(context: ScreenshotRenderContext,
     if not rendered:
         return suffix
     return rendered + '<br>\n<br>\n' + suffix
+
+
+def _render_title(context: ScreenshotRenderContext, mode: str) -> str:
+    """按通道模式渲染标题模板，不追加正文提示。"""
+    return render_screenshot_template(
+        context.raw_title, context.values, context.batch, mode)
+
+
+def prepare_channel(channel: dict, title: str, content: str,
+                    context: ScreenshotRenderContext | None
+                    ) -> tuple[str, str, dict]:
+    """按通道复制并覆盖本次参数，返回标题、正文与不含 provider 的副本。
+
+    Args:
+        channel: 标准通道字典，含 provider 及该渠道所需参数。
+        title: 基准渲染标题，不触发或跳过时原样返回。
+        content: 基准渲染正文，不触发或跳过时原样返回。
+        context: 本次截图渲染上下文；None 表示未触发适配。
+
+    Returns:
+        tuple[str, str, dict]: 本次标题、正文与参数副本。
+    """
+    params = dict(channel)
+    provider = params.pop('provider', '')
+
+    # 守卫：未触发或没有本次模板拥有的截图来源时保持基准参数
+    if context is None or not context.screenshot_owned:
+        return title, content, params
+
+    # 保留分支：provider 会改走自身消息种类，整条跳过全部适配
+    if provider == 'wechatworkapp' and params.get('media_id') is not None:
+        return title, content, params
+    if provider == 'smtp' and params.get('msg') is not None:
+        return title, content, params
+    if provider == 'bark' and params.get('ciphertext'):
+        return title, content, params
+
+    # 守卫：不支持与排除名单完全走基线
+    if provider not in _ADAPTED_CHANNELS:
+        return title, content, params
+
+    params.pop('title', None)
+    params.pop('content', None)
+
+    if provider == 'discord':
+        return (
+            _render_title(context, 'url'),
+            render_screenshot_content(context, 'url'),
+            params,
+        )
+
+    rendered_title = _render_title(context, 'markdown')
+    rendered_content = render_screenshot_content(context, 'markdown')
+
+    if provider in _MARKDOWN_CHANNELS:
+        params['markdown'] = True
+    elif provider == 'wechatworkbot':
+        params['markdown'] = _WECHATWORKBOT_MARKDOWN.get(
+            params.get('markdown'), 1)
+    elif provider == 'pushdeer':
+        params['type'] = 'markdown'
+    elif provider == 'telegram':
+        params.pop('text', None)
+        if params.get('parse_mode') != 'MarkdownV2':
+            params['parse_mode'] = 'Markdown'
+    elif provider == 'bark':
+        params.pop('body', None)
+        params['markdown'] = rendered_content
+
+    return rendered_title, rendered_content, params
