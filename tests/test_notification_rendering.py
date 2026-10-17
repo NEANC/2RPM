@@ -701,3 +701,30 @@ def test_smtp_html_attribute_escape(url):
 
     assert msg.get_body(preferencelist=('html',)).get_content() == (
         f'<img src="{html_escape(destination, quote=True)}" alt="shot">\n')
+
+
+def test_html_content_appends_escaped_notice_and_renamed_image():
+    """HTML 正文转义告警、换行转 br，并把改名输出以单个 img 追加。"""
+    batch = ScreenshotBatch(
+        {'shot': M, 'screenshot': M}, ('W<&>',), ('shot',))
+    values = dict(batch.values)
+    context = ScreenshotRenderContext('T', 'body', values, batch, True)
+    before_values = dict(values)
+    before_batch = ScreenshotBatch(
+        dict(batch.values), batch.warnings, batch.renamed_outputs)
+    destination = M[len('![shot]('):-1]
+    image = (
+        f'<img src="{html_escape(destination, quote=True)}" alt="shot">')
+
+    rendered = render_screenshot_content(context, 'html')
+
+    assert rendered == (
+        'body<br>\n<br>\n截图配置提示<br>\nW&lt;&amp;&gt;<br>\n<br>\n'
+        + image)
+    assert 'W&lt;&amp;&gt;' in rendered
+    assert 'body<br>\n' in rendered
+    assert rendered.count('<img') == 1
+    assert '&lt;img' not in rendered
+    assert image in rendered
+    assert context.values == before_values
+    assert batch == before_batch
