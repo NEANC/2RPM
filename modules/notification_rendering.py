@@ -94,7 +94,7 @@ def _render_aggregate(values, batch, mode):
     fragments = [
         _render_controlled(name, value, mode)
         for name, value in batch.values.items()
-        if name != _AGGREGATE_VARIABLE
+        if name != _AGGREGATE_VARIABLE and value != ''
     ]
     if fragments:
         separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'

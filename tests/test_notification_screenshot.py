@@ -2083,3 +2083,80 @@ def test_render_context_trigger_independence(monkeypatch):
     assert '![screenshot_1](' in logged_content
     assert 'screenshot_1: ' not in logged_content
     assert 'multipart/alternative' not in logged_content
+
+
+def _multi_window_targets(count):
+    """构造不同窗口与输出名的多目标配置，保持分配顺序。"""
+    return [
+        {**WINDOW_TARGET, 'target': f'窗口{index}', 'out': f'shot_{index}'}
+        for index in range(1, count + 1)
+    ]
+
+
+@pytest.mark.parametrize('count', (2, 3))
+@pytest.mark.parametrize('subject', (None, ''))
+def test_disabled_multi_target_smtp_title_entry(monkeypatch, count, subject):
+    """禁用截图多目标时真实入口仍构造合法 SMTP 标题并发送成功。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, notifier, getter = _install_onepush(monkeypatch)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+    config = _base_config(
+        channels=[_smtp_channel(subject=subject)],
+        targets=_multi_window_targets(count),
+        retry={'interval': '2s', 'max_count': 3})
+    template = config['push']['templates']['on_end']
+    template['capture_screenshot'] = False
+    template['title'] = '通知{screenshot}结束'
+    template['content'] = 'BODY'
+    before_config = deepcopy(config)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('smtp', True)]
+    assert sent == [('通知结束', 'BODY')]
+    assert notifier.notify.call_count == 1
+    getter.assert_called_once_with('smtp')
+    capture.assert_not_called()
+    upload.assert_not_called()
+    sleep.assert_not_called()
+    params = notifier.notify.call_args.kwargs
+    msg = params['msg']
+    assert params['title'] == '通知结束'
+    assert params['content'] == 'BODY'
+    assert str(msg['Subject']) == '通知结束'
+    assert msg.get_content_type() == 'multipart/alternative'
+    assert msg.get_body(preferencelist=('plain',)).get_content() == 'BODY\n'
+    assert msg.get_body(preferencelist=('html',)).get_content() == 'BODY\n'
+    assert config == before_config
+
+
+@pytest.mark.parametrize('provider', ('dingtalk', 'discord'))
+def test_disabled_multi_target_channel_content_entry(monkeypatch, provider):
+    """禁用截图多目标时 dingtalk/discord 正文不产生多余分隔。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, notifier, getter = _install_onepush(monkeypatch)
+    sleep = Mock()
+    monkeypatch.setattr(notif.time, 'sleep', sleep)
+    config = _base_config(
+        channels=[{'provider': provider, 'token': 't1'}],
+        targets=_multi_window_targets(2),
+        retry={'interval': '2s', 'max_count': 3})
+    template = config['push']['templates']['on_end']
+    template['capture_screenshot'] = False
+    template['title'] = 'T'
+    template['content'] = 'A{screenshot}B'
+    before_config = deepcopy(config)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [(provider, True)]
+    assert sent == [('T', 'AB')]
+    assert notifier.notify.call_count == 1
+    getter.assert_called_once_with(provider)
+    capture.assert_not_called()
+    upload.assert_not_called()
+    sleep.assert_not_called()
+    assert config == before_config
+    if provider == 'dingtalk':
+        assert notifier.notify.call_args.kwargs['markdown'] is True

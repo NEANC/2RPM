@@ -98,6 +98,112 @@ def test_render_modes():
         HTML_IMAGE + '<br>\n<br>\n截图失败')
 
 
+AGGREGATE_MODES = ('markdown', 'url', 'plain', 'html')
+DIRECT_AGGREGATE_TEMPLATES = (
+    '{screenshot}', '{screenshot:}', '{screenshot!s}', '{screenshot!s:}')
+
+_MIXED_REASON = '<原因>&'
+_MIXED_IMAGE_VALUES = {
+    'empty_before': '',
+    'shot': IMAGE,
+    'empty_middle': '',
+    'failed': f'截图上传失败：{_MIXED_REASON}',
+    'empty_after': '',
+    'screenshot': IMAGE + f'\n\n截图上传失败：{_MIXED_REASON}',
+}
+_MIXED_FAILURE_VALUES = {
+    'shot': '截图失败',
+    'empty': '',
+    'later': '截图上传失败',
+    'screenshot': '截图失败\n\n截图上传失败',
+}
+_MIXED_VALUES = {
+    'image': _MIXED_IMAGE_VALUES,
+    'failure': _MIXED_FAILURE_VALUES,
+}
+_MIXED_EXPECTED = {
+    'image': {
+        'markdown': IMAGE + f'\n\n截图上传失败：{_MIXED_REASON}',
+        'url': URL + f'\n\n截图上传失败：{_MIXED_REASON}',
+        'plain': 'shot: ' + URL + f'\n\n截图上传失败：{_MIXED_REASON}',
+        'html': HTML_IMAGE + '<br>\n<br>\n截图上传失败：&lt;原因&gt;&amp;',
+    },
+    'failure': {
+        'markdown': '截图失败\n\n截图上传失败',
+        'url': '截图失败\n\n截图上传失败',
+        'plain': '截图失败\n\n截图上传失败',
+        'html': '截图失败<br>\n<br>\n截图上传失败',
+    },
+}
+
+
+@pytest.mark.parametrize('template', DIRECT_AGGREGATE_TEMPLATES)
+@pytest.mark.parametrize('count', (0, 1, 2, 3))
+@pytest.mark.parametrize('mode', AGGREGATE_MODES)
+def test_empty_target_aggregate_modes(mode, count, template):
+    """禁用截图的多个空目标不产生分隔符，且不修改输入。"""
+    values = {f'empty_{index}': '' for index in range(1, count + 1)}
+    values['screenshot'] = ''
+    batch = ScreenshotBatch(dict(values), (), ())
+    before_values = dict(values)
+    before_batch = ScreenshotBatch(dict(values), (), ())
+
+    assert render_screenshot_template(template, values, batch, mode) == ''
+    assert render_screenshot_template(
+        'A' + template + 'B', values, batch, mode) == 'AB'
+    context = ScreenshotRenderContext(
+        'T', 'A' + template + 'B', values, batch, True)
+    assert render_screenshot_content(context, mode) == 'AB'
+    assert values == before_values
+    assert batch == before_batch
+
+
+@pytest.mark.parametrize('case', ('image', 'failure'))
+@pytest.mark.parametrize('mode', AGGREGATE_MODES)
+def test_mixed_empty_target_aggregate_modes(mode, case):
+    """空目标夹在成功图片与失败文字之间时只排除精确空项。"""
+    values = dict(_MIXED_VALUES[case])
+    batch = ScreenshotBatch(dict(values), (), ())
+    before_values = dict(values)
+    before_batch = ScreenshotBatch(dict(values), (), ())
+    expected = _MIXED_EXPECTED[case][mode]
+
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, mode) == expected
+    assert render_screenshot_template(
+        '{screenshot}|{screenshot!s}', values, batch, mode) == (
+        expected + '|' + expected)
+    assert values == before_values
+    assert batch == before_batch
+
+
+@pytest.mark.parametrize('mode', AGGREGATE_MODES)
+def test_whitespace_target_is_preserved(mode):
+    """仅含空白的受控值不是禁用空字符串，必须原样保留。"""
+    values = {'empty': '', 'space': ' \t', 'screenshot': ' \t'}
+    batch = ScreenshotBatch(dict(values), (), ())
+
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, mode) == ' \t'
+
+
+@pytest.mark.parametrize(
+    'fallback', ('', '截图失败', '截图配置失败：<原因>&'))
+@pytest.mark.parametrize('with_empty_targets', (False, True))
+@pytest.mark.parametrize('mode', AGGREGATE_MODES)
+def test_aggregate_fallback_modes(mode, with_empty_targets, fallback):
+    """没有保留项时按聚合值回退，不被空目标片段顶替。"""
+    values = {'screenshot': fallback}
+    if with_empty_targets:
+        values = {'empty_a': '', 'empty_b': '', 'screenshot': fallback}
+    batch = ScreenshotBatch(dict(values), (), ())
+    expected = (
+        fallback if mode != 'html' else html_escape(fallback, quote=True))
+
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, mode) == expected
+
+
 @pytest.mark.parametrize(
     'fallback', ('', '截图失败', '截图配置失败：未配置有效截图目标'))
 def test_notice_order_and_fallback(fallback):
