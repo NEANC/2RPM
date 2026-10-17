@@ -2,7 +2,12 @@
 # -_- coding: utf-8 -_-
 """验证截图聚合占位的直接来源识别、有限渲染与提示追加顺序。"""
 
+from email import policy
+from email.parser import BytesParser
+from html import escape as html_escape
+
 import pytest
+from onepush.providers.smtp import SMTP
 
 from modules.notification_rendering import (
     ScreenshotRenderContext,
@@ -12,6 +17,7 @@ from modules.notification_rendering import (
     render_screenshot_template,
 )
 from modules.screenshot.pipeline import ScreenshotBatch
+from modules.screenshot.pipeline import markdown_image
 
 
 URL = 'https://cdn.example/a%28b%29.png?sig=x%2Fy&k=z'
@@ -386,8 +392,11 @@ def test_skip_precedes_overrides_none_does_not_skip():
         'content': 'old',
     }
     title, content, smtp_params = prepare_channel(smtp_channel, 'T', M, CONTEXT)
-    assert (title, content, smtp_params) == (
-        'T', M, _params_without_provider(smtp_channel))
+    assert title == 'T'
+    assert content == 'shot: ' + URL
+    assert smtp_params['msg'].get_content_type() == 'multipart/alternative'
+    assert 'title' not in smtp_params
+    assert 'content' not in smtp_params
 
     bark_channel = {
         'provider': 'bark',
@@ -501,3 +510,194 @@ def test_no_trigger_and_unsupported_are_unchanged_unsupported(provider):
         'T', M, _params_without_provider(before))
     assert 'title' in params
     assert 'content' in params
+
+
+SMTP_CONTEXT = ScreenshotRenderContext('T', '{screenshot}', VALUES, BATCH, True)
+SMTP_TITLE_ONLY_CONTEXT = ScreenshotRenderContext(
+    '{screenshot}', 'BODY', VALUES, BATCH, True)
+TWO_BATCH = ScreenshotBatch(
+    {
+        'first': f'![first]({URL})',
+        'second': f'![second]({URL})',
+        'screenshot': f'![first]({URL})\n\n![second]({URL})',
+    },
+    (), ())
+SMTP_URL_CASES = (
+    'https://cdn.example/a(b).png?sig=x/y&k=z',
+    'https://cdn.example/a b.png?q=1 2',
+    'https://cdn.example/a%28b%29.png?sig=100%25',
+    'https://[2001:db8::1]/shot.png?sig=x/y',
+)
+HEADER_NAMES = {'subject': 'Subject', 'From': 'From', 'To': 'To'}
+
+
+def _smtp_channel(**overrides):
+    """返回可携带指定覆盖项的 SMTP 通道字典。"""
+    channel = {
+        'provider': 'smtp',
+        'msg': None,
+        'subject': 'T',
+        'From': 'sender@example.test',
+        'To': 'recipient@example.test',
+        'user': 'user@example.test',
+        'host': 'smtp.example.test',
+        'password': 'secret',
+        'title': 'old',
+        'content': 'old',
+    }
+    channel.update(overrides)
+    return channel
+
+
+def test_smtp_mime():
+    """SMTP 构造独立 multipart/alternative，两份正文与头语义稳定。"""
+    channel = _smtp_channel()
+    before = dict(channel)
+
+    title, content, params = prepare_channel(
+        channel, 'T', '{screenshot}', SMTP_CONTEXT)
+    msg = params['msg']
+
+    assert channel == before
+    assert title == 'T'
+    assert content == 'shot: ' + URL
+    assert msg.get_content_type() == 'multipart/alternative'
+    assert [part.get_content_type() for part in msg.iter_parts()] == [
+        'text/plain', 'text/html']
+    assert msg.get_body(preferencelist=('plain',)).get_content() == (
+        'shot: ' + URL + '\n')
+    assert msg.get_body(preferencelist=('html',)).get_content() == (
+        '<img src="https://cdn.example/a%28b%29.png?sig=x%2Fy&amp;k=z" '
+        'alt="shot">\n')
+    assert str(msg['Subject']) == 'T'
+    assert str(msg['From']) == 'sender@example.test'
+    assert str(msg['To']) == 'recipient@example.test'
+    assert 'title' not in params
+    assert 'content' not in params
+    for key in ('host', 'password', 'user', 'subject', 'From', 'To'):
+        assert params[key] == before[key]
+
+    parsed = BytesParser(policy=policy.default).parsebytes(msg.as_bytes())
+    assert parsed.get_content_type() == 'multipart/alternative'
+    assert [part.get_content_type() for part in parsed.iter_parts()] == [
+        'text/plain', 'text/html']
+    assert parsed.get_body(preferencelist=('plain',)).get_content() == (
+        'shot: ' + URL + '\n')
+    assert parsed.get_body(preferencelist=('html',)).get_content() == (
+        '<img src="https://cdn.example/a%28b%29.png?sig=x%2Fy&amp;k=z" '
+        'alt="shot">\n')
+    assert str(parsed['Subject']) == 'T'
+    assert str(parsed['From']) == 'sender@example.test'
+    assert str(parsed['To']) == 'recipient@example.test'
+
+    text_context = ScreenshotRenderContext(
+        'T', '<script>&"\n', VALUES, BATCH, True)
+    text_msg = prepare_channel(
+        _smtp_channel(), 'T', '', text_context)[2]['msg']
+    assert text_msg.get_body(
+        preferencelist=('plain',)).get_content() == '<script>&"\n'
+    assert text_msg.get_body(
+        preferencelist=('html',)).get_content() == (
+        '&lt;script&gt;&amp;&quot;<br>\n')
+
+    markdown_context = ScreenshotRenderContext(
+        'T', '![manual](u)\n{screenshot}', VALUES, BATCH, True)
+    markdown_msg = prepare_channel(
+        _smtp_channel(), 'T', M, markdown_context)[2]['msg']
+    assert markdown_msg.get_body(
+        preferencelist=('html',)).get_content() == (
+        '![manual](u)<br>\n'
+        '<img src="https://cdn.example/a%28b%29.png?sig=x%2Fy&amp;k=z" '
+        'alt="shot">\n')
+
+
+@pytest.mark.parametrize(
+    'header, explicit, expected',
+    (
+        ('subject', 'S', 'S'),
+        ('subject', None, 'shot: ' + URL),
+        ('subject', '', 'shot: ' + URL),
+        ('From', 'from@example.test', 'from@example.test'),
+        ('From', None, 'user@example.test'),
+        ('From', '', 'user@example.test'),
+        ('To', 'to@example.test', 'to@example.test'),
+        ('To', None, 'user@example.test'),
+        ('To', '', 'user@example.test'),
+    ),
+)
+def test_smtp_header_fallback(header, explicit, expected):
+    """Subject/From/To 分别采用显式值或按默认 parser 语义回退。"""
+    channel = _smtp_channel(**{header: explicit})
+
+    msg = prepare_channel(
+        channel, 'T', 'BODY', SMTP_TITLE_ONLY_CONTEXT)[2]['msg']
+
+    assert str(msg[HEADER_NAMES[header]]) == expected
+
+
+def test_smtp_title_only_and_invalid_headers():
+    """仅标题占位只输出纯文本；非法头换行直接拒绝且不折叠。"""
+    title, content, params = prepare_channel(
+        _smtp_channel(subject=None), 'T', 'BODY', SMTP_TITLE_ONLY_CONTEXT)
+    msg = params['msg']
+
+    assert title == 'shot: ' + URL
+    assert content == 'BODY'
+    assert str(msg['Subject']) == 'shot: ' + URL
+    assert str(msg['From']) == 'sender@example.test'
+    assert str(msg['To']) == 'recipient@example.test'
+    assert msg.get_body(preferencelist=('plain',)).get_content() == 'BODY\n'
+    assert '<img' not in msg.get_body(
+        preferencelist=('html',)).get_content()
+    assert 'title' not in params
+    assert 'content' not in params
+
+    two_context = ScreenshotRenderContext(
+        '{screenshot}', 'BODY', dict(TWO_BATCH.values), TWO_BATCH, True)
+    with pytest.raises(ValueError):
+        prepare_channel(
+            _smtp_channel(subject=None), 'T', 'BODY', two_context)
+
+    safe = prepare_channel(
+        _smtp_channel(subject='SAFE'), 'T', 'BODY', two_context)
+    assert str(safe[2]['msg']['Subject']) == 'SAFE'
+
+    for header in ('subject', 'From', 'To'):
+        for value in ('a\rb', 'a\nb', 'a\r\nb'):
+            with pytest.raises(ValueError):
+                prepare_channel(
+                    _smtp_channel(**{header: value}), 'T', 'BODY', CONTEXT)
+
+
+def test_smtp_message_identity():
+    """每次准备产生新消息；显式 msg 原样保留且不触碰 parser。"""
+    original_parser = SMTP._message_parser
+    channel = _smtp_channel()
+
+    first = prepare_channel(channel, 'T', '{screenshot}', SMTP_CONTEXT)[2]
+    second = prepare_channel(channel, 'T', '{screenshot}', SMTP_CONTEXT)[2]
+
+    assert first['msg'] is not second['msg']
+
+    original = object()
+    skipped = prepare_channel(
+        _smtp_channel(msg=original), 'T', '{screenshot}', SMTP_CONTEXT)[2]
+    assert skipped['msg'] is original
+    assert SMTP._message_parser is original_parser
+
+
+@pytest.mark.parametrize('url', SMTP_URL_CASES)
+def test_smtp_html_attribute_escape(url):
+    """HTML img src 只等于受控 destination 的属性转义结果。"""
+    image = markdown_image('shot', url)
+    destination = image[len('![shot]('):-1]
+    batch = ScreenshotBatch(
+        {'shot': image, 'screenshot': image}, (), ())
+    context = ScreenshotRenderContext(
+        '{screenshot}', '{screenshot}', dict(batch.values), batch, True)
+
+    msg = prepare_channel(
+        _smtp_channel(subject='T'), 'T', 'BODY', context)[2]['msg']
+
+    assert msg.get_body(preferencelist=('html',)).get_content() == (
+        f'<img src="{html_escape(destination, quote=True)}" alt="shot">\n')

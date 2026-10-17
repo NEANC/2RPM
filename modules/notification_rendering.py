@@ -3,9 +3,11 @@
 """将受控截图聚合占位渲染为通道专用正文。"""
 
 from dataclasses import dataclass
+from email.message import EmailMessage
 from html import escape
 from string import Formatter
 
+from modules.log_safety import extend_secrets
 from modules.screenshot.pipeline import ScreenshotBatch
 from modules.screenshot.pipeline import append_screenshot_notices
 
@@ -18,7 +20,7 @@ _MARKDOWN_CHANNELS = frozenset(
 _WECHATWORKBOT_MARKDOWN = {0: 1, 1: 1, 2: 2, 3: 1}
 _ADAPTED_CHANNELS = frozenset(
     ('dingtalk', 'pushplus', 'wechatworkapp', 'wechatworkbot', 'pushdeer',
-     'telegram', 'ntfy', 'bark', 'discord'))
+     'telegram', 'ntfy', 'bark', 'discord', 'smtp'))
 
 
 @dataclass(frozen=True)
@@ -58,9 +60,10 @@ def _render_image(name, destination, mode):
         return destination
     if mode == 'plain':
         return f'{name}: {destination}'
-    return (
-        f'<img src="{escape(destination, quote=True)}" '
-        f'alt="{escape(name, quote=True)}">')
+    source = escape(destination, quote=True)
+    if source != destination:
+        extend_secrets((source,))
+    return f'<img src="{source}" alt="{escape(name, quote=True)}">'
 
 
 def _render_text(text, mode):
@@ -202,6 +205,51 @@ def _render_title(context: ScreenshotRenderContext, mode: str) -> str:
         context.raw_title, context.values, context.batch, mode)
 
 
+def _smtp_header(name: str, value: str) -> str:
+    """校验最终邮件头值，拒绝 CR/LF 而不清洗或折叠。
+
+    Args:
+        name: 固定头字段名，仅用于定位错误。
+        value: 按默认 parser 语义回退后的最终头值。
+
+    Returns:
+        str: 可安全写入 EmailMessage 的头值。
+
+    Raises:
+        ValueError: 头值包含 CR 或 LF。
+    """
+    if value is None:
+        value = ''
+    if '\r' in value or '\n' in value:
+        raise ValueError(f'邮件头 {name} 包含非法换行')
+    return value
+
+
+def build_smtp_message(params: dict, title: str, plain: str,
+                       html: str) -> EmailMessage:
+    """构造本次 SMTP 独立双格式消息，头字段遵循本地默认 parser。
+
+    Args:
+        params: 本次通道参数副本，只读取 subject、From、To 与 user。
+        title: 纯文本渲染标题，作为 Subject 的回退值。
+        plain: text/plain 正文。
+        html: text/html 正文。
+
+    Returns:
+        EmailMessage: 本次通道独占的 multipart/alternative 消息。
+    """
+    subject = _smtp_header('Subject', params.get('subject') or title)
+    sender = _smtp_header('From', params.get('From') or params.get('user'))
+    recipient = _smtp_header('To', params.get('To') or params.get('user'))
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = sender
+    msg['To'] = recipient
+    msg.set_content(plain)
+    msg.add_alternative(html, subtype='html')
+    return msg
+
+
 def prepare_channel(channel: dict, title: str, content: str,
                     context: ScreenshotRenderContext | None
                     ) -> tuple[str, str, dict]:
@@ -237,6 +285,14 @@ def prepare_channel(channel: dict, title: str, content: str,
 
     params.pop('title', None)
     params.pop('content', None)
+
+    if provider == 'smtp':
+        rendered_title = _render_title(context, 'plain')
+        rendered_content = render_screenshot_content(context, 'plain')
+        html_content = render_screenshot_content(context, 'html')
+        params['msg'] = build_smtp_message(
+            params, rendered_title, rendered_content, html_content)
+        return rendered_title, rendered_content, params
 
     if provider == 'discord':
         return (
