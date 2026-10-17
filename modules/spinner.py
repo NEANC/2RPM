@@ -6,6 +6,7 @@ import threading
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import TextIO
 
 import colorama
 
@@ -151,6 +152,11 @@ class _SimpleTTYSpinner:
             self._output.write(_SHOW_CURSOR)
             self._output.flush()
 
+    @property
+    def closed(self):
+        """spinner 是否已停止。"""
+        return self._closed
+
 
 def _format_done(message):
     """构造绿色 ✔️ 前缀的收尾文案（图标后两空格，与 ❌ 行对齐）
@@ -241,6 +247,27 @@ class _TtySpinner:
         """
         self._spinner = spinner
         self._closed = False
+        self._owner_thread_id = threading.get_ident()
+
+    @property
+    def message(self) -> str:
+        """当前 spinner 行的公开文案。"""
+        return self._spinner._message
+
+    @property
+    def stream(self) -> TextIO:
+        """该句柄实际写入的输出流。"""
+        return self._spinner._output
+
+    @property
+    def owner_thread_id(self) -> int:
+        """建立句柄的线程身份，Context 复制不会转移到其他线程。"""
+        return self._owner_thread_id
+
+    @property
+    def closed(self) -> bool:
+        """句柄自身或底层 spinner 是否已关闭。"""
+        return self._closed or self._spinner.closed is True
 
     def text(self, message):
         """更新 spinner 行内文案（黄色）
@@ -358,20 +385,26 @@ class _LogSpinner:
 
 
 @contextmanager
-def spinner_phase(text):
+def spinner_phase(text, *, stream=None, report_exit=True):
     """spinner 阶段上下文管理器
 
-    TTY 环境下显示 yaspin 旋转动画并静音控台日志；非 TTY 环境降级为逐行日志输出；
-    无论正常结束还是异常，都会停止 spinner、移除临时 CRITICAL 改道处理器并还原控台日志级别
+    TTY 环境下显示旋转动画并静音控台日志；非 TTY 环境降级为逐行日志输出；
+    无论正常结束还是异常，都会停止 spinner、移除临时 CRITICAL 改道处理器并还原控台日志级别。
+    显式传入 stream 时，isatty 判定与实际写入均使用该流；report_exit 为假时不再输出退出提示，
+    供上传自有阶段静默收尾。启动也纳入资源 try/finally，每项清理独立执行，
+    普通清理异常不会覆盖在途的 KeyboardInterrupt / SystemExit。
 
     Args:
         text (str): spinner 初始文案
+        stream (TextIO | None): 显式输出流，缺省使用 sys.stdout
+        report_exit (bool): 异常退出时是否输出既有退出提示，默认 True
 
     Yields:
         _TtySpinner | _LogSpinner: 提供 text/done/fail 的句柄
     """
-    # 非 TTY：降级为日志，不触碰 yaspin 与控台级别
-    if not sys.stdout.isatty():
+    target = sys.stdout if stream is None else stream
+    # 非 TTY：降级为日志，不触碰 spinner 与控台级别
+    if not target.isatty():
         LOGGER.info(text)
         yield _LogSpinner()
         return
@@ -382,42 +415,90 @@ def spinner_phase(text):
     if console_handler is not None:
         console_handler.setLevel(logging.CRITICAL + 1)
 
-    spinner = _SimpleTTYSpinner(text)
-    spinner.start()
+    spinner = _SimpleTTYSpinner(text, output=target)
     handle = _TtySpinner(spinner)
     # 临时挂载 CRITICAL 改道处理器，借 spinner.write() 干净打印
     root_logger = logging.getLogger()
     write_handler = _SpinnerWriteHandler(spinner)
-    root_logger.addHandler(write_handler)
-    current_token = _CURRENT_SPINNER.set(handle)
+    handler_mounted = False
+    current_token = None
+    try:
+        root_logger.addHandler(write_handler)
+        handler_mounted = True
+        current_token = _CURRENT_SPINNER.set(handle)
+        spinner.start()
+        try:
+            yield handle
+        except SystemExit as e:
+            if report_exit and not handle.closed:
+                if e.code == 0:
+                    handle.done("程序已退出")
+                else:
+                    handle.fail(f"程序异常退出 (code {e.code})")
+            raise
+        except BaseException:
+            if report_exit and not handle.closed:
+                handle.fail("程序已退出")
+            raise
+    finally:
+        if current_token is not None:
+            try:
+                _CURRENT_SPINNER.reset(current_token)
+            except Exception:
+                pass
+        if handler_mounted:
+            try:
+                root_logger.removeHandler(write_handler)
+            except Exception:
+                pass
+        try:
+            spinner.stop(clear_line=False)
+        except Exception:
+            pass
+        if console_handler is not None:
+            try:
+                console_handler.setLevel(saved_level)
+            except Exception:
+                pass
+
+
+@contextmanager
+def temporary_text(handle, text):
+    """临时替换句柄文案并在退出时恢复公开状态
+
+    保存进入前的公开文案，设置临时文案；嵌套使用严格后进先出恢复。
+    只读写句柄的公开状态，绝不调用 done/fail/stop 关闭被借用的句柄。
+
+    Args:
+        handle (_TtySpinner): 可借用文案状态的 TTY 句柄
+        text (str): 作用域内使用的临时文案
+
+    Yields:
+        _TtySpinner: 传入的句柄
+    """
+    saved = handle.message
+    handle.text(text)
     try:
         yield handle
-    except SystemExit as e:
-        if not handle._closed:
-            if e.code == 0:
-                handle.done("程序已退出")
-            else:
-                handle.fail(f"程序异常退出 (code {e.code})")
-        raise
-    except BaseException:
-        if not handle._closed:
-            handle.fail("程序已退出")
-        raise
     finally:
-        _CURRENT_SPINNER.reset(current_token)
-        root_logger.removeHandler(write_handler)
-        spinner.stop(clear_line=False)
-        if console_handler is not None:
-            console_handler.setLevel(saved_level)
+        if not handle.closed:
+            handle.text(saved)
 
 
 def current_spinner():
-    """返回当前活动的 TTY spinner 句柄，无活动 TTY spinner 时为空。
+    """返回本线程中未关闭的 TTY spinner 句柄，否则为空。
+
+    复制的 Context 不代表授予 UI 写权限，因此仅返回建立句柄的同线程实例。
 
     Returns:
         _TtySpinner | None: 供入口复用外层实例的安全写入句柄。
     """
-    return _CURRENT_SPINNER.get()
+    handle = _CURRENT_SPINNER.get()
+    if handle is None or handle.closed:
+        return None
+    if handle.owner_thread_id != threading.get_ident():
+        return None
+    return handle
 
 
 def notify_fail(message, exc_info=False):
