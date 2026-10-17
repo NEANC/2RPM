@@ -6,9 +6,13 @@ import datetime
 import re
 import time
 import logging
+import threading
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
-from contextvars import copy_context
+from concurrent.futures import CancelledError as FutureCancelledError
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from contextvars import ContextVar, copy_context
+from dataclasses import dataclass
 from json import JSONDecodeError
 from string import Formatter
 
@@ -66,6 +70,111 @@ _RESERVED_VARIABLES = frozenset({
 _UNCONFIGURED_SCREENSHOT = '截图失败：未配置该截图目标'
 # 截图编排出现未知异常降级时给出的固定中文提示
 _INTERNAL_SCREENSHOT = '截图失败：内部错误'
+# 通道执行普通异常时的固定安全记录文案（不输出异常原文）
+_CHANNEL_EXCEPTION = '通道执行异常'
+# 反馈观察者普通异常时的固定安全记录文案（不输出异常原文）
+_OBSERVER_FAILURE = '推送反馈回调异常，已忽略'
+
+# 反馈作用域：保存 (owner_thread_id, observer)，仅在本线程消费终态时回调
+_FEEDBACK = ContextVar('notification_feedback', default=None)
+
+
+@dataclass(frozen=True)
+class PushChannelResult:
+    """推送通道终态的安全身份与结果。
+
+    属性:
+        event_id: 本次真实通知的事件标识，复用 notification_event_scope。
+        channel_index: 解析后有效通道的位置，从 0 起。
+        provider: 解析后的安全通道名，不套用图床别名。
+        ok: 该通道最终是否成功。
+    """
+
+    event_id: str
+    channel_index: int
+    provider: str
+    ok: bool
+
+
+@contextmanager
+def feedback_scope(on_result=None):
+    """建立推送反馈作用域，仅在本线程消费终态时回调观察者。
+
+    参数:
+        on_result: 终态观察者，接收一个 PushChannelResult；可为 None。
+
+    产出:
+        无；退出时恢复进入前的反馈状态，不进入任何发送重试。
+    """
+    token = _FEEDBACK.set((threading.get_ident(), on_result))
+    try:
+        yield
+    finally:
+        _FEEDBACK.reset(token)
+
+
+def _current_feedback():
+    """返回当前作用域的观察者分发信息。
+
+    返回:
+        tuple[int | None, callable | None]: (建立作用域的线程身份, 观察者)；
+        无作用域时观察者为 None。
+    """
+    state = _FEEDBACK.get()
+    if state is None:
+        return None, None
+    return state
+
+
+def _log_channel_exception(provider):
+    """记录一次通道执行普通异常，不输出异常原文。
+
+    参数:
+        provider: 已解析的通道安全名称。
+    """
+    try:
+        LOGGER.error(
+            "%s通道 [%s] %s", _event_prefix(), provider, _CHANNEL_EXCEPTION)
+    except Exception:
+        pass
+
+
+def _notify_observer(observer, owner_thread_id, dispatch_thread_id, result):
+    """在调用线程内分发一次终态，隔离观察者的普通异常。
+
+    控制异常保持原对象传播，不被吞掉；普通异常只做固定安全记录，既不改
+    变结果也不触发任何重发。非建立作用域的线程或空观察者直接跳过。
+
+    参数:
+        observer: 观察者回调；为空时不分发。
+        owner_thread_id: 建立反馈作用域的线程身份。
+        dispatch_thread_id: 当前分发线程身份。
+        result: 本次终态 PushChannelResult。
+    """
+    if observer is None or owner_thread_id != dispatch_thread_id:
+        return
+    try:
+        observer(result)
+    except (KeyboardInterrupt, SystemExit, FutureCancelledError):
+        raise
+    except Exception:
+        try:
+            LOGGER.error("%s%s", _event_prefix(), _OBSERVER_FAILURE)
+        except Exception:
+            pass
+
+
+def _cancel_registered(registered):
+    """逐个尝试取消已登记 Future，清理普通异常不覆盖在途控制异常。
+
+    参数:
+        registered: 已登记的 (future, channel_index) 列表。
+    """
+    for future, _index in registered:
+        try:
+            future.cancel()
+        except Exception:
+            pass
 
 
 def _parse_response_body(response):
@@ -613,14 +722,21 @@ def send_notification(config, template_key, **kwargs):
             )
             max_count = 1
 
-        # 通过 ThreadPoolExecutor 向各通道并发推送，等待全部完成后回收结果
+        # 通过 ThreadPoolExecutor 向各通道并发推送，按完成顺序消费并回收结果
         channel_names = ', '.join(c.get('provider', '?') for c in channels)
         LOGGER.info(f"共解析到 {len(channels)} 个推送通道: {channel_names}")
+        event_id = current_event_id()
+        owner_thread_id, observer = _current_feedback()
+        dispatch_thread_id = threading.get_ident()
+        providers = [channel.get('provider', '?') for channel in channels]
+        outcomes = [None] * len(channels)
+        consumed = set()
         with ThreadPoolExecutor() as executor:
-            futures = [
-                (
-                    channel.get('provider', '?'),
-                    executor.submit(
+            registered = []
+            try:
+                # 逐个提交后立即登记 Future→index，便于提交中途取消时收尾已提交任务
+                for index, channel in enumerate(channels):
+                    future = executor.submit(
                         copy_context().run,
                         _notify_single_channel,
                         channel,
@@ -630,11 +746,32 @@ def send_notification(config, template_key, **kwargs):
                         max_count,
                         screenshot_count,
                         render_context=render_context,
-                    ),
-                )
-                for channel in channels
-            ]
-            # future.result() 会阻塞至各通道完成，从而保证整体同步等待
-            results = [
-                (provider, future.result()) for provider, future in futures]
-        return results
+                    )
+                    registered.append((future, index))
+                pending = {future: index for future, index in registered}
+                # 调用线程按完成顺序消费；先写配置位置，再登记身份，最后回调
+                for future in as_completed(pending):
+                    index = pending[future]
+                    try:
+                        ok = future.result()
+                    except FutureCancelledError:
+                        raise
+                    except Exception:
+                        ok = False
+                        _log_channel_exception(providers[index])
+                    if (event_id, index) in consumed:
+                        continue
+                    outcomes[index] = ok
+                    consumed.add((event_id, index))
+                    _notify_observer(
+                        observer, owner_thread_id, dispatch_thread_id,
+                        PushChannelResult(
+                            event_id, index, providers[index], ok))
+            except (KeyboardInterrupt, SystemExit, FutureCancelledError):
+                # 先尝试取消尚未开始的 Future，再经 with 收尾等待运行中任务
+                _cancel_registered(registered)
+                raise
+        return [
+            (providers[index], outcomes[index])
+            for index in range(len(channels))
+        ]
