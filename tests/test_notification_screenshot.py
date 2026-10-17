@@ -6,6 +6,7 @@ import json
 import logging
 import netrc
 import os
+import smtplib
 import socket
 import sys
 import threading
@@ -96,7 +97,9 @@ def _install_onepush(monkeypatch, notify_impl=None):
     notifier = MagicMock()
 
     def default_notify(title=None, content=None, **params):
-        """返回成功响应，不发起任何网络请求。"""
+        """返回成功响应，不发起任何网络请求；SMTP 按标准库契约返回空 dict。"""
+        if 'host' in params:
+            return {}
         return _response(200)
 
     impl = notify_impl or default_notify
@@ -1858,10 +1861,15 @@ def test_channel_preparation_is_once_per_channel(monkeypatch):
     sent = {'discord': [], 'smtp': []}
 
     def notify(title=None, content=None, **params):
-        """记录每次发送内容，首次 HTTP 503 后成功以触发重试。"""
+        """记录每次发送内容，SMTP 首次异常后返回空 dict，discord 首次 503 后成功。"""
         provider = 'smtp' if 'host' in params else 'discord'
         sent[provider].append((title, content, params))
         attempts[provider] += 1
+        if provider == 'smtp':
+            if attempts[provider] == 1:
+                raise smtplib.SMTPRecipientsRefused(
+                    {'recipient@example.test': (550, b'rejected')})
+            return {}
         return _response(503 if attempts[provider] == 1 else 200)
 
     _install_onepush(monkeypatch, notify)

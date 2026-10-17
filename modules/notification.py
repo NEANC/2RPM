@@ -216,6 +216,34 @@ def _notify_single_channel(channel, title, content, retry_interval, max_count,
                 return False
             continue
 
+        # SMTP 以标准库 sendmail 的拒收字典作为接受依据，不借用 HTTP 判定
+        if provider == 'smtp':
+            try:
+                accepted = isinstance(response, dict)
+                empty = len(response) == 0 if accepted else False
+                reason = "SMTP 响应判定失败"
+            except Exception:
+                accepted = False
+                reason = "SMTP 响应判定失败"
+            if accepted:
+                # 已确认至少部分接受；日志普通异常不得改变发送结果
+                try:
+                    if empty:
+                        LOGGER.info(
+                            "%sSMTP 服务器已接受全部收件人（不代表最终到达）",
+                            _event_prefix())
+                    else:
+                        LOGGER.warning(
+                            "%sSMTP 部分收件人被拒收，至少部分已接受；已终止重试",
+                            _event_prefix())
+                except Exception:
+                    pass
+                return True
+            if not _handle_attempt_failure(
+                    provider, attempt, max_count, reason, retry_interval):
+                return False
+            continue
+
         try:
             success, reason = _is_push_successful(response)
         except Exception:

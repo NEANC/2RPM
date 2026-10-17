@@ -102,6 +102,13 @@ def _render_push_results(results, sp):
     if not results:
         return False
     for provider, ok in results:
+        if provider == 'smtp':
+            if ok:
+                sp.write_done(
+                    "通道 [smtp] SMTP 服务器至少部分接受（不代表最终到达）")
+            else:
+                sp.write_fail("通道 [smtp] SMTP 未确认接受")
+            continue
         if ok:
             sp.write_done(f"通道 [{provider}] 推送成功")
         else:
