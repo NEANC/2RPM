@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""验证统一反馈的安全通道名称、失败原因与正文模板，不访问设备或网络。"""
+
+import socket
+
+import pytest
+
+from modules.feedback_text import canonical_failure_code
+from modules.feedback_text import canonical_upload_provider
+from modules.feedback_text import format_failure_sentence
+from modules.feedback_text import safe_reason_text
+from modules.feedback_text import upload_provider_name
+
+
+SECRET_NAME = 'token=FAKE_SECRET'
+SECRET_URL = 'https://user:pass@evil.example.com/a?token=FAKE_SECRET'
+
+
+@pytest.fixture(autouse=True)
+def _forbid_network(monkeypatch):
+    """纯函数测试不得建立任何真实网络连接。"""
+
+    def _blocked(*args, **kwargs):
+        raise AssertionError('本测试禁止真实网络连接')
+
+    monkeypatch.setattr(socket, 'create_connection', _blocked)
+    monkeypatch.setattr(socket.socket, 'connect', _blocked)
+    monkeypatch.setattr(socket.socket, 'connect_ex', _blocked)
+
+
+@pytest.mark.parametrize(('provider', 'canonical', 'expected'), [
+    ('beeimg_cn', 'beeimg_cn', 'BeeIMG.CN'),
+    ('beeimg', 'beeimg', 'BeeIMG'),
+    ('catbox', 'catbox', 'Catbox'),
+    ('wmimg', 'wmimg', 'WMImg'),
+    ('boltp', 'boltp', 'Boltp'),
+    ('superbed', 'superbed', 'SuperBed'),
+    ('配置', '配置', '配置'),
+])
+def test_provider_names(provider, canonical, expected):
+    """六个内部键与共享配置错误映射为固定展示名。"""
+    assert canonical_upload_provider(provider) == canonical
+    assert upload_provider_name(provider) == expected
+
+
+@pytest.mark.parametrize('provider', [
+    SECRET_NAME,
+    SECRET_URL,
+    'evil.example.com',
+    'unknown_provider',
+    ['catbox'],
+    {'provider': 'beeimg_cn'},
+    None,
+    7,
+])
+def test_unknown_provider_never_echoes_input(provider):
+    """未知或非字符串 provider 不回显原文，仅显示未知图床。"""
+    assert canonical_upload_provider(provider) == 'unknown'
+    name = upload_provider_name(provider)
+    assert name == '未知图床'
+    for leak in (SECRET_NAME, SECRET_URL, 'evil.example.com', 'FAKE_SECRET'):
+        assert leak not in name
+
+
+def test_unknown_provider_slot_suffix():
+    """未知 provider 带整数槽位时补安全序号，序号为索引加一。"""
+    name = upload_provider_name(SECRET_NAME, slot_index=2)
+    assert name == '未知图床 第 3 项'
+    assert SECRET_NAME not in name
+    assert upload_provider_name(SECRET_NAME, slot_index=0) == '未知图床 第 1 项'
+
+
+@pytest.mark.parametrize(('category', 'code', 'expected'), [
+    ('upload', 'malicious', 'upload_failed'),
+    ('upload', 'profile_forbidden', 'profile_forbidden'),
+    ('upload', 123, 'upload_failed'),
+    ('upload', ['upload_failed'], 'upload_failed'),
+    ('capture', 'window_not_found', 'window_not_found'),
+    ('capture', 'adb_timeout', 'adb_timeout'),
+    ('capture', 'malicious', 'capture_failed'),
+    ('capture', 'upload_failed', 'capture_failed'),
+    ('config', 'no_targets', 'no_targets'),
+    ('config', 'target_invalid', 'target_invalid'),
+    ('config', 'invalid_hosts', 'invalid_hosts'),
+    ('config', 'malicious', 'config_error'),
+    ('config', 'window_not_found', 'config_error'),
+])
+def test_failure_namespaces(category, code, expected):
+    """三个命名空间各自白名单归一，未知固定到本类别兜底码。"""
+    assert canonical_failure_code(category, code) == expected
+
+
+@pytest.mark.parametrize(('category', 'code', 'expected'), [
+    ('upload', 'upload_failed', '图床上传失败'),
+    ('upload', 'malicious', '图床上传失败'),
+    ('upload', 'profile_forbidden',
+     '账号资料接口无访问权限，请为令牌授权资料读取权限，'
+     '或填写该账号可用的 options.storage_id。'),
+    ('upload', 'profile_forbidden_invalid_storage',
+     '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 '
+     'options.storage_id。'),
+    ('capture', 'window_not_found', '未找到匹配的窗口'),
+    ('capture', 'malicious', '截图失败'),
+    ('config', 'no_targets', '未配置有效截图目标'),
+    ('config', 'target_invalid', '截图目标配置无效'),
+    ('config', 'invalid_hosts', '图床配置必须为列表'),
+    ('config', 'malicious', '图床配置无效'),
+])
+def test_safe_reason_text(category, code, expected):
+    """原因文案不含类别前缀，权限原因去掉旧 BeeIMG.cn 前缀。"""
+    reason = safe_reason_text(category, code)
+    assert reason == expected
+    assert 'BeeIMG.cn' not in reason
+
+
+def test_permission_sentence_exact():
+    """beeimg_cn 权限句逐字固定，无半角拼写，无双句号。"""
+    sentence = format_failure_sentence('upload', 'beeimg_cn', 'profile_forbidden')
+    assert sentence == (
+        '截图上传失败：通道 BeeIMG.CN 的账号资料接口无访问权限，'
+        '请为令牌授权资料读取权限，或填写该账号可用的 options.storage_id。')
+    assert 'BeeIMG.cn' not in sentence
+    assert '。。' not in sentence
+    assert sentence.count('。') == 1
+
+
+def test_invalid_storage_is_distinct():
+    """手填储存驱动无效是独立原因，不折叠为普通权限句。"""
+    forbidden = format_failure_sentence('upload', 'beeimg_cn', 'profile_forbidden')
+    invalid_storage = format_failure_sentence(
+        'upload', 'beeimg_cn', 'profile_forbidden_invalid_storage')
+    assert invalid_storage == (
+        '截图上传失败：通道 BeeIMG.CN 手填储存驱动无效，'
+        '请授权资料读取权限或填写当前账号可用的 options.storage_id。')
+    assert invalid_storage != forbidden
+    assert invalid_storage.count('。') == 1
+    assert 'BeeIMG.cn' not in invalid_storage
+
+
+def test_general_upload_sentence():
+    """一般上传失败使用固定原因，并以单个句号收尾。"""
+    assert format_failure_sentence('upload', 'catbox', 'upload_failed') == (
+        '截图上传失败：通道 Catbox 图床上传失败。')
+    sentence = format_failure_sentence('upload', 'catbox', 'profile_forbidden')
+    assert sentence.startswith('截图上传失败：通道 Catbox ')
+    assert 'BeeIMG.cn' not in sentence
+    assert '。。' not in sentence
+    assert sentence.count('。') == 1
+
+
+@pytest.mark.parametrize('provider', [SECRET_NAME, SECRET_URL])
+def test_unknown_failure_sentence_hides_dynamic_input(provider):
+    """未知 provider 的整句不得包含动态原文、URL 或合成秘密。"""
+    sentence = format_failure_sentence('upload', provider, 'malicious')
+    assert sentence == '截图上传失败：通道 未知图床 图床上传失败。'
+    for leak in (SECRET_NAME, SECRET_URL, 'evil.example.com', 'FAKE_SECRET'):
+        assert leak not in sentence
+
+
+@pytest.mark.parametrize(('code', 'expected'), [
+    ('no_targets', '截图配置失败：未配置有效截图目标'),
+    ('target_invalid', '截图配置失败：截图目标配置无效'),
+    ('invalid_hosts', '截图配置失败：图床配置必须为列表'),
+    ('malicious', '截图配置失败：图床配置无效'),
+])
+def test_config_sentences(code, expected):
+    """配置失败使用独立前缀，不冒充任何图床上传失败。"""
+    sentence = format_failure_sentence('config', '配置', code)
+    assert sentence == expected
+    assert '上传失败' not in sentence
+
+
+@pytest.mark.parametrize(('code', 'expected'), [
+    ('window_not_found', '截图失败：未找到匹配的窗口'),
+    ('malicious', '截图失败'),
+])
+def test_capture_sentences(code, expected):
+    """截图失败复用既有安全映射，未知代码只显示类别。"""
+    assert format_failure_sentence('capture', '配置', code) == expected
