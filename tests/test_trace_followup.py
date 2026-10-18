@@ -161,12 +161,17 @@ def test_fallback_ui_is_silent_and_file_keeps_events(caplog):
 
 def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, caplog):
     from argparse import Namespace
+    from io import StringIO
     from modules.image_host.core import ImageHostError
+    from modules.upload_status import make_status_consumer
     from test_upload_stage_logging import Transport, group_reply, profile_reply
 
     cli = import_module('modules.screenshot.cli')
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
-    monkeypatch.setattr(cli, 'make_status_consumer', lambda: None)
+    # 关闭状态回调：真实消费者把显示写入丢弃流，终端不出现上传反馈
+    monkeypatch.setattr(
+        cli, 'make_status_consumer',
+        lambda **kwargs: make_status_consumer(stream=StringIO()))
     monkeypatch.setattr(cli, 'capture', Mock(return_value=CaptureResult(
         b'image', 'window', 'synthetic', 2, 2)))
     transport = Transport(monkeypatch, [group_reply(), profile_reply(status=403)])

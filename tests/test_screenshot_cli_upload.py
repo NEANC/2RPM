@@ -6,11 +6,14 @@ from argparse import Namespace
 from datetime import date
 from importlib import import_module
 from io import BytesIO
+import netrc
+import socket
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from PIL import Image
 import pytest
+import requests
 
 from modules.image_host.core import ImageHostError
 from modules.operation_trace import trace_scope
@@ -97,6 +100,26 @@ def patch_context(monkeypatch):
 
     monkeypatch.setattr(cli, 'UploadContext', FakeContext)
     return created
+
+
+@pytest.fixture(autouse=True)
+def isolate(monkeypatch, tmp_path):
+    """隔离缓存根并阻断任何未替身化的真实网络或账号访问。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    counter = {'forbidden': 0}
+
+    def forbidden(*args, **kwargs):
+        """记录并阻断未替身化的网络或账号访问。"""
+        counter['forbidden'] += 1
+        raise AssertionError('禁止真实网络或账号访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    yield
+    assert counter['forbidden'] == 0
 
 
 def test_upload_only_does_not_create_local_file(monkeypatch, tmp_path):
@@ -319,7 +342,7 @@ def test_save_control_signal_keeps_image_and_cancels_unstarted_uploads(
     monkeypatch.setattr(cli, '_upload_all', upload)
     events = []
     monkeypatch.setattr(
-        cli, 'make_status_consumer', lambda: events.append)
+        cli, 'make_status_consumer', lambda **kwargs: events.append)
 
     with pytest.raises(signal_type) as caught:
         run_cli(

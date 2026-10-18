@@ -72,14 +72,16 @@ def written_lines(stream):
     return [item.args[0].rstrip('\n') for item in stream.write.call_args_list]
 
 
-def spy_trace_scope(monkeypatch, module, events, traces):
-    """包装编排入口作用域以记录真实事件与批次对象。"""
+def spy_trace_scope(monkeypatch, module, events, traces, callbacks=None):
+    """包装编排入口作用域以记录真实事件、批次对象与被包裹的原回调。"""
     real = module.trace_scope
 
     @contextmanager
     def scope(**kwargs):
         """记录事件后仍交给生产消费者，两条出口互不影响。"""
         inner = kwargs.get('on_status')
+        if callbacks is not None:
+            callbacks.append(inner)
 
         def combined(event):
             """先记录事件，再转发给生产显示回调。"""
@@ -474,12 +476,23 @@ def test_display_failure_cannot_reupload(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
 
-    def broken_consumer(**kwargs):
-        """返回必然报错的显示回调。"""
-        def consume(event):
+    class BrokenConsumer:
+        """显示消费者替身：阶段进出正常，消费事件必抛普通异常。"""
+
+        def _enter_phase(self):
+            """返回空阶段帧，保证上传作用域可正常进入。"""
+            return None
+
+        def _exit_phase(self, frame):
+            """忽略阶段帧，退出阶段不影响上传结果。"""
+
+        def __call__(self, event):
             """模拟终端显示失败。"""
             raise RuntimeError(SECRET)
-        return consume
+
+    def broken_consumer(**kwargs):
+        """返回必然报错的显示消费者替身。"""
+        return BrokenConsumer()
 
     monkeypatch.setattr(pipeline, 'make_status_consumer', broken_consumer)
     batch = pipeline.prepare_screenshots(
@@ -514,14 +527,14 @@ def test_cli_success_url_contract_unchanged(monkeypatch, tmp_path, capsys):
     handler.close()
     with open(path, 'rb') as stream:
         file_text = stream.read().decode('utf-8')
-    result_stdout = capsys.readouterr().out
+    result = capsys.readouterr()
+    result_stdout = result.out
+    status_text = result.err
     assert code == 0
     assert 'catbox：上传成功 https://example.invalid/result\n' in result_stdout
-    status_text = '\n'.join(
-        line for line in result_stdout.splitlines()
-        if not line.startswith('catbox：'))
+    assert '正在上传截图' not in result_stdout
     assert '✔️ 通道 [Catbox] 上传成功' in status_text
-    assert '正在上传截图' not in status_text
+    assert '正在上传截图' in status_text
     assert '准备上传' not in status_text
     assert '\x1b' not in status_text
     assert URL not in status_text + file_text
@@ -559,7 +572,7 @@ def test_pipeline_failover_records_each_slot(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '❌ 通道 [Catbox] 上传失败' in out
     assert '✔️ 通道 [BeeIMG] 上传成功' in out
-    assert '正在上传截图' not in out
+    assert out.count('正在上传截图') == 1
     assert '\x1b' not in out
 
 
@@ -610,13 +623,15 @@ def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, caps
     code = cli.run_screenshot_cli(
         cli_args(hosts=[{'provider': 'beeimg_cn', 'token': SECRET}]),
         str(tmp_path))
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     assert code == 1
     assert transport.posts == []
-    assert terminal_lines(out) == ['❌ 通道 [BeeIMG.CN] 上传失败']
+    assert terminal_lines(captured.err) == ['❌ 通道 [BeeIMG.CN] 上传失败']
     assert out.count(ImageHostError('profile_forbidden', '').message) == 1
     assert 'beeimg_cn：上传失败\n' in out
     assert SECRET not in out
+    assert SECRET not in captured.err
 
 
 def test_cli_capture_failure_skips_planned_slots(monkeypatch, tmp_path, capsys):
@@ -808,3 +823,214 @@ def test_cancellation_marks_started_slot_and_skips_rest(
     assert summary['slots_cancelled'] == 1
     assert summary['slots_skipped'] == 1
     assert summary['status'] == 'cancelled'
+
+
+class BorrowedHandle:
+    """可借用的外层 TTY 句柄替身：暴露文案、输出流与公开借用属性。"""
+
+    def __init__(self, message, stream):
+        """保存初始文案、输出流与同线程身份。"""
+        self.message = message
+        self._stream = stream
+        self.texts = []
+        self.writes = []
+        self.closed = False
+        self.owner_thread_id = threading.get_ident()
+
+    @property
+    def stream(self):
+        """返回绑定的 TTY 输出流。"""
+        return self._stream
+
+    def text(self, message):
+        """记录文案切换并更新当前公开文案。"""
+        self.texts.append(message)
+        self.message = message
+
+    def write(self, message):
+        """记录插入的终态行。"""
+        self.writes.append(message)
+
+
+class OrderedStream:
+    """非 TTY 普通行替身：写入顺序与上传调用共用同一顺序列表。"""
+
+    def __init__(self, order):
+        """保存共享顺序列表并初始化行与刷新计数。"""
+        self._order = order
+        self.lines = []
+        self.flushes = 0
+
+    def write(self, text):
+        """记录一行并标记与上传调用交错的顺序。"""
+        self._order.append(('write', text.rstrip('\n')))
+        self.lines.append(text)
+
+    def flush(self):
+        """记录一次刷新。"""
+        self.flushes += 1
+
+    def isatty(self):
+        """恒为非 TTY，强制普通行路径。"""
+        return False
+
+
+def test_stable_consumer_per_image_scope(monkeypatch):
+    """两图共享同一消费者：逐图独立上传 scope 且外层文案逐图恢复。"""
+    upload_status = import_module('modules.upload_status')
+    pipeline = pipeline_module()
+
+    tty = plain_stream(isatty=True)
+    handle = BorrowedHandle('监视中', tty)
+    monkeypatch.setattr(upload_status, 'current_spinner', lambda: handle)
+
+    monkeypatch.setitem(
+        registry_module().UPLOADERS, 'wmimg',
+        lambda image, filename, token, options: URL)
+
+    def failing(image, filename, token, options):
+        """首站返回固定传输失败。"""
+        raise ImageHostError('transport_failed', '')
+
+    monkeypatch.setitem(registry_module().UPLOADERS, 'catbox', failing)
+
+    capture_messages = []
+
+    def capture(*args, **kwargs):
+        """记录捕获时外层句柄的公开文案并返回合成结果。"""
+        capture_messages.append(handle.message)
+        return capture_result()
+
+    monkeypatch.setattr(pipeline, 'capture', capture)
+    monkeypatch.setattr(pipeline, 'save_automatic', Mock(
+        return_value=SaveOutcome(None, 'shot.jpg')))
+
+    created = []
+    real_make = upload_status.make_status_consumer
+
+    def factory(**kwargs):
+        """记录构造参数并返回真实消费者，核对批次内唯一构造。"""
+        consumer = real_make(**kwargs)
+        created.append((kwargs, consumer))
+        return consumer
+
+    monkeypatch.setattr(pipeline, 'make_status_consumer', factory)
+
+    real_scope = upload_status.upload_feedback_scope
+    scoped = []
+
+    @contextmanager
+    def scope(consumer):
+        """记录被包裹的消费者身份后仍走真实阶段绑定。"""
+        scoped.append(consumer)
+        with real_scope(consumer):
+            yield consumer
+
+    monkeypatch.setattr(pipeline, 'upload_feedback_scope', scope)
+    events, traces, callbacks = [], [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces, callbacks)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'},
+                     {'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox', 'token': 't'},
+                        {'provider': 'wmimg', 'token': 't'}]},
+        True, ())
+    consumer = created[0][1]
+    assert len(created) == 1
+    assert callbacks == [consumer]
+    assert scoped == [consumer, consumer]
+    assert capture_messages == ['监视中', '监视中']
+    summary = traces[0].summary()
+    assert summary['slots_planned'] == 4
+    assert summary['slots_succeeded'] == 2
+    assert summary['slots_failed'] == 2
+    assert handle.texts == ['正在上传截图', '监视中'] * 2
+    assert handle.writes == [
+        '❌ 通道 [Catbox] 上传失败（截图 1）',
+        '✔️ 通道 [WMImg] 上传成功（截图 1）',
+        '❌ 通道 [Catbox] 上传失败（截图 2）',
+        '✔️ 通道 [WMImg] 上传成功（截图 2）',
+    ]
+
+
+def test_automatic_first_success_and_cli_all_slots(monkeypatch, tmp_path, capsys):
+    """自动逐图首成功即停并跳过剩余槽位；CLI 逐声明项全传仍调后续站。"""
+    upload_status = import_module('modules.upload_status')
+    registry = registry_module()
+    pipeline = pipeline_module()
+    order = []
+    stream = OrderedStream(order)
+    auto_calls = []
+
+    def catbox(image, filename, token, options):
+        """记录调用顺序并返回固定传输失败。"""
+        auto_calls.append('catbox')
+        order.append(('call', 'catbox'))
+        raise ImageHostError('transport_failed', '')
+
+    def wmimg(image, filename, token, options):
+        """记录调用顺序并返回合成成功链接。"""
+        auto_calls.append('wmimg')
+        order.append(('call', 'wmimg'))
+        return URL
+
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox', catbox)
+    monkeypatch.setitem(registry.UPLOADERS, 'wmimg', wmimg)
+    monkeypatch.setattr(pipeline, 'capture', Mock(return_value=capture_result()))
+    monkeypatch.setattr(pipeline, 'save_automatic', Mock(
+        return_value=SaveOutcome(None, 'shot.jpg')))
+    monkeypatch.setattr(
+        pipeline, 'make_status_consumer',
+        lambda **kwargs: upload_status.make_status_consumer(
+            stream=stream, **kwargs))
+    events, traces = [], []
+    spy_trace_scope(monkeypatch, pipeline, events, traces)
+    pipeline.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口'}],
+         'image_host': [{'provider': 'catbox', 'token': 't'},
+                        {'provider': 'wmimg', 'token': 't'},
+                        {'provider': 'superbed', 'token': 't'}]},
+        True, ())
+    auto_summary = traces[0].summary()
+    assert auto_calls == ['catbox', 'wmimg']
+    assert auto_summary['slots_planned'] == 3
+    assert auto_summary['slots_skipped'] == 1
+    assert order == [
+        ('write', '正在上传截图'),
+        ('call', 'catbox'),
+        ('write', '❌ 通道 [Catbox] 上传失败'),
+        ('call', 'wmimg'),
+        ('write', '✔️ 通道 [WMImg] 上传成功'),
+    ]
+
+    cli = cli_module()
+    cli_calls = []
+
+    def cli_catbox(image, filename, token, options):
+        """记录调用并返回合成成功链接。"""
+        cli_calls.append('catbox')
+        return URL
+
+    def cli_wmimg(image, filename, token, options):
+        """记录调用并返回固定传输失败。"""
+        cli_calls.append('wmimg')
+        raise ImageHostError('transport_failed', '')
+
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox', cli_catbox)
+    monkeypatch.setitem(registry.UPLOADERS, 'wmimg', cli_wmimg)
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=capture_result()))
+    saved_path = str(tmp_path / 'shot.jpg')
+    monkeypatch.setattr(cli, 'save_cli', Mock(
+        return_value=SaveOutcome(saved_path, 'shot.jpg')))
+    exit_code = cli.run_screenshot_cli(
+        cli_args(output=saved_path,
+                 hosts=[{'provider': 'catbox', 'token': 't'},
+                        {'provider': 'wmimg', 'token': 't'}]),
+        str(tmp_path))
+    captured = capsys.readouterr()
+    assert cli_calls == ['catbox', 'wmimg']
+    assert exit_code == 1
+    assert captured.out.splitlines() == [
+        saved_path, 'catbox：上传成功 ' + URL, 'wmimg：上传失败']
+    assert URL not in captured.err and saved_path not in captured.err
+    assert '正在上传截图' not in captured.out

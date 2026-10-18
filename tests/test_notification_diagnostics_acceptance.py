@@ -3,6 +3,7 @@
 """离线端到端验收：锁定诊断安全、真实计数与终态事实，全部外部边界为替身。"""
 
 from importlib import import_module
+from io import StringIO
 import logging
 import socket
 from unittest.mock import Mock, patch
@@ -69,6 +70,31 @@ def _registry():
 def _log_safety():
     """导入真实日志安全模块。"""
     return import_module('modules.log_safety')
+
+
+def _silent_consumer():
+    """构造显示写入丢弃流的真实消费者，用于关闭状态回调的变体。"""
+    return import_module('modules.upload_status').make_status_consumer(
+        stream=StringIO())
+
+
+class ScopedConsumer:
+    """把仅回调事件的函数包装为满足上传阶段合同的对象。"""
+
+    def __init__(self, callback):
+        """保存被包装的事件回调。"""
+        self._callback = callback
+
+    def _enter_phase(self):
+        """返回空阶段帧，允许上传阶段正常进入。"""
+        return None
+
+    def _exit_phase(self, frame):
+        """忽略阶段帧，不影响控制信号传播。"""
+
+    def __call__(self, event):
+        """把事件转发给被包装回调。"""
+        self._callback(event)
 
 
 @pytest.fixture(autouse=True)
@@ -312,8 +338,10 @@ def run_pipeline(monkeypatch, handler, *, no_callback=False):
     stage.Transport(monkeypatch, [
         stage.group_reply(), stage.profile_reply(), stage.SUCCESS_UPLOAD])
     if no_callback:
+        # 关闭状态回调：真实消费者把显示写入丢弃流，上传编排仍完整执行
         monkeypatch.setattr(
-            pipeline, 'make_status_consumer', lambda *args, **kwargs: None)
+            pipeline, 'make_status_consumer',
+            lambda **kwargs: _silent_consumer())
     section = {
         'targets': [{'provider': 'window', 'target': TARGET}],
         'image_host': [{'provider': 'beeimg_cn', 'token': MARKER,
@@ -576,7 +604,9 @@ def test_joint_started_cancellation(monkeypatch, tmp_path, boundary, signal_type
         if match and event.status == 'started':
             raise error
 
-    monkeypatch.setattr(pipeline, 'make_status_consumer', lambda **kwargs: consume)
+    monkeypatch.setattr(
+        pipeline, 'make_status_consumer',
+        lambda **kwargs: ScopedConsumer(consume))
     _support().spy_trace_scope(monkeypatch, pipeline, events, traces)
     with pytest.raises(signal_type) as caught:
         pipeline.prepare_screenshots({

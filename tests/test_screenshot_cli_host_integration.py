@@ -158,9 +158,10 @@ def test_cli_real_multi_host_credentials_and_aggregate_exit(
         3 if failure == 'http' else 4)
     assert sum('上传失败' in line for line in result_lines) == (
         0 if failure is None else 1)
-    status_lines = [line for line in output.out.splitlines()
+    status_lines = [line for line in output.err.splitlines()
                     if line.startswith(('✔️', '❌'))]
     assert status_lines
+    assert '正在上传截图' in output.err
     assert '准备上传' not in output.out
     assert '正在上传' not in output.out
     assert ENV_SECRET not in output.out + output.err + caplog.text

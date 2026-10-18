@@ -5,14 +5,21 @@
 from argparse import Namespace
 from importlib import import_module
 from io import BytesIO
+import netrc
 import os
+import socket
+import sys
 from unittest.mock import Mock
 
 from PIL import Image
 import pytest
+import requests
 
 from modules.screenshot.models import CaptureError, CaptureResult
 from modules.screenshot.retention import SaveOutcome
+
+
+URL = 'https://cdn.example.com/result.jpg'
 
 
 def cli_module():
@@ -224,3 +231,150 @@ def test_capture_warnings_are_printed(monkeypatch, tmp_path, capsys):
         args_for(str(tmp_path / 'shot.jpg')), str(tmp_path))
     assert code == 0
     assert '已回退为 PNG' in capsys.readouterr().out
+
+
+@pytest.fixture(autouse=True)
+def isolate(monkeypatch, tmp_path):
+    """隔离缓存根并阻断任何未替身化的真实网络或账号访问。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    counter = {'forbidden': 0}
+
+    def forbidden(*args, **kwargs):
+        """记录并阻断未替身化的网络或账号访问。"""
+        counter['forbidden'] += 1
+        raise AssertionError('禁止真实网络或账号访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    yield
+    assert counter['forbidden'] == 0
+
+
+class RecordingStream:
+    """可控 TTY 判定的输出流替身，按顺序记录写入与刷新。"""
+
+    def __init__(self, is_tty):
+        """保存 TTY 判定并初始化写入与刷新记录。"""
+        self._is_tty = is_tty
+        self.writes = []
+        self.flushes = 0
+
+    def write(self, text):
+        """记录一次写入。"""
+        self.writes.append(text)
+
+    def flush(self):
+        """记录一次刷新。"""
+        self.flushes += 1
+
+    def isatty(self):
+        """返回构造时指定的 TTY 判定。"""
+        return self._is_tty
+
+    def text(self):
+        """按写入顺序拼接全部文本。"""
+        return ''.join(self.writes)
+
+
+def install_hosts(monkeypatch, cli):
+    """把两个图床都替换为合成成功链接，不发起任何请求。"""
+    registry = import_module('modules.image_host.registry')
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox',
+                        lambda image, filename, token, options: URL)
+    monkeypatch.setitem(registry.UPLOADERS, 'wmimg',
+                        lambda image, filename, token, options: URL)
+
+
+def two_host_args(saved_path):
+    """构造两个声明图床的 CLI 参数，凭证取值不落入安全名称。"""
+    token = 'CLI_MATRIX_TOKEN_1'
+    return args_for(saved_path, hosts=[{'provider': 'catbox', 'token': token},
+                                       {'provider': 'wmimg', 'token': token}])
+
+
+@pytest.mark.parametrize('stdout_tty', [False, True])
+@pytest.mark.parametrize('stderr_tty', [False, True])
+def test_cli_feedback_stream_matrix(
+        monkeypatch, tmp_path, stdout_tty, stderr_tty):
+    """四种 TTY 组合下结果行只在 stdout，阶段与安全终态只在 stderr。"""
+    cli = cli_module()
+    out = RecordingStream(stdout_tty)
+    err = RecordingStream(stderr_tty)
+    monkeypatch.setattr(sys, 'stdout', out)
+    monkeypatch.setattr(sys, 'stderr', err)
+    install_hosts(monkeypatch, cli)
+    result = CaptureResult(make_image('jpeg'), 'window', 'MuMu模拟器 1', 8, 6,
+                           image_format='jpeg')
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=result))
+    saved_path = str(tmp_path / 'shot.jpg')
+    monkeypatch.setattr(cli, 'save_cli', Mock(
+        return_value=SaveOutcome(saved_path, 'shot.jpg')))
+    code = cli.run_screenshot_cli(
+        two_host_args(saved_path), str(tmp_path))
+    assert code == 0
+    assert out.text().splitlines() == [
+        saved_path, 'catbox：上传成功 ' + URL, 'wmimg：上传成功 ' + URL]
+    assert '正在上传截图' not in out.text()
+    assert '\r' not in out.text() and '\x1b' not in out.text()
+    assert URL not in err.text() and saved_path not in err.text()
+    assert '正在上传截图' in err.text()
+    assert '✔️ 通道 [Catbox] 上传成功' in err.text()
+    assert '✔️ 通道 [WMImg] 上传成功' in err.text()
+    if stderr_tty:
+        assert '\x1b' in err.text() and '\r' in err.text()
+    else:
+        assert '\x1b' not in err.text() and '\r' not in err.text()
+
+
+@pytest.mark.parametrize('mode', [
+    'disabled', 'no_hosts', 'save_only', 'capture_failure', 'config_error'])
+def test_no_upload_animation_for_early_paths(monkeypatch, tmp_path, mode):
+    """提前返回路径不创建上传阶段：禁用、无图床、仅保存、捕获失败与配置错误。"""
+    pipeline = import_module('modules.screenshot.pipeline')
+    cli = cli_module()
+    upload_status = import_module('modules.upload_status')
+    stream = RecordingStream(False)
+    created = []
+
+    def factory(**kwargs):
+        """记录构造并把消费者输出定向到本地流替身。"""
+        kwargs['stream'] = stream
+        consumer = upload_status.make_status_consumer(**kwargs)
+        created.append(consumer)
+        return consumer
+
+    payload = CaptureResult(make_image('jpeg'), 'window', '窗口', 8, 6,
+                            image_format='jpeg')
+    if mode in ('disabled', 'no_hosts', 'config_error'):
+        monkeypatch.setattr(pipeline, 'make_status_consumer', factory)
+        monkeypatch.setattr(pipeline, 'capture', Mock(return_value=payload))
+        monkeypatch.setattr(pipeline, 'save_automatic', Mock(
+            return_value=SaveOutcome(None, 'shot.jpg')))
+        section = {'targets': [{'provider': 'window', 'target': '窗口'}]}
+        if mode == 'no_hosts':
+            section['image_host'] = []
+        if mode == 'config_error':
+            section['targets'] = [{'provider': 'unknown', 'target': '窗口'}]
+            section['image_host'] = [{'provider': 'catbox', 'token': 't'}]
+        pipeline.prepare_screenshots(section, mode != 'disabled', ())
+        if mode == 'disabled':
+            assert created == []
+    else:
+        monkeypatch.setattr(cli, 'make_status_consumer', factory)
+        error = (CaptureError('window_not_found', '')
+                 if mode == 'capture_failure' else None)
+        monkeypatch.setattr(cli, 'capture', Mock(
+            side_effect=error, return_value=payload))
+        if mode == 'capture_failure':
+            hosts = [{'provider': 'catbox', 'token': 't'}]
+            args = args_for(None, hosts=hosts)
+        else:
+            saved_path = str(tmp_path / 'shot.jpg')
+            monkeypatch.setattr(cli, 'save_cli', Mock(
+                return_value=SaveOutcome(saved_path, 'shot.jpg')))
+            args = args_for(saved_path)
+        cli.run_screenshot_cli(args, str(tmp_path))
+    assert stream.text() == ''

@@ -3,15 +3,40 @@
 """真实入口的无预挂日志处理器离线回归。"""
 
 from importlib import import_module
+from io import StringIO
 import logging
+import netrc
+import socket
 import sys
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
 from modules.screenshot import winfs
+from modules.upload_status import make_status_consumer
+
+
+@pytest.fixture(autouse=True)
+def isolate(monkeypatch, tmp_path):
+    """隔离缓存根并阻断任何未替身化的真实网络或账号访问。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    counter = {'forbidden': 0}
+
+    def forbidden(*args, **kwargs):
+        """记录并阻断未替身化的网络或账号访问。"""
+        counter['forbidden'] += 1
+        raise AssertionError('禁止真实网络或账号访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    yield
+    assert counter['forbidden'] == 0
 
 
 @pytest.fixture
@@ -24,7 +49,10 @@ def entry_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(entry, 'get_program_directory', lambda: str(tmp_path))
     monkeypatch.setattr(entry, 'load_config', Mock(side_effect=AssertionError))
     cli = import_module('modules.screenshot.cli')
-    monkeypatch.setattr(cli, 'make_status_consumer', lambda: None)
+    # 关闭状态回调：真实消费者把显示写入丢弃流，终端两路都不出现上传反馈
+    monkeypatch.setattr(
+        cli, 'make_status_consumer',
+        lambda **kwargs: make_status_consumer(stream=StringIO()))
     yield entry, cli, root
     for handler in root.handlers[:]:
         root.removeHandler(handler)

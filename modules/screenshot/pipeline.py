@@ -22,6 +22,7 @@ from modules.operation_trace import trace_slot_outcome
 from modules.operation_trace import trace_slots_skipped
 from modules.operation_trace import trace_warning
 from modules.upload_status import make_status_consumer
+from modules.upload_status import upload_feedback_scope
 from modules.utils import get_program_directory
 
 from .models import CaptureError
@@ -75,12 +76,21 @@ def _upload_failure_summary(failures):
     return '截图上传失败：' + summary if summary else '截图上传失败'
 
 
+def _host_providers(hosts):
+    """按配置项顺序提取原始 provider，供消费者判定重复配置项后缀。"""
+    if not isinstance(hosts, list):
+        return ()
+    return tuple(
+        host.get('provider', '') if isinstance(host, Mapping) else ''
+        for host in hosts)
+
+
 def _prepare_target(item, hosts, warnings, diagnostics, *, context,
-                    runtime, event, policy, trace):
+                    runtime, event, policy, trace, consumer):
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。
 
     Returns:
-        tuple[str, bool]: 目标输出值与“捕获是否成功”的事实。
+        tuple[str, bool, bool]: 目标输出值与“捕获是否成功”的事实。
     """
     if item['error'] is not None:
         trace.finish_image(item['index'], 'failed')
@@ -115,8 +125,9 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         warnings.extend(outcome.warnings)
     failure = '截图上传失败'
     try:
-        uploaded = upload_with_fallback(
-            result.image_bytes, item['out'] + '.jpg', hosts, context=context)
+        with upload_feedback_scope(consumer):
+            uploaded = upload_with_fallback(
+                result.image_bytes, item['out'] + '.jpg', hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
             return markdown_image(item['out'], uploaded.url), True, True
@@ -172,10 +183,12 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     if targets:
         hosts = section.get('image_host')
         planned_hosts = len(hosts) if isinstance(hosts, list) and hosts else 0
+        consumer = make_status_consumer(
+            images_planned=len(targets), slot_providers=_host_providers(hosts))
         with trace_scope(
                 mode='automatic', images_planned=len(targets),
                 slots_planned=len(targets) * planned_hosts,
-                on_status=make_status_consumer()) as trace:
+                on_status=consumer) as trace:
             outcomes = []
             with ExitStack() as stack:
                 context = None
@@ -188,7 +201,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                             value, captured, succeeded = _prepare_target(
                                 item, hosts, warnings, diagnostics,
                                 context=context, runtime=runtime, event=event,
-                                policy=policy, trace=trace)
+                                policy=policy, trace=trace, consumer=consumer)
                             if not captured:
                                 # 捕获或截图配置失败：保存阶段未执行，补齐带图片归因的跳过事实
                                 trace_skipped('save', reason_code='capture_failed')
