@@ -666,10 +666,11 @@ def test_notification_version_targets_reuse_capture_batch(monkeypatch, marker):
     assert results == [(channel['provider'], True) for channel in THREE_CHANNELS]
     assert attempts == {'s1': 2, 't1': 2, 'w1': 2}
     assert notifier.notify.call_count == len(sent) == 6
-    contents = {content for _, content in sent}
-    assert len(contents) == 2
-    assert f'![first]({URL})\n\n截图配置失败：截图目标配置无效\n\n'\
-        f'![last]({URL})' in contents
+    assert len(set(sent)) == 1
+    parts = sent[0][1].split('\n\n')
+    assert parts == [
+        f'![first]({URL})', '截图配置失败：截图目标配置无效',
+        f'![last]({URL})']
     assert capture.call_count == upload.call_count == 2
     contexts = []
     for capture_call, upload_call, expression, name in zip(

@@ -5,10 +5,13 @@
 from email import policy
 from email.parser import BytesParser
 from html import escape as html_escape
+from importlib import import_module
+from unittest.mock import Mock
 
 import pytest
 from onepush.providers.smtp import SMTP
 
+from modules.image_host.core import UploadResult
 from modules.notification_rendering import (
     ScreenshotRenderContext,
     has_direct_screenshot,
@@ -16,7 +19,10 @@ from modules.notification_rendering import (
     render_screenshot_content,
     render_screenshot_template,
 )
+from modules.screenshot.models import CaptureResult
 from modules.screenshot.pipeline import ScreenshotBatch
+from modules.screenshot.pipeline import ScreenshotFailureDetail
+from modules.screenshot.pipeline import build_screenshot_notice_fragments
 from modules.screenshot.pipeline import markdown_image
 
 
@@ -839,3 +845,174 @@ def test_html_content_appends_escaped_notice_and_renamed_image():
     assert image in rendered
     assert context.values == before_values
     assert batch == before_batch
+
+
+_REASON_A = '截图上传失败：通道 BeeIMG.CN 图床网络传输失败。'
+_REASON_B = '截图上传失败：通道 Catbox 储存驱动不可用。'
+
+
+def test_failure_fragments_all_render_modes():
+    """四模式按唯一构建器同序输出失败句与图片，且只读不改批次。"""
+    batch = ScreenshotBatch(
+        {'a': '旧A', 'shot': IMAGE, 'b': '旧B', 'screenshot': '旧聚合'}, (), (),
+        (ScreenshotFailureDetail('a', 'upload', 'beeimg_cn', 'transport_failed'),
+         ScreenshotFailureDetail('b', 'upload', 'catbox', 'storage_unavailable')))
+    values = dict(batch.values)
+    before_values = dict(values)
+    before_batch = ScreenshotBatch(
+        dict(batch.values), (), (),
+        (ScreenshotFailureDetail('a', 'upload', 'beeimg_cn', 'transport_failed'),
+         ScreenshotFailureDetail('b', 'upload', 'catbox', 'storage_unavailable')))
+
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, 'markdown') == (
+        _REASON_A + '\n\n' + IMAGE + '\n\n' + _REASON_B)
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, 'url') == (
+        _REASON_A + '\n\n' + URL + '\n\n' + _REASON_B)
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, 'plain') == (
+        _REASON_A + '\n\n' + 'shot: ' + URL + '\n\n' + _REASON_B)
+    assert render_screenshot_template(
+        '{screenshot}', values, batch, 'html') == (
+        _REASON_A + '<br>\n<br>\n' + HTML_IMAGE + '<br>\n<br>\n' + _REASON_B)
+    assert values == before_values
+    assert batch == before_batch
+
+
+def test_notice_subset_before_dedup():
+    """先筛未引用的改名目标再在子集内去重，保留被引用目标的同因句。"""
+    batch = ScreenshotBatch(
+        {'a': '旧A', 'b': '旧B', 'screenshot': '旧聚合'}, (), ('b',),
+        (ScreenshotFailureDetail('a', 'upload', 'beeimg_cn', 'transport_failed'),
+         ScreenshotFailureDetail('b', 'upload', 'beeimg_cn', 'transport_failed')))
+
+    fragments = build_screenshot_notice_fragments(batch, '{a}')
+    assert fragments == (('b', 'text', _REASON_A),)
+    notice_only = fragments[0][2]
+    assert notice_only == _REASON_A
+
+    assert build_screenshot_notice_fragments(batch, '{b}') == ()
+    assert build_screenshot_notice_fragments(batch, '{screenshot}') == ()
+
+    warned = ScreenshotBatch(
+        dict(batch.values), ('W', 'W'), ('b',), batch.failure_details)
+    assert build_screenshot_notice_fragments(warned, '{a}') == (
+        ('', 'text', '截图配置提示\nW'), ('b', 'text', _REASON_A))
+    assert build_screenshot_notice_fragments(warned, '{') == (
+        ('', 'text', '截图配置提示\nW'),)
+
+
+def test_html_notice_escaped_once():
+    """HTML 追加文本只转义一次，旧无详情值不被当作新失败详情。"""
+    legacy = '<旧原因>&'
+    batch = ScreenshotBatch(
+        {'legacy': legacy, 'renamed': legacy, 'screenshot': ''}, ('W',),
+        ('renamed',))
+    values = dict(batch.values)
+    before_values = dict(values)
+    before_batch = ScreenshotBatch(
+        dict(batch.values), ('W',), ('renamed',))
+    context = ScreenshotRenderContext('T', 'body', values, batch, True)
+
+    html_notice = render_screenshot_content(context, 'html')
+
+    assert html_notice.count('&lt;旧原因&gt;&amp;') == 1
+    assert '&amp;lt;' not in html_notice
+    assert html_notice == (
+        'body<br>\n<br>\n截图配置提示<br>\nW<br>\n<br>\n'
+        '&lt;旧原因&gt;&amp;')
+    assert values == before_values
+    assert batch == before_batch
+    assert batch.failure_details == ()
+
+
+def test_owned_aggregate_and_user_text_unchanged(monkeypatch, tmp_path):
+    """手写内容、编号与自定义 out、覆盖路径沿用既有所有权，不被清洗。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    module = import_module('modules.screenshot.pipeline')
+    capture = Mock(side_effect=lambda source, name, **kwargs: CaptureResult(
+        b'png-' + name.encode(), source, name, 2, 3))
+    upload = Mock(return_value=UploadResult(True, 'catbox', URL, ('catbox',), ()))
+    monkeypatch.setattr(module, 'capture', capture)
+    monkeypatch.setattr(module, 'upload_with_fallback', upload)
+
+    batch = module.prepare_screenshots(
+        {'targets': [{'provider': 'window', 'target': '窗口', 'out': 'custom'}],
+         'image_host': [{'provider': 'catbox'}]}, True, ())
+    assert capture.call_count == upload.call_count == 1
+    assert batch.values['custom'] == f'![custom]({URL})'
+
+    numbered = ScreenshotBatch(
+        {'custom': _REASON_A, 'screenshot': '旧聚合'}, (), (),
+        (ScreenshotFailureDetail(
+            'custom', 'upload', 'beeimg_cn', 'transport_failed'),))
+    assert numbered.values['custom'] == _REASON_A
+    numbered_values = dict(numbered.values)
+    assert render_screenshot_template(
+        '{screenshot}', numbered_values, numbered, 'url') == _REASON_A
+    assert render_screenshot_template(
+        '{custom}', numbered_values, numbered, 'url') == _REASON_A
+
+    handwritten = ScreenshotBatch(
+        {'a': _REASON_A, 'b': _REASON_A, 'screenshot': '旧聚合'}, (), ())
+    handwritten_values = dict(handwritten.values)
+    assert render_screenshot_template(
+        '{screenshot}', handwritten_values, handwritten, 'markdown') == (
+        _REASON_A + '\n\n' + _REASON_A)
+    literal = _REASON_A + ' BeeIMG.cn 保持小写'
+    assert render_screenshot_template(
+        literal, handwritten_values, handwritten, 'markdown') == literal
+    assert render_screenshot_template(
+        '{screenshot}|{a}', handwritten_values, handwritten, 'markdown') == (
+        _REASON_A + '\n\n' + _REASON_A + '|' + _REASON_A)
+
+    assert render_screenshot_template(
+        '{{screenshot}}', dict(BATCH.values), BATCH, 'url') == '{screenshot}'
+    assert render_screenshot_template(
+        '{screenshot!r}', dict(BATCH.values), BATCH, 'url') == repr(IMAGE)
+    short = ScreenshotBatch({'shot': 's', 'screenshot': 's'}, (), ())
+    assert render_screenshot_template(
+        '{screenshot:>20}', {'shot': 's', 'screenshot': 's'}, short, 'url') == (
+        format('s', '>20'))
+
+    dingtalk = {
+        'provider': 'dingtalk', 'markdown': False, 'title': 'old',
+        'content': 'old'}
+    assert prepare_channel(dingtalk, 'T', 'BASE', None) == (
+        'T', 'BASE', _params_without_provider(dingtalk))
+    original = object()
+    smtp = {
+        'provider': 'smtp', 'msg': original, 'title': 'old', 'content': 'old'}
+    assert prepare_channel(smtp, 'T', 'BASE', CONTEXT) == (
+        'T', 'BASE', _params_without_provider(smtp))
+
+
+def test_smtp_failure_fragments_dual_format():
+    """SMTP 双格式失败集合与顺序等价，图片分别为纯文本标签与 img。"""
+    batch = ScreenshotBatch(
+        {'a': '旧A', 'shot': IMAGE, 'b': '旧B', 'screenshot': '旧聚合'}, (), (),
+        (ScreenshotFailureDetail('a', 'upload', 'beeimg_cn', 'transport_failed'),
+         ScreenshotFailureDetail('b', 'upload', 'catbox', 'storage_unavailable')))
+    context = ScreenshotRenderContext(
+        'T', '{screenshot}', dict(batch.values), batch, True)
+    before_batch = ScreenshotBatch(
+        dict(batch.values), (), (), batch.failure_details)
+
+    msg = prepare_channel(
+        _smtp_channel(subject='T'), 'T', 'BODY', context)[2]['msg']
+
+    assert [part.get_content_type() for part in msg.iter_parts()] == [
+        'text/plain', 'text/html']
+    plain = msg.get_body(preferencelist=('plain',)).get_content()
+    html = msg.get_body(preferencelist=('html',)).get_content()
+    assert plain == _REASON_A + '\n\n' + 'shot: ' + URL + '\n\n' + _REASON_B + '\n'
+    assert html == (
+        _REASON_A + '<br>\n<br>\n' + HTML_IMAGE + '<br>\n<br>\n'
+        + _REASON_B + '\n')
+    assert batch == before_batch
+
+    two_context = ScreenshotRenderContext(
+        '{screenshot}', 'BODY', dict(TWO_BATCH.values), TWO_BATCH, True)
+    with pytest.raises(ValueError):
+        prepare_channel(_smtp_channel(subject=None), 'T', 'BODY', two_context)

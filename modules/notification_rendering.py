@@ -9,7 +9,8 @@ from string import Formatter
 
 from modules.log_safety import extend_secrets
 from modules.screenshot.pipeline import ScreenshotBatch
-from modules.screenshot.pipeline import append_screenshot_notices
+from modules.screenshot.pipeline import build_screenshot_fragments
+from modules.screenshot.pipeline import build_screenshot_notice_fragments
 
 
 _AGGREGATE_VARIABLE = 'screenshot'
@@ -73,33 +74,22 @@ def _render_text(text, mode):
     return escape(text, quote=True).replace('\n', '<br>\n')
 
 
-def _render_controlled(name, value, mode):
-    """转换单个受控输出值，非完整图片外壳按普通文本保留。"""
-    destination = _image_destination(name, value)
-    if destination is None:
-        return _render_text(value, mode)
-    return _render_image(name, destination, mode)
-
-
-def _render_html_notice_value(name, value):
-    """转换 HTML 追加项，换行留给追加分隔统一处理。"""
-    destination = _image_destination(name, value)
-    if destination is None:
-        return escape(value, quote=True)
-    return _render_image(name, destination, 'html')
+def _render_notice_fragment(name, kind, text, mode):
+    """按片段种类渲染单个受控节点：图片提取 destination，文本按模式转换。"""
+    if kind == 'image':
+        return _render_image(name, _image_destination(name, text), mode)
+    return _render_text(text, mode)
 
 
 def _render_aggregate(values, batch, mode):
-    """按批次插入顺序组装单项，无单项时使用聚合提示。"""
-    fragments = [
-        _render_controlled(name, value, mode)
-        for name, value in batch.values.items()
-        if name != _AGGREGATE_VARIABLE and value != ''
-    ]
-    if fragments:
-        separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
-        return separator.join(fragments)
-    return _render_text(str(values.get(_AGGREGATE_VARIABLE, '')), mode)
+    """按唯一构建器片段顺序组装单项，无片段时沿用聚合回退值。"""
+    fragments = build_screenshot_fragments(batch)
+    if not fragments:
+        return _render_text(str(values.get(_AGGREGATE_VARIABLE, '')), mode)
+    separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
+    return separator.join(
+        _render_notice_fragment(name, kind, text, mode)
+        for name, kind, text in fragments)
 
 
 def has_direct_screenshot(template: str) -> bool:
@@ -168,35 +158,17 @@ def render_screenshot_content(context: ScreenshotRenderContext,
     """
     rendered = render_screenshot_template(
         context.raw_content, context.values, context.batch, mode)
-    if mode != 'html':
-        temporary = ScreenshotBatch(
-            {
-                name: _render_controlled(name, value, mode)
-                for name, value in context.batch.values.items()
-                if name != _AGGREGATE_VARIABLE
-            },
-            context.batch.warnings,
-            context.batch.renamed_outputs,
-        )
-        return append_screenshot_notices(
-            rendered, context.raw_content, temporary)
-
-    temporary = ScreenshotBatch(
-        {
-            name: _render_html_notice_value(name, value)
-            for name, value in context.batch.values.items()
-            if name != _AGGREGATE_VARIABLE
-        },
-        tuple(escape(warning, quote=True) for warning in context.batch.warnings),
-        context.batch.renamed_outputs,
-    )
-    suffix = append_screenshot_notices('', context.raw_content, temporary)
-    if not suffix:
+    fragments = build_screenshot_notice_fragments(
+        context.batch, context.raw_content)
+    if not fragments:
         return rendered
-    suffix = suffix.replace('\n', '<br>\n')
+    separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
+    suffix = separator.join(
+        _render_notice_fragment(name, kind, text, mode)
+        for name, kind, text in fragments)
     if not rendered:
         return suffix
-    return rendered + '<br>\n<br>\n' + suffix
+    return rendered + separator + suffix
 
 
 def _render_title(context: ScreenshotRenderContext, mode: str) -> str:
