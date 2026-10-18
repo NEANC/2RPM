@@ -101,6 +101,36 @@ def terminal_lines(text):
             if line.startswith('✔️') or line.startswith('❌')]
 
 
+class LogDegradeHandle:
+    """非 TTY 日志降级句柄替身：只有日志方法，缺借用所需公开属性。
+
+    刻意不定义 ``closed``/``owner_thread_id``/``stream`` 三项，
+    以此复现 ``_LogSpinner`` 被当作 ``spinner=`` 传入时的形态。
+    """
+
+    def __init__(self):
+        """初始化三个记录列表，便于断言句柄确实没被借用。"""
+        self.texts = []
+        self.dones = []
+        self.fails = []
+
+    def text(self, message):
+        """记录阶段文案（对应 _LogSpinner.text）。"""
+        self.texts.append(message)
+
+    def write(self, message):
+        """记录插入文本（对应 _LogSpinner.write）。"""
+        self.texts.append(message)
+
+    def write_done(self, message):
+        """记录成功收尾文案（对应 _LogSpinner.write_done）。"""
+        self.dones.append(message)
+
+    def write_fail(self, message):
+        """记录失败收尾文案（对应 _LogSpinner.write_fail）。"""
+        self.fails.append(message)
+
+
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch, tmp_path):
     """隔离缓存根并禁止任何未替身化的真实网络访问。"""
@@ -395,6 +425,24 @@ def test_non_tty_shows_status_with_muted_logger():
     assert '❌ 通道 [Catbox] 上传失败' in text
     assert '正在上传截图' not in text
     assert '\x1b' not in text
+
+
+def test_handle_missing_borrow_attrs_falls_back_to_plain_lines():
+    """缺借用属性的日志降级句柄不被借用，阶段与终态都走普通行并 flush。"""
+    upload_status = import_module('modules.upload_status')
+    stream = plain_stream()
+    handle = LogDegradeHandle()
+    consumer = upload_status.make_status_consumer(spinner=handle, stream=stream)
+    with upload_status.upload_feedback_scope(consumer):
+        consumer(slot_event('a', 1, 0, 'catbox', 'started'))
+        consumer(slot_event('a', 1, 0, 'catbox', 'succeeded'))
+    assert written_lines(stream) == [
+        '正在上传截图', '✔️ 通道 [Catbox] 上传成功']
+    assert stream.flush.call_count == 2
+    # 句柄缺属性只判定为不可借用，绝不借用它的任何日志方法
+    assert handle.texts == []
+    assert handle.dones == []
+    assert handle.fails == []
 
 
 def test_fallback_and_request_events_produce_no_terminal_ui():

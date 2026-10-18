@@ -22,6 +22,8 @@ _ICON_FAIL = '\u274c'
 _SILENT_STATUSES = frozenset({'cancelled', 'skipped'})
 # 需要登记并可能显示唯一终态的槽位状态
 _TERMINAL_STATUSES = frozenset({'succeeded', 'failed', 'cancelled', 'skipped'})
+# 借用句柄必须具备的公开属性，缺任一即判定不可借用
+_BORROW_ATTRS = ('closed', 'owner_thread_id', 'stream')
 
 
 class _ActivePhase:
@@ -184,8 +186,23 @@ class _UploadStatusConsumer:
         return handle if self._borrowable(handle) else None
 
     def _borrowable(self, handle):
-        """判断句柄能否被借用：同线程、未关闭、TTY，且流与显式流一致。"""
-        if handle is None or handle.closed:
+        """判断句柄能否被借用：同线程、未关闭、TTY，且流与显式流一致。
+
+        借用需要句柄公开 ``closed``/``owner_thread_id``/``stream`` 三项属性；
+        非 TTY 降级句柄 ``_LogSpinner`` 三者皆无，此处先行守卫判定不可借用，
+        由调用方落到普通行分支，绝不因取属性抛异常而被上层静默吞掉。
+
+        Args:
+            handle: 待判定的候选句柄；可为 None 或任意对象。
+
+        Returns:
+            bool: 仅同线程、未关闭且 TTY 的句柄返回 True。
+        """
+        if handle is None:
+            return False
+        if not all(hasattr(handle, name) for name in _BORROW_ATTRS):
+            return False
+        if handle.closed:
             return False
         if handle.owner_thread_id != self._owner_thread_id:
             return False
