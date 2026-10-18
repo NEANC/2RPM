@@ -344,7 +344,7 @@ def test_unregistered_provider_falls_back_to_unknown(tmp_path):
     slots = [event for event in events if event.stage == 'slot']
     assert slots and all(event.provider == 'unknown' for event in slots)
     assert marker not in text and marker not in terminal
-    assert 'unknown' in terminal
+    assert '未知图床 第 2 项' in terminal
 
 
 def test_provider_whitelist_matches_registry_keys():
