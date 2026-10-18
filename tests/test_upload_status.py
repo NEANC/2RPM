@@ -4,11 +4,13 @@
 
 from argparse import Namespace
 from contextlib import contextmanager
+from contextvars import copy_context
 from importlib import import_module
 from io import StringIO
 import logging
 import socket
-from unittest.mock import Mock, patch
+import threading
+from unittest.mock import Mock, call, patch
 
 import pytest
 import requests
@@ -50,11 +52,24 @@ def cli_args(output=None, hosts=None):
     return Namespace(source='window', target='窗口', output=output, hosts=hosts)
 
 
-def slot_event(image_index, slot_index, provider, status, reason_code=None):
-    """构造最小安全槽位事件。"""
-    return StageEvent(image_index=image_index, slot_index=slot_index,
-                      stage='slot', action='upload', provider=provider,
-                      status=status, reason_code=reason_code)
+def slot_event(batch_id, image_index, slot_index, provider, status,
+               reason_code=None):
+    """构造带批次身份的最小安全槽位事件。"""
+    return StageEvent(batch_id=batch_id, image_index=image_index,
+                      slot_index=slot_index, stage='slot', action='upload',
+                      provider=provider, status=status, reason_code=reason_code)
+
+
+def plain_stream(isatty=False):
+    """构造记录写入与 flush 的普通输出流替身。"""
+    stream = Mock()
+    stream.isatty.return_value = isatty
+    return stream
+
+
+def written_lines(stream):
+    """按写入顺序还原写入的行（去掉行尾换行）。"""
+    return [item.args[0].rstrip('\n') for item in stream.write.call_args_list]
 
 
 def spy_trace_scope(monkeypatch, module, events, traces):
@@ -81,9 +96,9 @@ def spy_trace_scope(monkeypatch, module, events, traces):
 
 
 def terminal_lines(text):
-    """统计最终上传终态显示行数，跳过与取消不计入。"""
+    """只保留安全上传终态显示行，跳过与取消不显示。"""
     return [line for line in text.splitlines()
-            if line == '上传成功' or line.startswith('上传失败：')]
+            if line.startswith('✔️') or line.startswith('❌')]
 
 
 @pytest.fixture(autouse=True)
@@ -101,25 +116,264 @@ def isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
 
 
+def test_slot_identity_and_suffixes(monkeypatch):
+    """两图重复槽位各显示一次唯一终态，后缀来自计划量与净化槽位序列。"""
+    spinner_mod = import_module('modules.spinner')
+    upload_status = import_module('modules.upload_status')
+    stream = plain_stream()
+    borrowed = Mock(closed=False, owner_thread_id=threading.get_ident(),
+                    stream=stream)
+    monkeypatch.setattr(upload_status, 'current_spinner', lambda: borrowed)
+    with patch.object(spinner_mod, '_SimpleTTYSpinner') as factory:
+        consumer = upload_status.make_status_consumer(
+            stream=stream, images_planned=2,
+            slot_providers=('beeimg_cn', 'beeimg_cn'))
+        with upload_status.upload_feedback_scope(consumer):
+            for event in (
+                    slot_event('a', 1, 0, 'beeimg_cn', 'started'),
+                    slot_event('a', 1, 0, 'beeimg_cn', 'failed'),
+                    slot_event('a', 1, 1, 'beeimg_cn', 'succeeded'),
+                    slot_event('a', 1, 1, 'beeimg_cn', 'succeeded')):
+                consumer(event)
+        assert written_lines(stream) == [
+            '正在上传截图',
+            '❌ 通道 [BeeIMG.CN] 上传失败（截图 1）（配置项 1）',
+            '✔️ 通道 [BeeIMG.CN] 上传成功（截图 1）（配置项 2）',
+        ]
+        assert stream.flush.call_count >= 3
+        assert factory.call_count == 0
+        assert borrowed.done.call_count == 0
+        assert borrowed.fail.call_count == 0
+        assert borrowed.stop.call_count == 0
+        # 另一图另进 scope，身份集合不重置，不同 batch_id 各再来一次
+        stream.write.reset_mock()
+        with upload_status.upload_feedback_scope(consumer):
+            for event in (
+                    slot_event('b', 2, 0, 'beeimg_cn', 'started'),
+                    slot_event('b', 2, 0, 'beeimg_cn', 'failed'),
+                    slot_event('b', 2, 1, 'beeimg_cn', 'succeeded'),
+                    slot_event('b', 2, 1, 'beeimg_cn', 'succeeded'),
+                    slot_event('b', 2, 2, 'beeimg_cn', 'cancelled'),
+                    slot_event('b', 2, 2, 'beeimg_cn', 'failed'),
+                    slot_event('b', 2, 3, 'beeimg_cn', 'skipped')):
+                consumer(event)
+        assert written_lines(stream) == [
+            '正在上传截图',
+            '❌ 通道 [BeeIMG.CN] 上传失败（截图 2）（配置项 1）',
+            '✔️ 通道 [BeeIMG.CN] 上传成功（截图 2）（配置项 2）',
+        ]
+        # CLI 一图重复 provider 只加配置项，使用实际槽位序号且首条已带后缀
+        single = plain_stream()
+        single_consumer = upload_status.make_status_consumer(
+            stream=single, images_planned=1,
+            slot_providers=('catbox', 'catbox'))
+        with upload_status.upload_feedback_scope(single_consumer):
+            single_consumer(slot_event('c', 1, 0, 'catbox', 'started'))
+            single_consumer(slot_event('c', 1, 0, 'catbox', 'succeeded'))
+            single_consumer(slot_event('c', 1, 1, 'catbox', 'started'))
+            single_consumer(slot_event('c', 1, 1, 'catbox', 'failed'))
+        assert written_lines(single) == [
+            '正在上传截图',
+            '✔️ 通道 [Catbox] 上传成功（配置项 1）',
+            '❌ 通道 [Catbox] 上传失败（配置项 2）',
+        ]
+        # 未知 provider 始终安全名称加槽位数字，绝不回显原文
+        unknown = plain_stream()
+        unknown_consumer = upload_status.make_status_consumer(
+            stream=unknown, slot_providers=('unknown',))
+        with upload_status.upload_feedback_scope(unknown_consumer):
+            unknown_consumer(
+                slot_event('d', 1, 3, 'token=' + SECRET, 'started'))
+            unknown_consumer(
+                slot_event('d', 1, 3, 'token=' + SECRET, 'failed'))
+        assert written_lines(unknown) == [
+            '正在上传截图', '❌ 通道 [未知图床 第 4 项] 上传失败']
+        assert SECRET not in ''.join(written_lines(unknown))
+
+
+def test_scope_laziness_and_late_terminal(monkeypatch):
+    """首个 slot.started 才懒启动，叠加 scope 复用活动资源且空 scope 不显示。"""
+    spinner_mod = import_module('modules.spinner')
+    upload_status = import_module('modules.upload_status')
+    stream = plain_stream()
+    borrowed = Mock(closed=False, owner_thread_id=threading.get_ident(),
+                    stream=stream)
+    monkeypatch.setattr(upload_status, 'current_spinner', lambda: borrowed)
+    with patch.object(spinner_mod, '_SimpleTTYSpinner') as factory:
+        consumer = upload_status.make_status_consumer(stream=stream)
+        # 阶段外 started 不开动画，阶段外终态只普通行
+        consumer(slot_event('a', 1, 0, 'catbox', 'started'))
+        consumer(slot_event('a', 1, 0, 'catbox', 'failed'))
+        assert written_lines(stream) == ['❌ 通道 [Catbox] 上传失败']
+        assert '正在上传截图' not in written_lines(stream)
+        assert factory.call_count == 0
+        stream.write.reset_mock()
+        # 空 scope 无槽位事件，不显示
+        with upload_status.upload_feedback_scope(consumer):
+            pass
+        assert stream.write.call_count == 0
+        # 活动 scope 内首个 started 才进入阶段
+        with upload_status.upload_feedback_scope(consumer):
+            consumer(slot_event('a', 2, 0, 'catbox', 'started'))
+            consumer(slot_event('a', 2, 0, 'catbox', 'succeeded'))
+        assert written_lines(stream) == [
+            '正在上传截图', '✔️ 通道 [Catbox] 上传成功']
+        assert factory.call_count == 0
+        # TTY 自有 spinner：嵌套 scope 复用同一活动资源，最外层负责关闭
+        tty = plain_stream(isatty=True)
+        own = Mock()
+        with patch.object(spinner_mod, '_SimpleTTYSpinner',
+                          return_value=own) as own_factory:
+            nested = upload_status.make_status_consumer(stream=tty)
+            with upload_status.upload_feedback_scope(nested):
+                with upload_status.upload_feedback_scope(nested):
+                    nested(slot_event('b', 1, 0, 'catbox', 'started'))
+                    nested(slot_event('b', 1, 0, 'catbox', 'succeeded'))
+                assert own.stop.call_count == 0
+            assert own_factory.call_count == 1
+            assert own_factory.call_args_list[0] == call(
+                '正在上传截图', output=tty)
+            assert own.stop.call_count == 1
+            assert own.write.call_args_list == [
+                call('✔️ 通道 [Catbox] 上传成功')]
+            assert own.fail.call_count == 0
+            # 下一次上传再次进入同一阶段，不泄漏也不嵌套第二个活动实例
+            with upload_status.upload_feedback_scope(nested):
+                nested(slot_event('b', 2, 0, 'catbox', 'started'))
+                nested(slot_event('b', 2, 0, 'catbox', 'failed'))
+            assert own_factory.call_count == 2
+
+
+def test_sink_error_and_control_stop(monkeypatch):
+    """普通写异常不重播，控制异常先停 UI 再传播且不阻断 trace 核算。"""
+    upload_status = import_module('modules.upload_status')
+    trace = import_module('modules.operation_trace')
+
+    broken = plain_stream()
+    broken.write.side_effect = RuntimeError(SECRET)
+    consumer = upload_status.make_status_consumer(stream=broken)
+    consumer(slot_event('a', 1, 0, 'catbox', 'failed'))
+    assert broken.write.call_count == 1
+    consumer(slot_event('a', 1, 0, 'catbox', 'failed'))
+    assert broken.write.call_count == 1
+    assert SECRET not in str(broken.write.call_args_list)
+
+    signal = KeyboardInterrupt('stop')
+    calls = []
+
+    def interrupt(text):
+        """记录写入并抛出同一控制信号对象。"""
+        calls.append(text)
+        raise signal
+
+    sink = plain_stream()
+    sink.write.side_effect = interrupt
+    consumer2 = upload_status.make_status_consumer(stream=sink)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        consumer2(slot_event('b', 1, 0, 'catbox', 'failed'))
+    assert caught.value is signal
+    # 控制异常后后续 UI 全停，但 trace 侧仍然登记真实终态
+    consumer2(slot_event('b', 1, 0, 'catbox', 'succeeded'))
+    consumer2(slot_event('b', 2, 0, 'catbox', 'failed'))
+    assert [item.rstrip('\n') for item in calls] == [
+        '❌ 通道 [Catbox] 上传失败']
+
+    calls3 = []
+
+    def interrupt3(text):
+        """记录写入并抛出同一控制信号对象。"""
+        calls3.append(text)
+        raise signal
+
+    sink3 = plain_stream()
+    sink3.write.side_effect = interrupt3
+    consumer3 = upload_status.make_status_consumer(stream=sink3)
+    with pytest.raises(KeyboardInterrupt) as caught3:
+        with trace.trace_scope(
+                mode='cli', images_planned=1, slots_planned=1,
+                on_status=consumer3) as traced:
+            traced.start_slot(1, 0, provider='catbox')
+            traced.finish_slot(1, 0, 'failed', reason_code='upload_failed')
+    assert caught3.value is signal
+    assert [item.rstrip('\n') for item in calls3] == [
+        '❌ 通道 [Catbox] 上传失败']
+    assert traced.summary()['slots_failed'] == 1
+
+
+def test_wrong_thread_or_stream_handle(monkeypatch):
+    """非 TTY 句柄不借用、跨线程不写 UI、显式流限制可借用句柄。"""
+    spinner_mod = import_module('modules.spinner')
+    upload_status = import_module('modules.upload_status')
+
+    outer = plain_stream()
+    selected = plain_stream()
+    with spinner_mod.spinner_phase('等待中', stream=outer):
+        assert spinner_mod.current_spinner() is None
+        consumer = upload_status.make_status_consumer(stream=selected)
+        with upload_status.upload_feedback_scope(consumer):
+            consumer(slot_event('a', 1, 0, 'catbox', 'started'))
+            consumer(slot_event('a', 1, 0, 'catbox', 'succeeded'))
+    assert written_lines(selected) == [
+        '正在上传截图', '✔️ 通道 [Catbox] 上传成功']
+    assert outer.write.call_count == 0
+
+    cross = plain_stream()
+    consumer2 = upload_status.make_status_consumer(stream=cross)
+    context = copy_context()
+
+    def run():
+        """在外线程用复制的上下文消费事件。"""
+        with upload_status.upload_feedback_scope(consumer2):
+            consumer2(slot_event('b', 1, 0, 'catbox', 'started'))
+            consumer2(slot_event('b', 1, 0, 'catbox', 'succeeded'))
+
+    worker = threading.Thread(target=lambda: context.run(run))
+    worker.start()
+    worker.join()
+    assert cross.write.call_count == 0
+    assert cross.flush.call_count == 0
+
+    stdout_handle = Mock(closed=False, owner_thread_id=threading.get_ident(),
+                         stream=plain_stream(isatty=True))
+    monkeypatch.setattr(upload_status, 'current_spinner',
+                        lambda: stdout_handle)
+    stderr = plain_stream(isatty=True)
+    own = Mock()
+    with patch.object(spinner_mod, '_SimpleTTYSpinner',
+                      return_value=own) as factory:
+        consumer3 = upload_status.make_status_consumer(stream=stderr)
+        with upload_status.upload_feedback_scope(consumer3):
+            consumer3(slot_event('c', 1, 0, 'catbox', 'started'))
+            consumer3(slot_event('c', 1, 0, 'catbox', 'succeeded'))
+        assert stdout_handle.write.call_count == 0
+        assert stdout_handle.text.call_count == 0
+        assert factory.call_count == 1
+        assert own.write.call_args_list == [
+            call('✔️ 通道 [Catbox] 上传成功')]
+
+
 def test_tty_reuses_outer_spinner():
-    """TTY 下复用外层 spinner 的安全写入，不新建嵌套 spinner。"""
+    """TTY 下复用外层 spinner：只恢复文案，绝不 done/fail/stop 被借用句柄。"""
     spinner_mod = import_module('modules.spinner')
     upload_status = import_module('modules.upload_status')
     outer = Mock()
+    outer._message = '等待中...'
     with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
             patch.object(spinner_mod, '_SimpleTTYSpinner',
                          return_value=outer) as factory:
         with spinner_mod.spinner_phase('等待中...'):
-            consume = upload_status.make_status_consumer()
-            consume(slot_event(1, 0, 'beeimg_cn', 'started'))
-            consume(slot_event(1, 0, 'beeimg_cn', 'succeeded'))
+            consumer = upload_status.make_status_consumer()
+            with upload_status.upload_feedback_scope(consumer):
+                consumer(slot_event('a', 1, 0, 'beeimg_cn', 'started'))
+                consumer(slot_event('a', 1, 0, 'beeimg_cn', 'succeeded'))
     factory.assert_called_once()
     assert spinner_mod.current_spinner() is None
-    assert [call.args[0] for call in outer.write.call_args_list] == [
-        '截图 1：准备上传',
-        '截图 1 / 图床 1 beeimg_cn：正在上传',
-        '上传成功',
-    ]
+    assert outer.set_text.call_args_list == [
+        call('正在上传截图'), call('等待中...')]
+    assert outer.write.call_args_list == [
+        call('✔️ 通道 [BeeIMG.CN] 上传成功')]
+    assert outer.done.call_count == 0
+    assert outer.fail.call_count == 0
 
 
 def test_non_tty_shows_status_with_muted_logger():
@@ -133,27 +387,28 @@ def test_non_tty_shows_status_with_muted_logger():
     stream = StringIO()
     try:
         consume = upload_status.make_status_consumer(stream=stream)
-        consume(slot_event(1, 0, 'catbox', 'started'))
-        consume(slot_event(1, 0, 'catbox', 'failed', 'missing_environment'))
+        consume(slot_event('a', 1, 0, 'catbox', 'started'))
+        consume(slot_event('a', 1, 0, 'catbox', 'failed', 'missing_environment'))
     finally:
         root.handlers = saved
     text = stream.getvalue()
-    assert '截图 1：准备上传' in text
-    assert '截图 1 / 图床 1 catbox：正在上传' in text
-    assert '上传失败：missing_environment' in text
+    assert '❌ 通道 [Catbox] 上传失败' in text
+    assert '正在上传截图' not in text
     assert '\x1b' not in text
 
 
-def test_host_failover_is_displayed_once_and_domain_is_not_next_host():
+def test_fallback_and_request_events_produce_no_terminal_ui():
+    """备用域名、储存候选与请求事件不再产生任何逐站终态行。"""
     upload_status = import_module('modules.upload_status')
     stream = StringIO()
     consume = upload_status.make_status_consumer(stream=stream)
     for reason in ('slot_failed', 'domain_failed'):
-        for status in ('started', 'succeeded'):
+        for status in ('started', 'succeeded', 'failed'):
             consume(StageEvent(stage='fallback', fallback_kind='host_failover',
                                status=status, reason_code=reason))
-    assert stream.getvalue().splitlines() == [
-        '上传失败，尝试下一图床', '上传失败，尝试备用域名']
+    consume(StageEvent(stage='upload_attempt', action='post',
+                       status='failed', reason_code='upload_failed'))
+    assert stream.getvalue() == ''
 
 
 def test_display_failure_cannot_reupload(monkeypatch, tmp_path):
@@ -217,14 +472,15 @@ def test_cli_success_url_contract_unchanged(monkeypatch, tmp_path, capsys):
     status_text = '\n'.join(
         line for line in result_stdout.splitlines()
         if not line.startswith('catbox：'))
-    assert '截图 1：准备上传' in status_text
-    assert '截图 1 / 图床 1 catbox：正在上传' in status_text
+    assert '✔️ 通道 [Catbox] 上传成功' in status_text
+    assert '正在上传截图' not in status_text
+    assert '准备上传' not in status_text
     assert '\x1b' not in status_text
     assert URL not in status_text + file_text
 
 
 def test_pipeline_failover_records_each_slot(monkeypatch, capsys):
-    """同一图片两图床先败后成：槽位一败一成，批次仍完成并显示故障转移。"""
+    """同一图片两图床先败后成：槽位一败一成，批次仍完成。"""
     pipeline = pipeline_module()
 
     def failing(image, filename, token, options):
@@ -253,11 +509,9 @@ def test_pipeline_failover_records_each_slot(monkeypatch, capsys):
     assert summary['slots_planned'] == 2
     assert summary['status'] == 'completed'
     out = capsys.readouterr().out
-    assert '截图 1：准备上传' in out
-    assert '截图 1 / 图床 1 catbox：正在上传' in out
-    assert '上传失败，尝试下一图床' in out
-    assert '截图 1 / 图床 2 beeimg：正在上传' in out
-    assert out.count('上传成功') == 1
+    assert '❌ 通道 [Catbox] 上传失败' in out
+    assert '✔️ 通道 [BeeIMG] 上传成功' in out
+    assert '正在上传截图' not in out
     assert '\x1b' not in out
 
 
@@ -299,7 +553,7 @@ def test_cli_two_hosts_slots_not_folded(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, capsys):
-    """CLI 无手填遇 profile 403：终端逐字呈现规格 6.1 提示、零 POST 且退出码为 1。"""
+    """CLI 无手填遇 profile 403：终端呈现安全终态、零 POST 且退出码为 1。"""
     support = import_module('test_upload_stage_logging')
     cli = cli_module()
     monkeypatch.setattr(cli, 'capture', Mock(return_value=capture_result()))
@@ -311,9 +565,8 @@ def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, caps
     out = capsys.readouterr().out
     assert code == 1
     assert transport.posts == []
-    assert terminal_lines(out) == [
-        '上传失败：BeeIMG.cn 账号资料接口无访问权限，'
-        '请为令牌授权资料读取权限，或填写该账号可用的 options.storage_id。']
+    assert terminal_lines(out) == ['❌ 通道 [BeeIMG.CN] 上传失败']
+    assert out.count(ImageHostError('profile_forbidden', '').message) == 1
     assert 'beeimg_cn：上传失败\n' in out
     assert SECRET not in out
 
@@ -337,6 +590,7 @@ def test_cli_capture_failure_skips_planned_slots(monkeypatch, tmp_path, capsys):
     reasons = [event.reason_code for event in events
                if event.stage == 'slot' and event.status == 'skipped']
     assert reasons == ['capture_failed']
+    assert capsys.readouterr().out.count('通道 [') == 0
 
 
 def test_preupload_failure_displays_one_slot_failure(monkeypatch, capsys):
@@ -366,7 +620,7 @@ def test_preupload_failure_displays_one_slot_failure(monkeypatch, capsys):
     assert summary['slots_succeeded'] == 0
     assert summary['status'] == 'failed'
     out = capsys.readouterr().out
-    assert terminal_lines(out) == ['上传失败：missing_environment']
+    assert terminal_lines(out) == ['❌ 通道 [Catbox] 上传失败']
 
 
 def test_recovery_success_does_not_display_intermediate_failure(
@@ -393,7 +647,7 @@ def test_recovery_success_does_not_display_intermediate_failure(
     assert summary['slots_succeeded'] == 1
     assert summary['slots_failed'] == 0
     out = capsys.readouterr().out
-    assert terminal_lines(out) == ['上传成功']
+    assert terminal_lines(out) == ['✔️ 通道 [BeeIMG.CN] 上传成功']
 
 
 @pytest.mark.parametrize('mode', ['automatic', 'multi_image', 'cli',

@@ -136,7 +136,8 @@ def test_capture_failure_has_fixed_reason_and_encode_skip(monkeypatch, source):
     assert trace.summary()['capture_retries'] == 0
 
 
-def test_failover_terminal_deduplicates_without_filtering_file(caplog):
+def test_fallback_ui_is_silent_and_file_keeps_events(caplog):
+    """备用域名回退不再产生逐站 UI 行，但文件仍记录两条真实 fallback 事件。"""
     from io import StringIO
     from modules.operation_trace import trace_scope, trace_fallback
     from modules.upload_status import make_status_consumer
@@ -154,7 +155,7 @@ def test_failover_terminal_deduplicates_without_filtering_file(caplog):
         with trace_scope(mode='cli', on_status=duplicated):
             with trace_fallback('host_failover', 'failover', reason_code='slot_failed'):
                 pass
-    assert stream.getvalue().count('尝试下一图床') == 1
+    assert stream.getvalue() == ''
     assert sum('stage=fallback' in record.getMessage() for record in caplog.records) == 2
 
 

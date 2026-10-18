@@ -1831,10 +1831,9 @@ def test_channel_retries_display_upload_status_once(
     assert notifier.notify.call_count == 6
     assert len({body for _, body in sent}) == 1
     status_text = capsys.readouterr().out
-    assert status_text.count('截图 1：准备上传') == 1
-    assert status_text.count('截图 2：准备上传') == 1
-    assert status_text.count('上传成功') == 2
-    assert status_text.count('截图 1 / 图床 1 beeimg_cn：正在上传') == 1
+    assert status_text.count('✔️ 通道 [BeeIMG.CN] 上传成功') == 2
+    assert '准备上传' not in status_text
+    assert '正在上传' not in status_text
     assert '\x1b' not in status_text
     assert URL not in status_text
 
