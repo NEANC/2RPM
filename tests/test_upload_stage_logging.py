@@ -822,10 +822,12 @@ def test_upload_attempt_started_is_info(monkeypatch, tmp_path, caplog):
             replies=[group_reply(), SUCCESS_UPLOAD])
     levels = {}
     for record in caplog.records:
-        message = record.getMessage()
-        if 'stage=upload_attempt' in message and 'status=started' in message:
+        event = getattr(record, 'stage_event', None)
+        if event is None:
+            continue
+        if event.stage == 'upload_attempt' and event.status == 'started':
             levels['upload'] = record.levelno
-        if 'stage=metadata_query' in message and 'status=started' in message:
+        if event.stage == 'metadata_query' and event.status == 'started':
             levels['query'] = record.levelno
     assert levels['upload'] == logging.INFO
     assert levels['query'] == logging.DEBUG
@@ -1420,8 +1422,9 @@ def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, capl
     assert final.status == 'completed'
     assert final.reason_code == 'recoverable_warning'
     records = [record for record in caplog.records
-               if 'stage=batch' in record.getMessage()
-               and 'status=completed' in record.getMessage()]
+               if getattr(record, 'stage_event', None) is not None
+               and record.stage_event.stage == 'batch'
+               and record.stage_event.status == 'completed']
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
 

@@ -30,8 +30,8 @@ def test_batch_started_and_unique_final_summary():
     assert batches[0].duration_ms is None
     lines = output.getvalue().splitlines()
     assert len(lines) == 2
-    assert 'images_planned=2' in lines[0] and 'slots_planned=4' in lines[0]
-    assert sum(' summary ' in line for line in lines) == 1
+    assert '计划图片 2' in lines[0] and '计划槽位 4' in lines[0]
+    assert sum('生成成功' in line for line in lines) == 1
     stream = StringIO()
     consumer = make_status_consumer(stream=stream)
     for event in batches:

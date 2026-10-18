@@ -92,8 +92,8 @@ def test_main_persists_without_status_callback(
     files = list((tmp_path / 'logs').glob('2RPM_*.log'))
     assert len(files) == 1
     text = files[0].read_text(encoding='utf-8')
-    assert 'batch' in text
-    assert ('failed' if failed else 'completed') in text
+    assert '截图批次' in text
+    assert ('截图批次失败' if failed else '截图批次完成') in text
     assert url not in text
     assert 'private-error' not in text
     assert 'private-token' not in text

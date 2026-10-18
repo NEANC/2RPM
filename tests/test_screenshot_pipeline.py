@@ -623,8 +623,10 @@ def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
     assert business[0].levelno == logging.WARNING
     assert business[0].getMessage() == '截图目标 1：' + expected
     assert traces[0].levelno == logging.ERROR
-    assert 'stage=batch action=automatic status=failed ' in traces[0].getMessage()
-    assert 'summary mode=automatic status=failed ' in traces[0].getMessage()
+    assert traces[0].stage_event.stage == 'batch'
+    assert traces[0].stage_event.action == 'automatic'
+    assert traces[0].stage_event.status == 'failed'
+    assert traces[0].stage_summary['status'] == 'failed'
     for record in caplog.records:
         assert SECRET not in repr(vars(record))
         assert URL not in repr(vars(record))
@@ -670,10 +672,10 @@ def test_upload_warnings_survive_success_and_failure(monkeypatch, caplog):
     assert len(business) == len(traces) == 1
     assert len(caplog.records) == len(business) + len(traces)
     assert business[0].levelno == traces[0].levelno == logging.WARNING
-    assert ('stage=batch action=automatic status=partial_failure '
-            in traces[0].getMessage())
-    assert ('summary mode=automatic status=partial_failure '
-            in traces[0].getMessage())
+    assert traces[0].stage_event.stage == 'batch'
+    assert traces[0].stage_event.action == 'automatic'
+    assert traces[0].stage_event.status == 'partial_failure'
+    assert traces[0].stage_summary['status'] == 'partial_failure'
     for warning in batch.warnings:
         assert body.count(warning) == business[0].getMessage().count(warning) == 1
         assert warning not in traces[0].getMessage()

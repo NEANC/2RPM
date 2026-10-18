@@ -39,19 +39,42 @@ def read_handler_bytes(handler):
         return stream.read().decode('utf-8')
 
 
-def stage_records(text, stage):
-    """从事件单行日志中提取指定阶段的字段映射，保持发生顺序。"""
-    records = []
-    marker = f' stage={stage} '
-    for line in text.splitlines():
-        if 'stage_event ' not in line or marker not in line + ' ':
-            continue
-        fields = {}
-        for token in line.split('stage_event ', 1)[1].split():
-            key, _, value = token.partition('=')
-            fields[key] = value
-        records.append(fields)
-    return records
+class StageRecordCollector(logging.Handler):
+    """收集事件模块的 LogRecord，供结构化断言，不渲染任何文本。"""
+
+    def __init__(self):
+        """初始化只收集记录、级别为 DEBUG 的内存处理器。"""
+        super().__init__(level=logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        """保存一条记录，保持真实发生顺序。"""
+        self.records.append(record)
+
+
+def stage_events(records, stage):
+    """返回指定阶段的安全 StageEvent，保持发生顺序。"""
+    return [record.stage_event for record in records
+            if getattr(record, 'stage_event', None) is not None
+            and record.stage_event.stage == stage]
+
+
+@contextmanager
+def captured_records(logger):
+    """在目标 logger 上临时挂载收集处理器并恢复原配置。"""
+    collector = StageRecordCollector()
+    saved_handlers = logger.handlers[:]
+    saved_level = logger.level
+    saved_propagate = logger.propagate
+    logger.handlers = [collector]
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+    try:
+        yield collector.records
+    finally:
+        logger.handlers = saved_handlers
+        logger.setLevel(saved_level)
+        logger.propagate = saved_propagate
 
 
 def test_no_active_scope_is_io_free_noop(monkeypatch):
@@ -272,10 +295,11 @@ def test_stage_fields_never_serialize_private_values(tmp_path):
     handler = logger_module._create_file_handler(str(tmp_path / 'logs'), 'app')
     assert handler is not None
     target = logging.getLogger('modules.operation_trace')
+    collector = StageRecordCollector()
     saved_handlers = target.handlers[:]
     saved_level = target.level
     saved_propagate = target.propagate
-    target.handlers = [handler]
+    target.handlers = [handler, collector]
     target.setLevel(logging.DEBUG)
     target.propagate = False
     marker = 'PRIVATE_MARKER_4711'
@@ -299,8 +323,11 @@ def test_stage_fields_never_serialize_private_values(tmp_path):
     handler.close()
     with open(path, 'rb') as stream:
         text = stream.read().decode('utf-8')
-    assert 'stage=capture' in text and 'stage=slot' in text
-    assert 'stage=batch' in text
+    observed = {event.stage for event in (
+        record.stage_event for record in collector.records
+        if getattr(record, 'stage_event', None) is not None)}
+    assert {'capture', 'slot', 'batch'} <= observed
+    assert 'stage_event ' not in text
     assert marker not in text
 
 
@@ -361,10 +388,11 @@ def test_interrupted_started_event_still_emits_cancelled(tmp_path):
     handler = logger_module._create_file_handler(str(tmp_path / 'logs'), 'app')
     assert handler is not None
     target = logging.getLogger('modules.operation_trace')
+    collector = StageRecordCollector()
     saved_handlers = target.handlers[:]
     saved_level = target.level
     saved_propagate = target.propagate
-    target.handlers = [handler]
+    target.handlers = [handler, collector]
     target.setLevel(logging.DEBUG)
     target.propagate = False
     signal = KeyboardInterrupt('synthetic-stop')
@@ -385,12 +413,12 @@ def test_interrupted_started_event_still_emits_cancelled(tmp_path):
         target.setLevel(saved_level)
         target.propagate = saved_propagate
     assert caught.value is signal
-    records = stage_records(read_handler_bytes(handler), 'capture')
+    records = stage_events(collector.records, 'capture')
     handler.close()
-    started = [item for item in records if item.get('status') == 'started']
-    cancelled = [item for item in records if item.get('status') == 'cancelled']
+    started = [item for item in records if item.status == 'started']
+    cancelled = [item for item in records if item.status == 'cancelled']
     assert len(started) == 1 and len(cancelled) == 1
-    assert started[0]['operation_id'] == cancelled[0]['operation_id']
+    assert started[0].operation_id == cancelled[0].operation_id
 
 
 def test_cache_failure_warns_and_slot_failure_errors(caplog):
@@ -407,10 +435,12 @@ def test_cache_failure_warns_and_slot_failure_errors(caplog):
             trace.finish_slot(1, 1, 'failed', reason_code='upload_failed')
     levels = {}
     for record in caplog.records:
-        message = record.getMessage()
-        if 'stage=metadata_cache' in message and 'status=failed' in message:
+        event = getattr(record, 'stage_event', None)
+        if event is None or event.status != 'failed':
+            continue
+        if event.stage == 'metadata_cache':
             levels['cache'] = record.levelno
-        if 'stage=slot' in message and 'status=failed' in message:
+        if event.stage == 'slot':
             levels['slot'] = record.levelno
     assert levels['cache'] == logging.WARNING
     assert levels['slot'] == logging.ERROR
@@ -433,13 +463,10 @@ def test_metadata_query_levels_keep_details_debug_and_failure_warning(caplog):
                     raise KeyboardInterrupt('cancel')
     levels = {}
     for record in caplog.records:
-        message = record.getMessage()
-        if 'stage=metadata_query' not in message:
+        event = getattr(record, 'stage_event', None)
+        if event is None or event.stage != 'metadata_query':
             continue
-        status = next(candidate for candidate in (
-            'started', 'succeeded', 'failed', 'cancelled')
-                      if f'status={candidate}' in message)
-        levels.setdefault(status, []).append(record.levelno)
+        levels.setdefault(event.status, []).append(record.levelno)
     assert levels['started'] == [logging.DEBUG] * 3
     assert levels['succeeded'] == [logging.DEBUG]
     assert levels['failed'] == [logging.WARNING]
@@ -464,11 +491,11 @@ def test_recoverable_failures_warn_while_skip_and_cancel_stay_info(caplog):
                     raise KeyboardInterrupt('cancel')
     levels = {}
     for record in caplog.records:
-        message = record.getMessage()
-        for stage in ('capture', 'encode'):
-            for status in ('failed', 'skipped', 'cancelled'):
-                if f'stage={stage}' in message and f'status={status}' in message:
-                    levels[(stage, status)] = record.levelno
+        event = getattr(record, 'stage_event', None)
+        if event is None or event.stage not in ('capture', 'encode'):
+            continue
+        if event.status in ('failed', 'skipped', 'cancelled'):
+            levels[(event.stage, event.status)] = record.levelno
     assert levels[('capture', 'failed')] == logging.WARNING
     assert levels[('encode', 'failed')] == logging.WARNING
     assert levels[('capture', 'skipped')] == logging.INFO
@@ -485,14 +512,18 @@ BATCH_LINE_SUMMARY_KEYS = (
     'mode', 'status', 'images_planned', 'images_processed',
     'images_succeeded', 'images_failed', 'images_cancelled', 'images_skipped',
     'capture_started', 'capture_succeeded', 'capture_failed',
-    'capture_cancelled', 'capture_skipped',
+    'capture_cancelled', 'capture_skipped', 'capture_retries',
+    'capture_format_fallbacks',
     'encode_started', 'encode_succeeded', 'encode_failed',
     'encode_cancelled', 'encode_skipped',
     'save_started', 'save_succeeded', 'save_failed', 'save_cancelled',
     'save_skipped',
     'group_get_attempts', 'group_get_succeeded', 'group_get_failed',
+    'group_get_cancelled',
     'profile_get_attempts', 'profile_get_succeeded', 'profile_get_failed',
+    'profile_get_cancelled',
     'upload_post_attempts', 'upload_post_succeeded', 'upload_post_failed',
+    'upload_post_cancelled',
     'preupload_refreshes', 'postupload_recoveries',
     'boltp_candidate_switches', 'host_failovers', 'fallbacks_skipped',
     'slots_planned', 'slots_succeeded', 'slots_failed', 'slots_cancelled',
@@ -502,19 +533,20 @@ BATCH_LINE_SUMMARY_KEYS = (
 
 @contextmanager
 def bound_file_handler(tmp_path, name='trace'):
-    """在临时目录建立真实文件处理器并绑定到事件模块 logger。"""
+    """建立真实文件处理器与收集处理器并绑定，供落盘与结构化双重断言。"""
     logger_module = import_module('modules.logger')
     handler = logger_module._create_file_handler(str(tmp_path / 'logs'), name)
     assert handler is not None
+    collector = StageRecordCollector()
     target = logging.getLogger('modules.operation_trace')
     saved_handlers = target.handlers[:]
     saved_level = target.level
     saved_propagate = target.propagate
-    target.handlers = [handler]
+    target.handlers = [handler, collector]
     target.setLevel(logging.DEBUG)
     target.propagate = False
     try:
-        yield handler
+        yield handler, collector.records
     finally:
         target.handlers = saved_handlers
         target.setLevel(saved_level)
@@ -523,7 +555,7 @@ def bound_file_handler(tmp_path, name='trace'):
 
 
 def test_batch_line_carries_required_summary_dimensions(tmp_path):
-    """唯一批次行末尾附加规格汇总维度，取值与真实事实一致。"""
+    """唯一批次行携带规格汇总维度，结构化取值与真实事实一致。"""
     module = trace_module()
     now = [1000.0]
 
@@ -531,7 +563,7 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
         """返回可控的单调时间原点。"""
         return now[0]
 
-    with bound_file_handler(tmp_path) as handler:
+    with bound_file_handler(tmp_path) as (handler, records):
         with module.trace_scope(
                 mode='cli', images_planned=2, slots_planned=3,
                 clock=clock) as trace:
@@ -561,55 +593,61 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
             trace.finish_slot(1, 2, 'failed', reason_code='upload_failed')
         text = read_handler_bytes(handler)
 
-    records = [record for record in stage_records(text, 'batch')
-               if record['status'] != 'started']
-    assert len(records) == 1
-    fields = records[0]
-    assert 'summary' in fields
+    finals = [record for record in records
+              if getattr(record, 'stage_event', None) is not None
+              and record.stage_event.stage == 'batch'
+              and record.stage_event.status != 'started']
+    assert len(finals) == 1
+    fields = finals[0].stage_summary
     for key in BATCH_LINE_SUMMARY_KEYS:
+        if key == 'duration_ms':
+            continue
         assert key in fields, key
     assert fields['mode'] == 'cli'
-    assert fields['images_planned'] == '2'
+    assert fields['images_planned'] == 2
     assert (fields['capture_started'], fields['capture_succeeded'],
-            fields['capture_failed']) == ('1', '1', '0')
+            fields['capture_failed']) == (1, 1, 0)
     assert (fields['encode_started'], fields['encode_succeeded'],
-            fields['encode_failed']) == ('1', '1', '0')
-    assert (fields['save_started'], fields['save_skipped']) == ('0', '1')
+            fields['encode_failed']) == (1, 1, 0)
+    assert (fields['save_started'], fields['save_skipped']) == (0, 1)
     assert (fields['group_get_attempts'],
-            fields['group_get_succeeded']) == ('1', '1')
+            fields['group_get_succeeded']) == (1, 1)
     assert (fields['profile_get_attempts'],
-            fields['profile_get_failed']) == ('1', '1')
+            fields['profile_get_failed']) == (1, 1)
     assert (fields['upload_post_attempts'],
-            fields['upload_post_succeeded']) == ('1', '1')
-    assert fields['fallbacks_skipped'] == '1'
+            fields['upload_post_succeeded']) == (1, 1)
+    assert fields['fallbacks_skipped'] == 1
     assert (fields['slots_planned'], fields['slots_succeeded'],
-            fields['slots_failed'], fields['slots_skipped']) == (
-                '3', '1', '1', '1')
-    assert fields['duration_ms'] == '200'
-    assert text.count('stage=batch') == 2
-    assert text.count(' summary ') == 1
+            fields['slots_failed'], fields['slots_skipped']) == (3, 1, 1, 1)
+    assert finals[0].stage_event.duration_ms == 200
+    assert text.count('截图批次') == 2
+    assert text.count('生成成功') == 1
+    assert 'stage_event ' not in text
 
 
 @pytest.mark.parametrize('planned', [None, 0])
 def test_planned_counts_preserve_unknown_and_explicit_zero(tmp_path, planned):
-    """未知计划量保留 None 并固定落盘为 unavailable，显式零仍为零。"""
+    """未知计划量保留 None 且中文摘要显示未知，显式零仍为零。"""
     module = trace_module()
-    with bound_file_handler(tmp_path, f'planned-{planned}') as handler:
+    with bound_file_handler(tmp_path, f'planned-{planned}') as (handler, records):
         with module.trace_scope(
                 mode='cli', images_planned=planned,
                 slots_planned=planned) as trace:
             summary = trace.summary()
         text = read_handler_bytes(handler)
-    expected_log = 'unavailable' if planned is None else '0'
     assert summary['images_planned'] is planned
     assert summary['slots_planned'] is planned
-    records = [record for record in stage_records(text, 'batch')
-               if record['status'] != 'started']
-    assert len(records) == 1
-    assert records[0]['images_planned'] == expected_log
-    assert records[0]['slots_planned'] == expected_log
-    assert text.count('stage=batch') == 2
-    assert text.count(' summary ') == 1
+    finals = [record for record in records
+              if getattr(record, 'stage_event', None) is not None
+              and record.stage_event.stage == 'batch'
+              and record.stage_event.status != 'started']
+    assert len(finals) == 1
+    assert finals[0].stage_summary['images_planned'] is planned
+    assert finals[0].stage_summary['slots_planned'] is planned
+    assert text.count('截图批次') == 2
+    expected = '未知' if planned is None else '0'
+    assert f'计划图片 {expected}' in text
+    assert f'计划槽位 {expected}' in text
 
 
 def test_batch_summary_balances_terminal_counts_on_cancel():
@@ -732,3 +770,209 @@ def test_batch_finalize_adds_no_requests(monkeypatch, tmp_path):
     assert after == before
     for guard in guards:
         guard.assert_not_called()
+
+
+SUMMARY_KEYS = frozenset(BATCH_LINE_SUMMARY_KEYS) - {'duration_ms'}
+
+
+def contains_cjk(text):
+    """判断文本是否含中日韩统一表意文字，用于确认中文投影。"""
+    return any('\u4e00' <= char <= '\u9fff' for char in text)
+
+
+def test_chinese_projection_all_categories():
+    """全部既有阶段、动作与原因白名单投影为固定中文，未知安全回退。"""
+    module = trace_module()
+    whitelists = module._CLASSIFICATION_WHITELISTS
+    for stage in whitelists['stage']:
+        if stage == 'batch':
+            continue
+        for status in whitelists['status']:
+            event = module._create_event(
+                stage=stage, action='read', status=status)
+            line = module._format_event(event)
+            assert 'stage_event' not in line
+            assert contains_cjk(line), (stage, status, line)
+    unknown_stage = module._format_event(
+        module._create_event(stage='secret', status='succeeded'))
+    assert '未知阶段' in unknown_stage
+    for code in whitelists['reason_code']:
+        if code == '':
+            continue
+        line = module._format_event(module._create_event(
+            stage='slot', action='upload', status='failed',
+            provider='catbox', reason_code=code))
+        assert '，原因：' in line, code
+        assert contains_cjk(line.split('原因：', 1)[1]), (code, line)
+    unknown_reason = module._format_event(module._create_event(
+        stage='slot', action='upload', status='failed',
+        provider='catbox', reason_code='secret'))
+    assert '，原因：未知原因' in unknown_reason
+
+
+def test_request_diagnostics_preserved():
+    """请求终态保留已知 HTTP、耗时与安全原因，缺失值不捏造。"""
+    module = trace_module()
+    full = module._format_event(module._create_event(
+        stage='upload_attempt', action='post', status='failed',
+        provider='beeimg_cn', image_index=1, slot_index=1, attempt_index=1,
+        http_status=200, duration_ms=83, reason_code='storage_unavailable'))
+    assert ('通道 [BeeIMG.CN] 第 1 次上传请求失败，HTTP 200，耗时 83 ms，'
+            '原因：储存驱动不可用') in full
+    no_response = module._format_event(module._create_event(
+        stage='upload_attempt', action='post', status='failed',
+        provider='beeimg_cn', attempt_index=1, duration_ms=83,
+        reason_code='transport_failed'))
+    assert 'HTTP' not in no_response
+    no_duration = module._format_event(module._create_event(
+        stage='upload_attempt', action='post', status='failed',
+        provider='beeimg_cn', attempt_index=1, http_status=200,
+        reason_code='http_failed'))
+    assert '耗时' not in no_duration
+
+
+def test_image_upload_stats_from_slots(caplog):
+    """逐图上传统计以图片身份派生，业务显式终态与槽位计数逐项一致。"""
+    module = trace_module()
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with module.trace_scope(
+                mode='automatic', images_planned=2, slots_planned=4) as trace:
+            trace.finish_image(1, 'succeeded')
+            trace.start_slot(1, 0, provider='catbox')
+            trace.finish_slot(1, 0, 'failed', reason_code='upload_failed')
+            trace.start_slot(1, 1, provider='wmimg')
+            trace.finish_slot(1, 1, 'failed', reason_code='http_failed')
+            trace.finish_image(2, 'failed')
+            trace.start_slot(2, 0, provider='catbox')
+            trace.finish_slot(2, 0, 'skipped', reason_code='host_failed')
+            trace.start_slot(2, 1, provider='wmimg')
+            trace.finish_slot(2, 1, 'skipped', reason_code='host_failed')
+            trace.set_status('failed')
+    summary = trace.summary()
+    assert trace._image_upload_stats() == {
+        'succeeded': 0, 'cancelled': 0, 'failed': 1, 'not_executed': 1}
+    assert summary['status'] == 'failed'
+    assert (summary['slots_failed'], summary['slots_skipped']) == (2, 2)
+    assert '生成成功 1/2' in caplog.text
+
+
+def test_image_upload_stats_groups_images_not_slot_totals():
+    """成功图片数按图片身份分组，不等同于槽位成功总数。"""
+    module = trace_module()
+    with module.trace_scope(
+            mode='cli', images_planned=2, slots_planned=4) as trace:
+        for image_index, statuses in ((1, ('succeeded', 'succeeded')),
+                                      (2, ('succeeded', 'failed'))):
+            trace.finish_image(image_index, 'succeeded')
+            for slot_index, status in enumerate(statuses):
+                trace.start_slot(image_index, slot_index, provider='catbox')
+                trace.finish_slot(image_index, slot_index, status)
+    summary = trace.summary()
+    assert trace._image_upload_stats()['succeeded'] == 2
+    assert summary['slots_succeeded'] == 3
+
+
+@pytest.mark.parametrize('image_status', ['succeeded', 'failed'])
+def test_image_upload_stats_counts_images_without_slots_as_not_executed(
+        image_status):
+    """无槽位的仅保存与配置失败图片计入未执行上传，不显示上传成功。"""
+    module = trace_module()
+    with module.trace_scope(mode='cli', images_planned=1, slots_planned=0) as trace:
+        trace.finish_image(1, image_status)
+    assert trace._image_upload_stats() == {
+        'succeeded': 0, 'cancelled': 0, 'failed': 0, 'not_executed': 1}
+
+
+def test_image_upload_stats_cancelled_outranks_failed():
+    """同一图片无成功但含取消时归为上传取消，优先于失败。"""
+    module = trace_module()
+    with module.trace_scope(mode='cli', images_planned=1, slots_planned=2) as trace:
+        trace.finish_image(1, 'failed')
+        trace.start_slot(1, 0, provider='catbox')
+        trace.finish_slot(1, 0, 'failed', reason_code='upload_failed')
+        trace.start_slot(1, 1, provider='catbox')
+        trace.finish_slot(1, 1, 'cancelled', reason_code='batch_cancelled')
+    assert trace._image_upload_stats() == {
+        'succeeded': 0, 'cancelled': 1, 'failed': 0, 'not_executed': 0}
+
+
+def test_structured_extra_and_safe_formatter(tmp_path):
+    """结构化 extra 保留安全事件与摘要副本，落盘文本无旧英文长串。"""
+    module = trace_module()
+    events = []
+    with bound_file_handler(tmp_path) as (handler, records):
+        with module.trace_scope(
+                mode='automatic', images_planned=1,
+                on_status=events.append) as trace:
+            trace.finish_image(1, 'failed')
+            with module.trace_operation(
+                    'capture', 'read', source='window') as operation:
+                operation.finish('succeeded', width=1, height=1)
+        summary = trace.summary()
+        text = read_handler_bytes(handler)
+    assert [record.stage_event for record in records] == events
+    assert all(record.stage_event is event
+               for record, event in zip(records, events))
+    final = records[-1]
+    assert final.stage_event.stage == 'batch'
+    assert final.stage_event.status == 'failed'
+    assert final.stage_summary == summary
+    assert final.image_upload_stats == {
+        'succeeded': 0, 'cancelled': 0, 'failed': 0, 'not_executed': 1}
+    assert set(summary) == SUMMARY_KEYS
+    for record in records:
+        if record.stage_event.stage == 'batch':
+            continue
+        assert record.stage_summary is None
+        assert record.image_upload_stats is None
+    assert 'stage_event ' not in text
+
+
+def test_transport_counts_not_started_counts(monkeypatch, tmp_path):
+    """请求计数只由真实传输登记驱动，与替身实际发送逐项相等。"""
+    module = trace_module()
+    stage = import_module('test_upload_stage_logging')
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    run = stage.run_chain(
+        monkeypatch, tmp_path,
+        [{'provider': 'beeimg_cn', 'token': 'synthetic',
+          'options': {'storage_id': 13}}],
+        replies=[stage.group_reply(), stage.profile_reply(),
+                 stage.SUCCESS_UPLOAD])
+    summary = run.summary
+    assert summary['group_get_attempts'] == len(
+        run.transport.gets('group')) == 1
+    assert summary['profile_get_attempts'] == len(
+        run.transport.gets('profile')) == 1
+    assert summary['upload_post_attempts'] == len(run.transport.posts) == 1
+    assert (summary['group_get_succeeded'], summary['group_get_failed'],
+            summary['group_get_cancelled']) == (1, 0, 0)
+    assert (summary['profile_get_succeeded'], summary['profile_get_failed'],
+            summary['profile_get_cancelled']) == (1, 0, 0)
+    assert (summary['upload_post_succeeded'], summary['upload_post_failed'],
+            summary['upload_post_cancelled']) == (1, 0, 0)
+
+    cancelled = []
+
+    def cancel_at_started(event):
+        """记录事件并在查询开始处抛出控制信号，模拟传输前取消。"""
+        cancelled.append(event)
+        if event.stage == 'metadata_query' and event.status == 'started':
+            raise KeyboardInterrupt('stop')
+
+    with pytest.raises(KeyboardInterrupt):
+        with module.trace_scope(mode='cli', on_status=cancel_at_started) as trace:
+            with module.trace_request('beeimg_cn', 'group'):
+                pass
+    assert len([event for event in cancelled if event.stage == 'metadata_query'
+                and event.status == 'started']) == 1
+    assert trace.summary()['group_get_attempts'] == 0
+
+    with pytest.raises(KeyboardInterrupt):
+        with module.trace_scope(mode='cli') as trace:
+            with module.trace_request('catbox', 'upload_attempt') as request:
+                request.mark_transport_started()
+                raise KeyboardInterrupt('stop')
+    during = trace.summary()
+    assert during['upload_post_attempts'] == 1
+    assert during['upload_post_cancelled'] == 1

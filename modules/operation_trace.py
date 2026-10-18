@@ -52,6 +52,83 @@ _PROVIDER_WHITELIST = frozenset({
 })
 _UNKNOWN_CATEGORY = 'unknown'
 _MODES = frozenset({'automatic', 'cli'})
+
+_STATUS_WORDS = {
+    'started': '开始',
+    'succeeded': '成功',
+    'failed': '失败',
+    'cancelled': '取消',
+    'skipped': '已跳过',
+    'completed': '完成',
+    'partial_failure': '部分失败',
+}
+_MODE_LABELS = {'automatic': '自动', 'cli': '命令行'}
+_STAGE_LABELS = {
+    'capture': '截图',
+    'encode': '编码',
+    'save': '保存',
+    'metadata_cache': '缓存',
+    'metadata_query': '元数据查询',
+    'storage_select': '储存选择',
+    'upload_attempt': '上传请求',
+    'fallback': '回退',
+    'slot': '上传',
+}
+_ACTION_LABELS = {
+    ('metadata_cache', 'load'): '缓存读取',
+    ('metadata_cache', 'save'): '缓存写入',
+    ('metadata_cache', 'invalidate'): '缓存失效',
+    ('metadata_query', 'group'): '分组查询',
+    ('metadata_query', 'profile'): '资料查询',
+}
+_FALLBACK_LABELS = {
+    'capture_retry': '重新截图',
+    'capture_format': '格式回退',
+    'preupload_refresh': '上传前刷新',
+    'postupload_recovery': '上传后恢复',
+    'boltp_candidate': '候选切换',
+    'host_failover': '域名回退',
+}
+_FALLBACK_CLAUSE = (
+    ('capture_retries', '重新截图'),
+    ('capture_format_fallbacks', '格式回退'),
+    ('preupload_refreshes', '上传前刷新'),
+    ('postupload_recoveries', '上传后恢复'),
+    ('boltp_candidate_switches', '候选切换'),
+    ('host_failovers', '域名回退'),
+)
+_REASON_LABELS = {
+    'unknown': '未知原因',
+    'adb_raw_invalid': 'ADB 原始图像无效',
+    'batch_cancelled': '批次已取消',
+    'slot_unfinished': '上传槽位未完成',
+    'recoverable_warning': '可恢复告警',
+    'budget_used': '已用尽重试预算',
+    'manual_replaced': '已替换手填值',
+    'reused_failure': '复用既有失败',
+    'reused_metadata': '复用既有元数据',
+    'domain_failed': '当前域名失败',
+    'operation_failed': '操作失败',
+    'slot_failed': '上传槽位失败',
+    'storage_rejected': '储存驱动被拒绝',
+    'delete_failed': '删除失败',
+    'disabled': '已禁用',
+    'forbidden': '无访问权限',
+    'invalid': '数据无效',
+    'invalid_identity': '缓存标识无效',
+    'io_failed': '读写失败',
+    'save_failed': '保存失败',
+    'save_conflict': '保存冲突',
+    'unavailable': '不可用',
+    'capture_failed': '截图失败',
+    'encoding_failed': '编码失败',
+    'encoding_reused': '复用已编码图像',
+    'response_too_large': '响应过大',
+    'first_success': '首个成功结果',
+}
+_UNKNOWN_STAGE = '未知阶段'
+_UNKNOWN_REASON = '未知原因'
+_UNKNOWN_PLANNED = '未知'
 _CLASSIFICATION_WHITELISTS = {
     'reason_code': frozenset({
         '', 'invalid_input', 'not_configured', 'invalid_hosts', 'invalid_host',
@@ -218,22 +295,165 @@ def _create_event(**fields) -> StageEvent:
     return StageEvent(**values)
 
 
-def _format_event(event, summary=None) -> str:
-    """把安全字段渲染为不含自由文本的单行记录，可附加批次汇总。"""
-    parts = []
-    for name in _EVENT_FIELDS:
-        value = getattr(event, name)
-        if value is None or value == '':
-            continue
-        parts.append(f'{name}={value}')
-    line = 'stage_event ' + ' '.join(parts)
-    if summary:
-        rendered = ' '.join(
-            f'{key}={"unavailable" if value is None else value}'
-            for key, value in summary.items())
-        label = 'plan' if event.status == 'started' else 'summary'
-        line = f'{line} {label} {rendered}'
-    return line
+def _upload_provider_label(provider, slot_index=None) -> str:
+    """经共享安全名称函数返回不会回显原文的通道展示名。"""
+    from modules.feedback_text import upload_provider_name
+    return upload_provider_name(provider, slot_index=slot_index)
+
+
+def _reason_text(event) -> str:
+    """经共享安全原因函数与本地表返回不含自由文本的固定原因。"""
+    from modules.feedback_text import canonical_failure_code
+    from modules.feedback_text import safe_reason_text
+    code = event.reason_code
+    if not code:
+        return ''
+    if canonical_failure_code('capture', code) == code:
+        return safe_reason_text('capture', code)
+    if canonical_failure_code('upload', code) == code:
+        return safe_reason_text('upload', code)
+    return _REASON_LABELS.get(code, _UNKNOWN_REASON)
+
+
+def _context_prefix(event) -> str:
+    """按图片与槽位身份生成中文前缀，缺失身份时不捏造。"""
+    if event.image_index is None:
+        return ''
+    if event.slot_index is None:
+        return f'截图 {event.image_index}：'
+    return f'截图 {event.image_index} / 图床 {event.slot_index + 1}：'
+
+
+def _stage_body(event) -> str:
+    """按阶段、动作与状态生成固定中文主体，未知类别安全回退。"""
+    stage = event.stage
+    status = event.status
+    word = _STATUS_WORDS.get(status, _UNKNOWN_STAGE)
+    if stage == 'upload_attempt':
+        name = _upload_provider_label(event.provider, event.slot_index)
+        attempt = (f'第 {event.attempt_index} 次'
+                   if event.attempt_index is not None else '')
+        return f'通道 [{name}] {attempt}上传请求{word}'
+    if stage == 'slot':
+        name = _upload_provider_label(event.provider, event.slot_index)
+        if status == 'skipped':
+            return f'通道 [{name}] 已跳过上传'
+        return f'通道 [{name}] 上传{word}'
+    if stage == 'fallback':
+        label = _FALLBACK_LABELS.get(event.fallback_kind, '回退')
+    else:
+        label = _ACTION_LABELS.get((stage, event.action))
+        if label is None:
+            label = _STAGE_LABELS.get(stage, _UNKNOWN_STAGE)
+    if status == 'skipped':
+        return f'已跳过{label}'
+    if (stage == 'metadata_cache' and event.action == 'load'
+            and event.source == 'hit'):
+        return '缓存命中'
+    return f'{label}{word}'
+
+
+def _diagnostic_suffix(event) -> str:
+    """按存在值追加 HTTP、耗时与安全原因，缺失值不捏造也不写零。"""
+    text = ''
+    if event.http_status is not None:
+        text += f'，HTTP {event.http_status}'
+    if event.duration_ms is not None:
+        text += f'，耗时 {event.duration_ms} ms'
+    reason = _reason_text(event)
+    if reason:
+        text += f'，原因：{reason}'
+    return text
+
+
+def _identity_suffix(event) -> str:
+    """按存在值追加简短英文关联标识，不铺开全部字段。"""
+    pairs = []
+    if event.batch_id is not None:
+        pairs.append(f'batch_id={event.batch_id}')
+    if event.operation_id is not None:
+        pairs.append(f'operation_id={event.operation_id}')
+    if event.request_id is not None:
+        pairs.append(f'request_id={event.request_id}')
+    if event.source_operation_id is not None:
+        pairs.append(f'source_operation_id={event.source_operation_id}')
+    if not pairs:
+        return ''
+    return '（' + '，'.join(pairs) + '）'
+
+
+def _planned_text(summary, key) -> str:
+    """把计划量渲染为固定文本，未知保留 None 显示未知。"""
+    value = None if not summary else summary.get(key)
+    return _UNKNOWN_PLANNED if value is None else str(value)
+
+
+def _fallback_clause(summary) -> str:
+    """把非零的回退与恢复计数渲染为一条简短中文子句。"""
+    return '、'.join(
+        f'{label} {summary.get(key, 0)}'
+        for key, label in _FALLBACK_CLAUSE if summary.get(key, 0))
+
+
+def _batch_final_body(event, summary, image_upload_stats) -> str:
+    """渲染唯一批次终态的中文摘要，覆盖计划量、四类图片与真实请求计数。"""
+    data = summary or {}
+    stats = image_upload_stats or {
+        'succeeded': 0, 'cancelled': 0, 'failed': 0, 'not_executed': 0}
+    clauses = [
+        f'生成成功 {data.get("images_succeeded", 0)}/'
+        f'{_planned_text(data, "images_planned")}',
+        f'上传取得至少一个成功结果的图片 {stats["succeeded"]}，'
+        f'上传取消的图片 {stats["cancelled"]}，'
+        f'已执行但无成功结果的图片 {stats["failed"]}，'
+        f'未执行上传的图片 {stats["not_executed"]}',
+        f'上传槽位成功 {data.get("slots_succeeded", 0)}、'
+        f'失败 {data.get("slots_failed", 0)}、'
+        f'取消 {data.get("slots_cancelled", 0)}、'
+        f'跳过 {data.get("slots_skipped", 0)}',
+        f'分组查询尝试 {data.get("group_get_attempts", 0)}、'
+        f'成功 {data.get("group_get_succeeded", 0)}、'
+        f'失败 {data.get("group_get_failed", 0)}、'
+        f'取消 {data.get("group_get_cancelled", 0)}',
+        f'资料查询尝试 {data.get("profile_get_attempts", 0)}、'
+        f'成功 {data.get("profile_get_succeeded", 0)}、'
+        f'失败 {data.get("profile_get_failed", 0)}、'
+        f'取消 {data.get("profile_get_cancelled", 0)}',
+        f'上传请求尝试 {data.get("upload_post_attempts", 0)}、'
+        f'成功 {data.get("upload_post_succeeded", 0)}、'
+        f'失败 {data.get("upload_post_failed", 0)}、'
+        f'取消 {data.get("upload_post_cancelled", 0)}',
+    ]
+    fallbacks = _fallback_clause(data)
+    if fallbacks:
+        clauses.append(fallbacks)
+    duration = event.duration_ms if event.duration_ms is not None else 0
+    clauses.append(f'耗时 {duration} ms')
+    word = _STATUS_WORDS.get(event.status, _UNKNOWN_STAGE)
+    text = f'截图批次{word}：' + '；'.join(clauses)
+    reason = _reason_text(event)
+    if reason:
+        text += f'，原因：{reason}'
+    return text
+
+
+def _format_event(event, summary=None, *, image_upload_stats=None) -> str:
+    """把安全字段渲染为中文单行记录，可附加批次中文摘要与派生投影。"""
+    if event.stage == 'batch':
+        if event.status == 'started':
+            body = (
+                f'截图批次开始：模式 {_MODE_LABELS.get(event.action, _UNKNOWN_STAGE)}'
+                f'，计划图片 {_planned_text(summary, "images_planned")}'
+                f'，计划槽位 {_planned_text(summary, "slots_planned")}')
+        else:
+            body = _batch_final_body(event, summary, image_upload_stats)
+    else:
+        body = (_context_prefix(event) + _stage_body(event)
+                + _diagnostic_suffix(event))
+    suffix = _identity_suffix(event)
+    if suffix:
+        body += suffix
+    return body
 
 
 def _event_level(event) -> int:
@@ -369,10 +589,24 @@ class BatchTrace:
         return _create_event(**payload)
 
     def _record_event(self, event, summary=None) -> None:
-        """先写文件事实，再独立尝试终端消费，互不影响。"""
+        """先写文件事实，再独立尝试终端消费，互不影响。
+
+        结构化 extra 只暴露安全事件、摘要副本与批次投影；普通格式化器
+        不序列化这些字段，仅使用其中的中文消息。
+        """
+        stats = (self._image_upload_stats()
+                 if event.stage == 'batch' and event.status != 'started'
+                 else None)
+        extra = {
+            'stage_event': event,
+            'stage_summary': dict(summary) if summary is not None else None,
+            'image_upload_stats': stats,
+        }
         try:
             LOGGER.log(
-                _event_level(event), '%s', _format_event(event, summary))
+                _event_level(event), '%s',
+                _format_event(event, summary, image_upload_stats=stats),
+                extra=extra)
         except Exception:
             pass
         if self._on_status is not None:
@@ -555,6 +789,28 @@ class BatchTrace:
             if self._stages.get(stage, {}).get('failed', 0):
                 return True
         return False
+
+    def _image_upload_stats(self) -> dict:
+        """以图片身份为基集合，从槽位事实派生只读上传分组计数。
+
+        每张图按已记录槽位状态归类，优先级为成功、取消、失败、未执行；
+        没有任何实际槽位或仅跳过的图片计入未执行上传。
+        """
+        stats = {
+            'succeeded': 0, 'cancelled': 0, 'failed': 0, 'not_executed': 0}
+        for image_index in self._images:
+            statuses = {
+                record['status'] for (index, _), record in self._slots.items()
+                if index == image_index and record['status'] is not None}
+            if 'succeeded' in statuses:
+                stats['succeeded'] += 1
+            elif 'cancelled' in statuses:
+                stats['cancelled'] += 1
+            elif 'failed' in statuses:
+                stats['failed'] += 1
+            else:
+                stats['not_executed'] += 1
+        return stats
 
     def set_status(self, status: str) -> None:
         """由编排层显式指定唯一批次终态。"""

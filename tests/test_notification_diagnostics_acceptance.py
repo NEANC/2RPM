@@ -235,7 +235,7 @@ def test_notification_to_upload_safe_final_bytes(monkeypatch, tmp_path, failed):
 
     assert all(marker not in final_file_text
                for marker in private_markers(outcome, tmp_path))
-    batch_final_count = sum('stage=batch' in line and ' summary ' in line
+    batch_final_count = sum('生成成功' in line
                             for line in final_file_text.splitlines())
     assert batch_final_count == 1
     actual_get_count = len(transport.gets('group')) + len(
@@ -313,8 +313,8 @@ def test_cli_mixed_results_and_forbidden_profile(monkeypatch, tmp_path, capsys):
 
     assert cli_exit_code == 1
     assert successful_url in result_stdout and successful_url not in final_file_text
-    assert final_file_text.count('stage=batch') == 2
-    assert final_file_text.count(' summary ') == 1
+    assert final_file_text.count('截图批次') == 2
+    assert final_file_text.count('生成成功') == 1
     actual_get_count = len(transport.gets('group')) + len(
         transport.gets('profile'))
     actual_post_count = len(transport.posts)
@@ -379,8 +379,8 @@ def test_file_records_complete_across_toggles(
     else:
         batch, text = run_pipeline(monkeypatch, handler)
 
-    assert text.count('stage=batch') == 2
-    assert text.count(' summary ') == 1
+    assert text.count('截图批次') == 2
+    assert text.count('生成成功') == 1
     assert all(marker not in text for marker in (MARKER, TARGET, str(tmp_path), URL))
     assert batch.values['screenshot_1'].startswith('![')
     if variant == 'non_tty':

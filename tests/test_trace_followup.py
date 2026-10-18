@@ -44,9 +44,10 @@ def test_fixed_warning_marks_completed_batch(monkeypatch, tmp_path, caplog, warn
         pipeline.prepare_screenshots(section, True, (), runtime={
             'program_dir': str(tmp_path), 'config_stem': 'synthetic'})
     records = [record for record in caplog.records
-               if 'stage=batch' in record.getMessage() and ' summary ' in record.getMessage()]
+               if getattr(record, 'stage_event', None) is not None
+               and record.stage_event.stage == 'batch'
+               and record.stage_event.status == 'completed']
     assert len(records) == 1
-    assert 'status=completed' in records[0].getMessage()
     assert records[0].levelno == logging.WARNING
 
 
@@ -156,7 +157,9 @@ def test_fallback_ui_is_silent_and_file_keeps_events(caplog):
             with trace_fallback('host_failover', 'failover', reason_code='slot_failed'):
                 pass
     assert stream.getvalue() == ''
-    assert sum('stage=fallback' in record.getMessage() for record in caplog.records) == 2
+    assert sum(1 for record in caplog.records
+               if getattr(record, 'stage_event', None) is not None
+               and record.stage_event.stage == 'fallback') == 2
 
 
 def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, caplog):
@@ -180,7 +183,9 @@ def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, c
     with caplog.at_level(logging.DEBUG):
         assert cli.run_screenshot_cli(args, str(tmp_path)) == 1
     assert ImageHostError('profile_forbidden', '').message in capsys.readouterr().out
-    assert 'reason_code=profile_forbidden' in caplog.text
+    assert any(getattr(record, 'stage_event', None) is not None
+               and record.stage_event.reason_code == 'profile_forbidden'
+               for record in caplog.records)
     assert not transport.posts
 
 
@@ -199,10 +204,12 @@ def test_cli_save_only_uses_actual_save_and_warning(monkeypatch, tmp_path, caplo
     with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
         assert cli.run_screenshot_cli(args, str(tmp_path)) == (0 if saved else 1)
     final = next(record for record in caplog.records
-                 if 'stage=batch' in record.getMessage() and ' summary ' in record.getMessage())
-    assert ('status=completed' if saved else 'status=failed') in final.getMessage()
+                 if getattr(record, 'stage_event', None) is not None
+                 and record.stage_event.stage == 'batch'
+                 and record.stage_event.status != 'started')
+    assert final.stage_event.status == ('completed' if saved else 'failed')
     assert final.levelno == (logging.WARNING if saved else logging.ERROR)
-    assert 'slots_planned=0' in final.getMessage()
+    assert final.stage_summary['slots_planned'] == 0
 
 
 def test_shortened_expiration_batch_warning_in_file(monkeypatch, tmp_path):
@@ -225,6 +232,7 @@ def test_shortened_expiration_batch_warning_in_file(monkeypatch, tmp_path):
     text = path.read_text(encoding='utf-8')
     assert run.results[0].success
     assert run.results[0].warnings == ('保存期限已按图床上限缩短',)
-    assert 'status=completed reason_code=recoverable_warning' in text
-    assert text.count(' summary ') == 1
+    assert '截图批次完成' in text
+    assert '原因：可恢复告警' in text
+    assert text.count('生成成功') == 1
     assert 'synthetic' not in text

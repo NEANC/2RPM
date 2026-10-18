@@ -33,9 +33,19 @@ def test_mode_boundary_covers_plan_summary_and_events(mode, caplog):
         with trace.trace_scope(mode=mode, on_status=events.append) as batch:
             assert batch.summary()['mode'] == 'unknown'
     assert [event.action for event in events] == ['unknown', 'unknown']
-    assert 'mode=unknown' in caplog.text
+    batch_events = [record.stage_event for record in caplog.records
+                    if getattr(record, 'stage_event', None) is not None
+                    and record.stage_event.stage == 'batch']
+    assert [event.action for event in batch_events] == ['unknown', 'unknown']
+    assert all(contains_cjk(record.getMessage()) for record in caplog.records
+               if getattr(record, 'stage_event', None) is not None)
     assert 'secret' not in caplog.text
     assert 'forged' not in caplog.text
+
+
+def contains_cjk(text):
+    """判断文本是否含中日韩统一表意文字，用于确认中文投影。"""
+    return any('\u4e00' <= char <= '\u9fff' for char in text)
 
 
 @pytest.mark.parametrize('field,accepted,rejected', [

@@ -322,8 +322,8 @@ def test_pipeline_save_failure_still_uploads_and_is_recorded(
         text = stream.read().decode('utf-8')
     assert upload.call_count == 1
     assert batch.values['screenshot_1'].startswith('![')
-    assert 'stage=save' in text
-    assert 'status=failed' in text and 'reason_code=save_failed' in text
+    assert '保存失败' in text
+    assert '原因：保存失败' in text
 
 
 def test_stage_log_file_has_no_private_capture_values(monkeypatch, tmp_path):
@@ -357,7 +357,8 @@ def test_stage_log_file_has_no_private_capture_values(monkeypatch, tmp_path):
     handler.close()
     with open(path, 'rb') as stream:
         text = stream.read().decode('utf-8')
-    assert 'stage=capture' in text and 'stage=batch' in text
+    assert '截图 1：' in text and '截图批次' in text
+    assert 'stage_event ' not in text
     assert marker not in text and serial not in text
 
 
@@ -395,12 +396,13 @@ def test_cli_capture_failure_batch_is_failed(monkeypatch, tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
         code = cli.run_screenshot_cli(args, str(tmp_path))
     assert code == 1
-    batches = [record.getMessage() for record in caplog.records
-               if 'stage=batch' in record.getMessage()
-               and ' summary ' in record.getMessage()]
+    batches = [record for record in caplog.records
+               if getattr(record, 'stage_event', None) is not None
+               and record.stage_event.stage == 'batch'
+               and record.stage_event.status != 'started']
     assert len(batches) == 1
-    assert 'status=failed' in batches[0]
-    assert 'status=completed' not in batches[0]
+    assert batches[0].stage_event.status == 'failed'
+    assert batches[0].stage_summary['status'] == 'failed'
 
 
 @pytest.mark.parametrize('signal', [KeyboardInterrupt('stop'), SystemExit(9)])
