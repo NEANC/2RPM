@@ -1,12 +1,32 @@
 from argparse import Namespace
 from importlib import import_module
+import netrc
+import socket
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.retention import SaveOutcome
 from test_screenshot_stage_logging import spy_trace_scope
+
+
+@pytest.fixture(autouse=True)
+def forbidden_external_io(monkeypatch):
+    """阻断真实网络与 netrc，取消传播失效时立即失败而非触网。"""
+
+    def forbidden(*args, **kwargs):
+        """任何未替身化的外部访问都直接令测试失败。"""
+        pytest.fail('取消核算测试禁止真实网络或 netrc 访问')
+
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', forbidden)
+    monkeypatch.setattr(requests.sessions, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(requests.utils, 'get_netrc_auth', forbidden)
+    monkeypatch.setattr(netrc, 'netrc', forbidden)
 
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
