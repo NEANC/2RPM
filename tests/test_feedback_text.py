@@ -6,6 +6,7 @@ import socket
 
 import pytest
 
+from modules import feedback_text
 from modules.feedback_text import canonical_failure_code
 from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
@@ -42,6 +43,16 @@ def test_provider_names(provider, canonical, expected):
     """六个内部键与共享配置错误映射为固定展示名。"""
     assert canonical_upload_provider(provider) == canonical
     assert upload_provider_name(provider) == expected
+
+
+def test_shared_provider_constants():
+    """共享配置与未知 provider 常量公开，且与归一函数返回值一致。"""
+    assert feedback_text.SHARED_CONFIG_PROVIDER == '配置'
+    assert feedback_text.UNKNOWN_UPLOAD_PROVIDER == 'unknown'
+    assert (feedback_text.canonical_upload_provider('配置')
+            == feedback_text.SHARED_CONFIG_PROVIDER)
+    assert (feedback_text.canonical_upload_provider('unregistered')
+            == feedback_text.UNKNOWN_UPLOAD_PROVIDER)
 
 
 @pytest.mark.parametrize('provider', [

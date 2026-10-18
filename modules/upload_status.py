@@ -2,8 +2,8 @@
 # -_- coding: utf-8 -_-
 """把安全上传阶段事件显示为终端进度，不参与任何文件记录或业务判定。"""
 
-import contextlib
 from collections.abc import Mapping
+import contextlib
 import sys
 import threading
 
@@ -252,7 +252,10 @@ class _UploadStatusConsumer:
         return sys.stdout if self._stream is None else self._stream
 
     def _terminal_line(self, event):
-        """构造安全终态行：图标、通道名与按计划量派生的后缀。"""
+        """构造安全终态行：图标、通道名与按计划量派生的后缀。
+
+        生成的上传终态行已带图标，输出端不能再次加图标；保持自己的格式。
+        """
         slot_index = event.slot_index if type(event.slot_index) is int else None
         name = upload_provider_name(event.provider, slot_index=slot_index)
         success = event.status == 'succeeded'

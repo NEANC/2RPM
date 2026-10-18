@@ -23,8 +23,8 @@ _DISPLAY_NAMES = {
     'superbed': 'SuperBed',
     'wmimg': 'WMImg',
 }
-_SHARED_CONFIG = '配置'
-_UNKNOWN_PROVIDER = 'unknown'
+SHARED_CONFIG_PROVIDER = '配置'
+UNKNOWN_UPLOAD_PROVIDER = 'unknown'
 _UNKNOWN_NAME = '未知图床'
 _CAPTURE_FALLBACK = 'capture_failed'
 _CONFIG_CODES = frozenset({
@@ -58,12 +58,12 @@ def canonical_upload_provider(provider: object) -> str:
         已知内部键、共享配置值 ``配置``，其余一律 ``unknown``。
     """
     if type(provider) is not str:
-        return _UNKNOWN_PROVIDER
+        return UNKNOWN_UPLOAD_PROVIDER
     if provider in _KNOWN_PROVIDERS:
         return provider
-    if provider == _SHARED_CONFIG:
-        return _SHARED_CONFIG
-    return _UNKNOWN_PROVIDER
+    if provider == SHARED_CONFIG_PROVIDER:
+        return SHARED_CONFIG_PROVIDER
+    return UNKNOWN_UPLOAD_PROVIDER
 
 
 def upload_provider_name(provider: object, *, slot_index: int | None = None) -> str:
@@ -78,7 +78,7 @@ def upload_provider_name(provider: object, *, slot_index: int | None = None) -> 
         未知带整数槽位时为 ``未知图床 第 N 项``，绝不回显原始名称。
     """
     canonical = canonical_upload_provider(provider)
-    if canonical != _UNKNOWN_PROVIDER:
+    if canonical != UNKNOWN_UPLOAD_PROVIDER:
         return _DISPLAY_NAMES.get(canonical, canonical)
     if type(slot_index) is int:
         return f'{_UNKNOWN_NAME} 第 {slot_index + 1} 项'

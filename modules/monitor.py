@@ -109,8 +109,9 @@ def _all_push_failed(results):
 def _render_push_results(results, sp):
     """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败
 
-    旧调用兼容门面：迁移后的生产路径不再调用本函数；每个通道独立输出一条
-    ✔️/❌（不定格 spinner）；空结果（禁用、缺变量、无有效通道）不输出
+    旧批量调用兼容入口：迁移后的生产路径不再调用本函数，也不得与即时反馈
+    生命周期合并；每个通道独立输出一条 ✔️/❌（不定格 spinner）；空结果
+    （禁用、缺变量、无有效通道）不输出
 
     Args:
         results (list[tuple[str, bool]]): send_notification 返回的各通道结果，
@@ -181,7 +182,8 @@ def _write_plain_feedback(text, ok):
     """把一条通道终态写入 stdout 普通行并立即 flush
 
     仅用于无可借用 TTY 句柄的场景（含非 TTY、日志静音）；不经过
-    _LogSpinner.write_*，避免同一反馈二次落文件；无 ANSI 控制序列
+    _LogSpinner.write_*，避免同一反馈二次落文件；普通流不带 ANSI，
+    保持原有图标及空格
 
     Args:
         text (str): 通道终态文案
@@ -194,6 +196,8 @@ def _write_plain_feedback(text, ok):
 
 def _render_channel_result(result, handle):
     """渲染单个通道终态：SMTP 与非 SMTP 使用各自固定文案
+
+    完成时单条反馈；与兼容入口保持同义文案，SMTP 接受不等于最终送达。
 
     Args:
         result (PushChannelResult): 单通道终态，含 provider 与 ok

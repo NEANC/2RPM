@@ -10,6 +10,8 @@ from string import Formatter
 from urllib.parse import quote
 from urllib.parse import urlsplit
 
+from modules.feedback_text import SHARED_CONFIG_PROVIDER
+from modules.feedback_text import UNKNOWN_UPLOAD_PROVIDER
 from modules.feedback_text import canonical_failure_code
 from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
@@ -42,8 +44,6 @@ LOGGER = logging.getLogger(__name__)
 _MARKDOWN_DELIMITERS = frozenset('[]()<>"\\')
 _CONFIG_FAILURE = '截图配置失败：未配置有效截图目标'
 _AGGREGATE_NAME = 'screenshot'
-_SHARED_CONFIG = '配置'
-_UNKNOWN_PROVIDER = 'unknown'
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,7 @@ def _upload_failure_details(output_name, failures):
         if not isinstance(failure, UploadFailure):
             continue
         provider = canonical_upload_provider(failure.provider)
-        if provider == _SHARED_CONFIG:
+        if provider == SHARED_CONFIG_PROVIDER:
             details.append(ScreenshotFailureDetail(
                 output_name, 'config', provider,
                 canonical_failure_code('config', failure.code)))
@@ -128,7 +128,8 @@ def _upload_failure_details(output_name, failures):
                 canonical_failure_code('upload', failure.code)))
     if not details:
         details.append(ScreenshotFailureDetail(
-            output_name, 'upload', _UNKNOWN_PROVIDER, 'upload_failed'))
+            output_name, 'upload', UNKNOWN_UPLOAD_PROVIDER,
+            'upload_failed'))
     return tuple(details)
 
 
@@ -243,7 +244,8 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         details = _upload_failure_details(output_name, uploaded.failures)
     except Exception:
         details = (ScreenshotFailureDetail(
-            output_name, 'upload', _UNKNOWN_PROVIDER, 'upload_failed'),)
+            output_name, 'upload', UNKNOWN_UPLOAD_PROVIDER,
+            'upload_failed'),)
     diagnostics.append(f'截图目标 {item["index"]}：{failure}')
     return failure, True, False, details
 
