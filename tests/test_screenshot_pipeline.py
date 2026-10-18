@@ -104,8 +104,9 @@ def test_pipeline_invalid_version_target_keeps_output_slot(
     assert batch.values['screenshot_2'].startswith('截图配置失败：')
     assert batch.values['first'] == f'![first]({URL})'
     assert batch.values['last'] == f'![last]({URL})'
-    assert batch.values['screenshot'] == '\n\n'.join(
-        batch.values[name] for name in ('first', 'screenshot_2', 'last'))
+    assert batch.values['screenshot'] == '\n\n'.join((
+        batch.values['first'], '截图配置失败：截图目标配置无效',
+        batch.values['last']))
     assert capture.call_count == upload.call_count == 2
     contexts = []
     for capture_call, upload_call, expression, name in zip(
@@ -133,6 +134,7 @@ def test_fixed_interfaces_and_frozen_batch():
     assert module.ScreenshotBatch.__annotations__ == {
         'values': dict[str, str], 'warnings': tuple[str, ...],
         'renamed_outputs': tuple[str, ...],
+        'failure_details': tuple[module.ScreenshotFailureDetail, ...],
     }
     batch = module.ScreenshotBatch({'screenshot': ''}, (), ())
     with pytest.raises(FrozenInstanceError):
@@ -227,12 +229,12 @@ def test_upload_failure_is_distinct_and_safe(monkeypatch, caplog, ordinary):
 
 
 def test_single_image_all_hosts_fail(monkeypatch, caplog):
-    """单图全失败仍提供实际输出和同一聚合，不复制上传器告警。"""
+    """单图全失败仍提供实际输出与去重通道聚合，不复制上传器告警。"""
     module, _, upload = boundaries(monkeypatch)
     upload.return_value = UploadResult(False, None, None, ('catbox',), ())
     batch = module.prepare_screenshots(section([target()]), True, ())
-    assert batch.values['screenshot'] == batch.values['screenshot_1']
-    assert '截图上传失败' in batch.values['screenshot']
+    assert batch.values['screenshot_1'] == '截图上传失败'
+    assert batch.values['screenshot'] == '截图上传失败：通道 未知图床 图床上传失败。'
     assert batch.warnings == ()
     assert all('FAKE_' not in record.getMessage() for record in caplog.records)
 
@@ -287,7 +289,7 @@ def test_invalid_target_retains_position(monkeypatch, bad):
     assert '配置' in batch.values['screenshot_1']
     assert batch.values['screenshot_2'] == f'![screenshot_2]({URL})'
     assert batch.values['screenshot'].split('\n\n') == [
-        batch.values['screenshot_1'], batch.values['screenshot_2']]
+        '截图配置失败：截图目标配置无效', batch.values['screenshot_2']]
     assert 'unknown-secret' not in str(batch)
     assert capture.call_count == upload.call_count == 1
 
@@ -334,7 +336,9 @@ def test_all_failed_targets_are_aggregated(monkeypatch):
         None, target(provider='adb'), target(),
     ]), True, ())
     assert batch.values['screenshot'].split('\n\n') == [
-        batch.values[f'screenshot_{index}'] for index in range(1, 4)]
+        '截图配置失败：截图目标配置无效',
+        '截图失败：指定 ADB 设备处于离线状态',
+        '截图上传失败：通道 未知图床 图床上传失败。']
     assert all('失败' in value for value in batch.values.values())
 
 
@@ -612,7 +616,8 @@ def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
     batch = module.prepare_screenshots(section([target()]), True, ())
     expected = '截图上传失败：' + ImageHostError(code, '').message
     assert batch.values['screenshot_1'] == expected
-    assert batch.values['screenshot'] == expected
+    assert batch.values['screenshot'] == (
+        '截图上传失败：通道 未知图床 ' + ImageHostError(code, '').message + '。')
     assert SECRET not in repr(batch) + caplog.text
     business = [record for record in caplog.records
                 if record.name == module.LOGGER.name]
@@ -640,7 +645,8 @@ def test_unknown_upload_failure_keeps_fixed_fallback(monkeypatch, caplog, code):
     upload.return_value = UploadResult(False, None, None, (), (
         UploadFailure(SECRET, code, SECRET, diagnostic=SECRET),))
     batch = module.prepare_screenshots(section([target()]), True, ())
-    assert batch.values['screenshot'] == '截图上传失败'
+    assert batch.values['screenshot_1'] == '截图上传失败'
+    assert batch.values['screenshot'] == '截图上传失败：通道 未知图床 图床上传失败。'
     assert SECRET not in repr(batch) + caplog.text
 
 

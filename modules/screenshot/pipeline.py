@@ -10,6 +10,9 @@ from string import Formatter
 from urllib.parse import quote
 from urllib.parse import urlsplit
 
+from modules.feedback_text import canonical_failure_code
+from modules.feedback_text import canonical_upload_provider
+from modules.feedback_text import format_failure_sentence
 from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
@@ -37,6 +40,19 @@ from .targets import allocate_targets
 LOGGER = logging.getLogger(__name__)
 _MARKDOWN_DELIMITERS = frozenset('[]()<>"\\')
 _CONFIG_FAILURE = '截图配置失败：未配置有效截图目标'
+_AGGREGATE_NAME = 'screenshot'
+_SHARED_CONFIG = '配置'
+_UNKNOWN_PROVIDER = 'unknown'
+
+
+@dataclass(frozen=True)
+class ScreenshotFailureDetail:
+    """保存单个输出名对应的不可变安全失败身份。"""
+
+    output_name: str
+    category: str
+    provider: str
+    code: str
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,7 @@ class ScreenshotBatch:
     values: dict[str, str]
     warnings: tuple[str, ...]
     renamed_outputs: tuple[str, ...]
+    failure_details: tuple[ScreenshotFailureDetail, ...] = ()
 
 
 def markdown_image(name, url):
@@ -76,6 +93,98 @@ def _upload_failure_summary(failures):
     return '截图上传失败：' + summary if summary else '截图上传失败'
 
 
+def _image_shell(name, value):
+    """复刻渲染层的图片外壳判定，不反向导入渲染模块。"""
+    prefix = f'![{name}]('
+    return (value.startswith(prefix) and value.endswith(')')
+            and len(value) > len(prefix) + 1)
+
+
+def _upload_failure_details(output_name, failures):
+    """把上传失败列表规范为不可变的类别、安全 provider 与规范 code。
+
+    Args:
+        output_name: 该图片的输出变量名。
+        failures: 上传结果中的失败元组，可能含非 UploadFailure 值。
+
+    Returns:
+        tuple[ScreenshotFailureDetail, ...]: 逐项去重前的详情；共享配置
+        类归为 config 类别并保留 ``配置`` provider；无有效项时给出
+        固定 ``upload`` / ``unknown`` / ``upload_failed`` 通用详情。
+    """
+    details = []
+    for failure in failures:
+        if not isinstance(failure, UploadFailure):
+            continue
+        provider = canonical_upload_provider(failure.provider)
+        if provider == _SHARED_CONFIG:
+            details.append(ScreenshotFailureDetail(
+                output_name, 'config', provider,
+                canonical_failure_code('config', failure.code)))
+        else:
+            details.append(ScreenshotFailureDetail(
+                output_name, 'upload', provider,
+                canonical_failure_code('upload', failure.code)))
+    if not details:
+        details.append(ScreenshotFailureDetail(
+            output_name, 'upload', _UNKNOWN_PROVIDER, 'upload_failed'))
+    return tuple(details)
+
+
+def build_screenshot_fragments(batch, *, output_names=None):
+    """按 values 插入顺序构建去重的安全失败片段，排除聚合自身。
+
+    Args:
+        batch: 含输出值与失败详情的冻结批次。
+        output_names: 仅构建这些输出名的子集；None 表示全量聚合。
+
+    Returns:
+        tuple[tuple[str, str, str], ...]: 有序 (输出名, kind, 文本)；
+        kind 为 image/text；同一次调用内首次出现的身份保留；子集为空
+        返回空，不回退聚合；仅全量且无可用片段时读取聚合详情或旧值。
+    """
+    details_by_name = {}
+    for detail in batch.failure_details:
+        details_by_name.setdefault(detail.output_name, []).append(detail)
+    allowed = None if output_names is None else set(output_names)
+    fragments = []
+    seen = set()
+    for name, value in batch.values.items():
+        if name == _AGGREGATE_NAME:
+            continue
+        if allowed is not None and name not in allowed:
+            continue
+        if value == '':
+            continue
+        details = details_by_name.get(name)
+        if details:
+            for detail in details:
+                identity = (detail.category, detail.provider, detail.code)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                fragments.append((name, 'text', format_failure_sentence(
+                    detail.category, detail.provider, detail.code)))
+            continue
+        kind = 'image' if _image_shell(name, value) else 'text'
+        fragments.append((name, kind, value))
+    if fragments or allowed is not None:
+        return tuple(fragments)
+    aggregate = details_by_name.get(_AGGREGATE_NAME)
+    text = (format_failure_sentence(
+        aggregate[0].category, aggregate[0].provider, aggregate[0].code)
+        if aggregate else batch.values.get(_AGGREGATE_NAME, ''))
+    if not text:
+        return ()
+    return ((_AGGREGATE_NAME, 'text', text),)
+
+
+def _screenshot_aggregate(values, details):
+    """按构建器生成默认聚合正文，保持空行分隔且不分号拼接。"""
+    batch = ScreenshotBatch(dict(values), (), (), tuple(details))
+    return '\n\n'.join(text for _, _, text in build_screenshot_fragments(batch))
+
+
 def _host_providers(hosts):
     """按配置项顺序提取原始 provider，供消费者判定重复配置项后缀。"""
     if not isinstance(hosts, list):
@@ -90,12 +199,16 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。
 
     Returns:
-        tuple[str, bool, bool]: 目标输出值与“捕获是否成功”的事实。
+        tuple[str, bool, bool, tuple[ScreenshotFailureDetail, ...]]:
+        目标输出值、捕获是否成功、上传是否成功及不可变失败详情。
     """
+    output_name = item['out']
     if item['error'] is not None:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图配置失败')
-        return f'截图配置失败：{item["error"]}', False, False
+        return (f'截图配置失败：{item["error"]}', False, False, (
+            ScreenshotFailureDetail(
+                output_name, 'config', '', 'target_invalid'),))
 
     try:
         result = capture(
@@ -109,11 +222,14 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         trace.finish_image(item['index'], 'failed')
         failure = capture_failure_message(error)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-        return failure, False, False
+        return (failure, False, False, (ScreenshotFailureDetail(
+            output_name, 'capture', '',
+            canonical_failure_code('capture', error.code)),))
     except Exception:
         trace.finish_image(item['index'], 'failed')
         diagnostics.append(f'截图目标 {item["index"]}：截图失败')
-        return '截图失败', False, False
+        return ('截图失败', False, False, (ScreenshotFailureDetail(
+            output_name, 'capture', '', 'capture_failed'),))
 
     trace.finish_image(item['index'], 'succeeded')
     warnings.extend(result.warnings)
@@ -130,12 +246,14 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
                 result.image_bytes, item['out'] + '.jpg', hosts, context=context)
         warnings.extend(uploaded.warnings)
         if uploaded.success:
-            return markdown_image(item['out'], uploaded.url), True, True
+            return markdown_image(item['out'], uploaded.url), True, True, ()
         failure = _upload_failure_summary(uploaded.failures)
+        details = _upload_failure_details(output_name, uploaded.failures)
     except Exception:
-        pass
+        details = (ScreenshotFailureDetail(
+            output_name, 'upload', _UNKNOWN_PROVIDER, 'upload_failed'),)
     diagnostics.append(f'截图目标 {item["index"]}：{failure}')
-    return failure, True, False
+    return failure, True, False, details
 
 
 def _resolve_status(outcomes):
@@ -180,6 +298,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     renamed = tuple(
         item['out'] for item in targets if item['renamed_from'] is not None
     )
+    details = []
     if targets:
         hosts = section.get('image_host')
         planned_hosts = len(hosts) if isinstance(hosts, list) and hosts else 0
@@ -198,10 +317,12 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                             context = stack.enter_context(
                                 UploadContext(diagnostics=False))
                         with trace_item(image_index=index):
-                            value, captured, succeeded = _prepare_target(
-                                item, hosts, warnings, diagnostics,
-                                context=context, runtime=runtime, event=event,
-                                policy=policy, trace=trace, consumer=consumer)
+                            value, captured, succeeded, target_details = (
+                                _prepare_target(
+                                    item, hosts, warnings, diagnostics,
+                                    context=context, runtime=runtime,
+                                    event=event, policy=policy, trace=trace,
+                                    consumer=consumer))
                             if not captured:
                                 # 捕获或截图配置失败：保存阶段未执行，补齐带图片归因的跳过事实
                                 trace_skipped('save', reason_code='capture_failed')
@@ -210,6 +331,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
                                 reason_code=('first_success' if captured
                                              else 'capture_failed'))
                         values[item['out']] = value
+                        details.extend(target_details)
                         outcome = trace_slot_outcome(index)
                         outcomes.append(
                             succeeded if outcome is None
@@ -229,16 +351,17 @@ def prepare_screenshots(section, enabled, reserved_names, *,
             if warnings:
                 trace_warning()
             trace.set_status(_resolve_status(outcomes))
-        values['screenshot'] = '\n\n'.join(values.values())
     else:
-        values['screenshot'] = _CONFIG_FAILURE
         diagnostics.append(_CONFIG_FAILURE)
+        details.append(ScreenshotFailureDetail(
+            _AGGREGATE_NAME, 'config', '', 'no_targets'))
+    values['screenshot'] = _screenshot_aggregate(values, details)
 
     unique_warnings = tuple(dict.fromkeys(warnings))
     messages = tuple(dict.fromkeys((*unique_warnings, *diagnostics)))
     if messages:
         LOGGER.warning('%s', '\n'.join(messages))
-    return ScreenshotBatch(values, unique_warnings, renamed)
+    return ScreenshotBatch(values, unique_warnings, renamed, tuple(details))
 
 
 def _referenced_fields(template):

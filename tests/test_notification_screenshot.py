@@ -666,13 +666,10 @@ def test_notification_version_targets_reuse_capture_batch(monkeypatch, marker):
     assert results == [(channel['provider'], True) for channel in THREE_CHANNELS]
     assert attempts == {'s1': 2, 't1': 2, 'w1': 2}
     assert notifier.notify.call_count == len(sent) == 6
-    assert len(set(sent)) == 1
-    parts = sent[0][1].split('\n\n')
-    assert len(parts) == 4
-    assert parts[0] == f'![first]({URL})'
-    assert parts[1].startswith('截图配置失败：')
-    assert parts[2].startswith('截图配置失败：')
-    assert parts[3] == f'![last]({URL})'
+    contents = {content for _, content in sent}
+    assert len(contents) == 2
+    assert f'![first]({URL})\n\n截图配置失败：截图目标配置无效\n\n'\
+        f'![last]({URL})' in contents
     assert capture.call_count == upload.call_count == 2
     contexts = []
     for capture_call, upload_call, expression, name in zip(
@@ -1024,7 +1021,7 @@ def test_http_registry_warnings_reach_notification_once(
     for warning in warnings:
         assert body.count(warning) == 1
         assert caplog.text.count(warning) == 2
-    assert ('截图上传失败：图床拒绝上传' in body) is not success
+    assert ('截图上传失败：通道 BeeIMG.CN 图床拒绝上传。' in body) is not success
     assert (URL in body) is success
     assert len(state['requests']) == 4
     assert SECRET not in str(sent) + caplog.text
@@ -1173,8 +1170,8 @@ def test_http_failure_categories_visible_without_server_diagnostics(
         assert len(state['requests']) == 1
     if case == 'config':
         assert state['requests'] == []
-    summary = '截图上传失败：' + expected
-    assert sent[0][0].count(summary) == sent[0][1].count(summary) == 2
+    summary = '截图上传失败：通道 BeeIMG.CN ' + expected + '。'
+    assert sent[0][0].count(summary) == sent[0][1].count(summary) == 1
     assert SECRET not in str(sent) + caplog.text
     assert not any(record.exc_info for record in caplog.records)
     assert not state['replies']
@@ -1299,7 +1296,8 @@ def test_notification_untrusted_failure_fields_and_unknown_exception(
     sent, _, _ = _install_onepush(monkeypatch)
     with caplog.at_level(logging.DEBUG):
         assert notif.send_notification(config, 'on_end', process_name='demo')
-    expected = '截图上传失败' if ordinary else '截图上传失败：图床 HTTP 请求失败'
+    expected = ('截图上传失败：通道 未知图床 图床上传失败。' if ordinary
+                else '截图上传失败：通道 未知图床 图床 HTTP 请求失败。')
     assert sent == [('标题 ' + expected, '正文 demo\n\n' + expected)]
     assert SECRET not in str(sent) + caplog.text
     assert capture.call_count == upload.call_count == 1
