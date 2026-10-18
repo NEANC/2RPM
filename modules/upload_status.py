@@ -3,6 +3,7 @@
 """把安全上传阶段事件显示为终端进度，不参与任何文件记录或业务判定。"""
 
 import contextlib
+from collections.abc import Mapping
 import sys
 import threading
 
@@ -24,6 +25,28 @@ _SILENT_STATUSES = frozenset({'cancelled', 'skipped'})
 _TERMINAL_STATUSES = frozenset({'succeeded', 'failed', 'cancelled', 'skipped'})
 # 借用句柄必须具备的公开属性，缺任一即判定不可借用
 _BORROW_ATTRS = ('closed', 'owner_thread_id', 'stream')
+
+
+def host_providers(hosts: object) -> tuple[object, ...]:
+    """按槽位顺序提取原始 provider 值，原样保留类型与占位。
+
+    仅接受 list（含 list 子类）；其他输入一律返回空元组，不兼容 tuple，
+    也不消费生成器。逐项遍历列表：Mapping 项取 ``provider`` 原值，缺失
+    字段或非 Mapping 项填 ``''``。返回的 None、数字与未知名称均不转换、
+    不规范化、不输出原文，输入列表与槽位顺序、重复项均保持不变；此处
+    不校验上传配置。安全展示所需的归一化仍由消费者负责。
+
+    Args:
+        hosts: 编排层或 CLI 提供的图床配置序列。
+
+    Returns:
+        tuple[object, ...]: 与列表槽位一一对应的原始 provider 值。
+    """
+    if not isinstance(hosts, list):
+        return ()
+    return tuple(
+        host.get('provider', '') if isinstance(host, Mapping) else ''
+        for host in hosts)
 
 
 class _ActivePhase:
@@ -52,17 +75,17 @@ class _UploadStatusConsumer:
         _spinner: 显式传入、优先借用的外层句柄。
         _stream: 显式选定的反馈流；为空时回退 sys.stdout。
         _images_planned: 编排已知的逻辑图片数，用于多图后缀判定。
-        _slot_providers: 净化后的槽位 provider 序列，用于配置项后缀判定。
+        _slot_providers: 原始槽位 provider 序列，构造时统一归一，用于配置项后缀判定。
     """
 
     def __init__(self, *, spinner, stream, images_planned, slot_providers):
-        """保存借用句柄、反馈流、计划量与净化槽位序列。
+        """保存借用句柄、反馈流、计划量与原始槽位序列。
 
         Args:
             spinner: 显式外层 TTY 句柄，缺省时再退化到当前活动句柄。
             stream: 显式反馈流，用于限制可借用句柄并承载普通行。
             images_planned: 逻辑图片计划数；仅 >1 的整数才追加截图后缀。
-            slot_providers: 编排层净化后的 provider 序列。
+            slot_providers: 原始 provider 序列；此处统一归一后再用于后缀判定。
         """
         self._spinner = spinner
         self._stream = stream
@@ -263,7 +286,7 @@ def make_status_consumer(*, spinner=None, stream=None, images_planned=None,
         spinner: 已存在的显式外层 TTY 句柄；缺省时复用当前活动句柄。
         stream: 显式反馈流；用于限制可借用句柄并承载非 TTY 普通行。
         images_planned: 编排已知的逻辑图片数；仅 >1 的整数才加截图后缀。
-        slot_providers: 编排层净化后的 provider 序列；用于配置项后缀判定。
+        slot_providers: 原始 provider 序列；消费者统一归一后用于配置项后缀判定。
 
     Returns:
         _UploadStatusConsumer: 供 trace 与阶段作用域稳定复用的显示消费者。

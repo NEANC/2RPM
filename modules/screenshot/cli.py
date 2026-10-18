@@ -17,6 +17,7 @@ from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot
 from modules.operation_trace import trace_slots_skipped
 from modules.operation_trace import trace_warning
+from modules.upload_status import host_providers
 from modules.upload_status import make_status_consumer
 from modules.upload_status import upload_feedback_scope
 
@@ -292,13 +293,6 @@ def _resolve_output(output, program_dir):
     return absolute, False
 
 
-def _host_providers(hosts):
-    """按声明顺序提取全部图床 provider，供消费者判定重复配置项后缀。"""
-    if not hosts:
-        return ()
-    return tuple(host.get('provider', '') for host in hosts)
-
-
 def _upload_all(data, filename, hosts):
     """独立凭证作用域，所有声明项串行执行且全部成功才成功。"""
     all_success = True
@@ -390,7 +384,7 @@ def run_screenshot_cli(args, program_dir, *, logging_scope=None):
     today = date.today()
     slots_planned = len(hosts) if hosts else 0
     consumer = make_status_consumer(
-        stream=sys.stderr, images_planned=1, slot_providers=_host_providers(hosts))
+        stream=sys.stderr, images_planned=1, slot_providers=host_providers(hosts))
     with (logging_scope if logging_scope is not None else nullcontext()), \
             trace_scope(mode='cli', images_planned=1, slots_planned=slots_planned,
                         on_status=consumer) as trace:

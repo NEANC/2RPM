@@ -24,6 +24,7 @@ from modules.operation_trace import trace_skipped
 from modules.operation_trace import trace_slot_outcome
 from modules.operation_trace import trace_slots_skipped
 from modules.operation_trace import trace_warning
+from modules.upload_status import host_providers
 from modules.upload_status import make_status_consumer
 from modules.upload_status import upload_feedback_scope
 from modules.utils import get_program_directory
@@ -185,15 +186,6 @@ def _screenshot_aggregate(values, details):
     return '\n\n'.join(text for _, _, text in build_screenshot_fragments(batch))
 
 
-def _host_providers(hosts):
-    """按配置项顺序提取原始 provider，供消费者判定重复配置项后缀。"""
-    if not isinstance(hosts, list):
-        return ()
-    return tuple(
-        host.get('provider', '') if isinstance(host, Mapping) else ''
-        for host in hosts)
-
-
 def _prepare_target(item, hosts, warnings, diagnostics, *, context,
                     runtime, event, policy, trace, consumer):
     """执行单项目标，不重试、不切换后端，只记录固定安全失败类别。
@@ -303,7 +295,7 @@ def prepare_screenshots(section, enabled, reserved_names, *,
         hosts = section.get('image_host')
         planned_hosts = len(hosts) if isinstance(hosts, list) and hosts else 0
         consumer = make_status_consumer(
-            images_planned=len(targets), slot_providers=_host_providers(hosts))
+            images_planned=len(targets), slot_providers=host_providers(hosts))
         with trace_scope(
                 mode='automatic', images_planned=len(targets),
                 slots_planned=len(targets) * planned_hosts,

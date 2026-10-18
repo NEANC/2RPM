@@ -3,8 +3,10 @@
 """验证终端上传状态显示与批次汇总，全部外部操作使用本地替身。"""
 
 from argparse import Namespace
+from collections import UserDict
 from contextlib import contextmanager
 from contextvars import copy_context
+from copy import deepcopy
 from importlib import import_module
 from io import StringIO
 import logging
@@ -1034,3 +1036,67 @@ def test_automatic_first_success_and_cli_all_slots(monkeypatch, tmp_path, capsys
         saved_path, 'catbox：上传成功 ' + URL, 'wmimg：上传失败']
     assert URL not in captured.err and saved_path not in captured.err
     assert '正在上传截图' not in captured.out
+
+
+def test_host_providers_preserves_slots():
+    """共享提取只接受列表并按槽位保留原始 provider、占位与顺序。"""
+    upload_status = import_module('modules.upload_status')
+    assert upload_status.host_providers(None) == ()
+    assert upload_status.host_providers([]) == ()
+    assert upload_status.host_providers(({'provider': 'catbox'},)) == ()
+    assert upload_status.host_providers({'provider': 'catbox'}) == ()
+    assert upload_status.host_providers('catbox') == ()
+
+    hosts = [
+        {'provider': 'catbox'}, None, {}, {'provider': 'catbox'},
+        {'provider': None}, {'provider': 7}, {'provider': 'unregistered'},
+    ]
+    snapshot = deepcopy(hosts)
+    assert upload_status.host_providers(hosts) == (
+        'catbox', '', '', 'catbox', None, 7, 'unregistered')
+    assert hosts == snapshot
+
+    # Mapping 子类同样按 provider 取值，缺失字段仍填占位
+    assert upload_status.host_providers(
+        [UserDict({'provider': 'catbox'}), {}]) == ('catbox', '')
+
+    def one_host():
+        """产出单个图床配置，用于证明提取不消费生成器。"""
+        yield {'provider': 'catbox'}
+
+    source = one_host()
+    assert upload_status.host_providers(source) == ()
+    assert next(source) == {'provider': 'catbox'}
+
+
+def test_host_providers_preserves_list_subclass_and_identity():
+    """list 子类被接受，provider 原对象原样返回且不重建槽位。"""
+    upload_status = import_module('modules.upload_status')
+
+    class HostsList(list):
+        """用于证明共享提取接受 list 子类的局部序列类型。"""
+
+    provider = {'marker': 'raw-provider'}
+    hosts = HostsList([{'provider': provider}])
+    result = upload_status.host_providers(hosts)
+    assert len(result) == 1
+    assert result[0] is provider
+    assert hosts == [{'provider': {'marker': 'raw-provider'}}]
+
+
+def test_host_providers_consumer_normalizes_unknown_slots():
+    """原始槽位中的 None 与未知名称由消费者归一，绝不回显原文。"""
+    upload_status = import_module('modules.upload_status')
+    hosts = [{'provider': None}, {'provider': 'unregistered-secret'}]
+    stream = StringIO()
+    consumer = upload_status.make_status_consumer(
+        stream=stream, images_planned=1,
+        slot_providers=upload_status.host_providers(hosts))
+    consumer(slot_event('a', 1, 0, 'unknown', 'failed'))
+    consumer(slot_event('a', 1, 1, 'unknown', 'failed'))
+    assert stream.getvalue().splitlines() == [
+        '❌ 通道 [未知图床 第 1 项] 上传失败（配置项 1）',
+        '❌ 通道 [未知图床 第 2 项] 上传失败（配置项 2）',
+    ]
+    assert 'unregistered-secret' not in stream.getvalue()
+    assert 'None' not in stream.getvalue()
