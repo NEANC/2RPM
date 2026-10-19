@@ -17,11 +17,11 @@ from modules.image_host.storage_cache import StorageCache
     ('boltp', 403, True),
     ('boltp', 401, True),
     ('boltp', 500, True),
-    ('beeimg_cn', 403, False),
+    ('beeimg_cn', 403, True),
 ])
 def test_profile_permission_does_not_block_boltp_upload(
         monkeypatch, tmp_path, provider, status, expected_success):
-    """仅 Boltp 资料权限不足时使用组内首个存储，其他错误照常失败。"""
+    """仅 Boltp 资料权限不足时使用组内首个存储；BeeIMG.CN 从不请求资料。"""
     calls = []
 
     def send(adapter, request, **kwargs):
@@ -71,10 +71,8 @@ def test_profile_permission_does_not_block_boltp_upload(
         else:
             assert len(calls) == 2
             assert calls[0].url.endswith('/group')
-            assert calls[1].url.endswith('/user/profile')
-            assert result.failures[0].code == 'profile_forbidden'
-            assert result.failures[0].stage == 'profile'
-            assert result.failures[0].http_status == status
+            assert calls[1].url.endswith('/upload')
+            assert not result.failures
         if expected_success:
             assert result.url == 'https://example.com/synthetic.png'
             assert not result.failures

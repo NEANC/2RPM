@@ -138,8 +138,53 @@ def _copy_options(host):
 
 
 def _prepare_v2(context, image, index, provider, token, options, seconds,
-                warnings, image_bytes=None, filename=None):
-    """复用版本化存储选择；Boltp 按候选独立上传并重算期限。"""
+                warnings, image_bytes=None, filename=None, *,
+                transmission=0):
+    """复用版本化存储选择；BeeIMG.CN 手填首次零查询，Boltp 按候选上传。
+
+    BeeIMG.CN 首次合法手填登记后直接上传，不查询组或资料、不读写存储
+    缓存；其余情况（自动发现或恢复）先取组选择再按元数据期限计算。
+    transmission 为当前上传代次，第二代为恢复，即使 options 仍保留手填
+    也只走恢复选择。Boltp 保持候选独立上传与重算期限的既有行为。
+    """
+    if provider == 'beeimg_cn':
+        manual = options.get('storage_id') if 'storage_id' in options else None
+        if transmission == 0 and type(manual) is int and manual > 0:
+            selected = context.record_manual_selection(
+                image, index, provider, token, manual)
+            state = context.storage_state(image, index, provider, token)
+            decision = compute_expiration(
+                seconds, image.started_at, None, state.previous_deadline,
+                context.now(), previous_shortened=state.previous_shortened)
+            context.record_expiration(image, index, provider, token, decision)
+            if decision.shortened:
+                _add_warnings(warnings, (_WARN_SHORTENED,))
+            prepared = PreparedV2Options(
+                deepcopy(options), expired_at=decision.expired_at)
+            prepared['storage_id'] = selected.storage_id
+            return prepared
+        try:
+            selected = context.prepare_storage(
+                image, index, provider, token,
+                manual_present='storage_id' in options,
+                manual_value=manual)
+        finally:
+            _add_warnings(warnings, context.take_warnings())
+        if selected.replaced_manual:
+            _add_warnings(warnings, (_WARN_REPLACED,))
+        metadata = context.get_metadata(provider, token, record_reuse=False)
+        state = context.storage_state(image, index, provider, token)
+        decision = compute_expiration(
+            seconds, image.started_at, metadata.file_expire_seconds,
+            state.previous_deadline, context.now(),
+            previous_shortened=state.previous_shortened)
+        context.record_expiration(image, index, provider, token, decision)
+        if decision.shortened:
+            _add_warnings(warnings, (_WARN_SHORTENED,))
+        prepared = PreparedV2Options(deepcopy(options),
+                                     expired_at=decision.expired_at)
+        prepared['storage_id'] = selected.storage_id
+        return prepared
     if provider == 'boltp':
         retention = (context.get_boltp_retention(token)
                      if seconds is not None else None)
@@ -280,7 +325,8 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                     break
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
-                    seconds, warnings) if is_v2 else deepcopy(options))
+                    seconds, warnings, transmission=transmission)
+                    if is_v2 else deepcopy(options))
                 if recovery_scope is not None:
                     recovery.finish('succeeded', reason_code='storage_rejected')
                     recovery_scope.__exit__(None, None, None)

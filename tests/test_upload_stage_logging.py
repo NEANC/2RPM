@@ -424,10 +424,10 @@ def test_boltp_invalid_manual_stops_before_post(storage_id, monkeypatch,
 
 def test_preupload_refresh_and_post_recovery_have_one_budget(
         monkeypatch, tmp_path):
-    """上传前刷新消费预算后，精确拒绝不再重传且只记跳过。"""
+    """手填直传不预消费恢复预算：零刷新，精确拒绝后仍恰好一次恢复。"""
     context, cache, transport = build(
         monkeypatch, tmp_path,
-        replies=[group_reply(), profile_reply(default=None), REJECTED_UPLOAD])
+        replies=[REJECTED_UPLOAD, group_reply(), SUCCESS_UPLOAD])
     identity = cache.identity('beeimg_cn', SECRET)
     assert cache.save(identity, StorageMetadata((13, 14), 14, None, 1000.0))
     events = []
@@ -440,20 +440,19 @@ def test_preupload_refresh_and_post_recovery_have_one_budget(
                       'options': {'storage_id': 99}}], context=context)
         summary = trace.summary()
     context.close()
-    assert not result.success
+    assert result.success
     assert (summary['group_get_attempts'], summary['profile_get_attempts'],
-            summary['upload_post_attempts']) == (1, 1, 1)
-    assert summary['preupload_refreshes'] == 1
-    assert summary['postupload_recoveries'] == 0
+            summary['upload_post_attempts']) == (1, 0, 2)
+    assert summary['preupload_refreshes'] == 0
+    assert summary['postupload_recoveries'] == 1
     fallback = [event for event in of_stage(events, 'fallback')
                 if event.status != 'started']
     assert [(event.fallback_kind, event.status, event.reason_code)
             for event in fallback] == [
-        ('preupload_refresh', 'succeeded', 'manual_replaced'),
-        ('postupload_recovery', 'skipped', 'budget_used')]
-    assert len(transport.posts) == 1
-    assert [event.status for event in slots(events)] == ['started', 'failed']
-    assert summary['slots_failed'] == 1
+        ('postupload_recovery', 'succeeded', 'storage_rejected')]
+    assert len(transport.posts) == 2
+    assert [event.status for event in slots(events)] == ['started', 'succeeded']
+    assert summary['slots_succeeded'] == 1
 
 
 def test_cached_failure_has_no_request_id(monkeypatch, tmp_path):
@@ -476,11 +475,11 @@ def test_cached_failure_has_no_request_id(monkeypatch, tmp_path):
 
 
 def test_timeout_counts_once_without_retransmission(monkeypatch, tmp_path):
-    """上传超时只记一次真实尝试且不触发任何恢复。"""
+    """合法手填直传超时只记一次真实尝试且不触发任何恢复。"""
     run = run_chain(
         monkeypatch, tmp_path,
         [{'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 13}}],
-        replies=[group_reply(), requests.exceptions.Timeout()])
+        replies=[requests.exceptions.Timeout()])
     assert run.summary['upload_post_attempts'] == 1
     assert len(run.transport.posts) == 1
     assert run.summary['postupload_recoveries'] == 0
@@ -492,12 +491,15 @@ def test_timeout_counts_once_without_retransmission(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize('scenario', [
-    'missing_credential', 'query_failure', 'profile_forbidden',
-    'selection_failure',
+    'missing_credential', 'query_failure', 'empty_group', 'malformed_group',
 ])
 def test_preupload_failure_finishes_slot_without_post(
         scenario, monkeypatch, tmp_path):
-    """前置失败恰好一个槽位失败、零 POST、无上传尝试事件。"""
+    """前置失败恰好一个槽位失败、零 POST、无上传尝试事件。
+
+    BeeIMG.CN 不再请求账号资料，资料受限不再构成前置失败；等价覆盖
+    改为组查询失败、空组与畸形组，仍保持零 POST 与单槽位失败。
+    """
     hosts = [{'provider': 'beeimg_cn', 'token': SECRET,
               'options': {'storage_id': 13}}]
     replies = []
@@ -506,13 +508,12 @@ def test_preupload_failure_finishes_slot_without_post(
     elif scenario == 'query_failure':
         hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
         replies = [requests.exceptions.Timeout()]
-    elif scenario == 'profile_forbidden':
+    elif scenario == 'empty_group':
         hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
-        replies = [group_reply(), profile_reply(status=403)]
+        replies = [group_reply(ids=())]
     else:
-        hosts = [{'provider': 'beeimg_cn', 'token': SECRET,
-                  'options': {'storage_id': True}}]
-        replies = [group_reply(), profile_reply(status=403)]
+        hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
+        replies = [(200, body({'status': 'success', 'data': {}}))]
     run = run_chain(monkeypatch, tmp_path, hosts, replies=replies)
     assert run.transport.posts == []
     assert run.summary['upload_post_attempts'] == 0
@@ -527,18 +528,17 @@ def test_preupload_failure_finishes_slot_without_post(
 
 
 def test_recovery_success_finishes_slot_once(monkeypatch, tmp_path):
-    """精确拒绝后恢复成功：两次真实请求、槽位仅一次成功终态。"""
+    """手填被精确拒绝后恢复成功：两次真实请求、槽位仅一次成功终态。"""
     run = run_chain(
         monkeypatch, tmp_path,
         [{'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 13}}],
-        replies=[group_reply(), REJECTED_UPLOAD, group_reply(),
-                 SUCCESS_UPLOAD], slot_index=4)
+        replies=[REJECTED_UPLOAD, group_reply(), SUCCESS_UPLOAD], slot_index=4)
     assert run.transport.replies == []
     assert run.results[0].success
     assert run.summary['upload_post_attempts'] == 2
     assert run.summary['postupload_recoveries'] == 1
     assert run.summary['group_get_attempts'] == len(
-        run.transport.gets('group')) == 2
+        run.transport.gets('group')) == 1
     attempts = of_stage(run.events, 'upload_attempt')
     assert [event.status for event in attempts] == [
         'started', 'failed', 'started', 'succeeded']
@@ -563,7 +563,7 @@ def test_slot_events_use_bound_indices(monkeypatch, tmp_path):
         monkeypatch, tmp_path,
         [{'provider': 'beeimg_cn', 'token': '',
           'options': {'storage_id': 13}}],
-        replies=[group_reply(), SUCCESS_UPLOAD], slot_index=9, slots_planned=1)
+        replies=[SUCCESS_UPLOAD], slot_index=9, slots_planned=1)
     slot = slots(run.events)
     assert [event.status for event in slot] == ['started', 'succeeded']
     assert all((event.image_index, event.slot_index) == (1, 9)
@@ -605,7 +605,7 @@ PROVIDER_POSTS = (
                   'files': [{'url': URL}]}))], 1),
     ('beeimg_cn', {'provider': 'beeimg_cn', 'token': '',
                    'options': {'storage_id': 13}},
-     [group_reply(), SUCCESS_UPLOAD], 1),
+     [SUCCESS_UPLOAD], 1),
     ('boltp', {'provider': 'boltp', 'token': '',
                'options': {'storage_id': 2}}, [SUCCESS_UPLOAD], 1),
 )
@@ -745,22 +745,18 @@ def test_invalid_cache_record_is_recorded(monkeypatch, tmp_path):
 
 
 def test_save_refuses_forbidden_partial_result(monkeypatch, tmp_path):
-    """forbidden 部分结果拒绝落盘并记录固定跳过。"""
-    context, cache, transport = build(
-        monkeypatch, tmp_path,
-        replies=[group_reply(ids=(13,)), profile_reply(status=403)])
+    """forbidden 部分结果在写入边界拒绝落盘并记录固定跳过。"""
+    cache = StorageCache(tmp_path / 'cache', clock=lambda: 1000.0)
+    identity = cache.identity('beeimg_cn', SECRET)
     events = []
-    with trace_scope(mode='cli', on_status=events.append) as trace:
-        with trace_item(image_index=1):
-            context.get_metadata('beeimg_cn', SECRET)
-        trace.summary()
-    context.close()
-    assert (transport.gets('profile'))
+    with trace_scope(mode='cli', on_status=events.append):
+        assert cache.save(
+            identity,
+            StorageMetadata((13,), None, None, 1000.0, 'forbidden')) is False
     refused = [event for event in of_stage(events, 'metadata_cache')
                if event.reason_code == 'forbidden']
     assert len(refused) == 1
     assert refused[0].status == 'skipped'
-    identity = cache.identity('beeimg_cn', SECRET)
     assert not (cache._root / (identity + '.json')).exists()
 
 
@@ -817,8 +813,7 @@ def test_upload_attempt_started_is_info(monkeypatch, tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
         run_chain(
             monkeypatch, tmp_path,
-            [{'provider': 'beeimg_cn', 'token': '',
-              'options': {'storage_id': 13}}],
+            [{'provider': 'beeimg_cn', 'token': ''}],
             replies=[group_reply(), SUCCESS_UPLOAD])
     levels = {}
     for record in caplog.records:
@@ -1038,12 +1033,12 @@ def test_non_v2_duration_excludes_json_parse(monkeypatch, tmp_path):
         REQUEST_BODY_MS]
 
 
-def test_v2_group_profile_upload_duration_excludes_json_parse(
+def test_v2_group_upload_duration_excludes_json_parse(
         monkeypatch, tmp_path):
-    """v2 组、资料和上传请求均在正文读取后冻结为三十毫秒。"""
+    """v2 组与上传请求均在正文读取后冻结为三十毫秒，不请求资料。"""
     module = import_module('modules.image_host.v2_http')
     clock = [0.0]
-    replies = [group_reply(), profile_reply(), SUCCESS_UPLOAD]
+    replies = [group_reply(), SUCCESS_UPLOAD]
     sent = install_timed_transport(
         monkeypatch, clock, [(status, content) for status, content in replies])
     original_loads = json.loads
@@ -1058,9 +1053,9 @@ def test_v2_group_profile_upload_duration_excludes_json_parse(
         monkeypatch, tmp_path,
         {'provider': 'beeimg_cn', 'token': SECRET}, clock)
     assert result.success
-    assert len(sent) == 3
+    assert len(sent) == 2
     assert [event.duration_ms for event in terminal_requests(events)] == [
-        REQUEST_BODY_MS, REQUEST_BODY_MS, REQUEST_BODY_MS]
+        REQUEST_BODY_MS, REQUEST_BODY_MS]
 
 
 @pytest.mark.parametrize('provider', ['wmimg', 'beeimg_cn'])
@@ -1360,11 +1355,13 @@ def test_selection_wraps_real_decision(signal_type, monkeypatch, tmp_path):
 @pytest.mark.parametrize('kind', ['preupload_refresh', 'postupload_recovery'])
 @pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
 def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
+    """刷新型回退包住真实查询：两秒耗时与取消信号来自被包裹的查询。"""
     registry = import_module('modules.image_host.registry')
     context, cache, transport = build(monkeypatch, tmp_path, replies=[])
-    identity = cache.identity('beeimg_cn', '')
+    provider = 'boltp' if kind == 'preupload_refresh' else 'beeimg_cn'
+    identity = cache.identity(provider, '')
     assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
-    context.get_metadata('beeimg_cn', '')
+    context.get_metadata(provider, '')
     replies = [group_reply(ids=(14,)), SUCCESS_UPLOAD]
     if kind == 'postupload_recovery':
         replies.insert(0, REJECTED_UPLOAD)
@@ -1381,18 +1378,30 @@ def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
 
     monkeypatch.setattr('modules.image_host.context.fetch_storage_metadata', delayed)
     events = []
-    host = {'provider': 'beeimg_cn', 'token': '', 'options': {'storage_id': 14}}
-    if kind == 'postupload_recovery':
-        host['options'] = {}
     with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
-        if signal:
-            with pytest.raises(signal_type) as caught:
-                registry.upload_with_fallback(b'image', 'image.png', [host],
-                                              context=context)
-            assert caught.value is signal
+        if kind == 'preupload_refresh':
+            # BeeIMG.CN 已无上传前刷新，直接经 Boltp 旧选择器覆盖该回退。
+            image = context.start_image()
+            if signal:
+                with pytest.raises(signal_type) as caught:
+                    context.prepare_storage(
+                        image, 0, 'boltp', '',
+                        manual_present=True, manual_value=14)
+                assert caught.value is signal
+            else:
+                context.prepare_storage(
+                    image, 0, 'boltp', '',
+                    manual_present=True, manual_value=14)
         else:
-            assert registry.upload_with_fallback(b'image', 'image.png', [host],
-                                                 context=context).success
+            host = {'provider': 'beeimg_cn', 'token': '', 'options': {}}
+            if signal:
+                with pytest.raises(signal_type) as caught:
+                    registry.upload_with_fallback(b'image', 'image.png', [host],
+                                                  context=context)
+                assert caught.value is signal
+            else:
+                assert registry.upload_with_fallback(
+                    b'image', 'image.png', [host], context=context).success
     recorded = [event for event in events if event.fallback_kind == kind]
     assert [event.status for event in recorded] == [
         'started', 'cancelled' if signal else 'succeeded']
@@ -1400,9 +1409,14 @@ def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
     context.close()
 
 
-@pytest.mark.parametrize('cause', ['profile', 'identity', 'load', 'save'])
+@pytest.mark.parametrize('cause', ['identity', 'load', 'save', 'boltp_replaced'])
 def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, caplog):
-    if cause != 'profile':
+    """降级成功仍标记批次告警：缓存故障或手填被替代都不阻断上传。"""
+    if cause == 'boltp_replaced':
+        hosts = [{'provider': 'boltp', 'token': '',
+                  'options': {'storage_id': 5}}]
+        replies = [REJECTED_UPLOAD, SUCCESS_UPLOAD]
+    else:
         name = {'identity': '_prepare_key', 'load': '_load',
                 'save': '_write_atomic'}[cause]
 
@@ -1410,14 +1424,11 @@ def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, capl
             raise OSError('synthetic')
 
         monkeypatch.setattr(StorageCache, name, broken)
+        hosts = [{'provider': 'beeimg_cn', 'token': SECRET}]
+        replies = [group_reply(), SUCCESS_UPLOAD]
     with caplog.at_level(logging.INFO, logger='modules.operation_trace'):
-        run = run_chain(monkeypatch, tmp_path, [
-            {'provider': 'beeimg_cn', 'token': SECRET,
-             'options': {'storage_id': 13}}], replies=[
-                group_reply(), profile_reply(status=403) if cause == 'profile'
-                else profile_reply(), SUCCESS_UPLOAD])
+        run = run_chain(monkeypatch, tmp_path, hosts, replies=replies)
     assert run.results[0].success
-    assert len(run.transport.posts) == 1
     final = of_stage(run.events, 'batch')[-1]
     assert final.status == 'completed'
     assert final.reason_code == 'recoverable_warning'
