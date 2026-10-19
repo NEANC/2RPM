@@ -81,7 +81,7 @@ def test_upload_error_discards_raw_context(session, provider, stage, error_type)
 
 
 def test_selection_failure_stays_slot_local(monkeypatch, tmp_path):
-    """选择失败只归当前槽位，不写入共享查询失败或阻断后续合法手填。"""
+    """查询事实按身份共享；BeeIMG.CN 的 profile_state 不再阻断任何槽位。"""
     forbidden = StorageMetadata((13, 14), None, 3600, 1000.0, 'forbidden')
     monkeypatch.setattr(
         context_module, 'fetch_storage_metadata',
@@ -90,16 +90,18 @@ def test_selection_failure_stays_slot_local(monkeypatch, tmp_path):
         cache=StorageCache(root=Path(tmp_path)))
     try:
         image = context.start_image()
-        with pytest.raises(ImageHostError) as caught:
-            context.prepare_storage(image, 0, 'beeimg_cn', 'SYNTHETIC_TOKEN')
-        assert caught.value.code == 'profile_forbidden'
-        assert (caught.value.stage, caught.value.http_status) == ('profile', 403)
+        selected = context.prepare_storage(image, 0, 'beeimg_cn', 'SYNTHETIC_TOKEN')
+        assert selected.storage_id == 13
+        assert selected.replaced_manual is False
         entry, = context._entries.values()
         assert entry.failure is None
         assert entry.metadata is forbidden
-        selected = context.prepare_storage(
-            image, 1, 'beeimg_cn', 'SYNTHETIC_TOKEN',
-            manual_present=True, manual_value=13)
-        assert selected.storage_id == 13
+        manual = context.record_manual_selection(
+            image, 1, 'beeimg_cn', 'SYNTHETIC_TOKEN', 13)
+        assert manual.storage_id == 13
+        assert context.storage_state(
+            image, 1, 'beeimg_cn', 'SYNTHETIC_TOKEN').selection == manual
+        assert context.storage_state(
+            image, 0, 'beeimg_cn', 'SYNTHETIC_TOKEN').selection == selected
     finally:
         context.close()

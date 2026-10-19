@@ -426,12 +426,15 @@ def test_event_success_reused_and_identity_isolated(rig, caplog, capsys):
 
 
 def test_disk_reuse_across_events_and_expiration(rig):
-    """下一事件命中真实磁盘缓存，到期查询使用注入时刻。"""
+    """下一事件命中真实磁盘缓存，BeeIMG.CN 读取时归一无账号默认值。"""
     module, ctx, cache, calls, _, now = rig
     first = ctx.get_metadata(PROVIDER, SECRET)
+    assert first.storage_ids == (13, 14)
     ctx.close()
     second = module.UploadContext(cache=cache, clock=lambda: now[0])
-    assert second.get_metadata(PROVIDER, SECRET) == first
+    cached = second.get_metadata(PROVIDER, SECRET)
+    assert cached.storage_ids == first.storage_ids
+    assert cached.default_storage_id is None
     assert len(calls) == 1
     now[0] += 86400
     third = module.UploadContext(cache=cache, clock=lambda: now[0])
@@ -577,12 +580,12 @@ def test_query_control_signals_keep_identity_and_are_not_cached(
 
 
 @pytest.mark.parametrize('disk', [False, True])
-@pytest.mark.parametrize('present, manual, used', [
-    (False, None, False), (True, 13, False), (True, 99, True),
-    (True, None, True), (True, {'invalid': SECRET}, True),
+@pytest.mark.parametrize('present, manual', [
+    (False, None), (True, 13), (True, 99),
+    (True, None), (True, {'invalid': SECRET}),
 ])
-def test_selection_budget_contract(rig, disk, present, manual, used):
-    """旧缓存无效手填强制刷新，刚查得的列表无效手填不重复查询。"""
+def test_selection_budget_contract(rig, disk, present, manual):
+    """组列表首项选择与手填无关，缓存旧列表直接选中且不消费纠错预算。"""
     _, ctx, cache, calls, _, _ = rig
     if disk:
         assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
@@ -592,10 +595,11 @@ def test_selection_budget_contract(rig, disk, present, manual, used):
         image, 0, PROVIDER, SECRET,
         manual_present=present, manual_value=manual)
     state = ctx.storage_state(image, 0, PROVIDER, SECRET)
-    assert selected.storage_id == (13 if present and manual == 13 else 14)
+    assert selected.storage_id == 13
     assert state.selection == selected
-    assert state.correction_used is used
-    assert len(calls) == (int(used) if disk else 1)
+    assert state.correction_used is False
+    assert ctx._corrected == set()
+    assert len(calls) == (0 if disk else 1)
     assert manual == original
     for _ in range(3):
         following = ctx.start_image()
@@ -603,8 +607,8 @@ def test_selection_budget_contract(rig, disk, present, manual, used):
             following, 0, PROVIDER, SECRET,
             manual_present=present, manual_value=manual) == selected
         assert ctx.storage_state(
-            following, 0, PROVIDER, SECRET).correction_used is used
-    assert len(calls) == (int(used) if disk else 1)
+            following, 0, PROVIDER, SECRET).correction_used is False
+    assert len(calls) == (0 if disk else 1)
 
 
 def test_budget_and_expiration_are_per_image_and_configuration(rig):
@@ -656,12 +660,12 @@ def test_same_identity_slots_share_version_but_not_recovery_budget(rig):
 
 
 def test_corrected_selection_revalidated_on_metadata_version_change(rig):
-    """同配置纠正事实复用，但新元数据必须重新选择可用编号。"""
+    """新元数据必须重新按组首项选择，手填值不参与优先级。"""
     _, ctx, _, calls, replies, _ = rig
     first = ctx.start_image()
     selected = ctx.prepare_storage(
         first, 0, PROVIDER, SECRET, manual_present=True, manual_value=[])
-    assert selected.storage_id == 14
+    assert selected.storage_id == 13
     old_state = ctx.storage_state(first, 0, PROVIDER, SECRET)
     old_version = old_state.metadata_version
     ctx.invalidate(PROVIDER, SECRET)
@@ -673,7 +677,7 @@ def test_corrected_selection_revalidated_on_metadata_version_change(rig):
     assert selected.storage_id == 21
     state = ctx.storage_state(second, 0, PROVIDER, SECRET)
     assert state.metadata_version > old_version
-    assert state.correction_used
+    assert state.correction_used is False
     assert len(calls) == 2
 
 
@@ -692,16 +696,14 @@ def test_stale_image_recovery_does_not_invalidate_newer_metadata(rig):
 
 
 def test_manual_refresh_failure_consumes_budget_and_is_reused(rig):
-    """手填纠错失败仍消耗预算，同配置后续图片不重复查询。"""
-    _, ctx, cache, calls, replies, _ = rig
-    assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
+    """查询失败快照在同事件后续图片复用，恢复预算不被错误消费。"""
+    _, ctx, _, calls, replies, _ = rig
     replies.append(RuntimeError(SECRET))
     for _ in range(3):
         image = ctx.start_image()
         with pytest.raises(ImageHostError):
             ctx.prepare_storage(image, 0, PROVIDER, SECRET,
                                 manual_present=True, manual_value=99)
-        assert ctx.storage_state(image, 0, PROVIDER, SECRET).correction_used
         assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
     assert len(calls) == 1
 
@@ -864,77 +866,66 @@ def test_context_manager_closes_on_exception(rig):
 
 
 def test_refresh_can_restore_manual_choice_and_still_consumes_budget(rig):
-    """旧列表离表手填在新列表合法时优先使用，纠错预算仍已消费。"""
+    """磁盘旧列表按新语义刷新，恢复后重新选择新列表首项且不额外查询。"""
     _, ctx, cache, calls, replies, _ = rig
     assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
     replies.append(metadata((99, 21), 21))
-    for _ in range(2):
-        image = ctx.start_image()
-        selection = ctx.prepare_storage(
-            image, 0, PROVIDER, SECRET,
-            manual_present=True, manual_value=99)
-        assert selection.storage_id == 99
-        assert not selection.replaced_manual
-        assert ctx.storage_state(image, 0, PROVIDER, SECRET).correction_used
-        assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
+    image = ctx.start_image()
+    assert ctx.prepare_storage(
+        image, 0, PROVIDER, SECRET,
+        manual_present=True, manual_value=99).storage_id == 13
+    assert ctx.begin_recovery(image, 0, PROVIDER, SECRET)
+    assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
+    assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 99
     assert len(calls) == 1
 
 
 def test_distinct_configurations_share_metadata_not_manual_budget(rig):
-    """同身份的无效手填纠错不消费其他自动配置项的预算。"""
+    """同身份不同配置项共享组元数据，但恢复预算分别消费。"""
     _, ctx, _, calls, _, _ = rig
     image = ctx.start_image()
     ctx.prepare_storage(image, 0, PROVIDER, SECRET,
                         manual_present=True, manual_value=[])
     ctx.prepare_storage(image, 1, PROVIDER, SECRET)
-    assert ctx.storage_state(image, 0, PROVIDER, SECRET).correction_used
+    assert not ctx.storage_state(image, 0, PROVIDER, SECRET).correction_used
     assert not ctx.storage_state(image, 1, PROVIDER, SECRET).correction_used
     assert len(calls) == 1
-    assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
+    assert ctx.begin_recovery(image, 0, PROVIDER, SECRET)
     assert ctx.begin_recovery(image, 1, PROVIDER, SECRET)
-    ctx.prepare_storage(image, 1, PROVIDER, SECRET)
+    assert ctx.prepare_storage(image, 1, PROVIDER, SECRET)
     assert len(calls) == 2
 
 
 @pytest.mark.parametrize('reverse', [False, True])
 def test_beeimg_forbidden_selection_is_slot_local(rig, reverse):
-    """forbidden 事实按身份复用，手填合法性只影响当前配置槽位。"""
+    """forbidden 仅作查询结果复用，BeeIMG.CN 忽略资料状态并按组首项选择。"""
     _, ctx, _, calls, replies, _ = rig
     replies.append(forbidden_metadata())
     order = ([(True, 13), (False, None)] if reverse
              else [(False, None), (True, 13)])
     image = ctx.start_image()
     for index, (present, manual) in enumerate(order):
-        if present:
-            selection = ctx.prepare_storage(
-                image, index, PROVIDER, SECRET,
-                manual_present=True, manual_value=manual)
-            assert selection.storage_id == manual
-            assert not selection.replaced_manual
-        else:
-            with pytest.raises(ImageHostError) as caught:
-                ctx.prepare_storage(image, index, PROVIDER, SECRET)
-            assert_safe(caught.value, 'profile_forbidden')
-            assert (caught.value.stage, caught.value.http_status) == (
-                'profile', 403)
+        selection = ctx.prepare_storage(
+            image, index, PROVIDER, SECRET,
+            manual_present=present, manual_value=manual)
+        assert selection.storage_id == 13
     assert len(calls) == 1
 
 
 def test_forbidden_fact_shared_across_images_not_manual_selection(rig):
-    """同身份跨图跨槽位共享 forbidden 事实，不同凭证各自独立查询。"""
+    """同身份跨图跨槽位共享 forbidden 查询事实，手填不改变组首项选择。"""
     _, ctx, _, calls, replies, _ = rig
     replies.append(forbidden_metadata())
     first, second = ctx.start_image(), ctx.start_image()
     for image in (first, second):
         for index in (0, 1):
-            with pytest.raises(ImageHostError) as caught:
-                ctx.prepare_storage(image, index, PROVIDER, SECRET)
-            assert_safe(caught.value, 'profile_forbidden')
+            selection = ctx.prepare_storage(image, index, PROVIDER, SECRET)
+            assert selection.storage_id == 13
+    assert len(calls) == 1
     selected = ctx.prepare_storage(
         first, 0, PROVIDER, SECRET, manual_present=True, manual_value=14)
-    assert selected.storage_id == 14
-    assert len(calls) == 1
-    replies.append(forbidden_metadata((21,)))
+    assert selected.storage_id == 13
+    replies.append(forbidden_metadata((21, 22)))
     other = ctx.prepare_storage(
         first, 0, PROVIDER, BACKUP, manual_present=True, manual_value=21)
     assert other.storage_id == 21
@@ -943,33 +934,33 @@ def test_forbidden_fact_shared_across_images_not_manual_selection(rig):
 
 @pytest.mark.parametrize('manual', [99, None, 0, -1, '13', [], {}])
 def test_forbidden_invalid_manual_never_selects_first(rig, manual):
-    """forbidden 下非法手填不偷选首项，给出固定权限提示。"""
+    """forbidden 下非法手填仍按组首项选择，不生成资料权限错误。"""
     _, ctx, _, calls, replies, _ = rig
     replies.append(forbidden_metadata())
     image = ctx.start_image()
-    with pytest.raises(ImageHostError) as caught:
-        ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                            manual_present=True, manual_value=manual)
-    assert_safe(caught.value, 'profile_forbidden_invalid_storage')
-    assert ctx.storage_state(image, 0, PROVIDER, SECRET).selection is None
+    selection = ctx.prepare_storage(
+        image, 0, PROVIDER, SECRET,
+        manual_present=True, manual_value=manual)
+    assert selection.storage_id == 13
+    assert ctx.storage_state(image, 0, PROVIDER, SECRET).selection == selection
     assert len(calls) == 1
 
 
 def test_forbidden_result_not_reused_across_events(rig):
-    """forbidden 只在本事件复用，下一事件重新查询并在授权后恢复。"""
+    """forbidden 查询事实只影响当前选择，不写盘，下一事件重新按组首项选择。"""
     module, ctx, cache, calls, replies, now = rig
     replies.append(forbidden_metadata())
     image = ctx.start_image()
-    with pytest.raises(ImageHostError) as caught:
-        ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                            manual_present=True, manual_value=99)
-    assert_safe(caught.value, 'profile_forbidden_invalid_storage')
+    selected = ctx.prepare_storage(
+        image, 0, PROVIDER, SECRET, manual_present=True, manual_value=99)
+    assert selected.storage_id == 13
     assert cache.load(cache.identity(PROVIDER, SECRET)) is None
     ctx.close()
-    replies.append(metadata((13, 14), 14))
+    replies.append(metadata((21, 22)))
     second = module.UploadContext(cache=cache, clock=lambda: now[0])
-    selected = second.prepare_storage(second.start_image(), 0, PROVIDER, SECRET)
-    assert selected.storage_id == 14
+    selected = second.prepare_storage(
+        second.start_image(), 0, PROVIDER, SECRET)
+    assert selected.storage_id == 21
     assert len(calls) == 2
 
 
@@ -1007,15 +998,16 @@ def test_new_image_can_recover_new_successful_version(rig):
 
 
 def test_disk_keeps_query_metadata_not_manual_preference(rig):
-    """事件选择不覆盖查询默认值或写入图片、配置和成功结果。"""
+    """事件选择不覆盖查询结果；磁盘读取归一无账号默认值。"""
     _, ctx, cache, _, _, _ = rig
     image = ctx.start_image()
     selected = ctx.prepare_storage(
         image, 0, PROVIDER, SECRET, manual_present=True, manual_value=13)
     assert selected.storage_id == 13
     stored = cache.load(cache.identity(PROVIDER, SECRET))
-    assert stored == metadata()
-    assert stored.default_storage_id == 14
+    assert stored.storage_ids == (13, 14)
+    assert stored.default_storage_id is None
+    assert stored.file_expire_seconds == metadata().file_expire_seconds
 
 
 def test_unqueried_invalidation_defers_disk_identity(rig, monkeypatch):
@@ -1072,6 +1064,270 @@ def test_invalid_injected_clock_fails_safely(rig, value):
         ctx.get_metadata(PROVIDER, SECRET)
     assert_safe(caught.value, 'config_error')
     assert calls == []
+
+
+def test_manual_selection_without_metadata_io(monkeypatch):
+    """合法手填登记只用事件身份：不查询、不建磁盘身份、不触发缓存 IO。"""
+    module = context_module()
+    cache_calls = []
+
+    class SpyCache:
+        """记录缓存入口调用；普通异常会被缓存包装吞掉，故必须显式记录。"""
+
+        def __getattr__(self, name):
+            """把任何缓存访问记为越界调用，不抛出会被吞掉的异常。"""
+            def recorded(*args, **kwargs):
+                """记录一次未预期的缓存访问。"""
+                cache_calls.append(name)
+
+            return recorded
+
+    def forbidden(*args, **kwargs):
+        """手填登记期间禁止任何元数据查询。"""
+        pytest.fail('手填登记不应查询元数据')
+
+    monkeypatch.setattr(module, 'fetch_storage_metadata', forbidden)
+    context = module.UploadContext(cache=SpyCache(), clock=lambda: 1000)
+    image = context.start_image()
+    token = TOKEN
+    selected = context.record_manual_selection(image, 0, 'beeimg_cn', token, 13)
+    state = context.storage_state(image, 0, 'beeimg_cn', token)
+    assert selected.storage_id == 13
+    assert selected.replaced_manual is False
+    assert state.selection == selected
+    assert state.selection_source == 'manual'
+    assert state.metadata_version == 0
+    assert state.rejected_storage_id is None
+    assert context._entries == {}
+    assert cache_calls == []
+    context.close()
+
+
+@pytest.mark.parametrize('row', [
+    'manual_without_entry', 'same_generation_success', 'same_generation_failure',
+    'newer_network_success', 'newer_network_failure', 'newer_disk_result',
+])
+def test_manual_recovery_generation_table(rig, monkeypatch, row):
+    """逐行核对代次表：手填基线、同代推进、新代复用与磁盘代必须刷新。"""
+    _, ctx, cache, calls, replies, _ = rig
+    loads = []
+    load = cache.load
+
+    def tracked(identity):
+        """记录真实磁盘读取次数，不替代读取行为。"""
+        loads.append(identity)
+        return load(identity)
+
+    monkeypatch.setattr(cache, 'load', tracked)
+    identity = ctx._identity(PROVIDER, SECRET)
+    if row == 'manual_without_entry':
+        image = ctx.start_image()
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        assert ctx._entries.get(identity) is None
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        entry = ctx._entries[identity]
+        assert (entry.version, entry.invalidated) == (1, True)
+        assert entry.metadata is None
+        assert calls == [] and loads == []
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert len(calls) == 1
+        assert loads == []
+        assert ctx._entries[identity].metadata.storage_ids == (13, 14)
+    elif row == 'same_generation_success':
+        image = ctx.start_image()
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 13
+        queries = len(calls)
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        assert ctx.storage_state(image, 0, PROVIDER, SECRET).metadata_version == 1
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        entry = ctx._entries[identity]
+        assert (entry.version, entry.metadata, entry.invalidated) == (
+            2, None, True)
+        assert len(calls) == queries
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert ctx._entries[identity].version == 2
+        assert len(calls) == queries + 1
+    elif row == 'same_generation_failure':
+        image = ctx.start_image()
+        replies.append(RuntimeError(SECRET))
+        with pytest.raises(ImageHostError) as caught:
+            ctx.get_metadata(PROVIDER, SECRET)
+        old_error = caught.value
+        assert ctx._entries[identity].version == 1
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        assert ctx.storage_state(image, 0, PROVIDER, SECRET).metadata_version == 1
+        queries = len(calls)
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx._entries[identity].failure is None
+        assert ctx._entries[identity].version == 2
+        assert len(calls) == queries
+        replies.append(RuntimeError(SECRET))
+        with pytest.raises(ImageHostError) as again:
+            ctx.prepare_storage(image, 0, PROVIDER, SECRET)
+        assert again.value is not old_error
+        assert ctx._entries[identity].version == 2
+        assert ctx._entries[identity].failure is not None
+        assert len(calls) == queries + 1
+    elif row == 'newer_network_success':
+        image = ctx.start_image()
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        assert ctx.prepare_storage(
+            ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+        entry = ctx._entries[identity]
+        assert (entry.version, entry.from_disk) == (1, False)
+        queries = len(calls)
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx._entries[identity] is entry
+        assert (entry.version, entry.invalidated) == (1, False)
+        assert len(calls) == queries
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert len(calls) == queries
+        assert ctx._entries[identity].metadata.storage_ids == (13, 14)
+    elif row == 'newer_network_failure':
+        image = ctx.start_image()
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        other = ctx.start_image()
+        replies.append(RuntimeError(SECRET))
+        with pytest.raises(ImageHostError):
+            ctx.prepare_storage(other, 0, PROVIDER, SECRET)
+        entry = ctx._entries[identity]
+        failure = entry.failure
+        assert (entry.version, entry.from_disk) == (1, False)
+        queries = len(calls)
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx._entries[identity] is entry
+        assert entry.version == 1
+        assert entry.failure is failure
+        assert len(calls) == queries
+        with pytest.raises(ImageHostError) as caught:
+            ctx.prepare_storage(image, 0, PROVIDER, SECRET)
+        assert caught.value.code == failure.code
+        assert ctx._entries[identity].failure is failure
+        assert len(calls) == queries
+    else:
+        image = ctx.start_image()
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
+        assert ctx.prepare_storage(
+            ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+        entry = ctx._entries[identity]
+        assert (entry.version, entry.from_disk) == (1, True)
+        assert loads == [cache.identity(PROVIDER, SECRET)]
+        queries = len(calls)
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx._entries[identity].version == 2
+        assert ctx._entries[identity].invalidated is True
+        assert len(calls) == queries
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert len(calls) == queries + 1
+        assert ctx._entries[identity].version == 2
+
+
+def test_old_rejection_cannot_delete_new_generation(rig, monkeypatch):
+    """晚到的旧代失效请求不得删除新代内存结果或磁盘记录。"""
+    _, ctx, cache, calls, replies, _ = rig
+    deletes = []
+    invalidate = cache.invalidate
+
+    def tracked(identity):
+        """记录真实磁盘失效次数，不替代删除行为。"""
+        deletes.append(identity)
+        return invalidate(identity)
+
+    monkeypatch.setattr(cache, 'invalidate', tracked)
+    first, second = ctx.start_image(), ctx.start_image()
+    for image in (first, second):
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+    assert ctx.storage_state(first, 0, PROVIDER, SECRET).metadata_version == 0
+    assert ctx.begin_recovery(first, 0, PROVIDER, SECRET) is True
+    assert ctx.prepare_storage(first, 0, PROVIDER, SECRET).storage_id == 14
+    identity = cache.identity(PROVIDER, SECRET)
+    entry = ctx._entries[ctx._identity(PROVIDER, SECRET)]
+    assert (entry.version, len(calls)) == (1, 1)
+    assert cache.load(identity) is not None
+    deletes_before = len(deletes)
+    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is True
+    assert entry.version == 1
+    ctx.invalidate(PROVIDER, SECRET, version=0, disk_only=True)
+    assert entry.version == 1
+    assert entry.metadata is not None
+    assert len(deletes) == deletes_before
+    assert cache.load(identity) is not None
+    assert len(calls) == 1
+    assert ctx.storage_state(second, 0, PROVIDER, SECRET).selection is not None
+
+
+def test_local_exclusion_and_slot_budgets(rig):
+    """恢复排除只作用于本图本槽，非法手填不消费预算也不写共享纠错事实。"""
+    _, ctx, cache, calls, replies, _ = rig
+    first = ctx.start_image()
+    assert ctx.prepare_storage(
+        first, 0, PROVIDER, SECRET,
+        manual_present=True, manual_value=[]).storage_id == 13
+    state = ctx.storage_state(first, 0, PROVIDER, SECRET)
+    assert state.correction_used is False
+    assert ctx._corrected == set()
+    shared = ctx.get_metadata(PROVIDER, SECRET)
+    assert shared.storage_ids == (13, 14)
+    second = ctx.start_image()
+    for index in (0, 1):
+        assert ctx.prepare_storage(second, index, PROVIDER, SECRET).storage_id == 13
+    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is True
+    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is False
+    assert ctx.begin_recovery(second, 1, PROVIDER, SECRET) is True
+    for index in (0, 1):
+        assert ctx.prepare_storage(
+            second, index, PROVIDER, SECRET).storage_id == 14
+    assert ctx.prepare_storage(
+        ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+    assert shared.storage_ids == (13, 14)
+    third, fourth = ctx.start_image(), ctx.start_image()
+    for image in (third, fourth):
+        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 13
+    for image in (third, fourth):
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is False
+    assert replies == []
+
+
+def test_manual_after_failed_lookup(rig):
+    """自动失败后登记手填不查询、不改快照，按新基线恢复并允许新事件重查。"""
+    module, ctx, cache, calls, replies, now = rig
+    image = ctx.start_image()
+    replies.append(RuntimeError(SECRET))
+    with pytest.raises(ImageHostError):
+        ctx.get_metadata(PROVIDER, SECRET)
+    identity = ctx._identity(PROVIDER, SECRET)
+    failure = ctx._entries[identity].failure
+    assert (ctx._entries[identity].version, len(calls)) == (1, 1)
+    recorded = ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+    state = ctx.storage_state(image, 0, PROVIDER, SECRET)
+    assert state.selection == recorded
+    assert state.selection_source == 'manual'
+    assert state.metadata_version == 1
+    assert ctx._entries[identity].failure is failure
+    assert len(calls) == 1
+    with pytest.raises(ImageHostError):
+        ctx.get_metadata(PROVIDER, SECRET)
+    assert ctx._entries[identity].failure is failure
+    assert len(calls) == 1
+    fresh = module.UploadContext(cache=cache, clock=lambda: now[0])
+    assert fresh.get_metadata(PROVIDER, SECRET).storage_ids == (13, 14)
+    assert len(calls) == 2
+    fresh.close()
+    assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+    assert ctx._entries[identity].failure is None
+    assert ctx._entries[identity].version == 2
+    assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+    assert ctx._entries[identity].version == 2
+    assert len(calls) == 3
+    assert ctx.storage_state(image, 0, PROVIDER, SECRET).selection_source == (
+        'metadata')
+    third = ctx.start_image()
+    assert ctx.prepare_storage(third, 0, PROVIDER, SECRET).storage_id == 13
+    ctx.record_manual_selection(third, 0, PROVIDER, SECRET, 15)
+    assert ctx.storage_state(
+        third, 0, PROVIDER, SECRET).metadata_version == 2
 
 
 @pytest.fixture
@@ -1177,13 +1433,6 @@ def group_reply(ids=(13, 14), retention=None):
     }}
 
 
-def profile_reply(default=14):
-    """构造账号默认存储响应。"""
-    return 200, {'status': 'success', 'data': {
-        'options': {'default_storage_id': default},
-    }}
-
-
 def upload_reply():
     """构造带不可改写签名的上传直链。"""
     return 200, {'status': 'success', 'data': {
@@ -1194,11 +1443,6 @@ def upload_reply():
 def rejection_reply():
     """构造传输层批准的精确存储拒绝白名单样本。"""
     return 200, {'status': 'error', 'message': '不存在的储存驱动'}
-
-
-def forbidden_reply():
-    """构造资料接口 HTTP 403 响应，其正文不应被读取。"""
-    return 403, {}
 
 
 def registry_upload(state, hosts=None, *, owned=False):
@@ -1221,31 +1465,25 @@ def post_data(state):
 @pytest.mark.parametrize('provider', ['beeimg_cn'])
 @pytest.mark.parametrize('token', ['', SECRET])
 def test_registry_cold_lookup_order_and_auth(integration, provider, token):
-    """冷缓存按组、可选账号、上传顺序执行且保持认证与直链。"""
+    """冷缓存只查组，按组首项上传且保持认证与直链。"""
     state = integration
-    state['replies'] = [group_reply()]
-    if token:
-        state['replies'].append(profile_reply())
-    state['replies'].append(upload_reply())
+    state['replies'] = [group_reply(), upload_reply()]
     result = registry_upload(state, [{'provider': provider, 'token': token}],
                              owned=True)
     assert result.success
     assert result.url == upload_reply()[1]['data']['public_url']
     assert result.attempts == (provider,)
     assert result.failures == ()
-    expected = ['/group', '/user/profile', '/upload'] if token else [
-        '/group', '/upload']
+    expected = ['/group', '/upload']
     assert [url.split('/api/v2')[1] for _, url, _ in state['calls']] == expected
-    assert [method for method, _, _ in state['calls']] == (
-        ['GET'] * (len(expected) - 1) + ['POST'])
+    assert [method for method, _, _ in state['calls']] == ['GET', 'POST']
     for _, _, kwargs in state['calls']:
         assert kwargs['headers'] == ({'Accept': 'application/json',
                                      'Authorization': 'Bearer ' + token}
                                     if token else {'Accept': 'application/json'})
         assert kwargs['allow_redirects'] is False
         assert kwargs['verify'] is True
-    assert post_data(state) == [{'storage_id': 14 if token else 13,
-                                 'is_public': '1'}]
+    assert post_data(state) == [{'storage_id': 13, 'is_public': '1'}]
 
 
 def test_registry_context_signature_and_hot_cache(integration):
@@ -1264,15 +1502,14 @@ def test_registry_context_signature_and_hot_cache(integration):
 
 
 def test_registry_event_reuses_queries_across_images(integration):
-    """外部事件跨图复用查询但每图只创建一次起点。"""
+    """外部事件跨图复用组查询但每图只创建一次起点。"""
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), upload_reply(),
-                        upload_reply()]
+    state['replies'] = [group_reply(), upload_reply(), upload_reply()]
     first = registry_upload(state)
     state['clock'][0] += 10
     second = registry_upload(state)
     assert first.success and second.success
-    assert [call[0] for call in state['calls']] == ['GET', 'GET', 'POST', 'POST']
+    assert [call[0] for call in state['calls']] == ['GET', 'POST', 'POST']
     assert len(state['context']._images) == 2
     assert state['context'].now() == state['clock'][0]
 
@@ -1319,8 +1556,9 @@ def test_registry_expiration_conflict_precedes_lookup(integration):
 
 
 @pytest.mark.parametrize('manual', [None, True, 0, -1, '13', [], {}, 99])
-def test_registry_manual_correction_refreshes_disk_once(integration, manual):
-    """无效手填不沿用旧缓存，新列表选默认且不修改输入。"""
+def test_registry_group_first_ignores_manual_with_disk_cache(
+        integration, manual):
+    """手填值不参与优先级，磁盘命中时按组首项静默选择且不改输入。"""
     state = integration
     cache = state['cache']
     assert cache.save(cache.identity(PROVIDER, SECRET), StorageMetadata(
@@ -1328,29 +1566,23 @@ def test_registry_manual_correction_refreshes_disk_once(integration, manual):
     hosts = [{'provider': PROVIDER, 'token': SECRET,
               'options': {'storage_id': manual}}]
     before = deepcopy(hosts)
-    state['replies'] = [group_reply((21, 22)), profile_reply(22), upload_reply(),
-                        upload_reply()]
+    state['replies'] = [upload_reply(), upload_reply()]
     first = registry_upload(state, hosts)
     second = registry_upload(state, hosts)
     assert first.success and second.success
     assert hosts == before
-    assert [data['storage_id'] for data in post_data(state)] == [22, 22]
-    assert [call[0] for call in state['calls']] == ['GET', 'GET', 'POST', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [13, 13]
+    assert [call[0] for call in state['calls']] == ['POST', 'POST']
     assert first.warnings == second.warnings == ('手填储存驱动不可用，已自动替代',)
-    assert all(state['context'].storage_state(
+    assert not any(state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used
         for image in state['context']._images)
 
 
 @pytest.mark.parametrize('reply', [(500, {}), group_reply(())])
-def test_registry_manual_refresh_failure_never_uses_old_cache(
-        integration, reply):
-    """纠错查询失败或空列表后不得发送旧编号或重复查询。"""
+def test_registry_lookup_failure_never_posts(integration, reply):
+    """查询失败或空组列表后不发送任何 POST，后续图片复用失败快照。"""
     state = integration
-    cache = state['cache']
-    identity = cache.identity(PROVIDER, SECRET)
-    assert cache.save(identity, StorageMetadata(
-        (13,), 13, None, state['clock'][0]))
     state['replies'] = [reply]
     hosts = [{'provider': PROVIDER, 'token': SECRET,
               'options': {'storage_id': 99}}]
@@ -1358,7 +1590,6 @@ def test_registry_manual_refresh_failure_never_uses_old_cache(
     assert not registry_upload(state, hosts).success
     assert len(state['calls']) == 1
     assert not post_data(state)
-    assert cache.load(identity) is None
 
 
 @pytest.mark.parametrize('provider', ['beeimg_cn'])
@@ -1366,14 +1597,14 @@ def test_registry_precise_rejection_refreshes_and_reposts_once(
         integration, provider):
     """精确拒绝只允许一次刷新重传且不增加配置槽位。"""
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
-                        group_reply((21,)), profile_reply(21), upload_reply()]
+    state['replies'] = [group_reply(), rejection_reply(), group_reply((21,)),
+                        upload_reply()]
     result = registry_upload(state, [{'provider': provider, 'token': SECRET}])
     assert result.success
     assert result.attempts == (provider,)
-    assert [data['storage_id'] for data in post_data(state)] == [14, 21]
+    assert [data['storage_id'] for data in post_data(state)] == [13, 21]
     assert [call[0] for call in state['calls']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+        'GET', 'POST', 'GET', 'POST']
     assert not state['replies']
     assert all(failure.code == 'storage_unavailable' for failure in result.failures)
 
@@ -1382,9 +1613,9 @@ def test_registry_precise_rejection_refreshes_and_reposts_once(
 def test_registry_recovery_stops_on_second_failure(integration, second):
     """刷新失败或第二次拒绝终止本站，不遍历存储也不无限重试。"""
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
+    state['replies'] = [group_reply(), rejection_reply()]
     if second == 'reject':
-        state['replies'] += [group_reply(), profile_reply(), rejection_reply()]
+        state['replies'] += [group_reply(), rejection_reply()]
     else:
         state['replies'] += [(500, {}) if second == 'query_fail'
                              else group_reply(())]
@@ -1395,29 +1626,35 @@ def test_registry_recovery_stops_on_second_failure(integration, second):
     assert not state['replies']
 
 
-def test_registry_manual_correction_consumes_recovery_budget(integration):
-    """上传前纠正后即使精确拒绝也不能再次 GET 或 POST。"""
+def test_registry_invalid_manual_keeps_recovery_budget(integration):
+    """非法手填转自动选择不消费预算，精确拒绝后仍有一次恢复。"""
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
+    state['replies'] = [group_reply(), rejection_reply(), group_reply((21,)),
+                        upload_reply()]
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'options': {'storage_id': 0}}])
-    assert not result.success
-    assert len(state['calls']) == 3
-    assert len(post_data(state)) == 1
-    assert result.failures[-1].code == 'storage_unavailable'
+    assert result.success
+    assert [data['storage_id'] for data in post_data(state)] == [13, 21]
+    assert [call[0] for call in state['calls']] == [
+        'GET', 'POST', 'GET', 'POST']
+    image, = state['context']._images
+    assert state['context'].storage_state(
+        image, 0, PROVIDER, SECRET).correction_used is True
+    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
 
 
-def test_registry_rejection_invalidates_cache_when_recovery_budget_is_used(
-        integration):
-    """纠错已耗尽重试预算时，精确拒绝仍须删除旧磁盘缓存。"""
+def test_registry_rejection_invalidates_disk_cache(integration):
+    """首次拒绝删除旧磁盘记录，重新查询落盘后第二次拒绝再删除它。"""
     state = integration
     identity = state['cache'].identity(PROVIDER, SECRET)
-    assert state['cache'].save(identity, metadata())
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply()]
-    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
-                                      'options': {'storage_id': 0}}])
+    assert state['cache'].save(identity, StorageMetadata(
+        (13, 14), None, None, state['clock'][0]))
+    state['replies'] = [rejection_reply(), group_reply((21,)),
+                        rejection_reply()]
+    result = registry_upload(state)
     assert not result.success
-    assert len(post_data(state)) == 1
+    assert [call[0] for call in state['calls']] == ['POST', 'GET', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [13, 21]
     assert state['cache'].load(identity) is None
 
 
@@ -1426,8 +1663,8 @@ def test_registry_exhausted_slot_does_not_reuse_stale_metadata_in_next_slot(
     """槽位 A 预算耗尽后，槽位 B 同身份重新查询且不额外重传。"""
     state = integration
     state['replies'] = [
-        group_reply(), profile_reply(), rejection_reply(),
-        group_reply((21,)), profile_reply(21), upload_reply(),
+        group_reply(), rejection_reply(), group_reply((21,)),
+        rejection_reply(), group_reply((22,)), upload_reply(),
     ]
     hosts = [
         {'provider': PROVIDER, 'token': SECRET,
@@ -1440,8 +1677,8 @@ def test_registry_exhausted_slot_does_not_reuse_stale_metadata_in_next_slot(
     assert result.success
     assert result.attempts == (PROVIDER, PROVIDER)
     assert [call[0] for call in state['calls']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
-    assert [data['storage_id'] for data in post_data(state)] == [14, 21]
+        'GET', 'POST', 'GET', 'POST', 'GET', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [13, 21, 22]
     image, = state['context']._images
     assert state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used
@@ -1461,12 +1698,12 @@ def test_registry_exhausted_slot_does_not_reuse_stale_metadata_in_next_slot(
 def test_registry_other_failures_are_never_retried(integration, reply, code):
     """非白名单拒绝、鉴权、限流、超时和解析失败均单 POST。"""
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), reply]
+    state['replies'] = [group_reply(), reply]
     result = registry_upload(state)
     assert not result.success
     assert result.failures[-1].code == code
     assert len(post_data(state)) == 1
-    assert len(state['calls']) == 3
+    assert len(state['calls']) == 2
 
 
 @pytest.mark.parametrize('first_limit, second_limit, duration, shortened', [
@@ -1478,9 +1715,8 @@ def test_registry_retry_preserves_deadline_and_shortening_pair(
     """重传成对继承历史，亚秒取整不误报且刷新只能缩短。"""
     state = integration
     start = state['clock'][0]
-    state['replies'] = [group_reply(retention=first_limit), profile_reply(),
-                        rejection_reply(), group_reply(retention=second_limit),
-                        profile_reply(), upload_reply()]
+    state['replies'] = [group_reply(retention=first_limit), rejection_reply(),
+                        group_reply(retention=second_limit), upload_reply()]
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'expiration': '10s'}])
     assert result.success
@@ -1504,8 +1740,7 @@ def test_registry_elapsed_deadline_prevents_second_post(integration):
         state['clock'][0] += 20
         return group_reply()
 
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
-                        advance, profile_reply()]
+    state['replies'] = [group_reply(), rejection_reply(), advance]
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'expiration': '10s'}])
     assert not result.success
@@ -1657,10 +1892,9 @@ def test_registry_same_identity_slots_have_independent_budgets(integration):
     """相同身份配置项共享版本但不共享预算，失败保留且备用可成功。"""
     state = integration
     state['replies'] = [
-        group_reply(), profile_reply(), rejection_reply(),
-        group_reply((21,)), profile_reply(21), rejection_reply(),
-        group_reply((21,)), profile_reply(21), rejection_reply(),
-        group_reply((22,)), profile_reply(22), upload_reply(),
+        group_reply(), rejection_reply(), group_reply((21,)),
+        rejection_reply(), group_reply((21,)), rejection_reply(),
+        group_reply((22,)), upload_reply(),
     ]
     hosts = [{'provider': PROVIDER, 'token': SECRET}] * 2
     result = registry_upload(state, hosts)
@@ -1668,8 +1902,8 @@ def test_registry_same_identity_slots_have_independent_budgets(integration):
     assert result.attempts == (PROVIDER, PROVIDER)
     assert result.failures
     assert all(f.code == 'storage_unavailable' for f in result.failures)
-    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 21, 22]
-    assert len(state['calls']) == 12
+    assert [d['storage_id'] for d in post_data(state)] == [13, 21, 21, 22]
+    assert len(state['calls']) == 8
     image, = state['context']._images
     first = state['context'].storage_state(image, 0, PROVIDER, SECRET)
     second = state['context'].storage_state(image, 1, PROVIDER, SECRET)
@@ -1686,20 +1920,28 @@ def test_registry_metadata_identity_isolated_and_reused(
     """BeeIMG.cn 不同凭证和匿名身份独立查询，后续图片各自复用。"""
     state = integration
     failure = (200, {'status': 'error', 'message': '普通业务拒绝'})
-    state['replies'] = [group_reply(), profile_reply(), failure,
-                        group_reply((21,), retention=30)]
-    if second_token:
-        state['replies'].append(profile_reply(21))
-    state['replies'] += [upload_reply(), failure, upload_reply()]
+    state['replies'] = [group_reply(), failure, group_reply(),
+                        upload_reply(), upload_reply()]
     hosts = [{'provider': PROVIDER, 'token': SECRET},
              {'provider': second_provider, 'token': second_token}]
-    for _ in range(2):
-        result = registry_upload(state, hosts)
-        assert result.success and result.provider == second_provider
-        assert result.attempts == (PROVIDER, second_provider)
-        assert len(result.failures) == 1
-    assert len(state['calls']) == (8 if second_token else 7)
-    assert [d['storage_id'] for d in post_data(state)] == [14, 21, 14, 21]
+    first = registry_upload(state, hosts)
+    second = registry_upload(state, hosts)
+    assert first.success and first.provider == second_provider
+    assert first.attempts == (PROVIDER, second_provider)
+    assert len(first.failures) == 1
+    assert second.success and second.provider == PROVIDER
+    assert second.attempts == (PROVIDER,)
+    assert second.failures == ()
+    headers = [kwargs['headers'] for method, _, kwargs in state['calls']
+               if method == 'GET']
+    expected_second = ({'Accept': 'application/json',
+                        'Authorization': 'Bearer ' + second_token}
+                       if second_token else {'Accept': 'application/json'})
+    assert headers == [{'Accept': 'application/json',
+                        'Authorization': 'Bearer ' + SECRET}, expected_second]
+    assert [call[0] for call in state['calls']] == [
+        'GET', 'POST', 'GET', 'POST', 'POST']
+    assert [d['storage_id'] for d in post_data(state)] == [13, 13, 13]
     assert not state['replies']
 
 
@@ -1785,9 +2027,8 @@ def test_registry_cache_warnings_drained_without_loss(integration, monkeypatch):
 
     monkeypatch.setattr(cache, '_write_atomic', save_failure)
     monkeypatch.setattr(cache, 'invalidate', delete_failure)
-    state['replies'] = [group_reply(retention=5), profile_reply(),
-                        rejection_reply(), group_reply(retention=10),
-                        profile_reply(), upload_reply()]
+    state['replies'] = [group_reply(retention=5), rejection_reply(),
+                        group_reply(retention=10), upload_reply()]
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'expiration': '20s'}])
     assert result.success
@@ -1798,84 +2039,67 @@ def test_registry_cache_warnings_drained_without_loss(integration, monkeypatch):
     assert SECRET not in repr(result) and BACKUP not in repr(result)
 
 
-@pytest.mark.parametrize('present, manual, success, code, posts', [
-    (False, None, False, 'profile_forbidden', 0),
-    (True, 7, True, None, 1),
-    (True, 99, False, 'profile_forbidden_invalid_storage', 0),
-    (True, '7', False, 'profile_forbidden_invalid_storage', 0),
+@pytest.mark.parametrize('present, manual, warnings, posts', [
+    (False, None, (), 1),
+    (True, 7, ('手填储存驱动不可用，已自动替代',), 1),
+    (True, 99, ('手填储存驱动不可用，已自动替代',), 1),
+    (True, '7', ('手填储存驱动不可用，已自动替代',), 1),
 ])
-def test_registry_profile_forbidden_matrix(
-        integration, present, manual, success, code, posts):
-    """资料 403 逐行覆盖决策表：合法手填才一次 POST，其余零 POST。"""
+def test_registry_group_first_ignores_manual_value(
+        integration, present, manual, warnings, posts):
+    """手填值不改变组首项选择；声明手填才给出替代提示并仍然 POST。"""
     state = integration
     options = {'storage_id': manual} if present else {}
-    state['replies'] = [group_reply((7,)), forbidden_reply()]
-    if success:
-        state['replies'].append(upload_reply())
+    state['replies'] = [group_reply((7,)), upload_reply()]
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'options': options}])
-    assert result.success is success
+    assert result.success
+    assert result.warnings == warnings
     methods = [method for method, _, _ in state['calls']]
-    assert methods == (['GET', 'GET', 'POST'] if success else ['GET', 'GET'])
+    assert methods == ['GET', 'POST']
     assert len(post_data(state)) == posts
-    if success:
-        assert [data['storage_id'] for data in post_data(state)] == [7]
-    else:
-        assert result.failures[-1].code == code
-        assert result.failures[-1].stage == 'profile'
-        assert result.failures[-1].http_status == 403
-        assert post_data(state) == []
+    assert [data['storage_id'] for data in post_data(state)] == [7]
 
 
-def test_registry_forbidden_prompt_texts_are_verbatim(integration):
-    """资料 403 的两条固定提示逐字匹配设计表格。"""
+def test_registry_never_requests_profile(integration):
+    """BeeIMG.CN 主链只请求组与上传，绝不请求账号资料。"""
     state = integration
-    state['replies'] = [group_reply((7,)), forbidden_reply()]
-    blocked = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET}])
-    assert not blocked.success
-    assert blocked.failures[-1].message == (
-        'BeeIMG.cn 账号资料接口无访问权限，请为令牌授权资料读取权限，'
-        '或填写该账号可用的 options.storage_id。')
-    state['replies'] = [group_reply((7,)), forbidden_reply()]
-    invalid = registry_upload(state, [{'provider': PROVIDER, 'token': BACKUP,
-                                       'options': {'storage_id': 99}}])
-    assert not invalid.success
-    assert invalid.failures[-1].message == (
-        '手填储存驱动无效，请授权资料读取权限或填写当前账号可用的 '
-        'options.storage_id。')
+    state['replies'] = [group_reply((7,)), upload_reply()]
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET}])
+    assert result.success
+    paths = [url.split('/api/v2')[1] for _, url, _ in state['calls']]
+    assert paths == ['/group', '/upload']
+    assert not state['replies']
 
 
-def test_registry_forbidden_manual_warning_is_deduplicated(integration):
-    """资料受限下的合法手填给出固定去重提示，并继续一次 POST。"""
+def test_registry_replaced_manual_warning_is_deduplicated(integration):
+    """手填被组内自动选择替代时给出固定去重提示，并继续一次 POST。"""
     state = integration
-    state['replies'] = [group_reply((7,)), forbidden_reply(), upload_reply(),
-                        upload_reply()]
+    state['replies'] = [group_reply((7,)), upload_reply(), upload_reply()]
     hosts = [{'provider': PROVIDER, 'token': SECRET,
               'options': {'storage_id': 7}}] * 2
     first = registry_upload(state, hosts)
     second = registry_upload(state, hosts)
     assert first.success and second.success
     assert [method for method, _, _ in state['calls']] == [
-        'GET', 'GET', 'POST', 'POST']
+        'GET', 'POST', 'POST']
     assert first.warnings == second.warnings == (
-        '资料读取受限，已验证手填储存驱动并继续上传',)
+        '手填储存驱动不可用，已自动替代',)
 
 
-def test_preupload_refresh_spends_post_recovery_budget(integration):
-    """旧缓存离表手填刷新后精确拒绝，预算已消费不再刷新或重传。"""
+def test_registry_recovery_budget_exhausted_after_second_rejection(
+        integration):
+    """两次精确拒绝后预算耗尽，不再查询也不授权第三次上传。"""
     state = integration
-    cache = state['cache']
-    identity = cache.identity(PROVIDER, SECRET)
-    assert cache.save(identity, StorageMetadata(
-        (13,), 13, None, state['clock'][0]))
-    state['replies'] = [group_reply((7,)), profile_reply(7), rejection_reply()]
+    state['replies'] = [group_reply(), rejection_reply(), group_reply((21,)),
+                        rejection_reply()]
     hosts = [{'provider': PROVIDER, 'token': SECRET,
               'options': {'storage_id': 7}}]
     result = registry_upload(state, hosts)
     assert not result.success
     assert [method for method, _, _ in state['calls']] == [
-        'GET', 'GET', 'POST']
-    assert [data['storage_id'] for data in post_data(state)] == [7]
+        'GET', 'POST', 'GET', 'POST']
+    assert [data['storage_id'] for data in post_data(state)] == [13, 21]
     assert result.failures[-1].code == 'storage_unavailable'
     image, = state['context']._images
     assert state['context'].storage_state(
@@ -1889,8 +2113,8 @@ def test_registry_recovery_records_two_real_attempts(integration):
     from modules.operation_trace import trace_scope
 
     state = integration
-    state['replies'] = [group_reply(), profile_reply(), rejection_reply(),
-                        group_reply(), profile_reply(), upload_reply()]
+    state['replies'] = [group_reply(), rejection_reply(), group_reply(),
+                        upload_reply()]
     events = []
     with trace_scope(
             mode='cli', images_planned=1, slots_planned=1,
@@ -1903,11 +2127,11 @@ def test_registry_recovery_records_two_real_attempts(integration):
 
     assert result.success
     assert [method for method, _, _ in state['calls']] == [
-        'GET', 'GET', 'POST', 'GET', 'GET', 'POST']
+        'GET', 'POST', 'GET', 'POST']
     assert summary['upload_post_attempts'] == 2
     assert summary['postupload_recoveries'] == 1
     assert (summary['group_get_attempts'],
-            summary['profile_get_attempts']) == (2, 2)
+            summary['profile_get_attempts']) == (2, 0)
     attempts = [event for event in events if event.stage == 'upload_attempt']
     assert [event.status for event in attempts] == [
         'started', 'failed', 'started', 'succeeded']

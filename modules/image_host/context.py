@@ -18,6 +18,7 @@ import hmac
 import math
 import os
 import time
+from typing import Literal
 
 from . import storage
 from .core import ImageHostError
@@ -79,7 +80,10 @@ class StorageState:
     """公开单图单配置的只读状态，不包含凭证或内部身份摘要。
 
     selection 为 None 表示尚未选择或此前选择的版本已经失效。
-    metadata_version 是本事件、本身份的递增版本，不是磁盘版本。
+    metadata_version 是本事件、本身份的递增版本，不是磁盘版本；
+    selection_source 为 'manual' 时该值表示发送前观察到的事件代次，
+    不声明本槽位拥有元数据，也不要求元数据存在或版本匹配。
+    rejected_storage_id 只记录本图本槽实际被拒绝的选择。
     历史期限由 record_expiration 显式记录，不在图片之间共享。
     """
 
@@ -88,6 +92,8 @@ class StorageState:
     correction_used: bool = False
     previous_deadline: float | None = None
     previous_shortened: bool | None = None
+    selection_source: Literal['manual', 'metadata'] | None = None
+    rejected_storage_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -258,13 +264,17 @@ class UploadContext:
             entry.disk_invalidated = True
 
     def invalidate(self, provider, token, *, version=None, disk_only=False):
-        """失效当前成功版本；重复待恢复或失败状态保持幂等。
+        """失效指定版本；版本不匹配时立即返回，不改内存也不删磁盘。
 
         已查询的身份立即删除磁盘记录。尚未查询的身份仅记录失效，
-        在首次 get_metadata 初始化磁盘身份后先删除再查询。
-        恢复失败在本事件内终止该代查询；再次 invalidate 不清除失败。
+        在首次 get_metadata 初始化磁盘身份后先删除再查询。带版本的
+        失效以调用方实际发送的代次为准：晚到的旧请求既不删除新代
+        内存结果，也不删除新代磁盘记录，也不重复递增。带版本且匹配
+        时同时清除该代成功与失败结果，使新代可重新查询。
         """
         entry = self._entry(provider, token)
+        if version is not None and entry.version != version:
+            return
         if disk_only:
             if entry.failure is not None:
                 return
@@ -276,11 +286,11 @@ class UploadContext:
                 self._cache_call('invalidate', entry.disk_identity)
                 entry.disk_invalidated = True
             return
-        if (entry.failure is not None or entry.invalidated
-                or (version is not None and entry.version != version)):
+        if (version is None and (entry.failure is not None or entry.invalidated)):
             return
         entry.version += 1
         entry.metadata = None
+        entry.failure = None
         entry.from_disk = False
         entry.corrected = False
         entry.invalidated = True
@@ -382,25 +392,72 @@ class UploadContext:
         return items, key
 
     def storage_state(self, image, index, provider, token) -> StorageState:
-        """读取冻结状态；已失效的选择不再向调用方暴露为可用选择。"""
+        """读取冻结状态；手填登记不要求元数据存在，其余需版本匹配。
+
+        手填登记只记录发送前观察到的事件代次，因此仍向调用方暴露
+        实际选择；元数据来源的选择在失效后不再暴露为可用选择。
+        """
         items, key = self._item(image, index, provider, token)
         state = items[key]
+        if state.selection_source == 'manual':
+            return state
         entry = self._entries.get(key[1])
         if (entry is None or entry.metadata is None
                 or entry.version != state.metadata_version):
             return replace(state, selection=None)
         return state
 
+    def record_manual_selection(self, image, index, provider, token,
+                                storage_id) -> StorageSelection:
+        """登记 BeeIMG.CN 首次手填直传，只使用事件身份与代次。
+
+        不查询、不初始化磁盘身份、不读写或失效缓存，也不改变失败
+        快照：登记的是发送前观察到的事件代次，无事件记录时基线为 0。
+        """
+        items, key = self._item(image, index, provider, token)
+        entry = self._entries.get(key[1])
+        selection = StorageSelection(storage_id, False)
+        items[key] = replace(
+            items[key], selection=selection, selection_source='manual',
+            metadata_version=(entry.version if entry is not None else 0))
+        return selection
+
     def prepare_storage(self, image, index, provider, token, *,
                         manual_present=False, manual_value=None
                         ) -> StorageSelection:
-        """选择当前可用存储，必要时消耗该图该项的一次纠错预算。
+        """选择当前可用存储；站点策略在明确的提供者边界分流。
 
-        旧磁盘列表上的无效手填触发一次纠错查询；本事件新列表则
-        直接替代。同配置同类手填问题共享已纠错事实，但每次均用
-        最新版本重新选择。非法手填只记录类别，不序列化或保留原对象。
+        BeeIMG.CN 按组顺序自动选择并只排除本图本槽刚被拒绝的候选；
+        Boltp 保留原有手填优先、纠错预算与资料受限告警语义。
         """
         items, key = self._item(image, index, provider, token)
+        if provider == 'beeimg_cn':
+            return self._prepare_group_storage(
+                items, key, provider, token, manual_present)
+        return self._prepare_legacy_storage(
+            items, key, provider, token, manual_present, manual_value)
+
+    def _prepare_group_storage(self, items, key, provider, token,
+                               manual_present) -> StorageSelection:
+        """BeeIMG.CN 按组顺序选择，排除本图本槽实际被拒绝的候选。
+
+        手填值不参与优先级，也不消费共享纠错预算或触发上传前刷新：
+        本事件新列表直接替代，其他图或其他槽位仍可选到同一编号。
+        """
+        current = self.get_metadata(provider, token)
+        entry = self._entries[key[1]]
+        selected = self._select_storage(
+            provider, current, manual_present, None,
+            excluded_id=items[key].rejected_storage_id)
+        items[key] = replace(items[key], selection=selected,
+                             metadata_version=entry.version,
+                             selection_source='metadata')
+        return selected
+
+    def _prepare_legacy_storage(self, items, key, provider, token,
+                                manual_present, manual_value
+                                ) -> StorageSelection:
+        """Boltp 旧算法：保留手填优先、跨图纠错预算与资料受限告警。"""
         manual = (manual_value if type(manual_value) is int
                   and manual_value > 0 else None)
         signature = (key, bool(manual_present), manual)
@@ -427,15 +484,19 @@ class UploadContext:
                 and current.profile_state == 'forbidden'):
             self._warn(_WARN_PROFILE_FORBIDDEN_MANUAL)
         items[key] = replace(items[key], selection=selected,
-                             metadata_version=entry.version)
+                             metadata_version=entry.version,
+                             selection_source='metadata')
         return selected
 
-    def _select_storage(self, provider, metadata, manual_present, manual):
+    def _select_storage(self, provider, metadata, manual_present, manual,
+                        *, excluded_id=None):
+        """显式按站点分发选择，并为恢复传入本图本槽的排除候选。"""
         with trace_operation('storage_select', 'select', provider=provider,
                              candidate_count=len(metadata.storage_ids)) as operation:
             try:
                 selected = select_storage(metadata, manual_present, manual,
-                                          provider=provider)
+                                          provider=provider,
+                                          excluded_id=excluded_id)
             except ImageHostError as error:
                 operation.finish('failed', reason_code=error.code)
                 raise
@@ -450,11 +511,12 @@ class UploadContext:
             return selected
 
     def begin_recovery(self, image, index, provider, token) -> bool:
-        """消费一次预算并按本图已用版本失效，不查询或执行 POST。
+        """消费一次预算并按本图已用代次失效，不查询或执行 POST。
 
         返回 True 仅表示允许继续取得恢复选择，不授权额外上传次数。
-        若另一图片已使旧版本失效或完成刷新，只消费本图预算而不再
-        删除新记录；后续 prepare_storage 复用新结果或同代失败快照。
+        BeeIMG.CN 按“发送时代次”推进：无记录时创建首代、同代重建
+        下一代、更新的网络代直接复用、仅来自磁盘的代必须刷新；
+        Boltp 保留原有候选与预算行为。
         """
         items, key = self._item(image, index, provider, token)
         state = items[key]
@@ -463,12 +525,23 @@ class UploadContext:
         if state.selection is None:
             items[key] = replace(state, correction_used=True)
             return False
-        entry = self._entries[key[1]]
-        if entry.version != state.metadata_version:
-            items[key] = replace(state, correction_used=True)
+        items[key] = replace(state, correction_used=True,
+                             rejected_storage_id=state.selection.storage_id)
+        entry = self._entries.get(key[1])
+        if provider != 'beeimg_cn':
+            if entry.version != state.metadata_version:
+                return True
+            self.invalidate(provider, token, version=state.metadata_version)
             return True
-        items[key] = replace(state, correction_used=True)
-        self.invalidate(provider, token, version=state.metadata_version)
+        baseline = state.metadata_version
+        if entry is None:
+            entry = _MetadataEntry(version=1, invalidated=True)
+            self._entries[key[1]] = entry
+            return True
+        if entry.version == baseline:
+            self.invalidate(provider, token, version=baseline)
+        elif entry.from_disk:
+            self.invalidate(provider, token, version=entry.version)
         return True
 
     def record_expiration(self, image, index, provider, token, decision):
