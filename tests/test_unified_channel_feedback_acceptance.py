@@ -301,11 +301,9 @@ def test_monitor_to_upload_to_push_feedback(monkeypatch, tmp_path):
     monitor = import_module('modules.monitor')
     pipeline = install_boundaries(monkeypatch)
     transport = Transport(monkeypatch, [
-        group_reply(), REJECTED_UPLOAD,
-        group_reply(), REJECTED_UPLOAD,
-        group_reply(), profile_reply(), SUCCESS_UPLOAD,
-        group_reply(), REJECTED_UPLOAD,
-        group_reply(), REJECTED_UPLOAD,
+        REJECTED_UPLOAD, group_reply(), REJECTED_UPLOAD,
+        group_reply(), SUCCESS_UPLOAD,
+        REJECTED_UPLOAD, group_reply(), REJECTED_UPLOAD,
         SUCCESS_UPLOAD,
     ])
     events, traces = [], []

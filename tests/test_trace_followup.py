@@ -167,19 +167,28 @@ def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, c
     from io import StringIO
     from modules.image_host.core import ImageHostError
     from modules.upload_status import make_status_consumer
-    from test_upload_stage_logging import Transport, group_reply, profile_reply
+    from test_upload_stage_logging import Transport
 
     cli = import_module('modules.screenshot.cli')
+    registry = import_module('modules.image_host.registry')
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+
+    def forbidden(image, filename, token, options):
+        """直接注入资料受限错误以验证提示可达，不发起任何真实请求。"""
+        raise ImageHostError('profile_forbidden', '')
+
+    monkeypatch.setitem(registry.UPLOADERS, 'beeimg_cn', forbidden)
     # 关闭状态回调：真实消费者把显示写入丢弃流，终端不出现上传反馈
     monkeypatch.setattr(
         cli, 'make_status_consumer',
         lambda **kwargs: make_status_consumer(stream=StringIO()))
     monkeypatch.setattr(cli, 'capture', Mock(return_value=CaptureResult(
         b'image', 'window', 'synthetic', 2, 2)))
-    transport = Transport(monkeypatch, [group_reply(), profile_reply(status=403)])
-    args = Namespace(source='window', target='synthetic', output=None,
-                     hosts=[{'provider': 'beeimg_cn', 'token': 'synthetic'}])
+    transport = Transport(monkeypatch, [])
+    args = Namespace(
+        source='window', target='synthetic', output=None,
+        hosts=[{'provider': 'beeimg_cn', 'token': 'synthetic',
+                'options': {'storage_id': 13}}])
     with caplog.at_level(logging.DEBUG):
         assert cli.run_screenshot_cli(args, str(tmp_path)) == 1
     assert ImageHostError('profile_forbidden', '').message in capsys.readouterr().out
@@ -187,6 +196,7 @@ def test_cli_permission_without_status_callback(monkeypatch, tmp_path, capsys, c
                and record.stage_event.reason_code == 'profile_forbidden'
                for record in caplog.records)
     assert not transport.posts
+    assert transport.sent == []
 
 
 @pytest.mark.parametrize('saved', [True, False])

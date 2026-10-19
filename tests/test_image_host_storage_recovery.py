@@ -1555,10 +1555,13 @@ def test_registry_expiration_conflict_precedes_lookup(integration):
     assert state['cache']._root is None
 
 
-@pytest.mark.parametrize('manual', [None, True, 0, -1, '13', [], {}, 99])
-def test_registry_group_first_ignores_manual_with_disk_cache(
-        integration, manual):
-    """手填值不参与优先级，磁盘命中时按组首项静默选择且不改输入。"""
+@pytest.mark.parametrize('manual, expected_id, replaced', [
+    (None, 13, True), (True, 13, True), (0, 13, True), (-1, 13, True),
+    ('13', 13, True), ([], 13, True), ({}, 13, True), (99, 99, False),
+])
+def test_registry_manual_validity_and_group_first_with_disk_cache(
+        integration, manual, expected_id, replaced):
+    """合法手填直传自身编号，非法手填按磁盘命中的组首项静默替换且不改输入。"""
     state = integration
     cache = state['cache']
     assert cache.save(cache.identity(PROVIDER, SECRET), StorageMetadata(
@@ -1571,9 +1574,11 @@ def test_registry_group_first_ignores_manual_with_disk_cache(
     second = registry_upload(state, hosts)
     assert first.success and second.success
     assert hosts == before
-    assert [data['storage_id'] for data in post_data(state)] == [13, 13]
+    assert [data['storage_id'] for data in post_data(state)] == [
+        expected_id, expected_id]
     assert [call[0] for call in state['calls']] == ['POST', 'POST']
-    assert first.warnings == second.warnings == ('手填储存驱动不可用，已自动替代',)
+    expected_warnings = (('手填储存驱动不可用，已自动替代',) if replaced else ())
+    assert first.warnings == second.warnings == expected_warnings
     assert not any(state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used
         for image in state['context']._images)
@@ -1584,8 +1589,7 @@ def test_registry_lookup_failure_never_posts(integration, reply):
     """查询失败或空组列表后不发送任何 POST，后续图片复用失败快照。"""
     state = integration
     state['replies'] = [reply]
-    hosts = [{'provider': PROVIDER, 'token': SECRET,
-              'options': {'storage_id': 99}}]
+    hosts = [{'provider': PROVIDER, 'token': SECRET}]
     assert not registry_upload(state, hosts).success
     assert not registry_upload(state, hosts).success
     assert len(state['calls']) == 1
@@ -2039,26 +2043,28 @@ def test_registry_cache_warnings_drained_without_loss(integration, monkeypatch):
     assert SECRET not in repr(result) and BACKUP not in repr(result)
 
 
-@pytest.mark.parametrize('present, manual, warnings, posts', [
-    (False, None, (), 1),
-    (True, 7, ('手填储存驱动不可用，已自动替代',), 1),
-    (True, 99, ('手填储存驱动不可用，已自动替代',), 1),
-    (True, '7', ('手填储存驱动不可用，已自动替代',), 1),
+@pytest.mark.parametrize('present, manual, manual_valid, replaced, expected_id', [
+    (False, None, False, False, 7),
+    (True, 7, True, False, 7),
+    (True, 99, True, False, 99),
+    (True, '7', False, True, 7),
 ])
-def test_registry_group_first_ignores_manual_value(
-        integration, present, manual, warnings, posts):
-    """手填值不改变组首项选择；声明手填才给出替代提示并仍然 POST。"""
+def test_registry_manual_validity_and_group_first_value(
+        integration, present, manual, manual_valid, replaced, expected_id):
+    """合法手填直传自身编号，非法手填按组首项自动选择并给出替代提示。"""
     state = integration
     options = {'storage_id': manual} if present else {}
-    state['replies'] = [group_reply((7,)), upload_reply()]
+    state['replies'] = ([upload_reply()] if manual_valid
+                        else [group_reply((7,)), upload_reply()])
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'options': options}])
     assert result.success
-    assert result.warnings == warnings
+    expected_warnings = (('手填储存驱动不可用，已自动替代',) if replaced else ())
+    assert result.warnings == expected_warnings
     methods = [method for method, _, _ in state['calls']]
-    assert methods == ['GET', 'POST']
-    assert len(post_data(state)) == posts
-    assert [data['storage_id'] for data in post_data(state)] == [7]
+    assert methods == (['POST'] if manual_valid else ['GET', 'POST'])
+    assert len(post_data(state)) == 1
+    assert [data['storage_id'] for data in post_data(state)] == [expected_id]
 
 
 def test_registry_never_requests_profile(integration):
@@ -2073,11 +2079,11 @@ def test_registry_never_requests_profile(integration):
 
 
 def test_registry_replaced_manual_warning_is_deduplicated(integration):
-    """手填被组内自动选择替代时给出固定去重提示，并继续一次 POST。"""
+    """非法手填被组内自动选择替代时给出固定去重提示，并继续一次 POST。"""
     state = integration
     state['replies'] = [group_reply((7,)), upload_reply(), upload_reply()]
     hosts = [{'provider': PROVIDER, 'token': SECRET,
-              'options': {'storage_id': 7}}] * 2
+              'options': {'storage_id': '7'}}] * 2
     first = registry_upload(state, hosts)
     second = registry_upload(state, hosts)
     assert first.success and second.success
@@ -2093,8 +2099,7 @@ def test_registry_recovery_budget_exhausted_after_second_rejection(
     state = integration
     state['replies'] = [group_reply(), rejection_reply(), group_reply((21,)),
                         rejection_reply()]
-    hosts = [{'provider': PROVIDER, 'token': SECRET,
-              'options': {'storage_id': 7}}]
+    hosts = [{'provider': PROVIDER, 'token': SECRET}]
     result = registry_upload(state, hosts)
     assert not result.success
     assert [method for method, _, _ in state['calls']] == [
@@ -2121,8 +2126,7 @@ def test_registry_recovery_records_two_real_attempts(integration):
             on_status=events.append) as trace:
         with trace_item(image_index=1, slot_index=1):
             result = registry_upload(state, [
-                {'provider': PROVIDER, 'token': SECRET,
-                 'options': {'storage_id': 14}}])
+                {'provider': PROVIDER, 'token': SECRET}])
         summary = trace.summary()
 
     assert result.success

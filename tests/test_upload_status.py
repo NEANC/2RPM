@@ -733,14 +733,20 @@ def test_cli_two_hosts_slots_not_folded(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, capsys):
-    """CLI 无手填遇 profile 403：终端呈现安全终态、零 POST 且退出码为 1。"""
+    """CLI 遇资料受限码时直接注入错误：呈现安全终态、零请求且退出码为 1。"""
     support = import_module('test_upload_stage_logging')
     cli = cli_module()
+
+    def forbidden(image, filename, token, options):
+        """直接注入资料受限错误以验证提示可达，不发起任何真实请求。"""
+        raise ImageHostError('profile_forbidden', '')
+
+    monkeypatch.setitem(registry_module().UPLOADERS, 'beeimg_cn', forbidden)
     monkeypatch.setattr(cli, 'capture', Mock(return_value=capture_result()))
-    transport = support.Transport(monkeypatch, [
-        support.group_reply(), support.profile_reply(status=403)])
+    transport = support.Transport(monkeypatch, [])
     code = cli.run_screenshot_cli(
-        cli_args(hosts=[{'provider': 'beeimg_cn', 'token': SECRET}]),
+        cli_args(hosts=[{'provider': 'beeimg_cn', 'token': SECRET,
+                         'options': {'storage_id': 13}}]),
         str(tmp_path))
     captured = capsys.readouterr()
     out = captured.out
@@ -807,15 +813,15 @@ def test_preupload_failure_displays_one_slot_failure(monkeypatch, capsys):
 
 def test_recovery_success_does_not_display_intermediate_failure(
         monkeypatch, tmp_path, capsys):
-    """精确拒绝后恢复成功只显示一次最终成功，不显示中途请求失败。"""
+    """手填直传遇精确拒绝后恢复成功只显示一次最终成功，不显示中途请求失败。"""
     support = import_module('test_upload_stage_logging')
     pipeline = pipeline_module()
     monkeypatch.setattr(pipeline, 'capture', Mock(return_value=capture_result()))
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
     support.Transport(monkeypatch, [
-        support.group_reply(), support.REJECTED_UPLOAD,
-        support.group_reply(), support.SUCCESS_UPLOAD])
+        support.REJECTED_UPLOAD, support.group_reply(),
+        support.SUCCESS_UPLOAD])
     events, traces = [], []
     spy_trace_scope(monkeypatch, pipeline, events, traces)
     batch = pipeline.prepare_screenshots(

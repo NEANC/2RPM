@@ -937,18 +937,17 @@ def test_transport_counts_not_started_counts(monkeypatch, tmp_path):
         monkeypatch, tmp_path,
         [{'provider': 'beeimg_cn', 'token': 'synthetic',
           'options': {'storage_id': 13}}],
-        replies=[stage.group_reply(), stage.profile_reply(),
-                 stage.SUCCESS_UPLOAD])
+        replies=[stage.SUCCESS_UPLOAD])
     summary = run.summary
     assert summary['group_get_attempts'] == len(
-        run.transport.gets('group')) == 1
+        run.transport.gets('group')) == 0
     assert summary['profile_get_attempts'] == len(
-        run.transport.gets('profile')) == 1
+        run.transport.gets('profile')) == 0
     assert summary['upload_post_attempts'] == len(run.transport.posts) == 1
     assert (summary['group_get_succeeded'], summary['group_get_failed'],
-            summary['group_get_cancelled']) == (1, 0, 0)
+            summary['group_get_cancelled']) == (0, 0, 0)
     assert (summary['profile_get_succeeded'], summary['profile_get_failed'],
-            summary['profile_get_cancelled']) == (1, 0, 0)
+            summary['profile_get_cancelled']) == (0, 0, 0)
     assert (summary['upload_post_succeeded'], summary['upload_post_failed'],
             summary['upload_post_cancelled']) == (1, 0, 0)
 
