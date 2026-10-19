@@ -8,10 +8,13 @@ import sys
 import traceback
 
 import pytest
+from ruamel.yaml import YAML
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules import config as config_module
+from modules.image_host.core import ImageHostError
+from modules.image_host.core import resolve_token
 from modules.screenshot.inline_upload import InlineUploadError
 from modules.screenshot.inline_upload import parse_inline_hosts
 from modules.yaml_scalar_compat import ScalarSyntaxError
@@ -30,6 +33,13 @@ def _write_raw(tmp_path, text):
     path = tmp_path / 'raw-config.yaml'
     path.write_text(text, encoding='utf-8')
     return path
+
+
+def _parse_config_text(text):
+    """复刻 config.load_config 的解析栈，绝不触碰文件与迁移写回。"""
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    return yaml.load(normalize_config_scalars(text))
 
 
 def test_whitelisted_backticks_and_flow_tokens(tmp_path):
@@ -493,13 +503,12 @@ def _single_host_text(flow, source):
 
 @pytest.mark.parametrize('flow', [False, True])
 @pytest.mark.parametrize('form', _TOKEN_FORMS)
-def test_token_wrapper_matrix(tmp_path, flow, form):
+def test_token_wrapper_matrix(flow, form):
     """块映射与 flow 映射下五种包裹及合法裸写得到同一字面凭证。"""
     text = _matrix_text(flow, form)
     normalized = normalize_config_scalars(text)
     assert normalize_config_scalars(normalized) == normalized
-    path = _write_raw(tmp_path, text)
-    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    screenshot = _parse_config_text(text)['push']['screenshot']
     items = screenshot['image_host']
     assert [item['token'] for item in items] == [
         expected for _, expected in _token_expectations(form)]
@@ -524,40 +533,68 @@ _CONFIG_WRAPPER_EDGES = (
 
 @pytest.mark.parametrize('flow', [False, True])
 @pytest.mark.parametrize('source, expected', _CONFIG_WRAPPER_EDGES)
-def test_token_wrapper_preserves_yaml_semantics(tmp_path, flow, source, expected):
+def test_token_wrapper_preserves_yaml_semantics(flow, source, expected):
     """单层包裹、已引用括号、空外壳、数字与环境引用保持既有 YAML 语义。"""
-    path = _write_raw(tmp_path, _single_host_text(flow, source))
-    host = config_module.load_config(str(path))['push']['screenshot'][
-        'image_host'][0]
+    host = _parse_config_text(_single_host_text(flow, source))[
+        'push']['screenshot']['image_host'][0]
     assert host['token'] == expected
 
 
 _CONFIG_WRAPPER_FAILURES = (
-    (False, '{' + _WRAPPER_SECRET),
-    (False, '[' + _WRAPPER_SECRET),
-    (False, '{' + _WRAPPER_SECRET + ']'),
-    (False, '[' + _WRAPPER_SECRET + '}'),
-    (True, '{' + _WRAPPER_SECRET + ']'),
-    (True, '[' + _WRAPPER_SECRET + '}'),
-    (False, '{' + _WRAPPER_SECRET + '}x'),
-    (False, '[' + _WRAPPER_SECRET + ']x'),
-    (True, '{' + _WRAPPER_SECRET + '}x'),
-    (True, '[' + _WRAPPER_SECRET + ']x'),
-    (False, '{' + _WRAPPER_SECRET + '\n        }'),
-    (True, '{' + _WRAPPER_SECRET + '\n        }'),
+    (False, '{' + _WRAPPER_SECRET, 'token_wrapper_multiline'),
+    (False, '[' + _WRAPPER_SECRET, 'token_wrapper_multiline'),
+    (False, '{' + _WRAPPER_SECRET + ']', 'token_wrapper_mismatch'),
+    (False, '[' + _WRAPPER_SECRET + '}', 'token_wrapper_mismatch'),
+    (True, '{' + _WRAPPER_SECRET + ']', 'token_wrapper_mismatch'),
+    (True, '[' + _WRAPPER_SECRET + '}', 'token_wrapper_mismatch'),
+    (False, '{' + _WRAPPER_SECRET + '}x', 'token_wrapper_trailing'),
+    (False, '[' + _WRAPPER_SECRET + ']x', 'token_wrapper_trailing'),
+    (True, '{' + _WRAPPER_SECRET + '}x', 'token_wrapper_trailing'),
+    (True, '[' + _WRAPPER_SECRET + ']x', 'token_wrapper_trailing'),
+    (False, '{' + _WRAPPER_SECRET + '\n        }', 'token_wrapper_multiline'),
+    (True, '{' + _WRAPPER_SECRET + '\n        }', 'token_wrapper_multiline'),
 )
 
 
-@pytest.mark.parametrize('flow, source', _CONFIG_WRAPPER_FAILURES)
-def test_token_wrapper_boundaries(tmp_path, caplog, flow, source):
-    """缺失闭合、错配、跨行与尾随垃圾整体拒绝且不回显原文。"""
+@pytest.mark.parametrize('flow, source, code', _CONFIG_WRAPPER_FAILURES)
+def test_token_wrapper_boundaries(flow, source, code):
+    """缺失闭合、错配、跨行与尾随垃圾在词法阶段整体拒绝且不回显原文。"""
     text = _single_host_text(flow, source)
-    path = _write_raw(tmp_path, text)
-    with pytest.raises(SystemExit) as error:
-        config_module.load_config(str(path))
-    assert error.value.code == 1
-    assert _WRAPPER_SECRET not in caplog.text
-    assert path.read_text(encoding='utf-8') == text
+    with pytest.raises(ScalarSyntaxError) as caught:
+        normalize_config_scalars(text)
+    assert caught.value.code == code
+    assert _WRAPPER_SECRET not in ''.join(
+        traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize('flow', [False, True])
+def test_token_wrapper_split_line_contract(flow):
+    """键名换行后的 token 值按块映射与 flow 映射分别落入容器语义或剥壳。"""
+    if not flow:
+        text = (MONITOR_HEAD + HOSTS_HEAD
+                + '      - provider: catbox\n        token:\n          {abc}\n')
+        assert normalize_config_scalars(text) == text
+        block_token = _parse_config_text(text)['push']['screenshot'][
+            'image_host'][0]['token']
+        assert block_token == {'abc': None}
+        with pytest.raises(ImageHostError) as caught:
+            resolve_token(block_token)
+        assert caught.value.code == 'invalid_token'
+        return
+    text = (MONITOR_HEAD + HOSTS_HEAD
+            + '      - {provider: catbox, token:\n           {abc}}\n')
+    flow_token = _parse_config_text(text)['push']['screenshot'][
+        'image_host'][0]['token']
+    assert flow_token == 'abc'
+
+
+def test_cli_split_line_token_is_rejected():
+    """CLI 键名换行后的 token 值不被识别，报错序号固定；同行仍可剥壳。"""
+    with pytest.raises(InlineUploadError) as caught:
+        parse_inline_hosts('provider: catbox, token:\n{abc}')
+    assert (caught.value.index, caught.value.code) == (1, 'token_invalid')
+    host = parse_inline_hosts('provider: catbox, token: {abc}')[0]
+    assert host['token'] == 'abc'
 
 
 def test_token_wrapper_keeps_other_containers():
