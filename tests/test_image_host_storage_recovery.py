@@ -15,18 +15,58 @@ import time
 
 import pytest
 import requests
+from ruamel.yaml import YAML
 
 from modules.image_host.core import ImageHostError
 from modules.image_host.diagnostics import safe_current_message
 from modules.image_host.expiration import ExpirationDecision
 from modules.image_host.storage import StorageMetadata
 from modules.image_host.storage_cache import StorageCache
+from modules.screenshot.inline_upload import parse_inline_hosts
+from modules.screenshot.inline_upload import prepare_cli_host
+from modules.yaml_scalar_compat import normalize_config_scalars
 
 
 SECRET = 'FAKE_EVENT_PRIMARY_7319'
 BACKUP = 'FAKE_EVENT_BACKUP_8420'
 ENV_NAME = 'SYNTHETIC_EVENT_CREDENTIAL'
 PROVIDER = 'beeimg_cn'
+TOKEN = '123|offline-token'
+TOKEN_FORMS = ('plain', 'single', 'double', 'backtick', 'brace', 'bracket')
+HOSTS_HEAD = 'push:\n  screenshot:\n    image_host:\n'
+
+
+class _NoIoCache:
+    """在任何缓存访问上失败的事件替身，确保身份测试不触碰磁盘。"""
+
+    def __getattr__(self, name):
+        """禁止意外的缓存调用。"""
+        raise AssertionError('身份测试不应访问缓存')
+
+
+def token_source(form, text):
+    """返回 token 值在测试配置中使用的 YAML 源片段。"""
+    if form == 'single':
+        return "'" + text + "'"
+    if form == 'double':
+        return '"' + text + '"'
+    if form == 'backtick':
+        return '`' + text + '`'
+    if form == 'brace':
+        return '{' + text + '}'
+    if form == 'bracket':
+        return '[' + text + ']'
+    return text
+
+
+def parsed_config_token(form, text=TOKEN):
+    """经真实词法预处理与 YAML 往返解析取得 token 标量。"""
+    document = (HOSTS_HEAD + '      - {provider: catbox, token: '
+                + token_source(form, text) + '}\n')
+    parser = YAML()
+    parser.preserve_quotes = True
+    return parser.load(normalize_config_scalars(document))[
+        'push']['screenshot']['image_host'][0]['token']
 
 
 def context_module():
@@ -104,6 +144,82 @@ def test_resolved_token_snapshot_is_used_once_and_cleared():
     assert context.resolve_credential(0, host) == '${LITERAL}'
     context.close()
     assert context._resolved_tokens == {}
+
+
+def test_resolved_scalar_token_is_not_reparsed(monkeypatch):
+    """注入的解析器字符串子类归一为内置 str，且不触发二次解析。"""
+    module = context_module()
+    calls = []
+    resolve = module.resolve_token
+
+    def observed(value):
+        """记录解析器调用并保持既有解析行为。"""
+        calls.append(value)
+        return resolve(value)
+
+    monkeypatch.setattr(module, 'resolve_token', observed)
+    token = parsed_config_token('single', '${LITERAL}')
+    assert type(token) is not str
+    context = module.UploadContext(resolved_tokens={0: token})
+    credential = context.resolve_credential(
+        0, {'provider': 'catbox', 'token': '${MISSING_TOKEN}'})
+    assert type(credential) is str
+    assert credential == '${LITERAL}'
+    assert calls == []
+    context.close()
+    assert context._resolved_tokens == {}
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('form', TOKEN_FORMS)
+def test_quoted_tokens_reach_storage_identity(provider, form):
+    """真实解析得到的引号凭证冻结后进入事件身份，与内置等值相同。"""
+    module = context_module()
+    context = module.UploadContext(cache=_NoIoCache())
+    token = parsed_config_token(form)
+    credential = context.resolve_credential(
+        0, {'provider': provider, 'token': token})
+    assert type(credential) is str
+    assert credential == TOKEN
+    identity = context._identity(provider, credential)
+    assert type(identity) is bytes
+    assert identity == context._identity(provider, TOKEN)
+    context.close()
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+@pytest.mark.parametrize('form', TOKEN_FORMS)
+def test_cli_quoted_token_snapshot(wrapped, form):
+    """内联整项解析到 CLI 快照注入全程保持内置 str 且不被二次解释。"""
+    body = ('provider: beeimg_cn, token: ' + token_source(form, TOKEN)
+            + ', options: {storage_id: 1}')
+    host = parse_inline_hosts('{' + body + '}' if wrapped else body)[0]
+    prepared, error = prepare_cli_host(host)
+    assert error is None
+    assert type(prepared['token']) is str
+    assert prepared['token'] == TOKEN
+    context = context_module().UploadContext(
+        resolved_tokens={0: prepared['token']})
+    credential = context.resolve_credential(0, host)
+    assert type(credential) is str
+    assert credential == TOKEN
+    context.close()
+
+
+@pytest.mark.parametrize('env_value', ['${LITERAL}', '{literal}', '[literal]'])
+def test_cli_environment_value_is_not_reexpanded(monkeypatch, env_value):
+    """环境值经内联快照注入后不再被解释为引用或外壳。"""
+    monkeypatch.setenv(ENV_NAME, env_value)
+    host = parse_inline_hosts(
+        'provider: catbox, token: ${{{name}}}'.format(name=ENV_NAME))[0]
+    prepared, error = prepare_cli_host(host)
+    assert error is None
+    assert type(prepared['token']) is str
+    assert prepared['token'] == env_value
+    context = context_module().UploadContext(
+        resolved_tokens={0: prepared['token']})
+    assert context.resolve_credential(0, host) == env_value
+    context.close()
 
 
 def test_constructor_contract_has_no_io(monkeypatch, tmp_path):

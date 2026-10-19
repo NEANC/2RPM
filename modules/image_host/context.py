@@ -488,9 +488,12 @@ class UploadContext:
                 if self._diagnostics and type(raw) is str and raw:
                     self._secrets = tuple(dict.fromkeys(
                         self._secrets + (raw,)))
-                token = (self._resolved_tokens[index]
-                         if index in self._resolved_tokens
-                         else resolve_token(raw))
+                if index in self._resolved_tokens:
+                    injected = self._resolved_tokens[index]
+                    token = (str(injected) if isinstance(injected, str)
+                             else injected)
+                else:
+                    token = resolve_token(raw)
             except Exception as error:
                 failure = self._failure(error, fallback='config_error')
                 self._credentials[index] = _Credential(None, failure)

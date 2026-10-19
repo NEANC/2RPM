@@ -16,8 +16,11 @@ import socket
 import time
 
 import pytest
+from ruamel.yaml import YAML
 
+from modules.image_host.core import resolve_token
 from modules.image_host.storage import StorageMetadata
+from modules.yaml_scalar_compat import normalize_config_scalars
 
 
 SECRET = 'FAKE_CACHE_SECRET_9381'
@@ -31,6 +34,9 @@ WARN_READ = '存储元数据缓存读取失败'
 WARN_SAVE = '存储元数据缓存保存失败'
 WARN_INVALIDATE = '存储元数据缓存失效失败'
 WARNINGS = {WARN_UNAVAILABLE, WARN_READ, WARN_SAVE, WARN_INVALIDATE}
+TOKEN = '123|offline-token'
+TOKEN_FORMS = ('plain', 'single', 'double', 'backtick', 'brace', 'bracket')
+HOSTS_HEAD = 'push:\n  screenshot:\n    image_host:\n'
 
 
 def cache_module():
@@ -77,6 +83,32 @@ def record_path(root, identity):
 def write_payload(root, identity, value):
     """只向隔离目录写入合成 JSON，用于读盘重新验证。"""
     record_path(root, identity).write_bytes(json.dumps(value).encode('utf-8'))
+
+
+def token_source(form, text):
+    """返回 token 值在测试配置中使用的 YAML 源片段。"""
+    if form == 'single':
+        return "'" + text + "'"
+    if form == 'double':
+        return '"' + text + '"'
+    if form == 'backtick':
+        return '`' + text + '`'
+    if form == 'brace':
+        return '{' + text + '}'
+    if form == 'bracket':
+        return '[' + text + ']'
+    return text
+
+
+def resolved_config_token(form, text=TOKEN):
+    """经真实配置词法预处理、往返解析与凭证解析得到内置 str 凭证。"""
+    document = (HOSTS_HEAD + '      - {provider: beeimg_cn, token: '
+                + token_source(form, text) + ', options: {storage_id: 1}}\n')
+    parser = YAML()
+    parser.preserve_quotes = True
+    host = parser.load(normalize_config_scalars(document))[
+        'push']['screenshot']['image_host'][0]
+    return resolve_token(host['token'])
 
 
 def assert_safe(cache, caplog, capsys):
@@ -279,6 +311,33 @@ def test_identity_hmac_is_stable_isolated_and_secret_free(
             assert secret not in path.name
             assert secret.encode('utf-8') not in data
     assert expected not in repr(cache)
+    assert cache.take_warnings() == ()
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+def test_quoted_tokens_share_cache_identity(tmp_path, provider):
+    """解析后的六种等值写法得到同一持久身份，站点与凭证仍隔离。"""
+    cache = cache_module().StorageCache(tmp_path)
+    identities = []
+    for form in TOKEN_FORMS:
+        identity = cache.identity(provider, resolved_config_token(form))
+        assert isinstance(identity, str)
+        identities.append(identity)
+    assert len(set(identities)) == 1
+    reference = cache.identity(provider, TOKEN)
+    assert identities[0] == reference
+    key = (tmp_path / KEY_NAME).read_bytes()
+    expected = hmac.new(key, provider.encode('ascii') + b'\0'
+                        + TOKEN.encode('utf-8'), hashlib.sha256).hexdigest()
+    assert reference == provider + '-' + expected
+    other_provider = 'boltp' if provider == 'beeimg_cn' else 'beeimg_cn'
+    assert cache.identity(other_provider, TOKEN) != reference
+    assert cache.identity(provider, OTHER_SECRET) != reference
+    assert cache.identity(provider, '') != reference
+    for path in tmp_path.iterdir():
+        data = path.read_bytes()
+        assert TOKEN not in path.name
+        assert TOKEN.encode('utf-8') not in data
     assert cache.take_warnings() == ()
 
 

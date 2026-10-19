@@ -12,6 +12,9 @@ import os
 import traceback
 
 import pytest
+from ruamel.yaml import YAML
+
+from modules.yaml_scalar_compat import normalize_config_scalars
 
 
 IMAGE = b'fixed-nonempty-image'
@@ -21,11 +24,40 @@ SECRET = 'FAKE_DIRECT_SECRET_7319'
 ENV_SECRET = 'FAKE_ENV_SECRET_8420'
 ENV_NAME = 'IMAGE_HOST_TEST_TOKEN'
 SYNTHETIC_JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature'
+TOKEN = '123|offline-token'
+HOSTS_HEAD = 'push:\n  screenshot:\n    image_host:\n'
+TOKEN_FORMS = ('plain', 'single', 'double', 'backtick', 'brace', 'bracket')
+WRAPPED_FORMS = ('single', 'double', 'backtick', 'brace', 'bracket')
 
 
 def core():
     """延迟导入实际核心，使缺少实现表现为用例失败。"""
     return import_module('modules.image_host.core')
+
+
+def token_source(form, text):
+    """返回 token 值在测试配置中使用的 YAML 源片段。"""
+    if form == 'single':
+        return "'" + text + "'"
+    if form == 'double':
+        return '"' + text + '"'
+    if form == 'backtick':
+        return '`' + text + '`'
+    if form == 'brace':
+        return '{' + text + '}'
+    if form == 'bracket':
+        return '[' + text + ']'
+    return text
+
+
+def parse_config_host(form, text=TOKEN):
+    """经真实词法预处理与 YAML 往返解析取得内存图床配置项。"""
+    document = (HOSTS_HEAD + '      - {provider: beeimg_cn, token: '
+                + token_source(form, text) + ', options: {storage_id: 1}}\n')
+    parser = YAML()
+    parser.preserve_quotes = True
+    return parser.load(normalize_config_scalars(document))[
+        'push']['screenshot']['image_host'][0]
 
 
 def registry():
@@ -257,6 +289,49 @@ def test_non_string_token_is_not_coerced(value):
     """非字符串凭证不通过真值判断或强制转换蒙混过关。"""
     with pytest.raises(core().ImageHostError) as caught:
         core().resolve_token(value)
+    assert caught.value.code == 'invalid_token'
+
+
+@pytest.mark.parametrize('value', [['plain'], {'plain': 'token'}])
+def test_direct_container_token_is_rejected(value):
+    """直接向凭证接口传入非空容器仍为 invalid_token。"""
+    with pytest.raises(core().ImageHostError) as caught:
+        core().resolve_token(value)
+    assert caught.value.code == 'invalid_token'
+
+
+def test_plain_none_and_empty_credentials_keep_semantics():
+    """直接普通字符串、前后空白、None 与空串保持既有匿名及保真语义。"""
+    assert type(core().resolve_token(TOKEN)) is str
+    assert core().resolve_token(TOKEN) == TOKEN
+    assert core().resolve_token('  key\t ') == '  key\t '
+    assert core().resolve_token(None) == ''
+    assert core().resolve_token('') == ''
+
+
+@pytest.mark.parametrize('form', TOKEN_FORMS)
+def test_quoted_config_tokens_are_builtin_strings(form):
+    """六种包裹写法经真实配置解析后得到内置 str 凭证。"""
+    resolved = core().resolve_token(parse_config_host(form)['token'])
+    assert type(resolved) is str
+    assert resolved == TOKEN
+
+
+@pytest.mark.parametrize('form', WRAPPED_FORMS)
+def test_quoted_numeric_config_token_is_accepted_as_string(form):
+    """五种显式包裹的数字仍作为字符串凭证接受。"""
+    resolved = core().resolve_token(parse_config_host(form, '12345')['token'])
+    assert type(resolved) is str
+    assert resolved == '12345'
+
+
+@pytest.mark.parametrize('source', ['12345', 'true', 'false'])
+def test_bare_scalar_config_token_is_not_coerced(source):
+    """无包裹数字与布尔值保持 YAML 原始类型并被凭证边界拒绝。"""
+    parsed = parse_config_host('plain', source)['token']
+    assert type(parsed) is not str
+    with pytest.raises(core().ImageHostError) as caught:
+        core().resolve_token(parsed)
     assert caught.value.code == 'invalid_token'
 
 

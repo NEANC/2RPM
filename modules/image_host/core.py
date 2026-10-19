@@ -119,6 +119,7 @@ def resolve_token(value) -> str:
 
     缺失及空字符串表示匿名凭证；是否允许匿名由适配器决定。
     环境变量名仅允许 ASCII 标识符，直接凭证不去除空白。
+    直接凭证统一归一为内置 str，不向调用方保留宿主字符串子类。
     """
     if value is None:
         return ''
@@ -132,7 +133,7 @@ def resolve_token(value) -> str:
         return token
     if '${' in value:
         raise ImageHostError('invalid_environment_reference', '')
-    return value
+    return str(value)
 
 
 def _valid_host(host):
