@@ -18,6 +18,8 @@ import time
 import pytest
 from ruamel.yaml import YAML
 
+from modules.image_host import storage_beeimg_cn
+from modules.image_host import storage_boltp as boltp
 from modules.image_host.core import resolve_token
 from modules.image_host.storage import StorageMetadata
 from modules.yaml_scalar_compat import normalize_config_scalars
@@ -60,12 +62,15 @@ def isolated_environment(monkeypatch, tmp_path):
 
 
 def make_cache(tmp_path, clock=None):
-    """创建隔离实例、身份和合法的合成元数据。"""
+    """创建隔离实例、身份和合法的合成元数据。
+
+    身份固定为 BeeIMG.CN，其新语义不存在账号默认存储，故默认编号为 None。
+    """
     cache = cache_module().StorageCache(
         tmp_path, clock=clock if clock is not None else lambda: 1000.0)
     identity = cache.identity('beeimg_cn', SECRET)
     assert isinstance(identity, str)
-    return cache, identity, StorageMetadata((13,), 13, 3600, 1000.0)
+    return cache, identity, StorageMetadata((13,), None, 3600, 1000.0)
 
 
 def payload():
@@ -73,6 +78,13 @@ def payload():
     return {'version': 1, 'provider': 'beeimg_cn', 'fetched_at': 1000.0,
             'storage_ids': [14, 13, 14], 'default_storage_id': 99,
             'file_expire_seconds': None}
+
+
+def legacy_payload(provider, fetched_at):
+    """构造不含 profile_state 的原始 v1 记录，默认编号仍为旧版取值。"""
+    return {'version': 1, 'provider': provider, 'fetched_at': fetched_at,
+            'storage_ids': [13, 14], 'default_storage_id': 14,
+            'file_expire_seconds': 0}
 
 
 def record_path(root, identity):
@@ -344,12 +356,12 @@ def test_quoted_tokens_share_cache_identity(tmp_path, provider):
 @pytest.mark.parametrize('expire', [None, 0, 3600])
 @pytest.mark.parametrize('default', [None, 13, 99])
 def test_roundtrip_frozen_minimal_metadata(tmp_path, expire, default):
-    """真实往返保序去重、保留离表默认值且不混淆零和未知。"""
+    """真实往返保序去重、写盘保留原默认值而读盘按站点归一。"""
     cache, identity, _ = make_cache(tmp_path)
     metadata = StorageMetadata((14, 13, 14), default, expire, 1000.0)
     assert cache.save(identity, metadata)
     result = cache.load(identity)
-    assert result == StorageMetadata((14, 13), default, expire, 1000.0)
+    assert result == StorageMetadata((14, 13), None, expire, 1000.0)
     assert metadata.storage_ids == (14, 13, 14)
     with pytest.raises(FrozenInstanceError):
         result.fetched_at = 0
@@ -357,6 +369,7 @@ def test_roundtrip_frozen_minimal_metadata(tmp_path, expire, default):
     assert set(stored) == set(payload())
     assert stored['provider'] == 'beeimg_cn'
     assert stored['version'] == 1
+    assert stored['default_storage_id'] == default
     assert cache.take_warnings() == ()
 
 
@@ -512,6 +525,97 @@ def test_loaded_v1_record_reports_not_requested(tmp_path):
         loaded.profile_state = 'forbidden'
 
 
+def test_legacy_beeimg_default_is_normalized(tmp_path):
+    """旧 BeeIMG.CN 记录的账号默认编号在读盘归一为 None，Boltp 保留原值。"""
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
+    bee_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+    assert bee_identity != boltp_identity
+    write_payload(tmp_path, bee_identity, legacy_payload('beeimg_cn', 1000.0))
+    write_payload(tmp_path, boltp_identity, legacy_payload('boltp', 1000.0))
+    assert (json.loads(record_path(tmp_path, bee_identity).read_bytes())
+            ['default_storage_id'] == 14)
+    assert (json.loads(record_path(tmp_path, boltp_identity).read_bytes())
+            ['default_storage_id'] == 14)
+    bee_loaded = cache.load(bee_identity)
+    boltp_loaded = cache.load(boltp_identity)
+    assert bee_loaded.storage_ids == (13, 14)
+    assert bee_loaded.default_storage_id is None
+    assert bee_loaded.profile_state == 'not_requested'
+    assert boltp_loaded.default_storage_id == 14
+    assert boltp.select_storage(boltp_loaded, False, None).storage_id == 14
+    bee_selected = storage_beeimg_cn.select_storage(bee_loaded, False, None)
+    assert bee_selected.storage_id == 13
+    assert cache.take_warnings() == ()
+
+
+def test_same_token_cache_isolation(tmp_path):
+    """同一合成凭证在两站生成独立身份与独立记录，互不覆盖或删除。"""
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
+    bee_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+    assert bee_identity != boltp_identity
+    assert cache.identity('beeimg_cn', SECRET) == bee_identity
+    write_payload(tmp_path, bee_identity, legacy_payload('beeimg_cn', 1000.0))
+    write_payload(tmp_path, boltp_identity, legacy_payload('boltp', 1000.0))
+    assert {path.name for path in tmp_path.iterdir()} == {
+        KEY_NAME, bee_identity + '.json', boltp_identity + '.json'}
+    assert cache.load(bee_identity) is not None
+    boltp_before = record_path(tmp_path, boltp_identity).read_bytes()
+    assert cache.invalidate(bee_identity)
+    assert not record_path(tmp_path, bee_identity).exists()
+    assert cache.load(boltp_identity).default_storage_id == 14
+    assert record_path(tmp_path, boltp_identity).read_bytes() == boltp_before
+    assert cache.take_warnings() == ()
+
+
+def test_cache_schema_and_ttl_unchanged(tmp_path):
+    """读取归一不放宽六字段白名单，也不改变期限、时间戳与相邻记录。"""
+    now = [1000.0]
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: now[0])
+    bee_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+    write_payload(tmp_path, bee_identity, legacy_payload('beeimg_cn', 1000.0))
+    write_payload(tmp_path, boltp_identity, legacy_payload('boltp', 1000.0))
+    assert cache.load(bee_identity).default_storage_id is None
+    stored = json.loads(record_path(tmp_path, bee_identity).read_bytes())
+    assert set(stored) == set(payload())
+    assert stored['fetched_at'] == 1000.0
+    assert stored['default_storage_id'] == 14
+    assert json.loads(record_path(tmp_path, boltp_identity).read_bytes()) == (
+        legacy_payload('boltp', 1000.0))
+
+    for extra in ('not_requested', 'forbidden'):
+        data = legacy_payload('beeimg_cn', 1000.0)
+        data['profile_state'] = extra
+        write_payload(tmp_path, bee_identity, data)
+        assert cache.load(bee_identity) is None
+        assert cache.take_warnings() == (WARN_READ,)
+
+    for value in (0, -1, True, '14', []):
+        data = legacy_payload('beeimg_cn', 1000.0)
+        data['default_storage_id'] = value
+        write_payload(tmp_path, bee_identity, data)
+        assert cache.load(bee_identity) is None
+    assert cache.take_warnings() == (WARN_READ,)
+
+    write_payload(tmp_path, bee_identity, legacy_payload('beeimg_cn', 1000.0))
+    now[0] = 1000.0 + 86400
+    assert cache.load(bee_identity) is None
+    now[0] = 999.999
+    assert cache.load(bee_identity) is None
+    assert json.loads(record_path(tmp_path, boltp_identity).read_bytes()) == (
+        legacy_payload('boltp', 1000.0))
+
+    now[0] = 1000.0
+    fresh = StorageMetadata((13, 14), None, 0, 1000.0)
+    assert cache.save(bee_identity, fresh)
+    saved = json.loads(record_path(tmp_path, bee_identity).read_bytes())
+    assert set(saved) == set(payload())
+    assert saved['default_storage_id'] is None
+    assert cache.take_warnings() == ()
+
+
 @pytest.mark.parametrize('extra, hit', [(0, True), (1, False), (50000, False)])
 def test_read_is_bounded_and_closes_real_file(
         tmp_path, monkeypatch, extra, hit):
@@ -581,7 +685,7 @@ def test_atomic_replace_uses_complete_same_directory_temp(
     assert cache.save(identity, metadata)
     destination = record_path(tmp_path, identity)
     original = destination.read_bytes()
-    updated = StorageMetadata((99,), 99, 0, 1000)
+    updated = StorageMetadata((99,), None, 0, 1000)
     replace = os.replace
     events = []
     fsync = os.fsync
@@ -895,4 +999,4 @@ def test_warnings_are_ordered_deduplicated_and_drained(tmp_path, monkeypatch):
         assert cache.invalidate(identity) is False
     assert cache.take_warnings() == (WARN_READ, WARN_SAVE, WARN_INVALIDATE)
     assert cache.take_warnings() == ()
-    assert metadata == StorageMetadata((13,), 13, 3600, 1000.0)
+    assert metadata == StorageMetadata((13,), None, 3600, 1000.0)

@@ -60,7 +60,11 @@ def _provider(identity):
 
 
 def _metadata(payload, provider):
-    """重新验证完整磁盘结构，仅构造最小冻结快照并保序去重。"""
+    """重新验证完整磁盘结构，仅构造最小冻结快照并保序去重。
+
+    磁盘格式始终不含 profile_state；老版本 BeeIMG.CN 记录曾写入账号
+    默认编号，验证通过后按提供者归一为 None，Boltp 保留原值不动。
+    """
     if not isinstance(payload, Mapping) or set(payload) != _FIELDS:
         raise ValueError
     if type(payload['version']) is not int or payload['version'] != _VERSION:
@@ -78,7 +82,8 @@ def _metadata(payload, provider):
     if expire is not None and (type(expire) is not int or expire < 0):
         raise ValueError
     fetched_at = _timestamp(payload['fetched_at'])
-    return StorageMetadata(tuple(dict.fromkeys(storage_ids)), default,
+    normalized = None if provider == 'beeimg_cn' else default
+    return StorageMetadata(tuple(dict.fromkeys(storage_ids)), normalized,
                            expire, fetched_at)
 
 
