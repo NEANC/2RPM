@@ -540,6 +540,25 @@ def test_token_wrapper_preserves_yaml_semantics(flow, source, expected):
     assert host['token'] == expected
 
 
+_CONFIG_INNER_QUOTES = (
+    ("{a'b}", "a'b"),
+    ('{a"b}', 'a"b'),
+    ('{a`b}', 'a`b'),
+    ("[a'b]", "a'b"),
+    ('[a"b]', 'a"b'),
+    ('[a`b]', 'a`b'),
+)
+
+
+@pytest.mark.parametrize('flow', [False, True])
+@pytest.mark.parametrize('source, expected', _CONFIG_INNER_QUOTES)
+def test_token_wrapper_keeps_inner_quotes_literal(flow, source, expected):
+    """外壳内部的单双引号与反引号是字面字符，不触发 YAML 转义。"""
+    host = _parse_config_text(_single_host_text(flow, source))[
+        'push']['screenshot']['image_host'][0]
+    assert host['token'] == expected
+
+
 _CONFIG_WRAPPER_FAILURES = (
     (False, '{' + _WRAPPER_SECRET, 'token_wrapper_multiline'),
     (False, '[' + _WRAPPER_SECRET, 'token_wrapper_multiline'),

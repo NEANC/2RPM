@@ -461,6 +461,20 @@ def test_token_wrapper_preserves_yaml_semantics(outer, source, expected):
     assert parse_inline_hosts(text)[0]['token'] == expected
 
 
+@pytest.mark.parametrize('source, expected', (
+    ("{a'b}", "a'b"),
+    ('{a"b}', 'a"b'),
+    ('{a`b}', 'a`b'),
+    ("[a'b]", "a'b"),
+    ('[a"b]', 'a"b'),
+    ('[a`b]', 'a`b'),
+))
+def test_token_wrapper_keeps_inner_quotes_literal(source, expected):
+    """内联外壳内部的单双引号与反引号是字面字符，不触发 YAML 转义。"""
+    hosts = parse_inline_hosts('provider: catbox, token: ' + source)
+    assert [host.get('token') for host in hosts] == [expected]
+
+
 def test_token_wrapper_keeps_other_containers():
     """非 token 字段的花括号仍按 YAML 容器解释，整项外层括号不被消费。"""
     host = parse_inline_hosts(
