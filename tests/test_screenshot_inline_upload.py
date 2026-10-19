@@ -433,7 +433,10 @@ def test_token_wrapper_boundaries(text, expected):
     if expected is None:
         with pytest.raises(InlineUploadError) as caught:
             parse_inline_hosts(text)
-        assert text not in ''.join(traceback.format_exception(caught.value))
+        rendered = ''.join(traceback.format_exception(caught.value))
+        # 整条命令与其中秘密都必须缺席，后者才能独立证明凭证未被回显。
+        assert text not in rendered
+        assert _WRAPPER_SECRET not in rendered
         return
     hosts = parse_inline_hosts(text)
     assert [host.get('token') for host in hosts] == expected
