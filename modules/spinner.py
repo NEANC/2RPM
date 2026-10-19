@@ -305,15 +305,24 @@ class _TtySpinner:
         self._spinner.fail(_format_fail(redact_text(message)))
         self._closed = True
 
-    def write(self, message):
+    def write(self, message, *, success=None):
         """插入打印文本后恢复 spinner 行
+
+        先按脱敏合同净化，再仅在结果语义明确时包裹受控颜色；颜色只作用于
+        完整文本，不新增图标，None 时保持既有无色插入行为。
 
         Args:
             message (str): 要打印的文本
+            success (bool | None): 结果语义；None 无色，True 绿色，False 红色
         """
         if self._closed:
             return
-        self._spinner.write(redact_text(message))
+        safe = redact_text(message)
+        if success is None:
+            self._spinner.write(safe)
+            return
+        color = colorama.Fore.GREEN if success else colorama.Fore.RED
+        self._spinner.write(color + safe + colorama.Style.RESET_ALL)
 
     def write_done(self, message):
         """插入打印成功文本后恢复 spinner 行

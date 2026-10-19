@@ -14,10 +14,12 @@ import socket
 import threading
 from unittest.mock import Mock, call, patch
 
+import colorama
 import pytest
 import requests
 
 from modules.image_host.core import ImageHostError
+from modules.log_safety import remove_terminal_sequences
 from modules.operation_trace import StageEvent
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import CaptureResult
@@ -240,6 +242,7 @@ def test_scope_laziness_and_late_terminal(monkeypatch):
         consumer(slot_event('a', 1, 0, 'catbox', 'failed'))
         assert written_lines(stream) == ['❌ 通道 [Catbox] 上传失败']
         assert '正在上传截图' not in written_lines(stream)
+        assert '\x1b' not in ''.join(written_lines(stream))
         assert factory.call_count == 0
         stream.write.reset_mock()
         # 空 scope 无槽位事件，不显示
@@ -269,7 +272,8 @@ def test_scope_laziness_and_late_terminal(monkeypatch):
                 '正在上传截图', output=tty)
             assert own.stop.call_count == 1
             assert own.write.call_args_list == [
-                call('✔️ 通道 [Catbox] 上传成功')]
+                call(colorama.Fore.GREEN + '✔️ 通道 [Catbox] 上传成功'
+                     + colorama.Style.RESET_ALL)]
             assert own.fail.call_count == 0
             # 下一次上传再次进入同一阶段，不泄漏也不嵌套第二个活动实例
             with upload_status.upload_feedback_scope(nested):
@@ -349,6 +353,7 @@ def test_wrong_thread_or_stream_handle(monkeypatch):
             consumer(slot_event('a', 1, 0, 'catbox', 'succeeded'))
     assert written_lines(selected) == [
         '正在上传截图', '✔️ 通道 [Catbox] 上传成功']
+    assert '\x1b' not in ''.join(written_lines(selected))
     assert outer.write.call_count == 0
 
     cross = plain_stream()
@@ -383,7 +388,8 @@ def test_wrong_thread_or_stream_handle(monkeypatch):
         assert stdout_handle.text.call_count == 0
         assert factory.call_count == 1
         assert own.write.call_args_list == [
-            call('✔️ 通道 [Catbox] 上传成功')]
+            call(colorama.Fore.GREEN + '✔️ 通道 [Catbox] 上传成功'
+                 + colorama.Style.RESET_ALL)]
 
 
 def test_tty_reuses_outer_spinner():
@@ -405,9 +411,59 @@ def test_tty_reuses_outer_spinner():
     assert outer.set_text.call_args_list == [
         call('正在上传截图'), call('等待中...')]
     assert outer.write.call_args_list == [
-        call('✔️ 通道 [BeeIMG.CN] 上传成功')]
+        call(colorama.Fore.GREEN + '✔️ 通道 [BeeIMG.CN] 上传成功'
+             + colorama.Style.RESET_ALL)]
     assert outer.done.call_count == 0
     assert outer.fail.call_count == 0
+
+
+def test_upload_terminal_result_colors():
+    """借用真实 TTY 包装器与自建 stderr TTY 都按结果语义着色，重复终态不重播。"""
+    spinner_mod = import_module('modules.spinner')
+    upload_status = import_module('modules.upload_status')
+    slots = ('beeimg_cn', 'beeimg_cn')
+    green_line = (colorama.Fore.GREEN
+                  + '✔️ 通道 [BeeIMG.CN] 上传成功（截图 1）（配置项 1）'
+                  + colorama.Style.RESET_ALL)
+    red_line = (colorama.Fore.RED
+                + '❌ 通道 [BeeIMG.CN] 上传失败（截图 1）（配置项 2）'
+                + colorama.Style.RESET_ALL)
+    plain_success = remove_terminal_sequences(green_line)
+    plain_fail = remove_terminal_sequences(red_line)
+
+    def drive(consumer):
+        """经真实消费者发送同图不同槽位的成败与重复、静默终态。"""
+        with upload_status.upload_feedback_scope(consumer):
+            consumer(slot_event('a', 1, 0, 'beeimg_cn', 'started'))
+            consumer(slot_event('a', 1, 0, 'beeimg_cn', 'succeeded'))
+            consumer(slot_event('a', 1, 1, 'beeimg_cn', 'failed'))
+            consumer(slot_event('a', 1, 0, 'beeimg_cn', 'succeeded'))
+            consumer(slot_event('a', 1, 2, 'beeimg_cn', 'cancelled'))
+            consumer(slot_event('a', 1, 3, 'beeimg_cn', 'skipped'))
+
+    # 借用外层真实 TTY 包装器：着色在 _TtySpinner 内完成
+    bottom = Mock()
+    outer_tty = plain_stream(isatty=True)
+    with patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=bottom):
+        with spinner_mod.spinner_phase('等待中', stream=outer_tty) as outer:
+            consumer = upload_status.make_status_consumer(
+                images_planned=2, slot_providers=slots)
+            drive(consumer)
+        assert not outer.closed
+    assert bottom.write.call_args_list == [call(green_line), call(red_line)]
+    assert [remove_terminal_sequences(item.args[0])
+            for item in bottom.write.call_args_list] == [
+        plain_success, plain_fail]
+
+    # 自建 stderr TTY：无外层句柄时自建 spinner 阶段并着色
+    own_bottom = Mock()
+    stderr = plain_stream(isatty=True)
+    with patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=own_bottom):
+        consumer2 = upload_status.make_status_consumer(
+            stream=stderr, images_planned=2, slot_providers=slots)
+        drive(consumer2)
+    assert own_bottom.write.call_args_list == [call(green_line), call(red_line)]
+    assert stderr.write.call_count == 0
 
 
 def test_non_tty_shows_status_with_muted_logger():
@@ -443,6 +499,8 @@ def test_handle_missing_borrow_attrs_falls_back_to_plain_lines():
     assert written_lines(stream) == [
         '正在上传截图', '✔️ 通道 [Catbox] 上传成功']
     assert stream.flush.call_count == 2
+    # 不可借用降级为普通行，无任何 ANSI
+    assert '\x1b' not in ''.join(written_lines(stream))
     # 句柄缺属性只判定为不可借用，绝不借用它的任何日志方法
     assert handle.texts == []
     assert handle.dones == []
@@ -836,6 +894,7 @@ class BorrowedHandle:
         self._stream = stream
         self.texts = []
         self.writes = []
+        self.successes = []
         self.closed = False
         self.owner_thread_id = threading.get_ident()
 
@@ -849,9 +908,10 @@ class BorrowedHandle:
         self.texts.append(message)
         self.message = message
 
-    def write(self, message):
-        """记录插入的终态行。"""
+    def write(self, message, *, success=None):
+        """记录插入的终态行与结果语义，签名与 _TtySpinner.write 一致。"""
         self.writes.append(message)
+        self.successes.append(success)
 
 
 class OrderedStream:
@@ -953,6 +1013,9 @@ def test_stable_consumer_per_image_scope(monkeypatch):
         '❌ 通道 [Catbox] 上传失败（截图 2）',
         '✔️ 通道 [WMImg] 上传成功（截图 2）',
     ]
+    # 借用句柄收到真实结果语义，且外层 spinner 不被关闭
+    assert handle.successes == [False, True, False, True]
+    assert handle.closed is False
 
 
 def test_automatic_first_success_and_cli_all_slots(monkeypatch, tmp_path, capsys):

@@ -15,6 +15,7 @@ import colorama
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules import spinner as spinner_mod
+from modules.log_safety import redact_text, safety_scope
 from modules.spinner import current_spinner, spinner_phase
 
 # 在 patch 覆盖模块属性前捕获真实类，供替身工厂构造真实实例
@@ -186,6 +187,57 @@ class TestSimpleTTYSpinner(unittest.TestCase):
         joined = "".join(output.writes)
         self.assertIn("\r", joined)
         self.assertNotIn("程序正在初始化", joined)
+
+
+class TestTtySpinnerResultColor(unittest.TestCase):
+    """测试 _TtySpinner.write 先脱敏再按结果语义受控着色。"""
+
+    def test_write_result_color_after_redaction(self):
+        """None 无色原样、True 绿、False 红，先脱敏后着色且不新增图标。"""
+        secret = 'FAKE_TTY_SECRET_9157'
+        injected = '\x1b[4m劫持\x1b[9m\x07'
+        message = f'{spinner_mod._ICON_FAIL} 通道 [{secret}] 上传失败{injected}'
+        bottom = MagicMock()
+        handle = spinner_mod._TtySpinner(bottom)
+        with safety_scope((secret,)):
+            safe_text = redact_text(message)
+            self.assertNotIn(secret, safe_text)
+
+            handle.write(message)
+            plain = bottom.write.call_args[0][0]
+            bottom.write.reset_mock()
+
+            handle.write(message, success=True)
+            green = bottom.write.call_args[0][0]
+            bottom.write.reset_mock()
+
+            handle.write(message, success=False)
+            red = bottom.write.call_args[0][0]
+            bottom.write.reset_mock()
+
+        # 既有脱敏合同决定期望，不用被测 write 生成期望
+        self.assertEqual(plain, safe_text)
+        self.assertEqual(
+            green, colorama.Fore.GREEN + safe_text + colorama.Style.RESET_ALL)
+        self.assertEqual(
+            red, colorama.Fore.RED + safe_text + colorama.Style.RESET_ALL)
+        self.assertNotIn('\x1b', plain)
+        for written in (plain, green, red):
+            self.assertNotIn(secret, written)
+            self.assertNotIn('\x1b[4m', written)
+            self.assertNotIn('\x1b[9m', written)
+            self.assertNotIn('\x07', written)
+            self.assertEqual(written.count(spinner_mod._ICON_FAIL), 1)
+        bottom.done.assert_not_called()
+        bottom.fail.assert_not_called()
+        bottom.stop.assert_not_called()
+
+        # 关闭后不再写入
+        handle.done('收尾')
+        bottom.done.assert_called_once()
+        bottom.write.reset_mock()
+        handle.write(message, success=True)
+        bottom.write.assert_not_called()
 
 
 class TestSpinnerNonTTY(unittest.TestCase):

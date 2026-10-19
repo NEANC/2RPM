@@ -132,7 +132,7 @@ class _UploadStatusConsumer:
         self._identities.add(identity)
         if status in _SILENT_STATUSES:
             return
-        self._emit(self._terminal_line(event))
+        self._emit(self._terminal_line(event), success=status == 'succeeded')
 
     def _register(self, event):
         """UI 已停时仍登记终态身份，保证 trace 侧终态不被伪造。"""
@@ -234,11 +234,11 @@ class _UploadStatusConsumer:
             return False
         return bool(stream.isatty())
 
-    def _emit(self, line):
-        """有句柄时插入完整终态行，否则写选定流的普通行并 flush。"""
+    def _emit(self, line, *, success):
+        """有活动 TTY 句柄时按其结果语义着色插入，否则写普通行并 flush。"""
         active = self._active
         if active is not None and active.handle is not None:
-            active.handle.write(line)
+            active.handle.write(line, success=success)
             return
         self._write_plain(self._target_stream(), line)
 
