@@ -169,7 +169,7 @@ def run_notification(monkeypatch, root_dir, *, handler, failed=False):
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
     transport = stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(),
+        stage.group_reply(),
         (200, (HOST_SECRET + ' ' + CHANNEL_SECRET).encode())
         if failed else stage.SUCCESS_UPLOAD])
 
@@ -335,8 +335,7 @@ def run_pipeline(monkeypatch, handler, *, no_callback=False):
         pipeline, 'capture', Mock(return_value=support.capture_result()))
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
-    stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(), stage.SUCCESS_UPLOAD])
+    stage.Transport(monkeypatch, [stage.SUCCESS_UPLOAD])
     if no_callback:
         # 关闭状态回调：真实消费者把显示写入丢弃流，上传编排仍完整执行
         monkeypatch.setattr(
@@ -396,8 +395,7 @@ def _assert_file_failure_keeps_success(monkeypatch, tmp_path, capsys):
         pipeline, 'capture', Mock(return_value=support.capture_result()))
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
-    stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(), stage.SUCCESS_UPLOAD])
+    stage.Transport(monkeypatch, [stage.SUCCESS_UPLOAD])
     handler = file_sink(tmp_path, 'iofail')
     handler.stream.close()
 
@@ -460,18 +458,16 @@ def test_cancellation_and_file_failure_preserve_facts(
     else:
         monkeypatch.setattr(
             pipeline, 'capture', Mock(return_value=support.capture_result()))
+        beeimg = {'provider': 'beeimg_cn', 'token': MARKER}
+        if operation == 'upload':
+            beeimg['options'] = {'storage_id': 13}
         section = {
             'targets': [{'provider': 'window', 'target': TARGET}],
             'image_host': [{'provider': 'catbox', 'token': ''},
-                           {'provider': 'beeimg_cn', 'token': MARKER,
-                            'options': {'storage_id': 13}},
+                           beeimg,
                            {'provider': 'wmimg', 'token': ''}],
         }
-        if operation == 'query':
-            replies = [(500, b''), error]
-        else:
-            replies = [(500, b''), stage.group_reply(),
-                       stage.profile_reply(), error]
+        replies = [(500, b''), error]
         expected = {'slots_planned': 3, 'slots_succeeded': 0,
                     'slots_failed': 1, 'slots_cancelled': 1, 'slots_skipped': 1,
                     'terminal': ['started', 'failed']}
@@ -496,7 +492,7 @@ def test_cancellation_and_file_failure_preserve_facts(
 
 
 def test_review_regressions_run_jointly(monkeypatch, tmp_path):
-    """四点回归联合运行：共享预算、Boltp 零 GET、ADB 计数与 merge 覆盖合法。"""
+    """四点回归联合运行：手填直传零刷新后恰一次恢复、Boltp 零 GET、ADB 计数与 merge 覆盖合法。"""
     stage = _stage()
     capture_stage = _capture_stage()
     backend = capture_stage.adb_backend()
@@ -518,8 +514,8 @@ def test_review_regressions_run_jointly(monkeypatch, tmp_path):
     assert cache.save(identity, StorageMetadata((13, 14), 14, None, 1000.0))
     context = UploadContext(cache=cache, clock=lambda: 1000.0)
     transport = stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(default=None),
-        stage.REJECTED_UPLOAD])
+        stage.REJECTED_UPLOAD, stage.group_reply(),
+        stage.SUCCESS_UPLOAD])
     events = []
     with trace_scope(mode='cli', on_status=events.append) as trace:
         with trace_item(image_index=1):
@@ -529,16 +525,16 @@ def test_review_regressions_run_jointly(monkeypatch, tmp_path):
                   'options': {'storage_id': 99}}], context=context)
         summary = trace.summary()
     context.close()
-    assert not result.success
+    assert result.success
     assert (summary['group_get_attempts'], summary['profile_get_attempts'],
-            summary['upload_post_attempts']) == (1, 1, 1)
-    assert summary['preupload_refreshes'] == 1
-    assert summary['postupload_recoveries'] == 0
-    assert len(transport.posts) == 1
+            summary['upload_post_attempts']) == (1, 0, 2)
+    assert summary['preupload_refreshes'] == 0
+    assert summary['postupload_recoveries'] == 1
+    assert len(transport.posts) == 2
     fallback = [(event.fallback_kind, event.status, event.reason_code)
                 for event in events
                 if event.stage == 'fallback' and event.status != 'started']
-    assert ('postupload_recovery', 'skipped', 'budget_used') in fallback
+    assert ('postupload_recovery', 'succeeded', 'storage_rejected') in fallback
 
     result, adb_summary, read = capture_stage.run_capture(
         backend, monkeypatch,
@@ -576,18 +572,18 @@ def test_review_regressions_run_jointly(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
 @pytest.mark.parametrize('boundary', [
-    'profile', 'storage_select', 'metadata_cache', 'postupload_recovery',
+    'group', 'storage_select', 'metadata_cache', 'postupload_recovery',
 ])
 def test_joint_started_cancellation(monkeypatch, tmp_path, boundary, signal_type):
     """真实链路在查询、选择、缓存或恢复开始取消，保留已发请求与槽位事实。"""
     stage = _stage()
     error = signal_type('synthetic-cancel')
-    replies = [] if boundary == 'metadata_cache' else [
-        stage.group_reply(), stage.profile_reply()]
-    if boundary == 'profile':
+    if boundary in ('group', 'metadata_cache'):
+        replies = []
+    elif boundary == 'storage_select':
         replies = [stage.group_reply()]
-    if boundary == 'postupload_recovery':
-        replies.append(stage.REJECTED_UPLOAD)
+    else:
+        replies = [stage.group_reply(), stage.REJECTED_UPLOAD]
     transport = stage.Transport(monkeypatch, replies)
     pipeline = _pipeline()
     monkeypatch.setattr(pipeline, 'capture', Mock(return_value=_support().capture_result()))
@@ -597,11 +593,16 @@ def test_joint_started_cancellation(monkeypatch, tmp_path, boundary, signal_type
 
     def consume(event):
         """只在指定真实阶段开始时抛出同一个控制信号。"""
-        match = (event.stage == boundary or
-                 boundary == 'profile' and event.stage == 'metadata_query'
-                 and event.action == 'profile' or
-                 event.fallback_kind == boundary)
-        if match and event.status == 'started':
+        if event.status != 'started':
+            return
+        if boundary == 'group':
+            match = (event.stage == 'metadata_query'
+                     and event.action == 'group')
+        elif boundary == 'postupload_recovery':
+            match = event.fallback_kind == 'postupload_recovery'
+        else:
+            match = event.stage == boundary
+        if match:
             raise error
 
     monkeypatch.setattr(
@@ -631,9 +632,10 @@ def test_joint_started_cancellation(monkeypatch, tmp_path, boundary, signal_type
     for event in cancelled:
         assert sum(item.status == 'started' and item.operation_id == event.operation_id
                    for item in events) == 1
-    if boundary == 'profile':
-        assert summary['profile_get_attempts'] == 0
-        assert summary['profile_get_cancelled'] == 0
+    if boundary == 'group':
+        assert summary['group_get_attempts'] == 0
+        assert summary['group_get_cancelled'] == 0
+        assert len(transport.gets('group')) == 0
 
 
 def test_joint_automatic_slots_reuse_existing_transport(monkeypatch, tmp_path):
