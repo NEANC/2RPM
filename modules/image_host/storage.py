@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""查询最小存储元数据并纯粹选择存储，不维护缓存或执行上传。"""
+"""保存存储元数据与选择的共享模型，并按站点显式分发查询与选择。
 
-from collections.abc import Mapping
+两站业务规则位于 storage_beeimg_cn 与 storage_boltp；本模块只保留
+共享模型、共享校验辅助与显式分发入口，不执行缓存或上传。
+"""
+
 from dataclasses import dataclass
 import math
 from typing import Literal
 
-from . import v2_http
 from .core import ImageHostError
 
 
@@ -52,135 +54,33 @@ def _fetch_time(now):
     return fetched_at
 
 
-def _parse_group(payload):
-    """严格校验组信息，保序去重且仅保留存储编号和可选期限。"""
-    data = payload.get('data')
-    if not isinstance(data, Mapping):
-        raise ImageHostError('storage_lookup_failed', '', stage='group')
-    group = data.get('group')
-    if not isinstance(group, Mapping):
-        raise ImageHostError('storage_lookup_failed', '', stage='group')
-    options = group.get('options')
-    storages = data.get('storages')
-    if not isinstance(options, Mapping) or not isinstance(storages, list):
-        raise ImageHostError('storage_lookup_failed', '', stage='group')
-    expire = options.get('file_expire_seconds')
-    if expire is not None and (
-            not isinstance(expire, int) or isinstance(expire, bool)
-            or expire < 0):
-        raise ImageHostError('storage_lookup_failed', '', stage='group')
-    storage_ids = []
-    seen = set()
-    for entry in storages:
-        if not isinstance(entry, Mapping):
-            raise ImageHostError('storage_lookup_failed', '', stage='group')
-        storage_id = entry.get('id')
-        if not _positive_integer(storage_id):
-            raise ImageHostError('storage_lookup_failed', '', stage='group')
-        if storage_id not in seen:
-            seen.add(storage_id)
-            storage_ids.append(storage_id)
-    if not storage_ids:
-        raise ImageHostError('storage_unavailable', '', stage='storage')
-    return tuple(storage_ids), expire
-
-
-def _parse_profile(payload):
-    """校验账号默认存储，不将合法但已不可用的编号当作查询失败。"""
-    data = payload.get('data')
-    if not isinstance(data, Mapping):
-        raise ImageHostError('storage_lookup_failed', '', stage='profile')
-    options = data.get('options')
-    if not isinstance(options, Mapping):
-        raise ImageHostError('storage_lookup_failed', '', stage='profile')
-    default = options.get('default_storage_id')
-    if default is not None and not _positive_integer(default):
-        raise ImageHostError('storage_lookup_failed', '', stage='profile')
-    return default
-
-
-def _parse_retention(payload):
-    try:
-        data = payload.get('data')
-        if not isinstance(data, Mapping):
-            raise ValueError
-        group = data.get('group')
-        if not isinstance(group, Mapping):
-            raise ValueError
-        options = group.get('options')
-        if not isinstance(options, Mapping):
-            raise ValueError
-        expire = options.get('file_expire_seconds')
-        if expire is not None and (
-                not isinstance(expire, int) or isinstance(expire, bool)
-                or expire < 0):
-            raise ValueError
-        return expire
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    raise ImageHostError('storage_lookup_failed', '', stage='group')
+def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
+    """按站点显式分发组、资料查询；未知站点沿用既有固定路由错误。"""
+    if provider == 'beeimg_cn':
+        from . import storage_beeimg_cn
+        return storage_beeimg_cn.fetch_metadata(token, now=now)
+    if provider == 'boltp':
+        from . import storage_boltp
+        return storage_boltp.fetch_metadata(token, now=now)
+    raise ImageHostError('invalid_provider', '', stage='group')
 
 
 def fetch_boltp_retention(token):
-    try:
-        return _parse_retention(v2_http.request_json('boltp', 'group', token))
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    raise ImageHostError('storage_lookup_failed', '', stage='group')
+    """分发到 Boltp 单次期限查询，保持既有分类与单请求语义。"""
+    from . import storage_boltp
+    return storage_boltp.fetch_retention(token)
 
 
-def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
-    """顺序查询组和可选账号资料，Boltp 资料无权限时保留组内存储。
+def select_storage(metadata, manual_present, manual_value, *, provider='boltp',
+                   excluded_id=None) -> StorageSelection:
+    """三位置参数兼容入口默认 Boltp 旧算法，生产调用必须显式传 provider。
 
-    凭证由调用方解析，本入口不展开或修剪。零期限不代表永久保存，
-    此处不计算过期时间；普通边界异常不保留敏感底层异常链。
+    BeeIMG.CN 永不使用默认入口；其选择器按组顺序排除 excluded_id，
+    且忽略手填优先级。
     """
-    fetched_at = _fetch_time(now)
-    stage = 'group'
-    try:
-        storage_ids, expire = _parse_group(
-            v2_http.request_json(provider, stage, token))
-        default = None
-        profile_state = 'not_requested'
-        if token:
-            stage = 'profile'
-            try:
-                default = _parse_profile(
-                    v2_http.request_json(provider, stage, token))
-                profile_state = 'available'
-            except ImageHostError as error:
-                # Boltp 上传令牌可无资料读取权限，默认项缺失不阻断上传。
-                tolerant = (error.code == 'http_failed'
-                            and error.http_status == 403)
-                if tolerant and provider == 'beeimg_cn':
-                    profile_state = 'forbidden'
-                elif not (tolerant and provider == 'boltp'):
-                    raise
-        return StorageMetadata(storage_ids, default, expire, fetched_at,
-                               profile_state)
-    except ImageHostError:
-        raise
-    except Exception:
-        pass
-    raise ImageHostError('storage_lookup_failed', '', stage=stage)
-
-
-def select_storage(metadata, manual_present, manual_value) -> StorageSelection:
-    """使用已校验快照按手填、默认、首项顺序选择，不修改输入。"""
-    storage_ids = metadata.storage_ids
-    if not storage_ids:
-        raise ImageHostError('storage_unavailable', '', stage='storage')
-    if (manual_present and _positive_integer(manual_value)
-            and manual_value in storage_ids):
-        return StorageSelection(manual_value, False)
-    if metadata.profile_state == 'forbidden':
-        code = ('profile_forbidden_invalid_storage' if manual_present
-                else 'profile_forbidden')
-        raise ImageHostError(code, '', stage='profile', http_status=403)
-    default = metadata.default_storage_id
-    selected = default if default in storage_ids else storage_ids[0]
-    return StorageSelection(selected, manual_present)
+    if provider == 'beeimg_cn':
+        from . import storage_beeimg_cn
+        return storage_beeimg_cn.select_storage(
+            metadata, manual_present, manual_value, excluded_id=excluded_id)
+    from . import storage_boltp
+    return storage_boltp.select_storage(metadata, manual_present, manual_value)

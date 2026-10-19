@@ -1334,11 +1334,11 @@ def test_selection_wraps_real_decision(signal_type, monkeypatch, tmp_path):
     original = module.select_storage
     signal = signal_type('stop') if signal_type else None
 
-    def delayed(*args):
+    def delayed(*args, **kwargs):
         clock[0] += 2.0
         if signal:
             raise signal
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(module, 'select_storage', delayed)
     with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):

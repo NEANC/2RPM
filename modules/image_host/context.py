@@ -434,13 +434,17 @@ class UploadContext:
         with trace_operation('storage_select', 'select', provider=provider,
                              candidate_count=len(metadata.storage_ids)) as operation:
             try:
-                selected = select_storage(metadata, manual_present, manual)
+                selected = select_storage(metadata, manual_present, manual,
+                                          provider=provider)
             except ImageHostError as error:
                 operation.finish('failed', reason_code=error.code)
                 raise
-            source = ('manual' if manual_present and not selected.replaced_manual
-                      else 'default' if metadata.default_storage_id == selected.storage_id
-                      else 'group_first')
+            if provider == 'beeimg_cn':
+                source = 'group_first'
+            else:
+                source = ('manual' if manual_present and not selected.replaced_manual
+                          else 'default' if metadata.default_storage_id == selected.storage_id
+                          else 'group_first')
             operation.finish('succeeded', selection_source=source,
                              storage_id=selected.storage_id)
             return selected
