@@ -431,8 +431,12 @@ def test_upload_terminal_result_colors():
     plain_success = remove_terminal_sequences(green_line)
     plain_fail = remove_terminal_sequences(red_line)
 
-    def drive(consumer):
-        """经真实消费者发送同图不同槽位的成败与重复、静默终态。"""
+    def drive(consumer, check=None):
+        """经真实消费者发送同图不同槽位的成败与重复、静默终态。
+
+        check 会在 upload_feedback_scope 活动期内、全部事件发送完毕后调用，
+        供调用方把生命周期断言落在借用句柄真正被使用的活动期内。
+        """
         with upload_status.upload_feedback_scope(consumer):
             consumer(slot_event('a', 1, 0, 'beeimg_cn', 'started'))
             consumer(slot_event('a', 1, 0, 'beeimg_cn', 'succeeded'))
@@ -440,16 +444,24 @@ def test_upload_terminal_result_colors():
             consumer(slot_event('a', 1, 0, 'beeimg_cn', 'succeeded'))
             consumer(slot_event('a', 1, 2, 'beeimg_cn', 'cancelled'))
             consumer(slot_event('a', 1, 3, 'beeimg_cn', 'skipped'))
+            if check is not None:
+                check()
 
     # 借用外层真实 TTY 包装器：着色在 _TtySpinner 内完成
     bottom = Mock()
+    bottom.closed = False
     outer_tty = plain_stream(isatty=True)
     with patch.object(spinner_mod, '_SimpleTTYSpinner', return_value=bottom):
         with spinner_mod.spinner_phase('等待中', stream=outer_tty) as outer:
+
+            def assert_borrowed_open():
+                """上传作用域活动期内断言被借用的外层句柄仍未被关闭。"""
+                assert outer.closed is False
+
             consumer = upload_status.make_status_consumer(
                 images_planned=2, slot_providers=slots)
-            drive(consumer)
-        assert not outer.closed
+            drive(consumer, assert_borrowed_open)
+            assert outer.closed is False
     assert bottom.write.call_args_list == [call(green_line), call(red_line)]
     assert [remove_terminal_sequences(item.args[0])
             for item in bottom.write.call_args_list] == [
@@ -598,6 +610,53 @@ def test_cli_success_url_contract_unchanged(monkeypatch, tmp_path, capsys):
     assert '准备上传' not in status_text
     assert '\x1b' not in status_text
     assert URL not in status_text + file_text
+
+
+def test_cli_tty_color_not_in_file_log(monkeypatch, tmp_path, capsys):
+    """活动 TTY 上传着色落在终端状态流，文件日志保持纯文本且不含链接。"""
+    cli = cli_module()
+    logger_module = import_module('modules.logger')
+    spinner_mod = import_module('modules.spinner')
+
+    def uploader(image, filename, token, options):
+        """返回合成成功链接，不发起网络请求。"""
+        return URL
+
+    monkeypatch.setitem(registry_module().UPLOADERS, 'catbox', uploader)
+    monkeypatch.setattr(cli, 'capture', Mock(return_value=capture_result()))
+    handler = logger_module._create_file_handler(str(tmp_path / 'logs'), 'app')
+    assert handler is not None
+    root = logging.getLogger()
+    root.addHandler(handler)
+    saved_level = root.level
+    # 抬级到 INFO，否则 INFO 记录在生效级别处被丢弃，file_text 恒空、断言恒真
+    root.setLevel(logging.INFO)
+    try:
+        # 合成凭证刻意避开通道名 "Catbox" 的子串，否则 TTY 写路径的脱敏
+        # 会把通道名里的同名子串一并替换，令成功终态行断言失真
+        with patch.object(spinner_mod.sys.stderr, 'isatty', return_value=True):
+            code = cli.run_screenshot_cli(
+                cli_args(hosts=[{'provider': 'catbox', 'token': SECRET}]),
+                str(tmp_path))
+    finally:
+        root.setLevel(saved_level)
+        root.removeHandler(handler)
+    path = handler.baseFilename
+    handler.close()
+    with open(path, 'rb') as stream:
+        file_text = stream.read().decode('utf-8')
+    result = capsys.readouterr()
+    status_text = result.err
+    result_stdout = result.out
+    assert code == 0
+    # 着色确实发生：同一次运行里终端状态流带 ANSI 且含成功终态
+    assert '\x1b' in status_text
+    assert '✔️ 通道 [Catbox] 上传成功' in remove_terminal_sequences(status_text)
+    # 文件日志非空，成对断言才有意义：着色发生而 ANSI 不进文件日志
+    assert file_text
+    assert '\x1b' not in file_text
+    assert '\x1b' not in result_stdout
+    assert URL not in file_text
 
 
 def test_pipeline_failover_records_each_slot(monkeypatch, capsys):
