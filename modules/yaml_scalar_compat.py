@@ -29,6 +29,7 @@ _CONFIG_WHITELIST = frozenset({
 })
 _TARGET_PATHS = frozenset({('push', 'screenshot', 'targets', 'target')})
 _TOKEN_PATHS = frozenset({('push', 'screenshot', 'image_host', 'token')})
+_TOKEN_WRAPPERS = {'{': '}', '[': ']'}
 YAML_LINE_BREAKS = '\r\n\x85\u2028\u2029'
 _BOUNDARY = ' \t,;}]' + YAML_LINE_BREAKS
 _ALIAS = re.compile(r'\*[^\s,\[\]{}]+')
@@ -175,6 +176,38 @@ class _Scanner:
         self.output.append(_quoted_literal(self.text[start + 1:index]))
         self._advance(index + 1 - self.pos)
 
+    def _token_wrapper(self):
+        """读取 token 值起始处的成对外壳并输出受保护字符串标量。
+
+        仅接受同一行内、按配对嵌套闭合且闭合后为合法字段或分项边界的外壳；
+        内部内容按字面保留，缺失闭合、错配与非法尾随都按固定类别失败。
+        """
+        stack = [_TOKEN_WRAPPERS[self.text[self.pos]]]
+        index = self.pos + 1
+        while index < self.length:
+            char = self.text[index]
+            if char in YAML_LINE_BREAKS:
+                raise ScalarSyntaxError(
+                    self.line, self.column, 'token_wrapper_multiline')
+            if char in _TOKEN_WRAPPERS:
+                stack.append(_TOKEN_WRAPPERS[char])
+            elif char in '}]':
+                if char != stack[-1]:
+                    raise ScalarSyntaxError(
+                        self.line, self.column, 'token_wrapper_mismatch')
+                stack.pop()
+                if not stack:
+                    break
+            index += 1
+        else:
+            raise ScalarSyntaxError(
+                self.line, self.column, 'token_wrapper_unterminated')
+        if not _is_boundary(self.text, index + 1):
+            raise ScalarSyntaxError(
+                self.line, self.column, 'token_wrapper_trailing')
+        self.output.append(_quoted_literal(self.text[self.pos + 1:index]))
+        self._advance(index + 1 - self.pos)
+
 
 class _InlineScanner(_Scanner):
 
@@ -224,6 +257,12 @@ class _InlineScanner(_Scanner):
                 self.scalar_start = False
                 self.seen_content = True
                 self._copy()
+                continue
+            if (char in '{[' and self.scalar_start and self._top()
+                    and self._token_value()):
+                self._token_wrapper()
+                self.scalar_start = False
+                self.seen_content = True
                 continue
             if char in '{[':
                 if char == '{' and not self.stack and not self.seen_content:
@@ -415,6 +454,7 @@ class _ConfigScanner(_Scanner):
         path = tuple(item for _, item in self.keys) + (key,)
         while self.pos < self.length and self.text[self.pos] in ' \t':
             self._copy()
+        value_start = self.pos
         while self.pos < self.length and self.text[self.pos] in '&!':
             end = self._property_end(self.pos)
             if end is None:
@@ -426,6 +466,9 @@ class _ConfigScanner(_Scanner):
             self.keys.append([indent, key])
             return
         char = self.text[self.pos]
+        if char in '{[' and path in _TOKEN_PATHS and self.pos == value_start:
+            self._token_wrapper()
+            return
         if char in '{[':
             self._flow_collection(path)
             return
@@ -497,6 +540,8 @@ class _ConfigScanner(_Scanner):
                 continue
             frame = self.flow[-1]
             if char in '{[':
+                if self._flow_token_wrapper(frame):
+                    continue
                 inner = 'map' if char == '{' else 'sequence'
                 child = frame['path']
                 if frame['kind'] == 'map' and frame['key'] is not None:
@@ -521,6 +566,20 @@ class _ConfigScanner(_Scanner):
                 self._copy()
                 continue
             self._flow_scalar(frame)
+
+    def _flow_token_wrapper(self, frame):
+        """在 flow 映射的 token 值位置读取成对外壳，否则返回 False。
+
+        仅当待用键的完整路径命中 token 白名单时按外壳处理，
+        其余位置保持原有 flow 映射与列表语义。
+        """
+        if frame['kind'] != 'map' or frame['key'] is None:
+            return False
+        if frame['path'] + (frame['key'],) not in _TOKEN_PATHS:
+            return False
+        self._token_wrapper()
+        self._record(frame, False, None)
+        return True
 
     def _flow_scalar(self, frame):
         if frame['kind'] == 'sequence':
@@ -626,7 +685,7 @@ class _ConfigScanner(_Scanner):
 
 
 def normalize_config_scalars(text):
-    if '`' not in text and '{' not in text:
+    if '`' not in text and '{' not in text and '[' not in text:
         return text
     return _ConfigScanner(text).run()
 
@@ -634,7 +693,8 @@ def normalize_config_scalars(text):
 def normalize_inline_upload(text):
     if not isinstance(text, str):
         return text
-    if '`' not in text and '${' not in text:
+    if ('`' not in text and '${' not in text
+            and '{' not in text and '[' not in text):
         return text
     scanner = _InlineScanner(text)
     try:

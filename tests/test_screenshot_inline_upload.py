@@ -321,3 +321,150 @@ def test_merge_default_allows_backtick_override():
         '<<: {provider: catbox, token: base}, token: `override`')[0]
     assert host['provider'] == 'catbox'
     assert host['token'] == 'override'
+
+
+_BARE_TOKEN_VALUES = (
+    ('abc', 'abc'),
+    ('123|offline-token', '123|offline-token'),
+    ('abc#def', 'abc#def'),
+    ('abc！def', 'abc！def'),
+    ('abc%def', 'abc%def'),
+    ('abc&def', 'abc&def'),
+    ('abc@def', 'abc@def'),
+)
+
+_WRAPPED_TOKEN_VALUES = (
+    '|abc', '#abc', '!abc', '！abc', '%abc', '&abc', '@abc',
+    'abc # def', 'a,b:c;d', ' abc ', 'a\\b',
+)
+
+_TOKEN_FORMS = ('bare', 'single', 'double', 'backtick', 'brace', 'bracket')
+
+_WRAPPER_SECRET = 'SECRET_WRAPPER_9c31'
+
+_HOST_OPTIONS = {'storage_id': 1}
+
+
+def _yaml_double(text):
+    """按 YAML 双引号规则编码字面内容，仅用于构造测试源。"""
+    return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _yaml_single(text):
+    """按 YAML 单引号规则编码字面内容，仅用于构造测试源。"""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _token_source(form, text):
+    """返回 token 值使用的 YAML 源片段。"""
+    if form == 'single':
+        return _yaml_single(text)
+    if form == 'double':
+        return _yaml_double(text)
+    if form == 'backtick':
+        return '`' + text + '`'
+    if form == 'brace':
+        return '{' + text + '}'
+    if form == 'bracket':
+        return '[' + text + ']'
+    return text
+
+
+def _token_expectations(form):
+    """按包裹形式返回参与的固定值与期望字面值。"""
+    pairs = list(_BARE_TOKEN_VALUES)
+    if form != 'bare':
+        pairs += [(value, value) for value in _WRAPPED_TOKEN_VALUES]
+    return pairs
+
+
+def _matrix_text(outer, form):
+    """构造覆盖全部矩阵值的 CLI 内联文本，逐项带固定其他字段。"""
+    items = []
+    for value, _ in _token_expectations(form):
+        body = ('provider: catbox, token: ' + _token_source(form, value)
+                + ', options: {storage_id: 1}')
+        items.append(('{' + body + '}') if outer else body)
+    return '; '.join(items)
+
+
+@pytest.mark.parametrize('outer', [False, True])
+@pytest.mark.parametrize('form', _TOKEN_FORMS)
+def test_token_wrapper_matrix(outer, form):
+    """显式整项与自动补整项两条入口下五种包裹与合法裸写得到同一字面值。"""
+    hosts = parse_inline_hosts(_matrix_text(outer, form))
+    expected = [value for _, value in _token_expectations(form)]
+    assert [host['token'] for host in hosts] == expected
+    assert [host['provider'] for host in hosts] == ['catbox'] * len(expected)
+    assert [host['options'] for host in hosts] == [
+        dict(_HOST_OPTIONS)] * len(expected)
+    for host, token in zip(hosts, expected):
+        prepared, error = prepare_cli_host(host)
+        assert error is None
+        assert prepared['token'] == token
+
+
+_CLI_WRAPPER_BOUNDARIES = (
+    ('provider: catbox, token: {a;b}; provider: catbox', ['a;b', None]),
+    ('{provider: catbox, token: {a;b}}; provider: catbox', ['a;b', None]),
+    ('provider: catbox, token: abc #def\n', ['abc']),
+    ('provider: catbox, token: {' + _WRAPPER_SECRET, None),
+    ('provider: catbox, token: [' + _WRAPPER_SECRET, None),
+    ('provider: catbox, token: {' + _WRAPPER_SECRET + ']', None),
+    ('provider: catbox, token: [' + _WRAPPER_SECRET + '}', None),
+    ('provider: catbox, token: {' + _WRAPPER_SECRET + '}x', None),
+    ('provider: catbox, token: [' + _WRAPPER_SECRET + ']x', None),
+    ('provider: catbox, token: {' + _WRAPPER_SECRET + '\n}', None),
+    ('{provider: catbox, token: {' + _WRAPPER_SECRET + '\n}}', None),
+    ('provider: catbox, token: {}', None),
+    ('provider: catbox, token: []', None),
+    ('provider: catbox, token: %abc', None),
+    ('provider: catbox, token: @abc', None),
+    ('provider: catbox, token: !abc', None),
+    ('provider: catbox, token: |abc', None),
+    ('provider: catbox, token: &abc', None),
+    ('provider: catbox, token: #abc', None),
+)
+
+
+@pytest.mark.parametrize('text, expected', _CLI_WRAPPER_BOUNDARIES)
+def test_token_wrapper_boundaries(text, expected):
+    """外壳分项边界、注释边界与非法裸起始符保持固定结果且不回显原文。"""
+    if expected is None:
+        with pytest.raises(InlineUploadError) as caught:
+            parse_inline_hosts(text)
+        assert text not in ''.join(traceback.format_exception(caught.value))
+        return
+    hosts = parse_inline_hosts(text)
+    assert [host.get('token') for host in hosts] == expected
+
+
+@pytest.mark.parametrize('outer', [False, True])
+@pytest.mark.parametrize('source, expected', (
+    ('{abc}', 'abc'),
+    ('[abc]', 'abc'),
+    ('{[abc]}', '[abc]'),
+    ("'{abc}'", '{abc}'),
+    ('"[abc]"', '[abc]'),
+    ('{123}', '123'),
+    ('{ abc }', ' abc '),
+    ('${IMAGE_TOKEN}', '${IMAGE_TOKEN}'),
+    ('{${IMAGE_TOKEN}}', '${IMAGE_TOKEN}'),
+))
+def test_token_wrapper_preserves_yaml_semantics(outer, source, expected):
+    """单层包裹、已引用括号、数字与环境引用保持既有 YAML 语义。"""
+    body = 'provider: catbox, token: ' + source
+    text = ('{' + body + '}') if outer else body
+    assert parse_inline_hosts(text)[0]['token'] == expected
+
+
+def test_token_wrapper_keeps_other_containers():
+    """非 token 字段的花括号仍按 YAML 容器解释，整项外层括号不被消费。"""
+    host = parse_inline_hosts(
+        'provider: catbox, options: {note: {abc}}, token: plain')[0]
+    assert host['options'] == {'note': {'abc': None}}
+    assert host['token'] == 'plain'
+    hosts = parse_inline_hosts(
+        '{provider: catbox, token: plain}; provider: catbox')
+    assert hosts[0] == {'provider': 'catbox', 'token': 'plain', 'options': {}}
+    assert len(hosts) == 2

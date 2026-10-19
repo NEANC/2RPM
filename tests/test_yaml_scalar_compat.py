@@ -408,3 +408,164 @@ def test_syntax_failure_never_writes_config(tmp_path, caplog):
     assert secret not in caplog.text
     assert '[已隐藏]' not in path.read_text(encoding='utf-8')
     assert 'stage=parse' in caplog.text
+
+
+_BARE_TOKEN_VALUES = (
+    ('abc', 'abc'),
+    ('123|offline-token', '123|offline-token'),
+    ('abc#def', 'abc#def'),
+    ('abc！def', 'abc！def'),
+    ('abc%def', 'abc%def'),
+    ('abc&def', 'abc&def'),
+    ('abc@def', 'abc@def'),
+)
+
+_WRAPPED_TOKEN_VALUES = (
+    '|abc', '#abc', '!abc', '！abc', '%abc', '&abc', '@abc',
+    'abc # def', 'a,b:c;d', ' abc ', 'a\\b',
+)
+
+_TOKEN_FORMS = ('bare', 'single', 'double', 'backtick', 'brace', 'bracket')
+
+_WRAPPER_SECRET = 'SECRET_WRAPPER_9c31'
+
+_HOST_OPTIONS = {'storage_id': 1}
+
+
+def _yaml_double(text):
+    """按 YAML 双引号规则编码字面内容，仅用于构造测试源。"""
+    return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _yaml_single(text):
+    """按 YAML 单引号规则编码字面内容，仅用于构造测试源。"""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def _token_source(form, text):
+    """返回 token 值使用的 YAML 源片段。"""
+    if form == 'single':
+        return _yaml_single(text)
+    if form == 'double':
+        return _yaml_double(text)
+    if form == 'backtick':
+        return '`' + text + '`'
+    if form == 'brace':
+        return '{' + text + '}'
+    if form == 'bracket':
+        return '[' + text + ']'
+    return text
+
+
+def _token_expectations(form):
+    """按包裹形式返回参与的固定值与期望字面值。"""
+    pairs = list(_BARE_TOKEN_VALUES)
+    if form != 'bare':
+        pairs += [(value, value) for value in _WRAPPED_TOKEN_VALUES]
+    return pairs
+
+
+def _matrix_text(flow, form):
+    """构造包含全部矩阵图床项的原始配置文本。"""
+    lines = [MONITOR_HEAD, HOSTS_HEAD]
+    options = '{storage_id: 1}'
+    for value, _ in _token_expectations(form):
+        source = _token_source(form, value)
+        if flow:
+            lines.append('      - {provider: catbox, token: ' + source
+                         + ', options: ' + options + '}\n')
+        else:
+            lines.append('      - provider: catbox\n')
+            lines.append('        token: ' + source + '\n')
+            lines.append('        options: ' + options + '\n')
+    return ''.join(lines)
+
+
+def _single_host_text(flow, source):
+    """构造只含单个图床项的原始配置文本。"""
+    if flow:
+        return (MONITOR_HEAD + HOSTS_HEAD
+                + '      - {provider: catbox, token: ' + source + '}\n')
+    return (MONITOR_HEAD + HOSTS_HEAD
+            + '      - provider: catbox\n'
+            + '        token: ' + source + '\n')
+
+
+@pytest.mark.parametrize('flow', [False, True])
+@pytest.mark.parametrize('form', _TOKEN_FORMS)
+def test_token_wrapper_matrix(tmp_path, flow, form):
+    """块映射与 flow 映射下五种包裹及合法裸写得到同一字面凭证。"""
+    text = _matrix_text(flow, form)
+    normalized = normalize_config_scalars(text)
+    assert normalize_config_scalars(normalized) == normalized
+    path = _write_raw(tmp_path, text)
+    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    items = screenshot['image_host']
+    assert [item['token'] for item in items] == [
+        expected for _, expected in _token_expectations(form)]
+    assert [item['options'] for item in items] == (
+        [dict(_HOST_OPTIONS)] * len(items))
+
+
+_CONFIG_WRAPPER_EDGES = (
+    ('{abc}', 'abc'),
+    ('[abc]', 'abc'),
+    ('{[abc]}', '[abc]'),
+    ("'{abc}'", '{abc}'),
+    ("'[abc]'", '[abc]'),
+    ('{}', ''),
+    ('[]', ''),
+    ('{123}', '123'),
+    ('{ abc }', ' abc '),
+    ('{${IMAGE_TOKEN}}', '${IMAGE_TOKEN}'),
+    ('${IMAGE_TOKEN}', '${IMAGE_TOKEN}'),
+)
+
+
+@pytest.mark.parametrize('flow', [False, True])
+@pytest.mark.parametrize('source, expected', _CONFIG_WRAPPER_EDGES)
+def test_token_wrapper_preserves_yaml_semantics(tmp_path, flow, source, expected):
+    """单层包裹、已引用括号、空外壳、数字与环境引用保持既有 YAML 语义。"""
+    path = _write_raw(tmp_path, _single_host_text(flow, source))
+    host = config_module.load_config(str(path))['push']['screenshot'][
+        'image_host'][0]
+    assert host['token'] == expected
+
+
+_CONFIG_WRAPPER_FAILURES = (
+    (False, '{' + _WRAPPER_SECRET),
+    (False, '[' + _WRAPPER_SECRET),
+    (False, '{' + _WRAPPER_SECRET + ']'),
+    (False, '[' + _WRAPPER_SECRET + '}'),
+    (True, '{' + _WRAPPER_SECRET + ']'),
+    (True, '[' + _WRAPPER_SECRET + '}'),
+    (False, '{' + _WRAPPER_SECRET + '}x'),
+    (False, '[' + _WRAPPER_SECRET + ']x'),
+    (True, '{' + _WRAPPER_SECRET + '}x'),
+    (True, '[' + _WRAPPER_SECRET + ']x'),
+    (False, '{' + _WRAPPER_SECRET + '\n        }'),
+    (True, '{' + _WRAPPER_SECRET + '\n        }'),
+)
+
+
+@pytest.mark.parametrize('flow, source', _CONFIG_WRAPPER_FAILURES)
+def test_token_wrapper_boundaries(tmp_path, caplog, flow, source):
+    """缺失闭合、错配、跨行与尾随垃圾整体拒绝且不回显原文。"""
+    text = _single_host_text(flow, source)
+    path = _write_raw(tmp_path, text)
+    with pytest.raises(SystemExit) as error:
+        config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert _WRAPPER_SECRET not in caplog.text
+    assert path.read_text(encoding='utf-8') == text
+
+
+def test_token_wrapper_keeps_other_containers():
+    """非 token 字段的花括号与方括号仍按 YAML 容器原样保留。"""
+    text = (
+        'push:\n  screenshot:\n    image_host:\n'
+        '      - {provider: catbox, token: plain, options: {storage_id: 1}}\n'
+        '    targets:\n'
+        '      - {provider: window, target: App, out: [shot]}\n'
+    )
+    assert normalize_config_scalars(text) == text
