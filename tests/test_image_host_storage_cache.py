@@ -1082,8 +1082,8 @@ def test_v2_cache_ttl_and_fields_unchanged(tmp_path, provider, age, expect_hit):
         assert result is None
 
     # 少字段
-    for missing in ('version', 'storage_ids', 'default_storage_id',
-                    'fetched_at'):
+    for missing in ('version', 'provider', 'fetched_at', 'storage_ids',
+                    'default_storage_id', 'file_expire_seconds'):
         bad = dict(data)
         del bad[missing]
         write_payload(tmp_path, identity, bad)
