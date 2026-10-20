@@ -488,6 +488,10 @@ def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
     assert len(skipped) == 1
     assert skipped[0].reason_code == 'batch_cancelled'
 
+    queries = [event for event in events if event.stage == 'metadata_query']
+    assert [(event.action, event.status) for event in queries] == [
+        ('group', 'started'), ('group', 'cancelled')]
+
     assert summary['upload_post_attempts'] == 1
     assert summary['postupload_recoveries'] == 1
     assert summary['group_get_cancelled'] == 1
