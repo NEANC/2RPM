@@ -86,6 +86,11 @@ def forbidden_metadata(ids=(13, 14), now=1000):
     return StorageMetadata(ids, None, 3600, now, 'forbidden')
 
 
+def event_queries(calls, provider):
+    """统计指定站点在本次事件中真实发生的元数据查询次数。"""
+    return sum(1 for called, _, _ in calls if called == provider)
+
+
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch, tmp_path):
     """隔离默认缓存根并禁止任何真实请求及 POST。"""
@@ -1370,6 +1375,154 @@ def test_manual_after_failed_lookup(rig):
     ctx.record_manual_selection(third, 0, PROVIDER, SECRET, 15)
     assert ctx.storage_state(
         third, 0, PROVIDER, SECRET).metadata_version == 2
+
+
+def test_beeimg_failure_and_refresh_leave_boltp_metadata_untouched(rig):
+    """同凭证下 BeeIMG.CN 的失败快照与代次刷新不污染 Boltp 的内存与磁盘记录。"""
+    _, ctx, cache, calls, replies, now = rig
+    beeimg_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+    assert beeimg_identity != boltp_identity
+
+    replies[:] = [metadata(ids=(13,), now=now[0])]
+    beeimg_metadata = ctx.get_metadata('beeimg_cn', SECRET)
+    replies[:] = [metadata(ids=(21,), now=now[0])]
+    boltp_metadata = ctx.get_metadata('boltp', SECRET)
+    beeimg_entry = ctx._entries[ctx._identity('beeimg_cn', SECRET)]
+    boltp_entry = ctx._entries[ctx._identity('boltp', SECRET)]
+    beeimg_version, boltp_version = beeimg_entry.version, boltp_entry.version
+    assert (beeimg_version, boltp_version) == (1, 1)
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert boltp_entry.metadata is boltp_metadata
+    assert cache.load(beeimg_identity).storage_ids == (13,)
+    assert cache.load(boltp_identity).storage_ids == (21,)
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 1)
+
+    replies[:] = [ImageHostError('storage_lookup_failed', '', stage='group')]
+    with pytest.raises(ImageHostError) as caught:
+        ctx.get_metadata('beeimg_cn', SECRET, correction=True)
+    assert_safe(caught.value, 'storage_lookup_failed')
+    assert beeimg_entry.failure is not None
+    assert beeimg_entry.metadata is None
+    assert cache.load(beeimg_identity) is None
+    assert boltp_entry.metadata is boltp_metadata
+    assert boltp_entry.failure is None
+    assert boltp_entry.version == boltp_version
+    assert cache.load(boltp_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (2, 1)
+
+    beeimg_failed_version = beeimg_entry.version
+    ctx.invalidate('beeimg_cn', SECRET, version=beeimg_failed_version)
+    assert beeimg_entry.version == beeimg_failed_version + 1
+    assert beeimg_entry.metadata is None
+    assert boltp_entry.metadata is boltp_metadata
+    assert boltp_entry.failure is None
+    assert boltp_entry.version == boltp_version
+    assert cache.load(boltp_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (2, 1)
+
+    replies[:] = [metadata(ids=(31,), now=now[0])]
+    refreshed = ctx.get_metadata('beeimg_cn', SECRET)
+    assert refreshed.storage_ids == (31,)
+    assert beeimg_entry.metadata is refreshed
+    assert beeimg_entry.version == beeimg_failed_version + 1
+    assert cache.load(beeimg_identity).storage_ids == (31,)
+    assert boltp_entry.metadata is boltp_metadata
+    assert boltp_entry.failure is None
+    assert boltp_entry.version == boltp_version
+    assert cache.load(boltp_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (3, 1)
+
+    beeimg_newer_version = beeimg_entry.version
+    ctx.invalidate('beeimg_cn', SECRET, version=beeimg_version, disk_only=True)
+    assert beeimg_entry.metadata is refreshed
+    assert beeimg_entry.metadata.storage_ids == (31,)
+    assert beeimg_entry.version == beeimg_newer_version
+    assert cache.load(beeimg_identity).storage_ids == (31,)
+    assert boltp_entry.metadata is boltp_metadata
+    assert boltp_entry.failure is None
+    assert boltp_entry.version == boltp_version
+    assert cache.load(boltp_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (3, 1)
+
+
+def test_boltp_failure_and_refresh_leave_beeimg_metadata_untouched(rig):
+    """同凭证下 Boltp 的失败快照与代次刷新不污染 BeeIMG.CN 的内存与磁盘记录。"""
+    _, ctx, cache, calls, replies, now = rig
+    beeimg_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+    assert beeimg_identity != boltp_identity
+
+    replies[:] = [metadata(ids=(13,), now=now[0])]
+    beeimg_metadata = ctx.get_metadata('beeimg_cn', SECRET)
+    replies[:] = [metadata(ids=(21,), now=now[0])]
+    boltp_metadata = ctx.get_metadata('boltp', SECRET)
+    beeimg_entry = ctx._entries[ctx._identity('beeimg_cn', SECRET)]
+    boltp_entry = ctx._entries[ctx._identity('boltp', SECRET)]
+    beeimg_version, boltp_version = beeimg_entry.version, boltp_entry.version
+    assert (beeimg_version, boltp_version) == (1, 1)
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert boltp_entry.metadata is boltp_metadata
+    assert cache.load(beeimg_identity).storage_ids == (13,)
+    assert cache.load(boltp_identity).storage_ids == (21,)
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 1)
+
+    replies[:] = [ImageHostError('storage_lookup_failed', '', stage='group')]
+    with pytest.raises(ImageHostError) as caught:
+        ctx.get_metadata('boltp', SECRET, correction=True)
+    assert_safe(caught.value, 'storage_lookup_failed')
+    assert boltp_entry.failure is not None
+    assert boltp_entry.metadata is None
+    assert cache.load(boltp_identity) is None
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert beeimg_entry.failure is None
+    assert beeimg_entry.version == beeimg_version
+    assert cache.load(beeimg_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 2)
+
+    boltp_failed_version = boltp_entry.version
+    ctx.invalidate('boltp', SECRET, version=boltp_failed_version)
+    assert boltp_entry.version == boltp_failed_version + 1
+    assert boltp_entry.metadata is None
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert beeimg_entry.failure is None
+    assert beeimg_entry.version == beeimg_version
+    assert cache.load(beeimg_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 2)
+
+    replies[:] = [metadata(ids=(32,), now=now[0])]
+    refreshed = ctx.get_metadata('boltp', SECRET)
+    assert refreshed.storage_ids == (32,)
+    assert boltp_entry.metadata is refreshed
+    assert boltp_entry.version == boltp_failed_version + 1
+    assert cache.load(boltp_identity).storage_ids == (32,)
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert beeimg_entry.failure is None
+    assert beeimg_entry.version == beeimg_version
+    assert cache.load(beeimg_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 3)
+
+    boltp_newer_version = boltp_entry.version
+    ctx.invalidate('boltp', SECRET, version=boltp_version, disk_only=True)
+    assert boltp_entry.metadata is refreshed
+    assert boltp_entry.metadata.storage_ids == (32,)
+    assert boltp_entry.version == boltp_newer_version
+    assert cache.load(boltp_identity).storage_ids == (32,)
+    assert beeimg_entry.metadata is beeimg_metadata
+    assert beeimg_entry.failure is None
+    assert beeimg_entry.version == beeimg_version
+    assert cache.load(beeimg_identity) is not None
+    assert (event_queries(calls, 'beeimg_cn'),
+            event_queries(calls, 'boltp')) == (1, 3)
 
 
 @pytest.fixture
