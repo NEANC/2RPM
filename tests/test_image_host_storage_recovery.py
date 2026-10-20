@@ -106,19 +106,20 @@ def isolate(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def rig(monkeypatch, tmp_path):
-    """延迟到测试解包时连接真实缓存及查询边界替身。"""
-    def build():
+def rig_factory(monkeypatch, tmp_path):
+    """按站点构建真实缓存及查询边界替身，供两站参数化用例复用。"""
+    def build(provider=PROVIDER):
         """在测试执行阶段断言实现存在，避免夹具初始化错误。"""
         module = context_module()
         now = [1000.0]
-        cache = StorageCache(tmp_path / 'cache', clock=lambda: now[0])
+        root = tmp_path / 'cache'
+        cache = StorageCache(root, clock=lambda: now[0])
         calls = []
         replies = []
 
-        def fetch(provider, token, *, now):
+        def fetch(received_provider, token, *, now):
             """记录查询时点，按队列返回模型或抛出合成异常。"""
-            calls.append((provider, token, now))
+            calls.append((received_provider, token, now))
             reply = replies.pop(0) if replies else metadata(now=now)
             if isinstance(reply, BaseException):
                 raise reply
@@ -126,9 +127,17 @@ def rig(monkeypatch, tmp_path):
 
         monkeypatch.setattr(module, 'fetch_storage_metadata', fetch)
         context = module.UploadContext(cache=cache, clock=lambda: now[0])
-        yield from (module, context, cache, calls, replies, now)
+        return provider, module, context, cache, calls, replies, now, root
 
-    return build()
+    return build
+
+
+@pytest.fixture
+def rig(rig_factory):
+    """默认 BeeIMG.CN 站点的事件夹具，保持既有用例的展开形状。"""
+    provider, module, context, cache, calls, replies, now, _ = rig_factory()
+    assert provider == PROVIDER
+    return module, context, cache, calls, replies, now
 
 
 def assert_safe(error, code):
@@ -584,22 +593,23 @@ def test_query_control_signals_keep_identity_and_are_not_cached(
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
 @pytest.mark.parametrize('disk', [False, True])
 @pytest.mark.parametrize('present, manual', [
     (False, None), (True, 13), (True, 99),
     (True, None), (True, {'invalid': SECRET}),
 ])
-def test_selection_budget_contract(rig, disk, present, manual):
-    """组列表首项选择与手填无关，缓存旧列表直接选中且不消费纠错预算。"""
-    _, ctx, cache, calls, _, _ = rig
+def test_selection_budget_contract(rig_factory, provider, disk, present, manual):
+    """两站组列表首项选择与手填无关，缓存旧列表直接选中且不消费预算。"""
+    _, _, ctx, cache, calls, _, _, _ = rig_factory(provider)
     if disk:
-        assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
+        assert cache.save(cache.identity(provider, SECRET), metadata())
     original = deepcopy(manual)
     image = ctx.start_image()
     selected = ctx.prepare_storage(
-        image, 0, PROVIDER, SECRET,
+        image, 0, provider, SECRET,
         manual_present=present, manual_value=manual)
-    state = ctx.storage_state(image, 0, PROVIDER, SECRET)
+    state = ctx.storage_state(image, 0, provider, SECRET)
     assert selected.storage_id == 13
     assert state.selection == selected
     assert state.correction_used is False
@@ -609,10 +619,10 @@ def test_selection_budget_contract(rig, disk, present, manual):
     for _ in range(3):
         following = ctx.start_image()
         assert ctx.prepare_storage(
-            following, 0, PROVIDER, SECRET,
+            following, 0, provider, SECRET,
             manual_present=present, manual_value=manual) == selected
         assert ctx.storage_state(
-            following, 0, PROVIDER, SECRET).correction_used is False
+            following, 0, provider, SECRET).correction_used is False
     assert len(calls) == (0 if disk else 1)
 
 
@@ -1108,13 +1118,15 @@ def test_manual_selection_without_metadata_io(monkeypatch):
     context.close()
 
 
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
 @pytest.mark.parametrize('row', [
     'manual_without_entry', 'same_generation_success', 'same_generation_failure',
     'newer_network_success', 'newer_network_failure', 'newer_disk_result',
 ])
-def test_manual_recovery_generation_table(rig, monkeypatch, row):
-    """逐行核对代次表：手填基线、同代推进、新代复用与磁盘代必须刷新。"""
-    _, ctx, cache, calls, replies, _ = rig
+def test_manual_recovery_generation_table(rig_factory, monkeypatch, provider,
+                                          row):
+    """两站逐行核对代次表：手填基线、同代推进、新代复用与磁盘代刷新。"""
+    _, _, ctx, cache, calls, replies, _, _ = rig_factory(provider)
     loads = []
     load = cache.load
 
@@ -1124,113 +1136,115 @@ def test_manual_recovery_generation_table(rig, monkeypatch, row):
         return load(identity)
 
     monkeypatch.setattr(cache, 'load', tracked)
-    identity = ctx._identity(PROVIDER, SECRET)
+    identity = ctx._identity(provider, SECRET)
     if row == 'manual_without_entry':
         image = ctx.start_image()
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
         assert ctx._entries.get(identity) is None
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         entry = ctx._entries[identity]
         assert (entry.version, entry.invalidated) == (1, True)
         assert entry.metadata is None
         assert calls == [] and loads == []
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 14
         assert len(calls) == 1
         assert loads == []
         assert ctx._entries[identity].metadata.storage_ids == (13, 14)
     elif row == 'same_generation_success':
         image = ctx.start_image()
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 13
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 13
         queries = len(calls)
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
-        assert ctx.storage_state(image, 0, PROVIDER, SECRET).metadata_version == 1
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
+        assert ctx.storage_state(image, 0, provider, SECRET).metadata_version == 1
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         entry = ctx._entries[identity]
         assert (entry.version, entry.metadata, entry.invalidated) == (
             2, None, True)
         assert len(calls) == queries
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 14
         assert ctx._entries[identity].version == 2
         assert len(calls) == queries + 1
     elif row == 'same_generation_failure':
         image = ctx.start_image()
         replies.append(RuntimeError(SECRET))
         with pytest.raises(ImageHostError) as caught:
-            ctx.get_metadata(PROVIDER, SECRET)
+            ctx.get_metadata(provider, SECRET)
         old_error = caught.value
         assert ctx._entries[identity].version == 1
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
-        assert ctx.storage_state(image, 0, PROVIDER, SECRET).metadata_version == 1
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
+        assert ctx.storage_state(image, 0, provider, SECRET).metadata_version == 1
         queries = len(calls)
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         assert ctx._entries[identity].failure is None
         assert ctx._entries[identity].version == 2
         assert len(calls) == queries
         replies.append(RuntimeError(SECRET))
         with pytest.raises(ImageHostError) as again:
-            ctx.prepare_storage(image, 0, PROVIDER, SECRET)
+            ctx.prepare_storage(image, 0, provider, SECRET)
         assert again.value is not old_error
         assert ctx._entries[identity].version == 2
         assert ctx._entries[identity].failure is not None
         assert len(calls) == queries + 1
     elif row == 'newer_network_success':
         image = ctx.start_image()
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
         assert ctx.prepare_storage(
-            ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+            ctx.start_image(), 0, provider, SECRET).storage_id == 13
         entry = ctx._entries[identity]
         assert (entry.version, entry.from_disk) == (1, False)
         queries = len(calls)
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         assert ctx._entries[identity] is entry
         assert (entry.version, entry.invalidated) == (1, False)
         assert len(calls) == queries
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 14
         assert len(calls) == queries
         assert ctx._entries[identity].metadata.storage_ids == (13, 14)
     elif row == 'newer_network_failure':
         image = ctx.start_image()
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
         other = ctx.start_image()
         replies.append(RuntimeError(SECRET))
         with pytest.raises(ImageHostError):
-            ctx.prepare_storage(other, 0, PROVIDER, SECRET)
+            ctx.prepare_storage(other, 0, provider, SECRET)
         entry = ctx._entries[identity]
         failure = entry.failure
         assert (entry.version, entry.from_disk) == (1, False)
         queries = len(calls)
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         assert ctx._entries[identity] is entry
         assert entry.version == 1
         assert entry.failure is failure
         assert len(calls) == queries
         with pytest.raises(ImageHostError) as caught:
-            ctx.prepare_storage(image, 0, PROVIDER, SECRET)
+            ctx.prepare_storage(image, 0, provider, SECRET)
         assert caught.value.code == failure.code
         assert ctx._entries[identity].failure is failure
         assert len(calls) == queries
     else:
         image = ctx.start_image()
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
-        assert cache.save(cache.identity(PROVIDER, SECRET), metadata())
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
+        assert cache.save(cache.identity(provider, SECRET), metadata())
         assert ctx.prepare_storage(
-            ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+            ctx.start_image(), 0, provider, SECRET).storage_id == 13
         entry = ctx._entries[identity]
         assert (entry.version, entry.from_disk) == (1, True)
-        assert loads == [cache.identity(PROVIDER, SECRET)]
+        assert loads == [cache.identity(provider, SECRET)]
         queries = len(calls)
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
         assert ctx._entries[identity].version == 2
         assert ctx._entries[identity].invalidated is True
         assert len(calls) == queries
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 14
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 14
         assert len(calls) == queries + 1
         assert ctx._entries[identity].version == 2
 
 
-def test_old_rejection_cannot_delete_new_generation(rig, monkeypatch):
-    """晚到的旧代失效请求不得删除新代内存结果或磁盘记录。"""
-    _, ctx, cache, calls, replies, _ = rig
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+def test_old_rejection_cannot_delete_new_generation(
+        rig_factory, monkeypatch, provider):
+    """两站晚到的旧代失效请求不得删除新代内存结果或磁盘记录。"""
+    _, _, ctx, cache, calls, replies, _, _ = rig_factory(provider)
     deletes = []
     invalidate = cache.invalidate
 
@@ -1242,24 +1256,24 @@ def test_old_rejection_cannot_delete_new_generation(rig, monkeypatch):
     monkeypatch.setattr(cache, 'invalidate', tracked)
     first, second = ctx.start_image(), ctx.start_image()
     for image in (first, second):
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
-    assert ctx.storage_state(first, 0, PROVIDER, SECRET).metadata_version == 0
-    assert ctx.begin_recovery(first, 0, PROVIDER, SECRET) is True
-    assert ctx.prepare_storage(first, 0, PROVIDER, SECRET).storage_id == 14
-    identity = cache.identity(PROVIDER, SECRET)
-    entry = ctx._entries[ctx._identity(PROVIDER, SECRET)]
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
+    assert ctx.storage_state(first, 0, provider, SECRET).metadata_version == 0
+    assert ctx.begin_recovery(first, 0, provider, SECRET) is True
+    assert ctx.prepare_storage(first, 0, provider, SECRET).storage_id == 14
+    identity = cache.identity(provider, SECRET)
+    entry = ctx._entries[ctx._identity(provider, SECRET)]
     assert (entry.version, len(calls)) == (1, 1)
     assert cache.load(identity) is not None
     deletes_before = len(deletes)
-    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is True
+    assert ctx.begin_recovery(second, 0, provider, SECRET) is True
     assert entry.version == 1
-    ctx.invalidate(PROVIDER, SECRET, version=0, disk_only=True)
+    ctx.invalidate(provider, SECRET, version=0, disk_only=True)
     assert entry.version == 1
     assert entry.metadata is not None
     assert len(deletes) == deletes_before
     assert cache.load(identity) is not None
     assert len(calls) == 1
-    assert ctx.storage_state(second, 0, PROVIDER, SECRET).selection is not None
+    assert ctx.storage_state(second, 0, provider, SECRET).selection is not None
 
 
 def test_late_rejection_cannot_delete_regenerated_result(rig, monkeypatch):
@@ -1304,36 +1318,184 @@ def test_late_rejection_cannot_delete_regenerated_result(rig, monkeypatch):
     assert entry.metadata is None
 
 
-def test_local_exclusion_and_slot_budgets(rig):
-    """恢复排除只作用于本图本槽，非法手填不消费预算也不写共享纠错事实。"""
-    _, ctx, cache, calls, replies, _ = rig
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('outcome', ['success', 'failure'])
+@pytest.mark.parametrize('disk_only', [False, True])
+def test_v2_late_invalidation_preserves_generation(
+        rig_factory, monkeypatch, provider, outcome, disk_only):
+    """晚到旧代失效不改变新代成功/失败结果、版本或磁盘原始字节。"""
+    _, _, ctx, cache, calls, replies, _, root = rig_factory(provider)
+    deletes = []
+    invalidate = cache.invalidate
+
+    def tracked(identity):
+        """记录真实磁盘失效次数，不替代删除行为。"""
+        deletes.append(identity)
+        return invalidate(identity)
+
+    monkeypatch.setattr(cache, 'invalidate', tracked)
+    first, second = ctx.start_image(), ctx.start_image()
+    for image in (first, second):
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 13
+    assert ctx.begin_recovery(first, 0, provider, SECRET) is True
+    if outcome == 'success':
+        replies.append(metadata((21,), 21))
+        assert ctx.prepare_storage(first, 0, provider, SECRET).storage_id == 21
+    else:
+        replies.append(RuntimeError(SECRET))
+        with pytest.raises(ImageHostError):
+            ctx.prepare_storage(first, 0, provider, SECRET)
+    identity = ctx._identity(provider, SECRET)
+    entry = ctx._entries[identity]
+    path = root / (cache.identity(provider, SECRET) + '.json')
+    disk_before = path.read_bytes() if path.exists() else None
+    metadata_before, failure_before = entry.metadata, entry.failure
+    version_before, queries_before = entry.version, len(calls)
+    deletes_before = len(deletes)
+    assert version_before == 2
+    if outcome == 'success':
+        assert metadata_before is not None and disk_before is not None
+    else:
+        assert failure_before is not None and disk_before is None
+
+    ctx.invalidate(provider, SECRET, version=1, disk_only=disk_only)
+
+    assert entry.version == version_before
+    assert entry.metadata is metadata_before
+    assert entry.failure is failure_before
+    assert len(calls) == queries_before
+    assert len(deletes) == deletes_before
+    assert (path.read_bytes() if path.exists() else None) == disk_before
+
+
+@pytest.mark.parametrize('disk_only', [False, True])
+@pytest.mark.parametrize('a_provider', ['beeimg_cn', 'boltp'])
+def test_v2_cross_provider_success_bytes(rig_factory, a_provider, disk_only):
+    """同 token 下 A 站刷新与旧代失效不触碰 B 站对象、版本、查询与原始字节。"""
+    b_provider = 'boltp' if a_provider == 'beeimg_cn' else 'beeimg_cn'
+    _, _, ctx, cache, calls, replies, now, root = rig_factory(a_provider)
+    a_identity = cache.identity(a_provider, SECRET)
+    b_identity = cache.identity(b_provider, SECRET)
+    assert a_identity != b_identity
+    assert ctx._identity(a_provider, SECRET) != ctx._identity(b_provider, SECRET)
+    replies.extend([metadata((13,), now=now[0]), metadata((21,), now=now[0])])
+    a_metadata = ctx.get_metadata(a_provider, SECRET)
+    b_metadata = ctx.get_metadata(b_provider, SECRET)
+    a_entry = ctx._entries[ctx._identity(a_provider, SECRET)]
+    b_entry = ctx._entries[ctx._identity(b_provider, SECRET)]
+    assert (a_metadata.storage_ids, b_metadata.storage_ids) == ((13,), (21,))
+    assert (a_entry.version, b_entry.version) == (1, 1)
+    b_path = root / (b_identity + '.json')
+    b_bytes = b_path.read_bytes()
+    b_version = b_entry.version
+    b_queries = event_queries(calls, b_provider)
+
+    def assert_b_untouched():
+        """B 站内存对象、版本、查询计数和磁盘原始字节逐项不变。"""
+        assert b_entry.metadata is b_metadata
+        assert b_entry.failure is None
+        assert b_entry.version == b_version
+        assert event_queries(calls, b_provider) == b_queries
+        assert b_path.read_bytes() == b_bytes
+
+    ctx.invalidate(a_provider, SECRET, version=1)
+    replies.append(RuntimeError(SECRET))
+    with pytest.raises(ImageHostError):
+        ctx.get_metadata(a_provider, SECRET)
+    assert (a_entry.version, a_entry.metadata) == (2, None)
+    assert a_entry.failure is not None
+    assert_b_untouched()
+
+    ctx.invalidate(a_provider, SECRET, version=a_entry.version)
+    replies.append(metadata((31,), now=now[0]))
+    refreshed = ctx.get_metadata(a_provider, SECRET)
+    assert refreshed.storage_ids == (31,)
+    assert (a_entry.version, a_entry.metadata) == (3, refreshed)
+    assert_b_untouched()
+
+    for stale_version in (1, 2):
+        ctx.invalidate(a_provider, SECRET, version=stale_version,
+                       disk_only=disk_only)
+        assert (a_entry.version, a_entry.metadata) == (3, refreshed)
+        assert_b_untouched()
+
+
+@pytest.mark.parametrize('a_provider', ['beeimg_cn', 'boltp'])
+def test_v2_cross_provider_failure_snapshot(rig_factory, a_provider):
+    """A 站失败快照不被 B 站刷新与旧代失效改写，重建异常但不重复查询。"""
+    b_provider = 'boltp' if a_provider == 'beeimg_cn' else 'beeimg_cn'
+    _, _, ctx, cache, calls, replies, now, root = rig_factory(a_provider)
+    replies.append(RuntimeError(SECRET))
+    with pytest.raises(ImageHostError) as first:
+        ctx.get_metadata(a_provider, SECRET)
+    first_error = first.value
+    a_entry = ctx._entries[ctx._identity(a_provider, SECRET)]
+    saved_failure = a_entry.failure
+    saved_version = a_entry.version
+    saved_queries = event_queries(calls, a_provider)
+    a_path = root / (cache.identity(a_provider, SECRET) + '.json')
+    saved_disk = a_path.read_bytes() if a_path.exists() else None
+
+    replies.append(metadata((21,), now=now[0]))
+    b_metadata = ctx.get_metadata(b_provider, SECRET)
+    b_entry = ctx._entries[ctx._identity(b_provider, SECRET)]
+    ctx.invalidate(b_provider, SECRET, version=b_entry.version)
+    replies.append(metadata((31,), now=now[0]))
+    refreshed = ctx.get_metadata(b_provider, SECRET)
+    assert refreshed.storage_ids == (31,)
+    ctx.invalidate(b_provider, SECRET, version=1, disk_only=True)
+    assert b_entry.metadata is refreshed
+    assert b_metadata.storage_ids == (21,)
+    assert cache.load(cache.identity(b_provider, SECRET)).storage_ids == (31,)
+
+    assert saved_failure is not None
+    assert a_entry.failure is saved_failure
+    assert a_entry.version == saved_version
+    assert event_queries(calls, a_provider) == saved_queries
+    assert (a_path.read_bytes() if a_path.exists() else None) == saved_disk
+
+    with pytest.raises(ImageHostError) as second:
+        ctx.get_metadata(a_provider, SECRET)
+    second_error = second.value
+    assert second_error is not first_error
+    assert (second_error.code, second_error.stage) == (
+        first_error.code, first_error.stage)
+    assert a_entry.failure is saved_failure
+    assert a_entry.version == saved_version
+    assert event_queries(calls, a_provider) == saved_queries
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+def test_local_exclusion_and_slot_budgets(rig_factory, provider):
+    """两站恢复排除只作用于本图本槽，非法手填不消费预算也不写纠错事实。"""
+    _, _, ctx, cache, calls, replies, _, _ = rig_factory(provider)
     first = ctx.start_image()
     assert ctx.prepare_storage(
-        first, 0, PROVIDER, SECRET,
+        first, 0, provider, SECRET,
         manual_present=True, manual_value=[]).storage_id == 13
-    state = ctx.storage_state(first, 0, PROVIDER, SECRET)
+    state = ctx.storage_state(first, 0, provider, SECRET)
     assert state.correction_used is False
     assert ctx._corrected == set()
-    shared = ctx.get_metadata(PROVIDER, SECRET)
+    shared = ctx.get_metadata(provider, SECRET)
     assert shared.storage_ids == (13, 14)
     second = ctx.start_image()
     for index in (0, 1):
-        assert ctx.prepare_storage(second, index, PROVIDER, SECRET).storage_id == 13
-    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is True
-    assert ctx.begin_recovery(second, 0, PROVIDER, SECRET) is False
-    assert ctx.begin_recovery(second, 1, PROVIDER, SECRET) is True
+        assert ctx.prepare_storage(second, index, provider, SECRET).storage_id == 13
+    assert ctx.begin_recovery(second, 0, provider, SECRET) is True
+    assert ctx.begin_recovery(second, 0, provider, SECRET) is False
+    assert ctx.begin_recovery(second, 1, provider, SECRET) is True
     for index in (0, 1):
         assert ctx.prepare_storage(
-            second, index, PROVIDER, SECRET).storage_id == 14
+            second, index, provider, SECRET).storage_id == 14
     assert ctx.prepare_storage(
-        ctx.start_image(), 0, PROVIDER, SECRET).storage_id == 13
+        ctx.start_image(), 0, provider, SECRET).storage_id == 13
     assert shared.storage_ids == (13, 14)
     third, fourth = ctx.start_image(), ctx.start_image()
     for image in (third, fourth):
-        assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 13
+        assert ctx.prepare_storage(image, 0, provider, SECRET).storage_id == 13
     for image in (third, fourth):
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is True
-        assert ctx.begin_recovery(image, 0, PROVIDER, SECRET) is False
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is True
+        assert ctx.begin_recovery(image, 0, provider, SECRET) is False
     assert replies == []
 
 

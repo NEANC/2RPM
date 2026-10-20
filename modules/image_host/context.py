@@ -427,21 +427,19 @@ class UploadContext:
     def prepare_storage(self, image, index, provider, token, *,
                         manual_present=False, manual_value=None
                         ) -> StorageSelection:
-        """选择当前可用存储；站点策略在明确的提供者边界分流。
+        """两站按同一组顺序选择当前可用存储。
 
-        BeeIMG.CN 按组顺序自动选择并只排除本图本槽刚被拒绝的候选；
-        Boltp 保留原有手填优先、纠错预算与资料受限告警语义。
+        手填值不参与优先级；合法手填由调用方先登记，只有自动发现
+        或恢复进入这里。manual_present 仅用于向调用方报告非法手填
+        已被替代，不改变候选顺序。
         """
         items, key = self._item(image, index, provider, token)
-        if provider == 'beeimg_cn':
-            return self._prepare_group_storage(
-                items, key, provider, token, manual_present)
-        return self._prepare_legacy_storage(
-            items, key, provider, token, manual_present, manual_value)
+        return self._prepare_group_storage(
+            items, key, provider, token, manual_present)
 
     def _prepare_group_storage(self, items, key, provider, token,
                                manual_present) -> StorageSelection:
-        """BeeIMG.CN 按组顺序选择，排除本图本槽实际被拒绝的候选。
+        """两站按组顺序选择，排除本图本槽实际被拒绝的候选。
 
         手填值不参与优先级，也不消费共享纠错预算或触发上传前刷新：
         本事件新列表直接替代，其他图或其他槽位仍可选到同一编号。
@@ -492,7 +490,7 @@ class UploadContext:
 
     def _select_storage(self, provider, metadata, manual_present, manual,
                         *, excluded_id=None):
-        """显式按站点分发选择，并为恢复传入本图本槽的排除候选。"""
+        """按统一组顺序选择，并为恢复传入本图本槽的排除候选。"""
         with trace_operation('storage_select', 'select', provider=provider,
                              candidate_count=len(metadata.storage_ids)) as operation:
             try:
@@ -502,13 +500,7 @@ class UploadContext:
             except ImageHostError as error:
                 operation.finish('failed', reason_code=error.code)
                 raise
-            if provider == 'beeimg_cn':
-                source = 'group_first'
-            else:
-                source = ('manual' if manual_present and not selected.replaced_manual
-                          else 'default' if metadata.default_storage_id == selected.storage_id
-                          else 'group_first')
-            operation.finish('succeeded', selection_source=source,
+            operation.finish('succeeded', selection_source='group_first',
                              storage_id=selected.storage_id)
             return selected
 
@@ -516,9 +508,8 @@ class UploadContext:
         """消费一次预算并按本图已用代次失效，不查询或执行 POST。
 
         返回 True 仅表示允许继续取得恢复选择，不授权额外上传次数。
-        BeeIMG.CN 按“发送时代次”推进：无记录时创建首代、同代重建
-        下一代、更新的网络代直接复用、仅来自磁盘的代必须刷新；
-        Boltp 保留原有候选与预算行为。
+        两站均按“发送时代次”推进：无记录时创建首代、同代重建
+        下一代、更新的网络代直接复用、仅来自磁盘的代必须刷新。
         """
         items, key = self._item(image, index, provider, token)
         state = items[key]
@@ -530,11 +521,6 @@ class UploadContext:
         items[key] = replace(state, correction_used=True,
                              rejected_storage_id=state.selection.storage_id)
         entry = self._entries.get(key[1])
-        if provider != 'beeimg_cn':
-            if entry.version != state.metadata_version:
-                return True
-            self.invalidate(provider, token, version=state.metadata_version)
-            return True
         baseline = state.metadata_version
         if entry is None:
             entry = _MetadataEntry(version=1, invalidated=True)

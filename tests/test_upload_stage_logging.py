@@ -1352,20 +1352,16 @@ def test_selection_wraps_real_decision(signal_type, monkeypatch, tmp_path):
     context.close()
 
 
-@pytest.mark.parametrize('kind', ['preupload_refresh', 'postupload_recovery'])
 @pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
-def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
-    """刷新型回退包住真实查询：两秒耗时与取消信号来自被包裹的查询。"""
+def test_recovery_wraps_refresh(signal_type, monkeypatch, tmp_path):
+    """恢复回退包住真实查询：两秒耗时与取消信号来自被包裹的查询。"""
     registry = import_module('modules.image_host.registry')
     context, cache, transport = build(monkeypatch, tmp_path, replies=[])
-    provider = 'boltp' if kind == 'preupload_refresh' else 'beeimg_cn'
+    provider = 'beeimg_cn'
     identity = cache.identity(provider, '')
     assert cache.save(identity, StorageMetadata((13,), None, None, 1000.0))
     context.get_metadata(provider, '')
-    replies = [group_reply(ids=(14,)), SUCCESS_UPLOAD]
-    if kind == 'postupload_recovery':
-        replies.insert(0, REJECTED_UPLOAD)
-    transport.replies = replies
+    transport.replies = [REJECTED_UPLOAD, group_reply(ids=(14,)), SUCCESS_UPLOAD]
     clock = [0.0]
     signal = signal_type('stop') if signal_type else None
     original = import_module('modules.image_host.context').fetch_storage_metadata
@@ -1379,33 +1375,22 @@ def test_recovery_wraps_refresh(kind, signal_type, monkeypatch, tmp_path):
     monkeypatch.setattr('modules.image_host.context.fetch_storage_metadata', delayed)
     events = []
     with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
-        if kind == 'preupload_refresh':
-            # BeeIMG.CN 已无上传前刷新，直接经 Boltp 旧选择器覆盖该回退。
-            image = context.start_image()
-            if signal:
-                with pytest.raises(signal_type) as caught:
-                    context.prepare_storage(
-                        image, 0, 'boltp', '',
-                        manual_present=True, manual_value=14)
-                assert caught.value is signal
-            else:
-                context.prepare_storage(
-                    image, 0, 'boltp', '',
-                    manual_present=True, manual_value=14)
+        host = {'provider': 'beeimg_cn', 'token': '', 'options': {}}
+        if signal:
+            with pytest.raises(signal_type) as caught:
+                registry.upload_with_fallback(b'image', 'image.png', [host],
+                                              context=context)
+            assert caught.value is signal
         else:
-            host = {'provider': 'beeimg_cn', 'token': '', 'options': {}}
-            if signal:
-                with pytest.raises(signal_type) as caught:
-                    registry.upload_with_fallback(b'image', 'image.png', [host],
-                                                  context=context)
-                assert caught.value is signal
-            else:
-                assert registry.upload_with_fallback(
-                    b'image', 'image.png', [host], context=context).success
-    recorded = [event for event in events if event.fallback_kind == kind]
+            assert registry.upload_with_fallback(
+                b'image', 'image.png', [host], context=context).success
+    recorded = [event for event in events
+                if event.fallback_kind == 'postupload_recovery']
     assert [event.status for event in recorded] == [
         'started', 'cancelled' if signal else 'succeeded']
     assert recorded[-1].duration_ms == 2000
+    assert not [event for event in events
+                if event.fallback_kind == 'preupload_refresh']
     context.close()
 
 
