@@ -529,8 +529,10 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
 
     契约来源：官方接口文档页面 /api/v2/upload。BeeIMG.cn 与 Boltp 分别于
     2026-09-30、2026-10-03 用账号令牌完成真实上传验证。
-    multipart 必填 file 与 storage_id，可选整数 album_id；存储编号由注册表
-    根据组信息和可选账号默认值选择后注入 options，不猜测文档示例编号。
+    multipart 必填 file 与 storage_id，可选整数 album_id。合法手填存储编号
+    首次零查询直接使用；未填或非法手填时，注册表调用 storage.select_storage
+    按 /api/v2/group 返回的 data.storages 顺序取首个未被本图本槽拒绝的编号，
+    不请求账号资料，也没有账号默认编号参与选择，不猜测文档示例编号。
     直接调用适配器时两站都要求非布尔正整数 storage_id；本层仅校验参数并
     上传，不负责查询存储、缓存或重传。
     项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
