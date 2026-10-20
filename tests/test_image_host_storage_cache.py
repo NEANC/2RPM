@@ -18,8 +18,7 @@ import time
 import pytest
 from ruamel.yaml import YAML
 
-from modules.image_host import storage_beeimg_cn
-from modules.image_host import storage_boltp as boltp
+from modules.image_host import storage
 from modules.image_host.core import resolve_token
 from modules.image_host.storage import StorageMetadata
 from modules.yaml_scalar_compat import normalize_config_scalars
@@ -64,7 +63,7 @@ def isolated_environment(monkeypatch, tmp_path):
 def make_cache(tmp_path, clock=None):
     """创建隔离实例、身份和合法的合成元数据。
 
-    身份固定为 BeeIMG.CN，其新语义不存在账号默认存储，故默认编号为 None。
+    身份固定为 BeeIMG.CN；两站新语义均不存在账号默认存储，故默认编号为 None。
     """
     cache = cache_module().StorageCache(
         tmp_path, clock=clock if clock is not None else lambda: 1000.0)
@@ -80,10 +79,10 @@ def payload():
             'file_expire_seconds': None}
 
 
-def legacy_payload(provider, fetched_at):
-    """构造不含 profile_state 的原始 v1 记录，默认编号仍为旧版取值。"""
+def legacy_payload(provider, fetched_at, default=14):
+    """构造不含 profile_state 的原始 v1 记录，默认编号取旧版字段值。"""
     return {'version': 1, 'provider': provider, 'fetched_at': fetched_at,
-            'storage_ids': [13, 14], 'default_storage_id': 14,
+            'storage_ids': [13, 14], 'default_storage_id': default,
             'file_expire_seconds': 0}
 
 
@@ -356,7 +355,7 @@ def test_quoted_tokens_share_cache_identity(tmp_path, provider):
 @pytest.mark.parametrize('expire', [None, 0, 3600])
 @pytest.mark.parametrize('default', [None, 13, 99])
 def test_roundtrip_frozen_minimal_metadata(tmp_path, expire, default):
-    """真实往返保序去重、写盘保留原默认值而读盘按站点归一。"""
+    """真实往返保序去重，调用方默认值落盘归一为 None。"""
     cache, identity, _ = make_cache(tmp_path)
     metadata = StorageMetadata((14, 13, 14), default, expire, 1000.0)
     assert cache.save(identity, metadata)
@@ -369,7 +368,7 @@ def test_roundtrip_frozen_minimal_metadata(tmp_path, expire, default):
     assert set(stored) == set(payload())
     assert stored['provider'] == 'beeimg_cn'
     assert stored['version'] == 1
-    assert stored['default_storage_id'] == default
+    assert stored['default_storage_id'] is None
     assert cache.take_warnings() == ()
 
 
@@ -526,7 +525,7 @@ def test_loaded_v1_record_reports_not_requested(tmp_path):
 
 
 def test_legacy_beeimg_default_is_normalized(tmp_path):
-    """旧 BeeIMG.CN 记录的账号默认编号在读盘归一为 None，选择只取组首项。"""
+    """旧记录读取时两站默认编号均归一为 None，选择只取组首项。"""
     cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
     bee_identity = cache.identity('beeimg_cn', SECRET)
     boltp_identity = cache.identity('boltp', SECRET)
@@ -542,9 +541,11 @@ def test_legacy_beeimg_default_is_normalized(tmp_path):
     assert bee_loaded.storage_ids == (13, 14)
     assert bee_loaded.default_storage_id is None
     assert bee_loaded.profile_state == 'not_requested'
-    assert boltp_loaded.default_storage_id == 14
-    assert boltp.select_storage(boltp_loaded, False, None).storage_id == 13
-    bee_selected = storage_beeimg_cn.select_storage(bee_loaded, False, None)
+    assert boltp_loaded.default_storage_id is None
+    assert storage.select_storage(
+        boltp_loaded, False, None, provider='boltp').storage_id == 13
+    bee_selected = storage.select_storage(
+        bee_loaded, False, None, provider='beeimg_cn')
     assert bee_selected.storage_id == 13
     assert cache.take_warnings() == ()
 
@@ -564,7 +565,7 @@ def test_same_token_cache_isolation(tmp_path):
     boltp_before = record_path(tmp_path, boltp_identity).read_bytes()
     assert cache.invalidate(bee_identity)
     assert not record_path(tmp_path, bee_identity).exists()
-    assert cache.load(boltp_identity).default_storage_id == 14
+    assert cache.load(boltp_identity).default_storage_id is None
     assert record_path(tmp_path, boltp_identity).read_bytes() == boltp_before
     assert cache.take_warnings() == ()
 
@@ -1000,3 +1001,97 @@ def test_warnings_are_ordered_deduplicated_and_drained(tmp_path, monkeypatch):
     assert cache.take_warnings() == (WARN_READ, WARN_SAVE, WARN_INVALIDATE)
     assert cache.take_warnings() == ()
     assert metadata == StorageMetadata((13,), None, 3600, 1000.0)
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('default', [13, 99])
+def test_v2_legacy_raw_cache_normalization(tmp_path, provider, default):
+    """直接写入旧原始六字段记录，验证读盘先校验再归一默认值为 None。"""
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
+    identity = cache.identity(provider, SECRET)
+    data = legacy_payload(provider, 1000.0, default=default)
+    original_bytes = json.dumps(data).encode('utf-8')
+    record_path(tmp_path, identity).write_bytes(original_bytes)
+    loaded = cache.load(identity)
+    assert loaded is not None
+    assert loaded.default_storage_id is None
+    assert loaded.fetched_at == 1000.0
+    assert loaded.storage_ids == (13, 14)
+    assert record_path(tmp_path, identity).read_bytes() == original_bytes
+    assert cache.take_warnings() == ()
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('value', [0, -1, True, '13', [], {}, 13.0])
+def test_v2_legacy_raw_cache_rejects_invalid_default(tmp_path, provider, value):
+    """非法默认编号保持校验失败，不因为归一而放宽校验。"""
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
+    identity = cache.identity(provider, SECRET)
+    data = legacy_payload(provider, 1000.0)
+    data['default_storage_id'] = value
+    write_payload(tmp_path, identity, data)
+    assert cache.load(identity) is None
+    assert cache.take_warnings() == (WARN_READ,)
+
+
+def test_v2_cache_save_normalizes_default(tmp_path):
+    """新保存将 validated.default_storage_id（归一后的 None）回写到 payload。"""
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
+    bee_identity = cache.identity('beeimg_cn', SECRET)
+    boltp_identity = cache.identity('boltp', SECRET)
+
+    # 调用方传入 bee 13，验证落盘后被归一为 None
+    metadata_bee = StorageMetadata((13, 99), 13, 3600, 1000.0)
+    assert cache.save(bee_identity, metadata_bee)
+    saved_bee = json.loads(record_path(tmp_path, bee_identity).read_bytes())
+    assert set(saved_bee.keys()) == {'version', 'provider', 'fetched_at',
+                                     'storage_ids', 'default_storage_id',
+                                     'file_expire_seconds'}
+    assert saved_bee['version'] == 1
+    assert saved_bee['default_storage_id'] is None
+    assert saved_bee['fetched_at'] == 1000.0
+
+    # 调用方传入 boltp 14，验证落盘后同样被归一为 None
+    metadata_boltp = StorageMetadata((13, 14), 14, 0, 1000.0)
+    assert cache.save(boltp_identity, metadata_boltp)
+    saved_boltp = json.loads(record_path(tmp_path, boltp_identity).read_bytes())
+    assert set(saved_boltp.keys()) == {'version', 'provider', 'fetched_at',
+                                       'storage_ids', 'default_storage_id',
+                                       'file_expire_seconds'}
+    assert saved_boltp['version'] == 1
+    assert saved_boltp['default_storage_id'] is None
+    assert saved_boltp['fetched_at'] == 1000.0
+    assert cache.take_warnings() == ()
+
+
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('age, expect_hit', [
+    (-1, False), (0, True), (86399, True), (86400, False)])
+def test_v2_cache_ttl_and_fields_unchanged(tmp_path, provider, age, expect_hit):
+    """TTL 边界、六字段校验保持原有行为，归一不放宽校验。"""
+    now = 1000.0
+    cache = cache_module().StorageCache(tmp_path, clock=lambda: now + age)
+    identity = cache.identity(provider, SECRET)
+    data = legacy_payload(provider, now, default=99)
+    write_payload(tmp_path, identity, data)
+    result = cache.load(identity)
+    if expect_hit:
+        assert result is not None
+        assert result.default_storage_id is None
+    else:
+        assert result is None
+
+    # 少字段
+    for missing in ('version', 'storage_ids', 'default_storage_id',
+                    'fetched_at'):
+        bad = dict(data)
+        del bad[missing]
+        write_payload(tmp_path, identity, bad)
+        assert cache.load(identity) is None
+
+    # 多字段
+    bad = dict(data)
+    bad['extra'] = 'extra'
+    write_payload(tmp_path, identity, bad)
+    assert cache.load(identity) is None
+    assert cache.take_warnings() == (WARN_READ,)
