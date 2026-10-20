@@ -324,7 +324,7 @@ def test_now_shares_image_clock_without_changing_existing_state(rig):
     image = ctx.start_image()
     assert image.started_at == started_at == now[0]
     ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                        manual_present=True, manual_value=99)
+                        manual_present=True)
     ctx.record_expiration(image, 0, PROVIDER, SECRET,
                           ExpirationDecision(1100, '合成显示', True))
     images = {key: dict(value) for key, value in ctx._images.items()}
@@ -605,7 +605,7 @@ def test_selection_budget_contract(rig_factory, provider, disk, present, manual)
     image = ctx.start_image()
     selected = ctx.prepare_storage(
         image, 0, provider, SECRET,
-        manual_present=present, manual_value=manual)
+        manual_present=present)
     state = ctx.storage_state(image, 0, provider, SECRET)
     assert selected.storage_id == 13
     assert state.selection == selected
@@ -616,7 +616,7 @@ def test_selection_budget_contract(rig_factory, provider, disk, present, manual)
         following = ctx.start_image()
         assert ctx.prepare_storage(
             following, 0, provider, SECRET,
-            manual_present=present, manual_value=manual) == selected
+            manual_present=present) == selected
         assert ctx.storage_state(
             following, 0, provider, SECRET).correction_used is False
     assert len(calls) == (0 if disk else 1)
@@ -675,7 +675,7 @@ def test_corrected_selection_revalidated_on_metadata_version_change(rig):
     _, ctx, _, calls, replies, _ = rig
     first = ctx.start_image()
     selected = ctx.prepare_storage(
-        first, 0, PROVIDER, SECRET, manual_present=True, manual_value=[])
+        first, 0, PROVIDER, SECRET, manual_present=True)
     assert selected.storage_id == 13
     old_state = ctx.storage_state(first, 0, PROVIDER, SECRET)
     old_version = old_state.metadata_version
@@ -684,7 +684,7 @@ def test_corrected_selection_revalidated_on_metadata_version_change(rig):
     ctx.get_metadata(PROVIDER, SECRET, correction=True)
     second = ctx.start_image()
     selected = ctx.prepare_storage(
-        second, 0, PROVIDER, SECRET, manual_present=True, manual_value=[])
+        second, 0, PROVIDER, SECRET, manual_present=True)
     assert selected.storage_id == 21
     state = ctx.storage_state(second, 0, PROVIDER, SECRET)
     assert state.metadata_version > old_version
@@ -714,7 +714,7 @@ def test_manual_refresh_failure_consumes_budget_and_is_reused(rig):
         image = ctx.start_image()
         with pytest.raises(ImageHostError):
             ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                                manual_present=True, manual_value=99)
+                                manual_present=True)
         assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
     assert len(calls) == 1
 
@@ -884,7 +884,7 @@ def test_refresh_can_restore_manual_choice_and_still_consumes_budget(rig):
     image = ctx.start_image()
     assert ctx.prepare_storage(
         image, 0, PROVIDER, SECRET,
-        manual_present=True, manual_value=99).storage_id == 13
+        manual_present=True).storage_id == 13
     assert ctx.begin_recovery(image, 0, PROVIDER, SECRET)
     assert not ctx.begin_recovery(image, 0, PROVIDER, SECRET)
     assert ctx.prepare_storage(image, 0, PROVIDER, SECRET).storage_id == 99
@@ -896,7 +896,7 @@ def test_distinct_configurations_share_metadata_not_manual_budget(rig):
     _, ctx, _, calls, _, _ = rig
     image = ctx.start_image()
     ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                        manual_present=True, manual_value=[])
+                        manual_present=True)
     ctx.prepare_storage(image, 1, PROVIDER, SECRET)
     assert not ctx.storage_state(image, 0, PROVIDER, SECRET).correction_used
     assert not ctx.storage_state(image, 1, PROVIDER, SECRET).correction_used
@@ -918,7 +918,7 @@ def test_beeimg_forbidden_selection_is_slot_local(rig, reverse):
     for index, (present, manual) in enumerate(order):
         selection = ctx.prepare_storage(
             image, index, PROVIDER, SECRET,
-            manual_present=present, manual_value=manual)
+            manual_present=present)
         assert selection.storage_id == 13
     assert len(calls) == 1
 
@@ -934,11 +934,11 @@ def test_forbidden_fact_shared_across_images_not_manual_selection(rig):
             assert selection.storage_id == 13
     assert len(calls) == 1
     selected = ctx.prepare_storage(
-        first, 0, PROVIDER, SECRET, manual_present=True, manual_value=14)
+        first, 0, PROVIDER, SECRET, manual_present=True)
     assert selected.storage_id == 13
     replies.append(forbidden_metadata((21, 22)))
     other = ctx.prepare_storage(
-        first, 0, PROVIDER, BACKUP, manual_present=True, manual_value=21)
+        first, 0, PROVIDER, BACKUP, manual_present=True)
     assert other.storage_id == 21
     assert len(calls) == 2
 
@@ -951,7 +951,7 @@ def test_forbidden_invalid_manual_never_selects_first(rig, manual):
     image = ctx.start_image()
     selection = ctx.prepare_storage(
         image, 0, PROVIDER, SECRET,
-        manual_present=True, manual_value=manual)
+        manual_present=True)
     assert selection.storage_id == 13
     assert ctx.storage_state(image, 0, PROVIDER, SECRET).selection == selection
     assert len(calls) == 1
@@ -963,7 +963,7 @@ def test_forbidden_result_not_reused_across_events(rig):
     replies.append(forbidden_metadata())
     image = ctx.start_image()
     selected = ctx.prepare_storage(
-        image, 0, PROVIDER, SECRET, manual_present=True, manual_value=99)
+        image, 0, PROVIDER, SECRET, manual_present=True)
     assert selected.storage_id == 13
     assert cache.load(cache.identity(PROVIDER, SECRET)) is None
     ctx.close()
@@ -1013,7 +1013,7 @@ def test_disk_keeps_query_metadata_not_manual_preference(rig):
     _, ctx, cache, _, _, _ = rig
     image = ctx.start_image()
     selected = ctx.prepare_storage(
-        image, 0, PROVIDER, SECRET, manual_present=True, manual_value=13)
+        image, 0, PROVIDER, SECRET, manual_present=True)
     assert selected.storage_id == 13
     stored = cache.load(cache.identity(PROVIDER, SECRET))
     assert stored.storage_ids == (13, 14)
@@ -1055,7 +1055,7 @@ def test_close_drops_owned_secret_and_state_references(rig):
     ctx.collect_secrets([{'token': SECRET}])
     image = ctx.start_image()
     ctx.prepare_storage(image, 0, PROVIDER, SECRET,
-                        manual_present=True, manual_value=[])
+                        manual_present=True)
     ctx.close()
     assert ctx._secrets == ()
     assert ctx._entries == ctx._images == ctx._credentials == {}
@@ -1467,7 +1467,7 @@ def test_local_exclusion_and_slot_budgets(rig_factory, provider):
     first = ctx.start_image()
     assert ctx.prepare_storage(
         first, 0, provider, SECRET,
-        manual_present=True, manual_value=[]).storage_id == 13
+        manual_present=True).storage_id == 13
     state = ctx.storage_state(first, 0, provider, SECRET)
     assert state.correction_used is False
     shared = ctx.get_metadata(provider, SECRET)

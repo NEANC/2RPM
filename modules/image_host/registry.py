@@ -39,18 +39,6 @@ UPLOADERS = {
     'superbed': upload_superbed,
 }
 
-_FALLBACK_ACTIONS = {
-    'preupload_refresh': 'refresh', 'postupload_recovery': 'recover',
-    'boltp_candidate': 'switch', 'host_failover': 'failover',
-}
-
-
-def _record_fallback(fallback_kind, reason_code):
-    """记录一次已执行的回退事实，计数只在实际收尾时增加。"""
-    with trace_operation('fallback', _FALLBACK_ACTIONS[fallback_kind],
-                         fallback_kind=fallback_kind) as operation:
-        operation.finish('succeeded', reason_code=reason_code)
-
 
 def _skip_fallback(fallback_kind, reason_code):
     """记录一次计划但未执行的回退，不伪造开始与耗时。"""
@@ -163,8 +151,7 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
     try:
         selected = context.prepare_storage(
             image, index, provider, token,
-            manual_present=transmission == 0 and 'storage_id' in options,
-            manual_value=manual)
+            manual_present=transmission == 0 and 'storage_id' in options)
     finally:
         _add_warnings(warnings, context.take_warnings())
     if selected.replaced_manual:

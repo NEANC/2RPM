@@ -372,7 +372,7 @@ class UploadContext:
 
     def record_manual_selection(self, image, index, provider, token,
                                 storage_id) -> StorageSelection:
-        """登记 BeeIMG.CN 首次手填直传，只使用事件身份与代次。
+        """登记两站首次合法手填直传，只使用事件身份与代次。
 
         不查询、不初始化磁盘身份、不读写或失效缓存，也不改变失败
         快照：登记的是发送前观察到的事件代次，无事件记录时基线为 0。
@@ -386,8 +386,7 @@ class UploadContext:
         return selection
 
     def prepare_storage(self, image, index, provider, token, *,
-                        manual_present=False, manual_value=None
-                        ) -> StorageSelection:
+                        manual_present=False) -> StorageSelection:
         """两站按同一组顺序选择当前可用存储。
 
         手填值不参与优先级；合法手填由调用方先登记，只有自动发现

@@ -115,7 +115,7 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
             '期限 0 不构成永久保存保证',
             'expiration 位于图床项顶层，不放入 options',
             '仅 wmimg / boltp / beeimg_cn 支持期限',
-            '详细规则见 README「图床存储与期限」'):
+            '详细规则见 README「图床能力」'):
         assert fragment in text
     hosts = config_module.COMMENTS['push']['screenshot']['image_host']
     assert len(hosts.splitlines()) <= 13

@@ -236,7 +236,7 @@ COMMENTS = {
                 "- 仅 wmimg / boltp / beeimg_cn 支持期限；首次手填不预查，"
                 "自动选择与恢复可用有效磁盘缓存\n"
                 "- 期限 0 不构成永久保存保证；任何期限值都不保证服务端实际删除时间；"
-                "详细规则见 README「图床存储与期限」\n"
+                "详细规则见 README「图床能力」\n"
                 "- 示例: {provider: beeimg_cn, token: '${BEEIMG_CN_TOKEN}', "
                 "expiration: 7d}\n"
                 "- 示例: {provider: boltp, token: '${BOLTP_TOKEN}', "

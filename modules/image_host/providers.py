@@ -588,9 +588,10 @@ def upload_boltp(image_bytes, filename, token, options) -> str:
     契约来源：https://www.boltp.com/api/v2/pages/api-docs，文档核对日期
     2026-09-30。2026-10-03 已用 Bearer 令牌完成真实上传验证：组接口返回
     可用存储编号 2，上传返回 status 为 success 及 data.public_url。
-    经注册表调用时，两站使用相同的组顺序选择、手填优先与精确拒绝后单次
-    恢复规则；不再枚举固定候选，也不再预查账号期限或资料。直接调用时
-    仍须在 options 中提供非布尔正整数 storage_id，本适配器不查询存储。
+    经注册表调用时，合法手填编号直接使用，非法手填由注册表自动替代，
+    组选择阶段手填值不参与优先级；精确存储拒绝仅允许一次恢复，不再
+    枚举固定候选，也不再预查账号期限或资料。直接调用时仍须在 options
+    中提供非布尔正整数 storage_id，本适配器不查询存储。
     """
     return _upload_v2_storage(
         'boltp', 'Boltp', image_bytes, filename, token, options)

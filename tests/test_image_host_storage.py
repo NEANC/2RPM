@@ -1030,6 +1030,7 @@ def test_v2_group_expiration_valid(storage_http, provider, expire):
         options['file_expire_seconds'] = expire
     metadata = storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
     assert metadata.file_expire_seconds == expire
+    assert group_calls(storage_http) == [('GET', 'group')]
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
@@ -1041,6 +1042,7 @@ def test_v2_group_expiration_errors(storage_http, provider, expire):
     with pytest.raises(ImageHostError) as caught:
         storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
     assert_safe(caught.value, 'storage_lookup_failed', 'group')
+    assert group_calls(storage_http) == [('GET', 'group')]
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
@@ -1054,6 +1056,7 @@ def test_v2_group_extra_fields_ignored(storage_http, provider):
     metadata = storage_module().fetch_storage_metadata(provider, SECRET, now=1000)
     assert metadata.storage_ids == (14, 13)
     assert SECRET not in repr(metadata)
+    assert group_calls(storage_http) == [('GET', 'group')]
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
