@@ -17,6 +17,7 @@ from PIL import Image
 import pytest
 import requests
 
+import modules.image_host.context as context_module
 from modules import notification as notification_module
 from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
@@ -191,6 +192,38 @@ def _cache_root(tmp_path):
     return tmp_path / 'local' / '2RPM' / 'image_host'
 
 
+class _RecordingCache(StorageCache):
+    """记录 identity/load/save/invalidate 调用名，行为继承真实缓存。"""
+
+    instances = []
+
+    def __init__(self, *args, **kwargs):
+        """继承真实缓存初始化并登记本实例，不执行任何外部操作。"""
+        super().__init__(*args, **kwargs)
+        self.calls = []
+        _RecordingCache.instances.append(self)
+
+    def identity(self, *args, **kwargs):
+        """记录一次身份读取调用后委托真实实现。"""
+        self.calls.append('identity')
+        return super().identity(*args, **kwargs)
+
+    def load(self, *args, **kwargs):
+        """记录一次磁盘读取调用后委托真实实现。"""
+        self.calls.append('load')
+        return super().load(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        """记录一次磁盘保存调用后委托真实实现。"""
+        self.calls.append('save')
+        return super().save(*args, **kwargs)
+
+    def invalidate(self, *args, **kwargs):
+        """记录一次磁盘失效调用后委托真实实现。"""
+        self.calls.append('invalidate')
+        return super().invalidate(*args, **kwargs)
+
+
 def _inline_upload_text(expiration='1h'):
     """构造一项手填 13 的 BeeIMG.CN 内联上传参数。"""
     text = (f'provider: beeimg_cn, token: "{SYNTHETIC_TOKEN}", '
@@ -246,6 +279,9 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
     image = CaptureResult(_png_bytes(), 'window', SYNTHETIC_WINDOW,
                           2, 2, image_format='png')
 
+    _RecordingCache.instances.clear()
+    monkeypatch.setattr(context_module, 'StorageCache', _RecordingCache)
+
     with caplog.at_level(logging.DEBUG, logger=TRACE_LOGGER):
         if entry == 'cli':
             monkeypatch.setattr(cli, 'capture', lambda *args, **kwargs: image)
@@ -278,6 +314,8 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
     assert _storage_ids(transport, 'beeimg_cn') == [MANUAL_STORAGE_ID]
     assert [event for event in events if event.stage == 'metadata_cache'] == []
     assert not _cache_root(tmp_path).exists()
+    assert _RecordingCache.instances
+    assert [cache.calls for cache in _RecordingCache.instances] == [[]]
     assert summary['upload_post_attempts'] == 1 == len(transport.posts())
     assert summary['upload_post_succeeded'] == 1
     assert summary['upload_post_failed'] == 0
@@ -349,7 +387,7 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
             ('beeimg_cn', '/group'): [_group_reply()],
         }
     if layer == 'http':
-        queues[(victim, '/group')] = [_response(503, b'')]
+        queues[(victim, '/group')] = [(503, b'')]
     else:
         _patch_business_failure(monkeypatch, victim)
 
@@ -366,6 +404,13 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
         len(transport.requests_for('beeimg_cn', '/group'))
         + len(transport.requests_for('boltp', '/group')))
     assert summary['upload_post_attempts'] == len(transport.posts())
+
+    if layer == 'http':
+        http_failed = [failure for failure in result.failures
+                       if failure.code == 'http_failed']
+        assert http_failed
+        assert http_failed[-1].stage == 'group'
+        assert http_failed[-1].http_status == 503
 
     if victim == 'beeimg_cn':
         assert len(transport.requests_for('beeimg_cn', '/group')) == (
