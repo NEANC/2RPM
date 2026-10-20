@@ -111,7 +111,7 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
             '0 或非法手填自动选择组内首个未拒绝编号',
             '组列表按返回顺序去重，不使用默认编号或固定候选',
             '精确拒绝仅恢复一次，最多两次 POST',
-            '首次手填不预查，自动选择与恢复可用有效磁盘缓存',
+            '首次手填不预查，自动选择可命中有效磁盘缓存，恢复仅复用更新的网络结果或重新查询',
             '期限 0 不构成永久保存保证',
             'expiration 位于图床项顶层，不放入 options',
             '仅 wmimg / boltp / beeimg_cn 支持期限',

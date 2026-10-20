@@ -234,7 +234,7 @@ COMMENTS = {
                 "- 精确拒绝仅恢复一次，最多两次 POST\n"
                 "- expiration 位于图床项顶层，不放入 options；如 7d、1d12h\n"
                 "- 仅 wmimg / boltp / beeimg_cn 支持期限；首次手填不预查，"
-                "自动选择与恢复可用有效磁盘缓存\n"
+                "自动选择可命中有效磁盘缓存，恢复仅复用更新的网络结果或重新查询\n"
                 "- 期限 0 不构成永久保存保证；任何期限值都不保证服务端实际删除时间；"
                 "详细规则见 README「图床能力」\n"
                 "- 示例: {provider: beeimg_cn, token: '${BEEIMG_CN_TOKEN}', "
