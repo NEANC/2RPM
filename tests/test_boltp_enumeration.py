@@ -96,308 +96,155 @@ def test_boltp_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch)
     assert calls == []
 
 
-def test_context_retention_caches_success_and_none_by_hmac_identity(monkeypatch):
-    from modules.image_host import context
-
-    calls = []
-    monkeypatch.setattr(context.storage, 'fetch_boltp_retention',
-                        lambda token: calls.append(token) or None)
-    ctx = context.UploadContext()
-
-    assert ctx.get_boltp_retention('secret-a') is None
-    assert ctx.get_boltp_retention('secret-a') is None
-    assert ctx.get_boltp_retention('secret-b') is None
-    assert ctx.get_boltp_retention('') is None
-    assert calls == ['secret-a', 'secret-b', '']
-    ctx.close()
+def _group_payload(retention=None, ids=(2, 3)):
+    """构造只含组信息的合成成功响应。"""
+    return {'status': 'success', 'data': {
+        'group': {'options': {'file_expire_seconds': retention}},
+        'storages': [{'id': value} for value in ids]}}
 
 
-def test_context_retention_failure_is_safe_cached_snapshot(monkeypatch):
-    from modules.image_host import context
-    from modules.image_host.core import ImageHostError
-
-    token = 'RETENTION_SECRET_7319'
-    calls = []
-    original = ValueError(token)
-
-    def fail(value):
-        calls.append(value)
-        raise original
-
-    monkeypatch.setattr(context.storage, 'fetch_boltp_retention', fail)
-    ctx = context.UploadContext()
-    errors = []
-    for _ in range(2):
-        with pytest.raises(ImageHostError) as caught:
-            ctx.get_boltp_retention(token)
-        errors.append(caught.value)
-
-    assert calls == [token]
-    assert errors[0] is not errors[1]
-    assert token not in str(errors[0]) + repr(errors[0].args)
-    assert errors[0].__cause__ is None
-    assert errors[0].__context__ is None
-    ctx.close()
-
-
-def test_context_retention_close_clears_cache_and_closed_rejects(monkeypatch):
-    from modules.image_host import context
-    from modules.image_host.core import ImageHostError
-
-    calls = []
-    monkeypatch.setattr(context.storage, 'fetch_boltp_retention',
-                        lambda token: calls.append(token) or 60)
-    ctx = context.UploadContext()
-    assert ctx.get_boltp_retention('secret') == 60
-    ctx.close()
-    assert ctx._retentions == {}
-    with pytest.raises(ImageHostError):
-        ctx.get_boltp_retention('secret')
-
-    fresh = context.UploadContext()
-    assert fresh.get_boltp_retention('secret') == 60
-    assert calls == ['secret', 'secret']
-    fresh.close()
-
-
-@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
-def test_context_retention_control_signal_propagates_without_caching(
-        monkeypatch, signal_type):
-    from modules.image_host import context, storage
-
-    signal = signal_type()
-    calls = []
-
-    def fail(token):
-        calls.append(token)
-        raise signal
-
-    monkeypatch.setattr(context.storage, 'fetch_boltp_retention', fail)
-    ctx = context.UploadContext()
-    for _ in range(2):
-        with pytest.raises(signal_type) as caught:
-            ctx.get_boltp_retention('secret')
-        assert caught.value is signal
-    assert calls == ['secret', 'secret']
-    ctx.close()
-
-
-def test_boltp_fetch_retention_only_requests_group(monkeypatch):
-    from modules.image_host import storage, v2_http
+def test_context_group_metadata_only_requests_group(monkeypatch):
+    """Boltp 组元数据只查询 group，期限随查询结果返回。"""
+    from modules.image_host import context, v2_http
 
     calls = []
     token = 'RETENTION_SECRET_7319'
 
     def request_json(provider, stage, request_token):
+        """只接受 Boltp 组查询，确保没有资料请求。"""
         calls.append((provider, stage, request_token))
-        return {'data': {'group': {'options': {'file_expire_seconds': 0}}}}
+        return _group_payload(0)
 
     monkeypatch.setattr(v2_http, 'request_json', request_json)
-
-    assert storage.fetch_boltp_retention(token) == 0
+    with context.UploadContext(clock=lambda: 1000) as ctx:
+        metadata = ctx.get_metadata('boltp', token)
+    assert metadata.file_expire_seconds == 0
+    assert metadata.storage_ids == (2, 3)
     assert calls == [('boltp', 'group', token)]
 
 
-def test_boltp_fetch_retention_maps_malformed_data_without_token(monkeypatch):
-    from modules.image_host import storage, v2_http
+def test_context_group_metadata_caches_success_by_hmac_identity(monkeypatch):
+    """成功结果按站点与凭证的 HMAC 身份复用，同 token 不跨身份。"""
+    from modules.image_host import context, v2_http
+
+    calls = []
+
+    def request_json(provider, stage, token):
+        """记录每次实际查询的站点、阶段与凭证。"""
+        calls.append((provider, stage, token))
+        return _group_payload()
+
+    monkeypatch.setattr(v2_http, 'request_json', request_json)
+    with context.UploadContext(clock=lambda: 1000) as ctx:
+        first = ctx.get_metadata('boltp', 'secret-a')
+        assert ctx.get_metadata('boltp', 'secret-a') is first
+        second = ctx.get_metadata('boltp', 'secret-b')
+        third = ctx.get_metadata('boltp', '')
+    assert (first.storage_ids, second.storage_ids, third.storage_ids) == (
+        (2, 3), (2, 3), (2, 3))
+    assert first.file_expire_seconds is None
+    assert calls == [('boltp', 'group', 'secret-a'),
+                     ('boltp', 'group', 'secret-b'),
+                     ('boltp', 'group', '')]
+
+
+def test_context_group_failure_is_safe_cached_snapshot(monkeypatch):
+    """查询失败保存安全快照并复用，不保存原始异常或凭证。"""
+    from modules.image_host import context, v2_http
     from modules.image_host.core import ImageHostError
 
     token = 'RETENTION_SECRET_7319'
-    monkeypatch.setattr(
-        v2_http, 'request_json',
-        lambda provider, stage, request_token: {
-            'data': {'group': {'options': {'file_expire_seconds': True}}}})
+    calls = []
 
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention(token)
-
-    assert caught.value.code == 'storage_lookup_failed'
-    assert caught.value.stage == 'group'
-    assert token not in str(caught.value) + repr(caught.value.args)
-
-
-@pytest.mark.parametrize('retention', [None, 0, 86400])
-def test_boltp_fetch_retention_accepts_optional_nonnegative_integer(
-        monkeypatch, retention):
-    from modules.image_host import storage, v2_http
-
-    monkeypatch.setattr(
-        v2_http, 'request_json',
-        lambda provider, stage, token: {
-            'data': {'group': {'options': {'file_expire_seconds': retention}}}})
-
-    assert storage.fetch_boltp_retention('') == retention
-
-
-@pytest.mark.parametrize(('scenario', 'code', 'status'), [
-    ('forbidden', 'http_failed', 403),
-    ('server_error', 'http_failed', 500),
-    ('business_rejected', 'business_rejected', 200),
-    ('invalid_json', 'invalid_response', 200),
-    ('timeout', 'transport_failed', None),
-])
-def test_boltp_fetch_retention_classifies_real_http_transport(
-        monkeypatch, scenario, code, status):
-    from modules.image_host import storage, v2_http
-    from modules.image_host.core import ImageHostError
-
-    sent = []
-
-    def send(adapter, request, **kwargs):
-        sent.append(request)
-        if scenario == 'timeout':
-            raise requests.exceptions.Timeout
-        response = requests.Response()
-        response.request = request
-        response.url = request.url
-        response.status_code = status
-        response._content = {
-            'business_rejected': b'{"status":"error","message":"denied"}',
-            'invalid_json': b'{',
-        }.get(scenario, b'')
-        response._content_consumed = True
-        return response
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
-
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
-
-    assert len(sent) == 1
-    assert sent[0].url == 'https://www.boltp.com/api/v2/group'
-    assert sent[0].method == 'GET'
-    assert caught.value.code == code
-    assert caught.value.http_status == status
-    assert caught.value.stage == 'group'
-
-
-@pytest.mark.parametrize('payload', [
-    {'data': {'group': {'options': {'file_expire_seconds': 60}}}},
-    {'data': {'storages': 'malformed',
-              'group': {'options': {'file_expire_seconds': 60}}}},
-])
-def test_boltp_fetch_retention_ignores_storages_field(monkeypatch, payload):
-    from modules.image_host import storage, v2_http
-
-    monkeypatch.setattr(v2_http, 'request_json', lambda *args: payload)
-
-    assert storage.fetch_boltp_retention('') == 60
-
-
-@pytest.mark.parametrize('payload', [
-    {}, {'data': None}, {'data': {'group': []}},
-    {'data': {'group': {'options': []}}},
-])
-def test_boltp_fetch_retention_rejects_malformed_structure(
-        monkeypatch, payload):
-    from modules.image_host import storage, v2_http
-    from modules.image_host.core import ImageHostError
-
-    monkeypatch.setattr(v2_http, 'request_json', lambda *args: payload)
-
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
-
-    assert (caught.value.code, caught.value.stage) == (
-        'storage_lookup_failed', 'group')
-
-
-@pytest.mark.parametrize('retention', [-1, 1.5, '60', True, [], {}])
-def test_boltp_fetch_retention_rejects_invalid_expiration_type(
-        monkeypatch, retention):
-    from modules.image_host import storage, v2_http
-    from modules.image_host.core import ImageHostError
-
-    monkeypatch.setattr(
-        v2_http, 'request_json',
-        lambda *args: {'data': {'group': {'options': {
-            'file_expire_seconds': retention}}}})
-
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
-
-    assert (caught.value.code, caught.value.stage) == (
-        'storage_lookup_failed', 'group')
-
-
-@pytest.mark.parametrize(('failure_code', 'code', 'status'), [
-    ('forbidden', 'http_failed', 403),
-    ('server_error', 'http_failed', 500),
-    ('invalid_json', 'invalid_response', None),
-    ('timeout', 'transport_failed', None),
-])
-def test_boltp_fetch_retention_preserves_http_classification_and_chain(
-        monkeypatch, failure_code, code, status):
-    from modules.image_host import storage, v2_http
-    from modules.image_host.core import ImageHostError
-
-    def fail(*args):
-        if failure_code == 'forbidden':
-            raise ImageHostError(
-                'http_failed', '', stage='group', http_status=403)
-        if failure_code == 'server_error':
-            raise ImageHostError(
-                'http_failed', '', stage='group', http_status=500)
-        if failure_code == 'invalid_json':
-            raise ImageHostError('invalid_response', '', stage='group')
-        raise ImageHostError('transport_failed', '', stage='group')
+    def fail(provider, stage, value):
+        """抛出含凭证的合成异常，验证不进入错误展示。"""
+        calls.append((provider, stage, value))
+        raise ValueError(value)
 
     monkeypatch.setattr(v2_http, 'request_json', fail)
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
+    with context.UploadContext(clock=lambda: 1000) as ctx:
+        errors = []
+        for _ in range(2):
+            with pytest.raises(ImageHostError) as caught:
+                ctx.get_metadata('boltp', token)
+            errors.append(caught.value)
+    assert calls == [('boltp', 'group', token)]
+    assert errors[0] is not errors[1]
+    assert errors[0].code == 'storage_lookup_failed'
+    assert token not in str(errors[0]) + repr(errors[0].args)
+    assert errors[0].__cause__ is None
+    assert errors[0].__context__ is None
 
-    assert caught.value.code == code
-    assert caught.value.http_status == status
-    assert caught.value.__cause__ is None
 
-
-def test_boltp_fetch_retention_preserves_exact_business_rejection(monkeypatch):
-    from modules.image_host import storage, v2_http
+def test_context_group_close_clears_entries_and_closed_rejects(
+        monkeypatch, tmp_path):
+    """关闭清空事件记录，关闭后的查询与新建事件都被拒绝。"""
+    from modules.image_host import context, v2_http
     from modules.image_host.core import ImageHostError
+    from modules.image_host.storage_cache import StorageCache
 
-    rejection = ImageHostError('business_rejected', '', stage='group')
-    monkeypatch.setattr(v2_http, 'request_json', lambda *args: (_ for _ in ()).throw(rejection))
+    calls = []
 
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
+    def request_json(provider, stage, token):
+        """记录查询并返回合成组信息。"""
+        calls.append(token)
+        return _group_payload(60)
 
-    assert caught.value is rejection
-    assert caught.value.code == 'business_rejected'
-    assert caught.value.__cause__ is None
+    monkeypatch.setattr(v2_http, 'request_json', request_json)
+    ctx = context.UploadContext(clock=lambda: 1000)
+    assert ctx.get_metadata('boltp', 'secret').file_expire_seconds == 60
+    ctx.close()
+    assert ctx._entries == {}
+    with pytest.raises(ImageHostError):
+        ctx.get_metadata('boltp', 'secret')
 
-
-def test_boltp_fetch_retention_maps_unclassified_error_with_cause(monkeypatch):
-    from modules.image_host import storage, v2_http
-    from modules.image_host.core import ImageHostError
-
-    monkeypatch.setattr(
-        v2_http, 'request_json',
-        lambda *args: (_ for _ in ()).throw(ValueError('malformed payload')))
-
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention('')
-
-    assert caught.value.code == 'storage_lookup_failed'
-    assert caught.value.stage == 'group'
-    assert caught.value.__cause__ is None
-    assert caught.value.__context__ is None
+    with context.UploadContext(
+            cache=StorageCache(tmp_path / 'fresh', clock=lambda: 1000)
+    ) as fresh:
+        assert fresh.get_metadata('boltp', 'secret').file_expire_seconds == 60
+    assert calls == ['secret', 'secret']
 
 
-def test_boltp_fetch_retention_does_not_expose_token(monkeypatch):
-    from modules.image_host import storage, v2_http
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_context_group_control_signal_propagates_without_caching(
+        monkeypatch, signal_type):
+    """控制信号原对象向外传播，不被缓存为可复用业务失败。"""
+    from modules.image_host import context, v2_http
+
+    signal = signal_type()
+    calls = []
+
+    def fail(provider, stage, token):
+        """抛出指定控制信号，验证第二次仍会真实重查。"""
+        calls.append(token)
+        raise signal
+
+    monkeypatch.setattr(v2_http, 'request_json', fail)
+    with context.UploadContext(clock=lambda: 1000) as ctx:
+        for _ in range(2):
+            with pytest.raises(signal_type) as caught:
+                ctx.get_metadata('boltp', 'secret')
+            assert caught.value is signal
+    assert calls == ['secret', 'secret']
+
+
+def test_context_group_invalid_expiration_is_safe(monkeypatch):
+    """非法组期限整次失败，凭证不进入错误展示且不留异常链。"""
+    from modules.image_host import context, v2_http
     from modules.image_host.core import ImageHostError
 
     token = 'RETENTION_SECRET_7319'
-    monkeypatch.setattr(
-        v2_http, 'request_json',
-        lambda *args: {'data': {'group': {'options': {
-            'file_expire_seconds': True}}}})
+    payload = _group_payload(True)
 
-    with pytest.raises(ImageHostError) as caught:
-        storage.fetch_boltp_retention(token)
-
-    assert caught.value.stage == 'group'
+    monkeypatch.setattr(v2_http, 'request_json', lambda *args: payload)
+    with context.UploadContext(clock=lambda: 1000) as ctx:
+        with pytest.raises(ImageHostError) as caught:
+            ctx.get_metadata('boltp', token)
+    assert (caught.value.code, caught.value.stage) == (
+        'storage_lookup_failed', 'group')
     assert token not in str(caught.value) + repr(caught.value.args)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):

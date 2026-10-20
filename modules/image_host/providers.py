@@ -490,7 +490,7 @@ def _prepare_superbed(token, options, filename):
     return (version, headers, data, SUPERBED_CONTRACTS[version][1], mime), None
 
 
-def validate_v2_options(options, *, provider='beeimg_cn', require_storage=True):
+def validate_v2_options(options, *, require_storage=True):
     """无日志校验两站通用选项，两站存储编号均为非布尔正整数。"""
     permission = options.get('permission', 1)
     if (not isinstance(permission, int) or isinstance(permission, bool)
@@ -545,7 +545,7 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
     每次最多发送一次请求；连接和读取超时不是整个操作的硬总时限，超时
     也不能保证服务端尚未保存图片。
     """
-    validate_v2_options(options, provider=provider)
+    validate_v2_options(options)
     expired_at = _prepared_expiration(options)
     data = {'storage_id': options['storage_id'],
             'is_public': str(options.get('permission', 1))}

@@ -92,8 +92,7 @@ def test_superbed_never_enters_storage_recovery(
             'storage_unavailable', '', stage='upload', http_status=200)
     with UploadContext() as context:
         for name in ('prepare_storage', 'get_metadata', 'begin_recovery',
-                     'storage_state', 'record_expiration',
-                     'get_boltp_retention', '_cache_call'):
+                     'storage_state', 'record_expiration', '_cache_call'):
             monkeypatch.setattr(context, name, forbidden)
         result = registry.upload_with_fallback(
             IMAGE, FILENAME, hosts, context=context)

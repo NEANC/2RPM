@@ -216,8 +216,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 seconds = parse_expiration(host['expiration'])
             is_v2 = provider in _V2_PROVIDERS
             if is_v2:
-                validate_v2_options(options, provider=provider,
-                                    require_storage=False)
+                validate_v2_options(options, require_storage=False)
             elif seconds is not None and provider != 'wmimg':
                 _add_warnings(warnings, (_WARN_UNSUPPORTED,))
             for transmission in range(2 if is_v2 else 1):

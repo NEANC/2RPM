@@ -733,9 +733,6 @@ def test_recovery_expiration_keeps_original_start(client, monkeypatch):
         return decision
 
     monkeypatch.setattr(registry(), 'compute_expiration', capture_compute)
-    monkeypatch.setattr(
-        context, 'get_boltp_retention',
-        lambda token: pytest.fail('不得再做首次期限预查'))
     client.response.body = json.dumps(
         {'status': 'error', 'message': '不存在的储存驱动'})
     client.responses = [client.response, Response()]
@@ -747,3 +744,6 @@ def test_recovery_expiration_keeps_original_start(client, monkeypatch):
     assert result.success
     assert [decision.deadline for decision in decisions] == [4600.0, 4600.0]
     assert [decision.shortened for decision in decisions] == [False, False]
+    assert len(client.calls) == 2
+    # 首次手填不预查期限，唯一一次组查询来自拒绝后的恢复刷新。
+    assert len(client.get_calls) == 1

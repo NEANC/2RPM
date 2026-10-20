@@ -966,7 +966,7 @@ def test_wmimg_expiration_uses_shared_start(wmclient, monkeypatch, delay):
     monkeypatch.setitem(registry().UPLOADERS, 'first', first)
     monkeypatch.setitem(registry().UPLOADERS, 'backup', backup)
     for name in ('get_metadata', 'prepare_storage', 'begin_recovery',
-                 'get_boltp_retention', 'storage_state', 'record_expiration'):
+                 'storage_state', 'record_expiration'):
         monkeypatch.setattr(module.UploadContext, name, forbidden)
     hosts = [
         {'provider': 'first'},

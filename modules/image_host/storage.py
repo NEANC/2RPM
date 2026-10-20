@@ -123,12 +123,6 @@ def fetch_storage_metadata(provider, token, *, now) -> StorageMetadata:
     raise ImageHostError('invalid_provider', '', stage='group')
 
 
-def fetch_boltp_retention(token):
-    """分发到 Boltp 单次期限查询，保持既有分类与单请求语义。"""
-    from . import storage_boltp
-    return storage_boltp.fetch_retention(token)
-
-
 def select_storage(metadata, manual_present, manual_value, *, provider='boltp',
                    excluded_id=None) -> StorageSelection:
     """两站统一按组顺序取首个未被本图本槽拒绝的编号。

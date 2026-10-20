@@ -70,7 +70,7 @@ def test_production_classifications_are_preserved():
         'capture_failed', 'recoverable_warning',
     }
     positions = {'_cache_skipped': 1, '_reuse_metadata': 0,
-                 '_refresh_event': 1, '_record_fallback': 1, '_skip_fallback': 1}
+                 '_record_fallback': 1, '_skip_fallback': 1}
     root = Path(__file__).resolve().parents[1] / 'modules'
     for path in root.rglob('*.py'):
         if path.name == 'operation_trace.py':

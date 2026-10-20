@@ -18,7 +18,7 @@ _BASES = {
     'beeimg_cn': 'https://www.beeimg.cn/api/v2',
     'boltp': 'https://www.boltp.com/api/v2',
 }
-_PATHS = {'group': '/group', 'profile': '/user/profile', 'upload': '/upload'}
+_PATHS = {'group': '/group', 'upload': '/upload'}
 _BODY_LIMIT = 1024 * 1024
 _CHUNK_SIZE = 64 * 1024
 _TIMEOUT = (5, 15)
@@ -83,10 +83,10 @@ def _read_payload(response, operation):
         return None
 
 
-def _validate_payload(provider, stage, payload):
-    """按阶段延迟导入对应解析器，避免跨站与循环依赖。
+def _validate_payload(stage, payload):
+    """按阶段延迟导入对应解析器，避免循环依赖。
 
-    两站组响应使用同一共享结构合同，不再保留只校验期限的特殊路由。
+    两站组响应使用同一共享结构合同；上传阶段只校验直链。
     """
     if stage == 'upload':
         data = payload.get('data')
@@ -96,9 +96,6 @@ def _validate_payload(provider, stage, payload):
             validate_image_url(data.get('public_url'))
         except ImageHostError:
             raise ImageHostError('invalid_response', '', stage=stage) from None
-    elif stage == 'profile':
-        from . import storage_boltp
-        storage_boltp.parse_profile(payload)
     else:
         from . import storage
         storage.parse_group(payload)
@@ -151,7 +148,7 @@ def _send(provider, stage, kwargs):
                     status = payload.get('status')
                     if isinstance(status, str) and status == 'success':
                         try:
-                            _validate_payload(provider, stage, payload)
+                            _validate_payload(stage, payload)
                         except ImageHostError as error:
                             operation.finish('failed', reason_code=error.code,
                                              http_status=status_code)

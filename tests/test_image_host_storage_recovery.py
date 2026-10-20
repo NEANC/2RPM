@@ -305,7 +305,6 @@ def test_now_reads_current_clock_once_without_io(monkeypatch, tmp_path):
             assert len(calls) == index
             assert calls[-1] == value
             assert ctx._images == ctx._entries == ctx._credentials == {}
-            assert ctx._corrected == set()
             assert ctx._key is None
             assert ctx._secrets == ()
             assert ctx._warnings == []
@@ -330,7 +329,6 @@ def test_now_shares_image_clock_without_changing_existing_state(rig):
                           ExpirationDecision(1100, '合成显示', True))
     images = {key: dict(value) for key, value in ctx._images.items()}
     entries = deepcopy(ctx._entries)
-    corrected = ctx._corrected.copy()
     key = ctx._key
     query_calls = list(calls)
     now[0] = 1020.5
@@ -338,7 +336,6 @@ def test_now_shares_image_clock_without_changing_existing_state(rig):
     assert image.started_at == started_at
     assert ctx._images == images
     assert ctx._entries == entries
-    assert ctx._corrected == corrected
     assert ctx._key is key
     assert calls == query_calls
     assert ctx._closed is False
@@ -613,7 +610,6 @@ def test_selection_budget_contract(rig_factory, provider, disk, present, manual)
     assert selected.storage_id == 13
     assert state.selection == selected
     assert state.correction_used is False
-    assert ctx._corrected == set()
     assert len(calls) == (0 if disk else 1)
     assert manual == original
     for _ in range(3):
@@ -1063,7 +1059,6 @@ def test_close_drops_owned_secret_and_state_references(rig):
     ctx.close()
     assert ctx._secrets == ()
     assert ctx._entries == ctx._images == ctx._credentials == {}
-    assert ctx._corrected == set()
     assert ctx._key is ctx._cache is ctx._clock is None
 
 
@@ -1475,7 +1470,6 @@ def test_local_exclusion_and_slot_budgets(rig_factory, provider):
         manual_present=True, manual_value=[]).storage_id == 13
     state = ctx.storage_state(first, 0, provider, SECRET)
     assert state.correction_used is False
-    assert ctx._corrected == set()
     shared = ctx.get_metadata(provider, SECRET)
     assert shared.storage_ids == (13, 14)
     second = ctx.start_image()

@@ -30,7 +30,7 @@ from modules.image_host.diagnostics import diagnostic_scope
 PROVIDERS = ('beeimg_cn', 'boltp')
 BASES = {'beeimg_cn': 'https://www.beeimg.cn/api/v2',
          'boltp': 'https://www.boltp.com/api/v2'}
-PATHS = {'group': '/group', 'profile': '/user/profile', 'upload': '/upload'}
+PATHS = {'group': '/group', 'upload': '/upload'}
 SECRET = 'FAKE_HTTP_SECRET_7319'
 SIGNED_URL = 'https://example.com/image?signature=FAKE_SIGNATURE_7319'
 LIMIT = 1024 * 1024
@@ -470,9 +470,10 @@ def test_independent_sessions_and_credentials(client):
     ('other', 'upload'), ('https://example.com', 'group'),
     ('BOLTP', 'upload'), (None, 'upload'), ([], 'upload'),
     ('boltp', 'other'), ('beeimg_cn', '/group'), ('boltp', []),
+    ('boltp', 'profile'), ('beeimg_cn', 'profile'),
 ])
 def test_invalid_route_fails_before_session(client, provider, stage):
-    """未知站点或阶段在构造会话之前安全拒绝。"""
+    """未知站点、资料阶段等无效路由在构造会话之前安全拒绝。"""
     with pytest.raises(ImageHostError) as caught:
         http().request_json(provider, stage, SECRET)
     assert SECRET not in repr(caught.value)
@@ -603,8 +604,8 @@ def test_transport_errors_are_safe_and_close_owned_resources(
     else:
         client.chunks = [b'{', error]
     with pytest.raises(ImageHostError) as caught:
-        http().request_json('beeimg_cn', 'profile', SECRET)
-    assert_safe(caught.value, 'transport_failed', 'profile',
+        http().request_json('beeimg_cn', 'group', SECRET)
+    assert_safe(caught.value, 'transport_failed', 'group',
                 200 if phase == 'read' else None)
     assert client.events == ({'construct': [], 'request': ['session'],
                               'read': ['response', 'session']}[phase])
@@ -780,8 +781,6 @@ def group_calls(state):
 
 SUCCESS_PAYLOADS = {
     'group': GROUP_PAYLOAD,
-    'profile': {'status': 'success',
-                'data': {'options': {'default_storage_id': 13}}},
     'upload': {'status': 'success',
                'data': {'public_url': 'https://example.com/synthetic.png'}},
 }
@@ -1362,6 +1361,7 @@ def beeimg_group_payload(ids=(13, 14), expire=0):
 def test_beeimg_group_only_contract(monkeypatch):
     """BeeIMG.CN 仅请求 group：不取默认编号、不请求 profile、仍取组内首项。"""
     bee = site_module('storage_beeimg_cn')
+    module = storage_module()
     calls = []
     group = beeimg_group_payload()
 
@@ -1376,8 +1376,11 @@ def test_beeimg_group_only_contract(monkeypatch):
     assert metadata.storage_ids == (13, 14)
     assert metadata.default_storage_id is None
     assert metadata.profile_state == 'not_requested'
-    assert bee.select_storage(metadata, False, None).storage_id == 13
-    assert bee.select_storage(metadata, True, 13, excluded_id=13).storage_id == 14
+    assert module.select_storage(
+        metadata, False, None, provider='beeimg_cn').storage_id == 13
+    assert module.select_storage(
+        metadata, True, 13, provider='beeimg_cn',
+        excluded_id=13).storage_id == 14
     assert metadata.storage_ids == (13, 14)
     for token in (SECRET, '  ' + SECRET + '  '):
         calls.clear()
@@ -1386,11 +1389,12 @@ def test_beeimg_group_only_contract(monkeypatch):
         assert present.default_storage_id is None
         assert present.profile_state == 'not_requested'
     with pytest.raises(ImageHostError) as caught:
-        bee.select_storage(replace(metadata, storage_ids=(13,)), False, None,
-                           excluded_id=13)
+        module.select_storage(replace(metadata, storage_ids=(13,)), False, None,
+                              provider='beeimg_cn', excluded_id=13)
     assert_safe(caught.value, 'storage_unavailable', 'storage')
     with pytest.raises(ImageHostError) as caught:
-        bee.select_storage(replace(metadata, storage_ids=()), False, None)
+        module.select_storage(replace(metadata, storage_ids=()), False, None,
+                              provider='beeimg_cn')
     assert_safe(caught.value, 'storage_unavailable', 'storage')
     for payload, code, stage in (
             ({}, 'storage_lookup_failed', 'group'),
@@ -1417,7 +1421,7 @@ def test_beeimg_group_only_contract(monkeypatch):
              'storage_unavailable', 'storage'),
     ):
         with pytest.raises(ImageHostError) as caught:
-            bee.parse_group(payload)
+            module.parse_group(payload)
         assert_safe(caught.value, code, stage)
 
 
@@ -1430,13 +1434,15 @@ def test_beeimg_group_only_contract(monkeypatch):
 def test_beeimg_selection_ignores_profile(caplog, present, manual, default,
                                           profile_state):
     """BeeIMG.CN 选择忽略手填优先级、默认编号与资料状态，只按组顺序取首项。"""
-    bee = site_module('storage_beeimg_cn')
-    metadata = bee.StorageMetadata((13, 14), default, 0, 1000, profile_state)
+    module = storage_module()
+    metadata = module.StorageMetadata((13, 14), default, 0, 1000, profile_state)
     original = deepcopy((metadata, manual))
-    assert bee.select_storage(metadata, present, manual) == (
-        bee.StorageSelection(13, present))
-    assert bee.select_storage(metadata, present, manual,
-                              excluded_id=13).storage_id == 14
+    assert module.select_storage(
+        metadata, present, manual, provider='beeimg_cn') == (
+        module.StorageSelection(13, present))
+    assert module.select_storage(
+        metadata, present, manual, provider='beeimg_cn',
+        excluded_id=13).storage_id == 14
     assert (metadata, manual) == original
     assert not caplog.records
 
@@ -1448,8 +1454,6 @@ def test_provider_parser_isolation(monkeypatch):
     module = storage_module()
     transport = http()
     group = beeimg_group_payload()
-    profile = {'status': 'success',
-               'data': {'options': {'default_storage_id': 13}}}
     upload = {'status': 'success',
               'data': {'public_url': 'https://example.com/synthetic.png'}}
 
@@ -1474,62 +1478,58 @@ def test_provider_parser_isolation(monkeypatch):
         metadata = bee.fetch_metadata('', now=1000)
         assert (metadata.storage_ids, metadata.profile_state) == (
             (13, 14), 'not_requested')
-        assert bee.select_storage(metadata, False, None).storage_id == 13
+        assert module.select_storage(
+            metadata, False, None, provider='beeimg_cn').storage_id == 13
         assert module.fetch_storage_metadata(
             'beeimg_cn', '', now=1000).storage_ids == (13, 14)
-        transport._validate_payload('beeimg_cn', 'group', group)
-        transport._validate_payload('beeimg_cn', 'upload', upload)
+        transport._validate_payload('group', group)
+        transport._validate_payload('upload', upload)
     with monkeypatch.context() as bee_patch:
         bee_patch.setattr(bee, 'fetch_metadata', boom)
         monkeypatch.setattr(transport, 'request_json', boltp_transport)
         assert module.parse_group(group)[0] == (13, 14)
-        assert bolt.parse_profile(profile) == 13
-        assert bolt.parse_retention(group) == 0
         metadata = bolt.fetch_metadata(SECRET, now=1000)
         assert (metadata.default_storage_id, metadata.profile_state) == (
             None, 'not_requested')
-        assert bolt.fetch_retention(SECRET) == 0
-        assert bolt.select_storage(metadata, False, None).storage_id == 13
+        assert module.select_storage(
+            metadata, False, None, provider='boltp').storage_id == 13
         assert module.fetch_storage_metadata(
             'boltp', SECRET, now=1000).storage_ids == (13, 14)
-        assert module.fetch_boltp_retention(SECRET) == 0
-        transport._validate_payload('boltp', 'group', group)
-        transport._validate_payload('boltp', 'profile', profile)
-        transport._validate_payload('boltp', 'upload', upload)
+        transport._validate_payload('group', group)
+        transport._validate_payload('upload', upload)
 
 
-@pytest.mark.parametrize('retention', [None, 0, 86400])
-def test_boltp_group_contract_requires_storages(monkeypatch, retention):
-    """完整 group 才构成合法组响应，缺 storages 时组查询整次失败。"""
-    bolt = site_module('storage_boltp')
+def test_v2_obsolete_interfaces_removed():
+    """旧期限、资料解析与固定候选入口已删除，仅保留统一组查询。"""
     module = storage_module()
-    group = {'status': 'success', 'data': {
-        'group': {'options': {'file_expire_seconds': retention}},
-        'storages': [{'id': 13}]}}
-    assert bolt.parse_retention(group) == retention
-
-    def request_json(provider, stage, token):
-        """只接受 Boltp 组查询，确保期限走 group 阶段。"""
-        assert (provider, stage) == ('boltp', 'group')
-        return group
-
-    monkeypatch.setattr(http(), 'request_json', request_json)
-    assert module.fetch_boltp_retention('') == retention
-    metadata = module.fetch_storage_metadata('boltp', '', now=1000)
-    assert metadata.file_expire_seconds == retention
-
-    incomplete = {'status': 'success', 'data': {
-        'group': {'options': {'file_expire_seconds': retention}}}}
-    monkeypatch.setattr(
-        http(), 'request_json',
-        lambda provider, stage, token: incomplete)
-    with pytest.raises(ImageHostError) as caught:
-        module.fetch_storage_metadata('boltp', '', now=1000)
-    assert_safe(caught.value, 'storage_lookup_failed', 'group')
+    context_module = import_module('modules.image_host.context')
+    transport = http()
+    assert not hasattr(module, 'fetch_boltp_retention')
+    for name in ('storage_beeimg_cn', 'storage_boltp'):
+        site = site_module(name)
+        assert callable(site.fetch_metadata)
+        for removed in ('parse_group', 'parse_profile', 'parse_retention',
+                        'fetch_retention', 'select_storage'):
+            assert not hasattr(site, removed), removed
+    for removed in ('get_boltp_retention', '_prepare_legacy_storage'):
+        assert not hasattr(context_module.UploadContext, removed), removed
+    with context_module.UploadContext() as context:
+        for removed in ('_retentions', '_corrected'):
+            assert not hasattr(context, removed), removed
+    assert 'profile' not in transport._PATHS
+    assert set(transport._PATHS) == {'group', 'upload'}
+    metadata_fields = {item.name for item in fields(module.StorageMetadata)}
+    assert {'default_storage_id', 'profile_state'} <= metadata_fields
+    entry_fields = {item.name for item in fields(context_module._MetadataEntry)}
+    assert 'corrected' in entry_fields
+    state_fields = {item.name for item in fields(context_module.StorageState)}
+    assert 'correction_used' in state_fields
+    assert 'correction' in signature(
+        context_module.UploadContext.get_metadata).parameters
 
 
 @pytest.mark.parametrize('first', ENTRY_MODULES)
-def test_storage_imports_in_cold_process(first):
+def test_v2_shared_import_orders(first):
     """四种首模块顺序均可冷启动，冷进程不建立任何 socket。"""
     root = Path(__file__).resolve().parents[1]
     interpreter = Path(sys.executable)

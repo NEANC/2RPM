@@ -20,7 +20,6 @@ import os
 import time
 from typing import Literal
 
-from . import storage
 from .core import ImageHostError
 from .core import resolve_token
 from .diagnostics import diagnostic_scope as _diagnostic_scope
@@ -46,26 +45,12 @@ _CACHE_WARNINGS = {
     'invalidate': '存储元数据缓存失效失败',
 }
 
-_WARN_PROFILE_FORBIDDEN_MANUAL = '资料读取受限，已验证手填储存驱动并继续上传'
-
 
 def _reuse_metadata(reason_code, provider, entry):
     """记录一次不产生新请求的事件内元数据复用事实。"""
     trace_skipped('metadata_cache', reason_code=reason_code,
                   cache_layer='event', provider=provider,
                   source_operation_id=entry.source_operation_id)
-
-
-def _refresh_event(status, reason_code):
-    """记录一次上传前旧缓存刷新回退的执行或跳过事实。"""
-    if status == 'skipped':
-        trace_skipped('fallback', reason_code=reason_code,
-                      fallback_kind='preupload_refresh')
-        return
-    with trace_operation(
-            'fallback', 'refresh',
-            fallback_kind='preupload_refresh') as operation:
-        operation.finish(status, reason_code=reason_code)
 
 
 @dataclass(frozen=True, eq=False)
@@ -158,9 +143,7 @@ class UploadContext:
         self._resolved_tokens = dict(resolved_tokens or {})
         self._key = None
         self._entries = {}
-        self._retentions = {}
         self._images = {}
-        self._corrected = set()
         self._credentials = {}
         self._secrets = ()
         self._collected = False
@@ -347,28 +330,6 @@ class UploadContext:
             raise entry.failure.error()
         return entry.metadata
 
-    def get_boltp_retention(self, token):
-        """按事件内 HMAC 身份缓存 Boltp 期限或安全失败快照。"""
-        identity = self._identity('boltp', token)
-        if identity not in self._retentions:
-            try:
-                value = storage.fetch_boltp_retention(token)
-            except Exception as error:
-                value = self._failure(
-                    error, fallback='storage_lookup_failed', secrets=(token,))
-            self._retentions[identity] = (value, current_request_id())
-        else:
-            value, source = self._retentions[identity]
-            trace_skipped(
-                'metadata_cache', cache_layer='event', provider='boltp',
-                source_operation_id=source,
-                reason_code=('reused_failure' if isinstance(value, _Failure)
-                             else 'reused_metadata'))
-        result, source = self._retentions[identity]
-        if isinstance(result, _Failure):
-            raise result.error()
-        return result
-
     def now(self) -> float:
         """用于请求前期限检查，只读注入时钟，不创建图片或元数据状态。"""
         self._ensure_open()
@@ -449,40 +410,6 @@ class UploadContext:
         selected = self._select_storage(
             provider, current, manual_present, None,
             excluded_id=items[key].rejected_storage_id)
-        items[key] = replace(items[key], selection=selected,
-                             metadata_version=entry.version,
-                             selection_source='metadata')
-        return selected
-
-    def _prepare_legacy_storage(self, items, key, provider, token,
-                                manual_present, manual_value
-                                ) -> StorageSelection:
-        """Boltp 旧算法：保留手填优先、跨图纠错预算与资料受限告警。"""
-        manual = (manual_value if type(manual_value) is int
-                  and manual_value > 0 else None)
-        signature = (key, bool(manual_present), manual)
-        if signature in self._corrected:
-            items[key] = replace(items[key], correction_used=True)
-        current = self.get_metadata(provider, token)
-        entry = self._entries[key[1]]
-        selected = self._select_storage(provider, current, manual_present, manual)
-        if selected.replaced_manual:
-            used = items[key].correction_used
-            items[key] = replace(items[key], correction_used=True)
-            self._corrected.add(signature)
-            if entry.from_disk and not used:
-                with trace_operation(
-                        'fallback', 'refresh',
-                        fallback_kind='preupload_refresh') as operation:
-                    current = self.get_metadata(provider, token, correction=True)
-                    selected = self._select_storage(
-                        provider, current, manual_present, manual)
-                    operation.finish('succeeded', reason_code='manual_replaced')
-            elif entry.from_disk:
-                _refresh_event('skipped', 'budget_used')
-        if (manual is not None and not selected.replaced_manual
-                and current.profile_state == 'forbidden'):
-            self._warn(_WARN_PROFILE_FORBIDDEN_MANUAL)
         items[key] = replace(items[key], selection=selected,
                              metadata_version=entry.version,
                              selection_source='metadata')
@@ -613,9 +540,7 @@ class UploadContext:
         """
         self._closed = True
         self._entries.clear()
-        self._retentions.clear()
         self._images.clear()
-        self._corrected.clear()
         self._credentials.clear()
         self._resolved_tokens.clear()
         self._secrets = ()

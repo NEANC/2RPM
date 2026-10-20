@@ -40,14 +40,6 @@ def group_reply(ids=(13, 14), expire=None, status=200):
         'storages': [{'id': value} for value in ids]}}))
 
 
-def profile_reply(default=14, status=200):
-    """构造一次 profile 查询响应，可显式返回 403。"""
-    if status != 200:
-        return (status, b'')
-    return (200, body({'status': 'success', 'data': {'options': {
-        'default_storage_id': default}}}))
-
-
 SUCCESS_UPLOAD = (200, body({'status': 'success',
                              'data': {'public_url': URL}}))
 REJECTED_UPLOAD = (200, body({'status': 'error', 'message': REJECTION}))
@@ -189,7 +181,7 @@ def of_stage(events, stage):
     return [event for event in events if event.stage == stage]
 
 
-@pytest.mark.parametrize('stage', ['group', 'profile'])
+@pytest.mark.parametrize('stage', ['group'])
 def test_get_cancelled_at_started_has_zero_transport(monkeypatch, stage):
     from modules.image_host.v2_http import request_json
 
@@ -1147,7 +1139,7 @@ def test_request_duration_excludes_slow_session_construction(
         SLOW_REQUEST_BODY_MS]
 
 
-@pytest.mark.parametrize('stage', ['group', 'profile', 'upload'])
+@pytest.mark.parametrize('stage', ['group', 'upload'])
 @pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
 def test_v2_request_timing_excludes_slow_auth_preparation(
         stage, signal_type, monkeypatch):
@@ -1167,7 +1159,7 @@ def test_v2_request_timing_excludes_slow_auth_preparation(
     monkeypatch.setattr(
         import_module(__name__), 'BODY_SECONDS', AUTH_BODY_SECONDS)
     signal = None if signal_type is None else signal_type('stop-request')
-    reply = {'group': group_reply(), 'profile': profile_reply(),
+    reply = {'group': group_reply(),
              'upload': SUCCESS_UPLOAD}[stage]
     sent = install_timed_transport(
         monkeypatch, clock, [(*reply, signal)])
@@ -1308,7 +1300,7 @@ def test_non_v2_json_unknown_charset_uses_requests_text_fallback(
         REQUEST_BODY_MS]
 
 
-@pytest.mark.parametrize('stage', ['group', 'profile', 'upload'])
+@pytest.mark.parametrize('stage', ['group', 'upload'])
 def test_v2_required_structure_precedes_request_terminal(stage, monkeypatch):
     module = import_module('modules.image_host.v2_http')
     clock = [0.0]
