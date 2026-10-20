@@ -292,34 +292,38 @@ def test_direct_is_public_cannot_override_permission(client, value):
 
 
 @pytest.mark.parametrize('storage_id', [None, True, False, -1, '5', 5.0, [], {}])
-def test_invalid_storage_id_fails_before_request(client, storage_id):
-    """非法显式编号不查询也不纠正。"""
+def test_invalid_storage_id_uses_group_selection(client, storage_id):
+    """非法手填不再提前失败：先查组再上传组首项，且不修改输入。"""
     options = {'storage_id': storage_id}
     original = deepcopy(options)
     result = upload(options=options)
-    assert not result.success
-    assert result.failures[0].code == 'invalid_options'
+    assert result.success
+    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
     assert options == original
-    assert client.calls == client.get_calls == []
-    assert client.created == 0
+    assert len(client.get_calls) == 1
+    assert client.get_calls[0][0].endswith('/group')
+    assert client.calls[0][1]['data']['storage_id'] == STORAGE_ID
+    assert client.created == client.closed == 2
 
 
-def test_missing_storage_id_uses_first_candidate(client):
-    """缺省编号从 2 开始，而不是采用组默认编号。"""
+def test_missing_storage_id_uses_group_first(client):
+    """缺省编号按组列表首项选择，而不是固定候选或账号默认编号。"""
     assert upload(options={}).success
-    assert client.calls[0][1]['data']['storage_id'] == 2
-    assert client.get_calls == []
+    assert len(client.get_calls) == 1
+    assert client.get_calls[0][0].endswith('/group')
+    assert client.calls[0][1]['data']['storage_id'] == STORAGE_ID
 
 
-@pytest.mark.parametrize('storage_id', [0, 2, 3, 1, 99])
-def test_explicit_nonnegative_storage_id_is_forwarded(client, storage_id):
-    """合法非负编号原样提交服务端。"""
+@pytest.mark.parametrize('storage_id', [1, 2, 3, 5, 99])
+def test_explicit_positive_storage_id_is_forwarded(client, storage_id):
+    """合法正整数编号原样提交服务端且零查询。"""
     options = {'storage_id': storage_id}
     original = deepcopy(options)
     assert upload(options=options).success
     assert client.calls[0][1]['data'] == {
         'storage_id': storage_id, 'is_public': '1',
     }
+    assert client.get_calls == []
     assert options == original
 
 
@@ -666,7 +670,7 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     backup.body = json.dumps({'status': True, 'data': {'links': {'url': URL}}})
     recovering = code == 'storage_unavailable'
     first = client.response
-    client.responses = [first] * (3 if recovering else 1) + [backup]
+    client.responses = [first] * (2 if recovering else 1) + [backup]
     result = upload(options={'storage_id': STORAGE_ID}, extra_hosts=[
         {'provider': 'wmimg'},
         {'provider': 'boltp', 'options': {'storage_id': 2}},
@@ -676,48 +680,48 @@ def test_precise_failures_reach_real_registry_fallback(client, body, status, cod
     assert result.provider == 'wmimg'
     assert result.attempts == ('boltp', 'wmimg')
     assert result.failures[0].code == code
-    assert len(result.failures) == (3 if recovering else 1)
+    assert len(result.failures) == (2 if recovering else 1)
     assert all(failure.code == code for failure in result.failures)
-    assert len(client.calls) == (4 if recovering else 2)
+    assert len(client.calls) == (3 if recovering else 2)
     assert [call[1]['data']['storage_id'] for call in client.calls
-            if call[0] == ENDPOINT] == ([5, 2, 3] if recovering else [5])
+            if call[0] == ENDPOINT] == ([5, 2] if recovering else [5])
     assert client.calls[-1][0] == 'https://wmimg.com/api/v1/upload'
-    assert client.get_calls == []
-    assert client.closed == client.created == len(client.calls)
-    assert first.closed == (3 if recovering else 1)
+    assert len(client.get_calls) == (1 if recovering else 0)
+    assert client.closed == client.created == (
+        len(client.calls) + len(client.get_calls))
+    assert first.closed == (2 if recovering else 1)
     assert backup.closed == 1
 
 
-def test_candidate_loop_preserves_each_failure(client):
-    """候选 storage_id 连续遭精确拒绝时逐条保留失败记录。"""
+def test_recovery_loop_preserves_each_failure(client):
+    """两次精确拒绝后停止，逐条保留失败记录且不产生第三次 POST。"""
     client.response.body = json.dumps(
         {'status': 'error', 'message': '不存在的储存驱动'})
     client.response.status_code = 200
-    client.responses = [client.response] * 3
+    client.responses = [client.response, client.response]
     result = upload(options={'storage_id': STORAGE_ID})
     assert not result.success
     assert [failure.code for failure in result.failures] == [
-        'storage_unavailable', 'storage_unavailable', 'storage_unavailable']
-    assert len(client.calls) == 3
+        'storage_unavailable', 'storage_unavailable']
+    assert len(client.calls) == 2
+    assert len(client.get_calls) == 1
 
 
-def test_manual_exact_rejection_warns_once_when_candidates_replace_it(client):
-    """手填候选精确拒绝并改试替代值时只产生一次固定告警。"""
+def test_manual_exact_rejection_does_not_warn_replacement(client):
+    """合法手填被精确拒绝属于恢复而非替代，不产生替代告警。"""
     client.response.body = json.dumps(
         {'status': 'error', 'message': '不存在的储存驱动'})
     client.response.status_code = 200
-    client.responses = [client.response, Response(), Response()]
-    client.responses[1].body = json.dumps(
-        {'status': 'error', 'message': '不存在的储存驱动'})
-    client.responses[2].body = json.dumps(payload())
+    client.responses = [client.response, Response()]
     result = upload(options={'storage_id': STORAGE_ID})
     assert result.success
-    assert result.warnings.count('手填储存驱动不可用，已自动替代') == 1
+    assert result.warnings == ()
+    assert len(client.calls) == 2
+    assert len(client.get_calls) == 1
 
 
-def test_candidate_expiration_history_is_inherited_without_extension(
-        client, monkeypatch):
-    """候选切换继承首次期限决策及 shortened 状态，不延长 deadline。"""
+def test_recovery_expiration_keeps_original_start(client, monkeypatch):
+    """恢复沿用原起点与手填首次期限，不做期限预查也不延长。"""
     context_type = import_module('modules.image_host.context').UploadContext
     context = context_type(clock=lambda: 1000)
     decisions = []
@@ -729,20 +733,17 @@ def test_candidate_expiration_history_is_inherited_without_extension(
         return decision
 
     monkeypatch.setattr(registry(), 'compute_expiration', capture_compute)
-    monkeypatch.setattr(context, 'get_boltp_retention', lambda token: 100)
+    monkeypatch.setattr(
+        context, 'get_boltp_retention',
+        lambda token: pytest.fail('不得再做首次期限预查'))
     client.response.body = json.dumps(
         {'status': 'error', 'message': '不存在的储存驱动'})
-    client.responses = [client.response, Response(), Response()]
-    client.responses[1].body = json.dumps(
-        {'status': 'error', 'message': '不存在的储存驱动'})
-    client.responses[2].body = json.dumps(payload())
+    client.responses = [client.response, Response()]
     result = registry().upload_with_fallback(
         IMAGE, FILENAME,
         [{'provider': 'boltp', 'token': SECRET,
           'options': {'storage_id': STORAGE_ID}, 'expiration': '1h'}],
         context=context)
     assert result.success
-    assert len(decisions) == 3
-    assert decisions[1].deadline == decisions[0].deadline
-    assert decisions[1].shortened is decisions[0].shortened is True
-    assert decisions[2].deadline == decisions[1].deadline
+    assert [decision.deadline for decision in decisions] == [4600.0, 4600.0]
+    assert [decision.shortened for decision in decisions] == [False, False]

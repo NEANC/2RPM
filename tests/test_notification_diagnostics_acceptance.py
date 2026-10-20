@@ -501,13 +501,12 @@ def test_review_regressions_run_jointly(monkeypatch, tmp_path):
         monkeypatch, tmp_path,
         [{'provider': 'boltp', 'token': '',
           'options': {'storage_id': 0}}],
-        replies=[stage.REJECTED_UPLOAD, stage.REJECTED_UPLOAD,
-                 stage.SUCCESS_UPLOAD])
-    assert stage.storage_ids(boltp.transport) == [0, 2, 3]
+        replies=[stage.group_reply(ids=(2,)), stage.SUCCESS_UPLOAD])
+    assert stage.storage_ids(boltp.transport) == [2]
     assert (boltp.summary['group_get_attempts'],
-            boltp.summary['profile_get_attempts']) == (0, 0)
-    assert boltp.summary['upload_post_attempts'] == 3
-    assert boltp.summary['boltp_candidate_switches'] == 2
+            boltp.summary['profile_get_attempts']) == (1, 0)
+    assert boltp.summary['upload_post_attempts'] == 1
+    assert boltp.summary['boltp_candidate_switches'] == 0
 
     cache = StorageCache(tmp_path / 'cache', clock=lambda: 1000.0)
     identity = cache.identity('beeimg_cn', MARKER)
@@ -645,8 +644,10 @@ def test_joint_automatic_slots_reuse_existing_transport(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, 'capture', Mock(return_value=_support().capture_result()))
     monkeypatch.setattr(pipeline, 'save_automatic', Mock(
         return_value=SaveOutcome(None, 'shot.jpg')))
-    transport = stage.Transport(monkeypatch, [stage.REJECTED_UPLOAD,
-        stage.REJECTED_UPLOAD, stage.SUCCESS_UPLOAD, stage.SUCCESS_UPLOAD])
+    transport = stage.Transport(monkeypatch, [
+        stage.group_reply(), stage.REJECTED_UPLOAD, stage.group_reply(),
+        stage.REJECTED_UPLOAD, stage.group_reply(), stage.SUCCESS_UPLOAD,
+        stage.SUCCESS_UPLOAD])
     events, traces = [], []
     _support().spy_trace_scope(monkeypatch, pipeline, events, traces)
     pipeline.prepare_screenshots({

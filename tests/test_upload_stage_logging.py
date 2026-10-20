@@ -219,8 +219,12 @@ def slots(events):
 def test_automatic_slots_bind_requests_and_reset_attempts(monkeypatch, tmp_path):
     run = run_chain(
         monkeypatch, tmp_path,
-        [{'provider': 'boltp'}, {'provider': 'boltp'}],
-        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, SUCCESS_UPLOAD],
+        [{'provider': 'beeimg_cn', 'token': '',
+          'options': {'storage_id': 13}},
+         {'provider': 'beeimg_cn', 'token': '',
+          'options': {'storage_id': 13}}],
+        replies=[REJECTED_UPLOAD, group_reply(), REJECTED_UPLOAD,
+                 SUCCESS_UPLOAD],
         mode='automatic')
     requests_started = [event for event in run.events
                         if event.stage == 'upload_attempt'
@@ -318,14 +322,13 @@ def test_superbed_domain_fallback_links_real_terminal(monkeypatch, tmp_path, sig
         assert events[-1].reason_code == 'recoverable_warning'
 
 
-@pytest.mark.parametrize('kind', ['boltp_candidate', 'host_failover'])
 @pytest.mark.parametrize('signal', [None, KeyboardInterrupt, SystemExit])
-def test_chain_fallback_links_target_and_cancellation(monkeypatch, tmp_path, kind, signal):
-    hosts = ([{'provider': 'boltp'}] if kind == 'boltp_candidate' else
-             [{'provider': 'catbox'}, {'provider': 'boltp'}])
-    first = REJECTED_UPLOAD if kind == 'boltp_candidate' else (503, b'')
+def test_chain_fallback_links_target_and_cancellation(monkeypatch, tmp_path, signal):
+    hosts = [{'provider': 'catbox'}, {'provider': 'boltp',
+                                     'options': {'storage_id': 5}}]
     registry = import_module('modules.image_host.registry')
-    transport = Transport(monkeypatch, [first, signal() if signal else SUCCESS_UPLOAD])
+    transport = Transport(monkeypatch, [(503, b''),
+                                        signal() if signal else SUCCESS_UPLOAD])
     events = []
     with trace_scope(mode='automatic', on_status=events.append):
         if signal:
@@ -340,86 +343,109 @@ def test_chain_fallback_links_target_and_cancellation(monkeypatch, tmp_path, kin
                         if event.status == 'started']
     assert fallback[0].source_operation_id is not None
     assert requests_started[1].source_operation_id == fallback[0].operation_id
-    assert fallback[0].slot_index == (0 if kind == 'boltp_candidate' else 1)
+    assert fallback[0].slot_index == 1
     if signal:
         assert slots(events)[-1].status == 'cancelled'
     assert len(transport.posts) == 2
 
 
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_recovery_fallback_cancels_with_signal(signal_type, monkeypatch, tmp_path):
+    """恢复查询抛出的控制信号把回退与槽位记为取消，且无第二次 POST。"""
+    registry = import_module('modules.image_host.registry')
+    signal = signal_type('local stop')
+    context, cache, transport = build(
+        monkeypatch, tmp_path, replies=[REJECTED_UPLOAD, signal])
+    events = []
+    try:
+        with pytest.raises(signal_type):
+            with trace_scope(mode='cli', on_status=events.append):
+                registry.upload_with_fallback(
+                    b'image', 'image.png',
+                    [{'provider': 'beeimg_cn', 'token': '',
+                      'options': {'storage_id': 13}}], context=context)
+    finally:
+        context.close()
+    fallback = of_stage(events, 'fallback')
+    assert [event.status for event in fallback] == ['started', 'cancelled']
+    assert fallback[0].fallback_kind == 'postupload_recovery'
+    assert len(transport.posts) == 1
+    assert slots(events)[-1].status == 'cancelled'
+
+
 def test_preupload_failover_uses_failed_slot_as_source(monkeypatch, tmp_path):
     run = run_chain(monkeypatch, tmp_path, [
         {'provider': 'beeimg_cn', 'token': MISSING_ENV},
-        {'provider': 'boltp'}], replies=[SUCCESS_UPLOAD])
+        {'provider': 'boltp', 'options': {'storage_id': 5}}],
+        replies=[SUCCESS_UPLOAD])
     fallback = of_stage(run.events, 'fallback')[0]
     assert fallback.source_operation_id == slots(run.events)[0].operation_id
 
 
-def test_boltp_zero_and_candidate_switch_do_not_get(monkeypatch, tmp_path):
-    """Boltp 手填 0 合法且候选切换不增加任何网络查询。"""
+def test_boltp_zero_uses_group_then_upload(monkeypatch, tmp_path):
+    """Boltp 手填 0 走自动选择：先查组再发送组首项。"""
     run = run_chain(
         monkeypatch, tmp_path,
         [{'provider': 'boltp', 'token': '',
           'options': {'storage_id': 0}}],
-        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, SUCCESS_UPLOAD])
-    assert storage_ids(run.transport) == [0, 2, 3]
+        replies=[group_reply(ids=(2,)), SUCCESS_UPLOAD])
+    assert storage_ids(run.transport) == [2]
     assert (run.summary['group_get_attempts'],
-            run.summary['profile_get_attempts']) == (0, 0)
-    assert run.summary['upload_post_attempts'] == 3
-    assert run.summary['boltp_candidate_switches'] == 2
+            run.summary['profile_get_attempts']) == (1, 0)
+    assert run.summary['upload_post_attempts'] == 1
+    assert run.summary['boltp_candidate_switches'] == 0
     selection = of_stage(run.events, 'storage_select')
-    assert selection[0].storage_id == 0
-    assert selection[0].selection_source == 'manual'
-    assert run.transport.gets('group') == []
-    assert len(run.transport.posts) == run.summary['upload_post_attempts'] == 3
+    assert selection[-1].storage_id == 2
+    assert selection[-1].selection_source == 'group_first'
+    assert len(run.transport.gets('group')) == 1
     assert run.summary['slots_succeeded'] == 1
     assert run.summary['slots_failed'] == 0
 
 
-def test_boltp_expiration_get_is_shared(monkeypatch, tmp_path):
-    """同凭证多图在有期限时只共享一次 group 查询且始终零 profile。"""
+def test_boltp_group_query_is_shared_across_images(monkeypatch, tmp_path):
+    """同凭证多图只共享一次组查询，且始终零 profile。"""
     run = run_chain(
         monkeypatch, tmp_path,
-        [{'provider': 'boltp', 'token': '', 'expiration': '1h',
+        [{'provider': 'boltp', 'token': '',
           'options': {'storage_id': 0}}],
-        replies=[group_reply(expire=60), REJECTED_UPLOAD, SUCCESS_UPLOAD,
-                 SUCCESS_UPLOAD],
+        replies=[group_reply(ids=(2,)), SUCCESS_UPLOAD, SUCCESS_UPLOAD],
         images=(1, 2))
     assert (run.summary['group_get_attempts'],
             run.summary['profile_get_attempts']) == (1, 0)
     assert len(run.transport.gets('group')) == 1
     assert run.transport.gets('profile') == []
-    assert run.summary['upload_post_attempts'] == 3
-    assert run.summary['boltp_candidate_switches'] == 1
+    assert run.summary['upload_post_attempts'] == 2
+    assert run.summary['postupload_recoveries'] == 0
 
 
-@pytest.mark.parametrize(('manual', 'expected'), [
-    (0, [0, 2, 3]), (2, [2, 3]), (3, [3, 2]), (5, [5, 2, 3]),
-])
-def test_boltp_candidate_order_keeps_dedup(manual, expected, monkeypatch,
-                                            tmp_path):
-    """候选按手填、2、3 保序去重且切换不增加 GET。"""
+@pytest.mark.parametrize('manual', [2, 3, 5])
+def test_boltp_manual_positive_is_sent_without_query(manual, monkeypatch,
+                                                     tmp_path):
+    """合法正整数手填直接发送，不查组也不切换候选。"""
     run = run_chain(
         monkeypatch, tmp_path,
         [{'provider': 'boltp', 'token': '',
           'options': {'storage_id': manual}}],
-        replies=[REJECTED_UPLOAD, REJECTED_UPLOAD, REJECTED_UPLOAD])
-    assert storage_ids(run.transport) == expected
+        replies=[SUCCESS_UPLOAD])
+    assert storage_ids(run.transport) == [manual]
     assert run.summary['group_get_attempts'] == 0
-    assert run.summary['upload_post_attempts'] == len(expected)
+    assert run.summary['upload_post_attempts'] == 1
 
 
 @pytest.mark.parametrize('storage_id', [True, -1, 1.5, '0', None, []])
-def test_boltp_invalid_manual_stops_before_post(storage_id, monkeypatch,
-                                                tmp_path):
-    """非法布尔或负数手填在传输前停止且零 POST。"""
+def test_boltp_invalid_manual_uses_group_selection(storage_id, monkeypatch,
+                                                   tmp_path):
+    """非法布尔、负数或容器手填走自动选择，先查组再上传。"""
     run = run_chain(
         monkeypatch, tmp_path,
         [{'provider': 'boltp', 'token': '',
           'options': {'storage_id': storage_id}}],
-        replies=[])
-    assert run.transport.posts == []
-    assert run.summary['upload_post_attempts'] == 0
-    assert run.summary['slots_failed'] == 1
+        replies=[group_reply(ids=(2,)), SUCCESS_UPLOAD])
+    assert storage_ids(run.transport) == [2]
+    assert run.summary['group_get_attempts'] == 1
+    assert run.summary['profile_get_attempts'] == 0
+    assert run.summary['upload_post_attempts'] == 1
+    assert run.summary['slots_succeeded'] == 1
 
 
 def test_preupload_refresh_and_post_recovery_have_one_budget(
@@ -1394,13 +1420,13 @@ def test_recovery_wraps_refresh(signal_type, monkeypatch, tmp_path):
     context.close()
 
 
-@pytest.mark.parametrize('cause', ['identity', 'load', 'save', 'boltp_replaced'])
+@pytest.mark.parametrize('cause', ['identity', 'load', 'save', 'manual_replaced'])
 def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, caplog):
     """降级成功仍标记批次告警：缓存故障或手填被替代都不阻断上传。"""
-    if cause == 'boltp_replaced':
+    if cause == 'manual_replaced':
         hosts = [{'provider': 'boltp', 'token': '',
-                  'options': {'storage_id': 5}}]
-        replies = [REJECTED_UPLOAD, SUCCESS_UPLOAD]
+                  'options': {'storage_id': 0}}]
+        replies = [group_reply(ids=(2,)), SUCCESS_UPLOAD]
     else:
         name = {'identity': '_prepare_key', 'load': '_load',
                 'save': '_write_atomic'}[cause]
@@ -1426,21 +1452,24 @@ def test_degraded_success_marks_batch_warning(cause, monkeypatch, tmp_path, capl
 
 
 @pytest.mark.parametrize('signal_type', [None, KeyboardInterrupt, SystemExit])
-def test_boltp_selection_wraps_option_assignment(signal_type, monkeypatch, tmp_path):
+def test_boltp_selection_wraps_group_choice(signal_type, monkeypatch, tmp_path):
+    """Boltp 自动选择包住真实选择调用：两秒耗时与取消信号来自被包裹的调用。"""
+    module = import_module('modules.image_host.context')
     registry = import_module('modules.image_host.registry')
-    original = registry.PreparedV2Options.__setitem__
+    context, _, _ = build(
+        monkeypatch, tmp_path,
+        replies=[group_reply(ids=(2,)), SUCCESS_UPLOAD])
     clock = [0.0]
     signal = signal_type('stop') if signal_type else None
+    original = module.select_storage
 
-    def delayed(options, key, value):
-        if key == 'storage_id':
-            clock[0] += 2.0
-            if signal:
-                raise signal
-        return original(options, key, value)
+    def delayed(*args, **kwargs):
+        clock[0] += 2.0
+        if signal:
+            raise signal
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(registry.PreparedV2Options, '__setitem__', delayed)
-    context, _, _ = build(monkeypatch, tmp_path, replies=[SUCCESS_UPLOAD])
+    monkeypatch.setattr(module, 'select_storage', delayed)
     events = []
     with trace_scope(mode='cli', clock=lambda: clock[0], on_status=events.append):
         if signal:

@@ -82,11 +82,11 @@ def test_cache_load_failure_classification(monkeypatch, tmp_path, error, reason)
 
 
 @pytest.mark.parametrize('failed', [False, True])
-def test_boltp_retention_reuse_has_query_source(monkeypatch, tmp_path, failed):
+def test_boltp_group_query_has_query_source(monkeypatch, tmp_path, failed):
     from test_upload_stage_logging import group_reply, run_chain, SUCCESS_UPLOAD
 
     run = run_chain(monkeypatch, tmp_path,
-                    [{'provider': 'boltp', 'token': 'synthetic', 'expiration': '1d'}],
+                    [{'provider': 'boltp', 'token': 'synthetic'}],
                     images=(1, 2), replies=([group_reply(status=500)] if failed else
                                            [group_reply(), SUCCESS_UPLOAD, SUCCESS_UPLOAD]))
     reused = [event for event in run.events if event.cache_layer == 'event']

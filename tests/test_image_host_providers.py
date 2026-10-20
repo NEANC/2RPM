@@ -1069,3 +1069,72 @@ def test_wmimg_expiration_failure_does_not_retry(wmclient, monkeypatch):
     assert len(wmclient.calls) == 1
     assert 'expired_at' in wmclient.calls[0][1]['data']
     assert result.warnings == ()
+
+
+V2_ADAPTERS = (('beeimg_cn', 'upload_beeimg_cn'),
+               ('boltp', 'upload_boltp'))
+
+
+@pytest.mark.parametrize(('provider', 'adapter'), V2_ADAPTERS)
+@pytest.mark.parametrize('storage_id', [
+    0, -1, True, '13', 1.5, None, [], {},
+], ids=lambda value: repr(value))
+def test_v2_direct_adapter_requires_positive_storage(
+        monkeypatch, provider, adapter, storage_id):
+    """两站直接适配器都只接受正整数，非法编号零 GET/POST。"""
+    module = providers()
+    error_type = import_module('modules.image_host.core').ImageHostError
+    calls = []
+
+    def request_json(*args, **kwargs):
+        """记录任何越过校验的请求。"""
+        calls.append((args, kwargs))
+        return {'status': 'success', 'data': {'public_url': URL}}
+
+    monkeypatch.setattr(module, 'request_json', request_json)
+    with pytest.raises(error_type) as caught:
+        getattr(module, adapter)(
+            IMAGE, FILENAME, '', {'storage_id': storage_id})
+    assert caught.value.code == 'invalid_options'
+    assert calls == []
+
+
+@pytest.mark.parametrize(('provider', 'adapter'), V2_ADAPTERS)
+@pytest.mark.parametrize('storage_id', [1, 13, 99])
+def test_v2_direct_adapter_posts_positive_storage_once(
+        monkeypatch, provider, adapter, storage_id):
+    """合法正整数直接适配器只发送一次上传请求，不查询组。"""
+    module = providers()
+    calls = []
+
+    def request_json(provider_name, stage, token, *, data=None, files=None):
+        """记录唯一上传请求并返回合成成功。"""
+        calls.append((provider_name, stage, data))
+        return {'status': 'success', 'data': {'public_url': URL}}
+
+    monkeypatch.setattr(module, 'request_json', request_json)
+    assert getattr(module, adapter)(
+        IMAGE, FILENAME, '', {'storage_id': storage_id}) == URL
+    assert calls == [(provider, 'upload',
+                      {'storage_id': storage_id, 'is_public': '1'})]
+
+
+@pytest.mark.parametrize(('provider', 'adapter'), V2_ADAPTERS)
+def test_v2_direct_adapter_never_queries_or_retries(
+        monkeypatch, provider, adapter):
+    """精确存储拒绝也不会让直接适配器自行查询或重试。"""
+    module = providers()
+    error_type = import_module('modules.image_host.core').ImageHostError
+    calls = []
+
+    def request_json(provider_name, stage, token, *, data=None, files=None):
+        """记录唯一请求并抛出精确存储拒绝。"""
+        calls.append((provider_name, stage))
+        raise error_type('storage_unavailable', '', stage='upload',
+                         http_status=200)
+
+    monkeypatch.setattr(module, 'request_json', request_json)
+    with pytest.raises(error_type) as caught:
+        getattr(module, adapter)(IMAGE, FILENAME, '', {'storage_id': 13})
+    assert caught.value.code == 'storage_unavailable'
+    assert calls == [(provider, 'upload')]

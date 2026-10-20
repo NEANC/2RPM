@@ -491,15 +491,14 @@ def _prepare_superbed(token, options, filename):
 
 
 def validate_v2_options(options, *, provider='beeimg_cn', require_storage=True):
-    """无日志校验两站通用选项，恢复用途仅可跳过存储字段检查。"""
+    """无日志校验两站通用选项，两站存储编号均为非布尔正整数。"""
     permission = options.get('permission', 1)
     if (not isinstance(permission, int) or isinstance(permission, bool)
             or permission not in (0, 1) or 'is_public' in options):
         raise ImageHostError('invalid_options', '')
     if require_storage:
         storage_id = options.get('storage_id')
-        if (not isinstance(storage_id, int) or isinstance(storage_id, bool)
-                or storage_id < (0 if provider == 'boltp' else 1)):
+        if type(storage_id) is not int or storage_id < 1:
             raise ImageHostError('invalid_options', '')
     if 'album_id' in options:
         album_id = options['album_id']
@@ -532,8 +531,8 @@ def _upload_v2_storage(provider, label, image_bytes, filename, token,
     2026-09-30、2026-10-03 用账号令牌完成真实上传验证。
     multipart 必填 file 与 storage_id，可选整数 album_id；存储编号由注册表
     根据组信息和可选账号默认值选择后注入 options，不猜测文档示例编号。
-    直接调用适配器时，BeeIMG.cn 要求非布尔正整数，Boltp 接受非布尔非负整数；
-    本层仅校验参数并上传，不负责查询存储、缓存或重传。
+    直接调用适配器时两站都要求非布尔正整数 storage_id；本层仅校验参数并
+    上传，不负责查询存储、缓存或重传。
     项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
     字符串 "1"/"0" 显式表达该布尔表单字段，不省略该字段；原生 is_public
     不作为可覆盖权限语义的选项，显式传入即安全拒绝。
@@ -589,13 +588,9 @@ def upload_boltp(image_bytes, filename, token, options) -> str:
     契约来源：https://www.boltp.com/api/v2/pages/api-docs，文档核对日期
     2026-09-30。2026-10-03 已用 Bearer 令牌完成真实上传验证：组接口返回
     可用存储编号 2，上传返回 status 为 success 及 data.public_url。
-    同次验证中资料接口返回 HTTP 403，提示令牌无权访问；存储查询层仅对
-    Boltp 的该状态忽略默认存储资料；上传选择不依赖默认值或组列表。
-    经注册表调用时，忽略账号默认存储资料，优先尝试有效手填值，再按
-    2、3 的固定候选顺序上传；候选最多两个自动编号，且仅在 HTTP 200、
-    status=error、message 精确等于“不存在的储存驱动”时继续尝试。
-    这些编号是项目策略，并非动态发现或官方保证；本适配器不查询存储，
-    直接调用仍须在 options 中提供有效 storage_id。
+    经注册表调用时，两站使用相同的组顺序选择、手填优先与精确拒绝后单次
+    恢复规则；不再枚举固定候选，也不再预查账号期限或资料。直接调用时
+    仍须在 options 中提供非布尔正整数 storage_id，本适配器不查询存储。
     """
     return _upload_v2_storage(
         'boltp', 'Boltp', image_bytes, filename, token, options)

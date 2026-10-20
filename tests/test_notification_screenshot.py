@@ -1025,7 +1025,8 @@ def test_http_registry_warnings_reach_notification_once(
 
 
 @pytest.mark.parametrize('provider, token', [
-    ('beeimg_cn', SECRET), ('boltp', 'FAKE_OTHER_CREDENTIAL'),
+    ('beeimg_cn', 'FAKE_OTHER_BEEIMG_CREDENTIAL'),
+    ('boltp', 'FAKE_OTHER_CREDENTIAL'),
 ])
 def test_http_fallback_isolates_identity_and_preserves_success(
         notification_http, monkeypatch, caplog, provider, token):
@@ -1033,7 +1034,7 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     state = notification_http
     rejected = (200, {'status': 'error', 'message': SECRET})
     state['replies'] = [
-        _group_response(), rejected, _upload_response(),
+        _group_response(), rejected, _group_response(), _upload_response(),
         rejected, _upload_response(),
     ]
     config = _http_config()
@@ -1048,7 +1049,7 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     assert len(state['contexts']) == 1
     requests_seen = state['requests']
     assert [request.method for request in requests_seen] == [
-        'GET', 'POST', 'POST', 'POST', 'POST']
+        'GET', 'POST', 'GET', 'POST', 'POST', 'POST']
     assert requests_seen[0].headers['Authorization'] == 'Bearer ' + SECRET
     assert requests_seen[2].headers['Authorization'] == 'Bearer ' + token
     assert ('beeimg.cn' in requests_seen[2].url) is (provider == 'beeimg_cn')
@@ -1061,22 +1062,21 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     assert not state['replies']
 
 
-def test_http_boltp_each_image_restarts_enumeration(
+def test_http_boltp_zero_uses_group_first_per_image(
         notification_http, monkeypatch):
-    """Boltp 双图各从 0 开始且无元数据查询。"""
+    """Boltp 手填 0 走自动选择：组查询在事件内复用，每图上传组首项。"""
     state = notification_http
-    reject = (200, {'status': 'error', 'message': '不存在的储存驱动'})
-    state['replies'] = [reject, reject, _upload_response(),
-                        reject, _upload_response()]
+    state['replies'] = [_group_response(ids=(13,)), _upload_response(),
+                        _upload_response()]
     sent, _, _ = _install_onepush(monkeypatch)
     config = _http_config()
     config['push']['screenshot']['image_host'] = [
         {'provider': 'boltp', 'token': SECRET, 'options': {'storage_id': 0}}]
     assert notif.send_notification(config, 'on_end', process_name='demo')
-    assert [request.method for request in state['requests']] == ['POST'] * 5
-    for request, storage_id in zip(state['requests'], (0, 2, 3, 0, 2)):
-        assert ('name="storage_id"\r\n\r\n' + str(storage_id)
-                + '\r\n').encode() in request.body
+    assert [request.method for request in state['requests']] == [
+        'GET', 'POST', 'POST']
+    for request in state['requests'][1:]:
+        assert b'name="storage_id"\r\n\r\n13\r\n' in request.body
     assert len(state['contexts']) == 1
     assert sent[0][1].count(URL) == 2
     assert not state['replies']

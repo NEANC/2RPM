@@ -3,7 +3,6 @@
 """提供静态适配器注册表和每张图片独立的顺序故障转移。"""
 
 from collections.abc import Mapping
-from contextlib import ExitStack
 from copy import deepcopy
 import sys
 
@@ -138,46 +137,22 @@ def _copy_options(host):
 
 
 def _prepare_v2(context, image, index, provider, token, options, seconds,
-                warnings, image_bytes=None, filename=None, *,
-                transmission=0):
-    """复用版本化存储选择；BeeIMG.CN 手填首次零查询，Boltp 按候选上传。
+                warnings, *, transmission=0):
+    """两站统一选择存储并计算期限，绝不在此执行上传请求。
 
-    BeeIMG.CN 首次合法手填登记后直接上传，不查询组或资料、不读写存储
-    缓存；其余情况（自动发现或恢复）先取组选择再按元数据期限计算。
-    transmission 为当前上传代次，第二代为恢复，即使 options 仍保留手填
-    也只走恢复选择。Boltp 保持候选独立上传与重算期限的既有行为。
+    首次合法手填只登记实际选择及发送前代次，用组上限 None 计算期限，
+    不查询组或资料、不读写存储缓存；其余情况（未填、非法手填或恢复）
+    先按组顺序自动选择，再按元数据组期限计算。transmission 为当前上传
+    代次，第二代为恢复，即使 options 仍保留手填也只走自动选择。
     """
-    if provider == 'beeimg_cn':
-        manual = options.get('storage_id') if 'storage_id' in options else None
-        if transmission == 0 and type(manual) is int and manual > 0:
-            selected = context.record_manual_selection(
-                image, index, provider, token, manual)
-            state = context.storage_state(image, index, provider, token)
-            decision = compute_expiration(
-                seconds, image.started_at, None, state.previous_deadline,
-                context.now(), previous_shortened=state.previous_shortened)
-            context.record_expiration(image, index, provider, token, decision)
-            if decision.shortened:
-                _add_warnings(warnings, (_WARN_SHORTENED,))
-            prepared = PreparedV2Options(
-                deepcopy(options), expired_at=decision.expired_at)
-            prepared['storage_id'] = selected.storage_id
-            return prepared
-        try:
-            selected = context.prepare_storage(
-                image, index, provider, token,
-                manual_present='storage_id' in options,
-                manual_value=manual)
-        finally:
-            _add_warnings(warnings, context.take_warnings())
-        if selected.replaced_manual:
-            _add_warnings(warnings, (_WARN_REPLACED,))
-        metadata = context.get_metadata(provider, token, record_reuse=False)
+    manual = options['storage_id'] if 'storage_id' in options else None
+    if transmission == 0 and type(manual) is int and manual > 0:
+        selected = context.record_manual_selection(
+            image, index, provider, token, manual)
         state = context.storage_state(image, index, provider, token)
         decision = compute_expiration(
-            seconds, image.started_at, metadata.file_expire_seconds,
-            state.previous_deadline, context.now(),
-            previous_shortened=state.previous_shortened)
+            seconds, image.started_at, None, state.previous_deadline,
+            context.now(), previous_shortened=state.previous_shortened)
         context.record_expiration(image, index, provider, token, decision)
         if decision.shortened:
             _add_warnings(warnings, (_WARN_SHORTENED,))
@@ -185,66 +160,11 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
                                      expired_at=decision.expired_at)
         prepared['storage_id'] = selected.storage_id
         return prepared
-    if provider == 'boltp':
-        retention = (context.get_boltp_retention(token)
-                     if seconds is not None else None)
-        manual_id = options['storage_id'] if 'storage_id' in options else None
-        candidates = ([options['storage_id']] if 'storage_id' in options else [])
-        candidates.extend(value for value in (2, 3) if value not in candidates)
-        failures = []
-        state = context.storage_state(image, index, provider, token)
-        for position, storage_id in enumerate(candidates):
-            with ExitStack() as stack:
-                fallback = (stack.enter_context(trace_fallback(
-                    'boltp_candidate', 'switch', reason_code='storage_rejected',
-                    provider=provider, storage_id=storage_id)) if position else None)
-                decision = compute_expiration(
-                    seconds, image.started_at, retention,
-                    state.previous_deadline, context.now(),
-                    previous_shortened=state.previous_shortened)
-                context.record_expiration(image, index, provider, token, decision)
-                if decision.shortened:
-                    _add_warnings(warnings, (_WARN_SHORTENED,))
-                prepared = PreparedV2Options(
-                    deepcopy(options), expired_at=decision.expired_at)
-                with trace_operation(
-                        'storage_select', 'select', provider=provider,
-                        storage_id=storage_id,
-                        selection_source=('manual' if storage_id == manual_id
-                                          else 'candidate'),
-                        candidate_count=len(candidates)) as operation:
-                    prepared['storage_id'] = storage_id
-                    operation.finish(
-                        'succeeded', storage_id=storage_id,
-                        selection_source=('manual' if storage_id == manual_id
-                                          else 'candidate'))
-                try:
-                    result = UPLOADERS[provider](image_bytes, filename, token, prepared)
-                    return validate_image_url(result), None
-                except ImageHostError as error:
-                    failure = _failure(provider, error.code, error=error)
-                except Exception:
-                    failure = _failure(provider, 'upload_failed')
-                if fallback is not None:
-                    fallback.finish('failed', reason_code=failure.code)
-            failures.append(failure)
-            if (storage_id == options.get('storage_id')
-                    and 'storage_id' in options
-                    and failure.code == 'storage_unavailable'
-                    and failure.stage == 'upload'
-                    and failure.http_status == 200):
-                _add_warnings(warnings, (_WARN_REPLACED,))
-            if not (failure.code == 'storage_unavailable'
-                    and failure.stage == 'upload'
-                    and failure.http_status == 200):
-                break
-            state = context.storage_state(image, index, provider, token)
-        return None, failures
     try:
         selected = context.prepare_storage(
             image, index, provider, token,
-            manual_present='storage_id' in options,
-            manual_value=options.get('storage_id'))
+            manual_present=transmission == 0 and 'storage_id' in options,
+            manual_value=manual)
     finally:
         _add_warnings(warnings, context.take_warnings())
     if selected.replaced_manual:
@@ -289,10 +209,6 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 raise shape_error
             token = context.resolve_credential(index, host)
             options = _copy_options(host)
-            if provider == 'boltp' and 'storage_id' in options:
-                storage_id = options['storage_id']
-                if type(storage_id) is not int or storage_id < 0:
-                    raise ImageHostError('invalid_options', '')
             seconds = None
             if 'expiration' in host:
                 if 'expired_at' in options:
@@ -300,29 +216,11 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                 seconds = parse_expiration(host['expiration'])
             is_v2 = provider in _V2_PROVIDERS
             if is_v2:
-                if provider == 'boltp' and 'storage_id' in options:
-                    storage_id = options['storage_id']
-                    if (type(storage_id) is not int or storage_id < 0):
-                        raise ImageHostError('invalid_options', '')
-                    validate_v2_options({key: value for key, value in options.items()
-                                         if key != 'storage_id'},
-                                        provider=provider, require_storage=False)
-                elif provider == 'boltp':
-                    validate_v2_options(options, provider=provider,
-                                        require_storage=False)
-                else:
-                    validate_v2_options(options, provider=provider,
-                                        require_storage=False)
+                validate_v2_options(options, provider=provider,
+                                    require_storage=False)
             elif seconds is not None and provider != 'wmimg':
                 _add_warnings(warnings, (_WARN_UNSUPPORTED,))
             for transmission in range(2 if is_v2 else 1):
-                if provider == 'boltp':
-                    url, candidate_failure = _prepare_v2(
-                        context, image, index, provider, token, options,
-                        seconds, warnings, image_bytes, filename)
-                    if candidate_failure is not None:
-                        failures.extend(candidate_failure)
-                    break
                 prepared = (_prepare_v2(
                     context, image, index, provider, token, options,
                     seconds, warnings, transmission=transmission)
@@ -368,9 +266,7 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                         if not recovery_allowed:
                             _skip_fallback('postupload_recovery', 'budget_used')
                     else:
-                        # _V2_PROVIDERS 仅含 beeimg_cn 与 boltp，而 boltp 在
-                        # 循环内提前 break，故 transmission != 0 只会由
-                        # BeeIMG.CN 的第二次精确拒绝到达，disk_only 恒定成立。
+                        # 第二次精确拒绝只按实际发送版本失效，不再查询或上传。
                         state = context.storage_state(
                             image, index, provider, token)
                         context.invalidate(

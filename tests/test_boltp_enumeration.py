@@ -12,6 +12,50 @@ import requests
 
 
 URL = 'https://images.example/synthetic.png'
+REJECTION = '不存在的储存驱动'
+
+
+def _install(monkeypatch, upload_replies, group_ids=(2, 3)):
+    """安装按方法路由的传输替身，返回按发生顺序记录的全部请求。"""
+    sent = []
+    queue = list(upload_replies)
+
+    def send(adapter, request, **kwargs):
+        """GET 返回合成组信息，POST 按队列返回合成正文。"""
+        sent.append(request)
+        response = requests.Response()
+        response.request = request
+        response.url = request.url
+        response.status_code = 200
+        if request.method == 'GET':
+            response._content = json.dumps({'status': 'success', 'data': {
+                'group': {'options': {'file_expire_seconds': None}},
+                'storages': [{'id': value} for value in group_ids]}}).encode()
+        else:
+            response._content = queue.pop(0)
+        response._content_consumed = True
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    return sent
+
+
+def _storage_id(request):
+    """从 multipart 请求体读取真实发送的存储编号。"""
+    content_type = request.headers['Content-Type']
+    message = BytesParser(policy=default).parsebytes(
+        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()
+        + request.body)
+    part = next(
+        item for item in message.iter_parts()
+        if item.get_param('name', header='content-disposition') == 'storage_id')
+    return int(part.get_payload(decode=True))
+
+
+@pytest.fixture(autouse=True)
+def isolate_cache(monkeypatch, tmp_path):
+    """隔离默认缓存目录，避免读取本机遗留的存储记录。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
 
 
 @pytest.fixture
@@ -28,43 +72,28 @@ def upload_adapter(monkeypatch):
     return providers, calls
 
 
-def test_boltp_storage_zero_reaches_real_http_adapter(upload_adapter, monkeypatch):
+def test_boltp_storage_zero_is_rejected_before_http(upload_adapter, monkeypatch):
+    """Boltp 直接适配器不再接受零值编号，且零请求。"""
+    from modules.image_host.core import ImageHostError
+
     providers, _ = upload_adapter
-    monkeypatch.setattr(
-        providers, 'request_json',
-        import_module('modules.image_host.v2_http').request_json)
     calls = []
 
     def send(adapter, request, **kwargs):
         calls.append(request)
         response = requests.Response()
-        response.request = request
-        response.url = request.url
         response.status_code = 200
-        response._content = json.dumps({
-            'status': 'success',
-            'data': {'public_url': URL},
-        }).encode('utf-8')
+        response._content = b'{}'
         response._content_consumed = True
         return response
 
     monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
 
-    result = providers.upload_boltp(b'image', 'image.png', '', {'storage_id': 0})
+    with pytest.raises(ImageHostError) as caught:
+        providers.upload_boltp(b'image', 'image.png', '', {'storage_id': 0})
 
-    assert result == URL
-    assert len(calls) == 1
-    assert calls[0].url.endswith('/api/v2/upload')
-    assert calls[0].method == 'POST'
-    content_type = calls[0].headers['Content-Type']
-    assert content_type.startswith('multipart/form-data;')
-    message = BytesParser(policy=default).parsebytes(
-        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()
-        + calls[0].body)
-    storage_id = next(
-        part for part in message.iter_parts()
-        if part.get_param('name', header='content-disposition') == 'storage_id')
-    assert storage_id.get_payload(decode=True) == b'0'
+    assert caught.value.code == 'invalid_options'
+    assert calls == []
 
 
 def test_context_retention_caches_success_and_none_by_hmac_identity(monkeypatch):
@@ -394,76 +423,51 @@ def test_beeimg_cn_storage_zero_is_rejected_before_http(upload_adapter, monkeypa
     assert calls == []
 
 
-def test_boltp_enumerates_storage_candidates_and_stops_on_success(monkeypatch):
+def test_boltp_precise_rejection_recovers_from_group(monkeypatch):
+    """手填编号被精确拒绝后按组顺序改选下一项，只发两次 POST。"""
     from modules.image_host.registry import upload_with_fallback
 
-    sent = []
-    responses = [
-        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
-        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
-    ]
-
-    def send(adapter, request, **kwargs):
-        sent.append(request)
-        response = requests.Response()
-        response.request = request
-        response.url = request.url
-        response.status_code = 200
-        response._content = responses.pop(0)
-        response._content_consumed = True
-        return response
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    rejection = json.dumps(
+        {'status': 'error', 'message': REJECTION}).encode()
+    success = json.dumps(
+        {'status': 'success', 'data': {'public_url': URL}}).encode()
+    sent = _install(monkeypatch, [rejection, success], group_ids=(2, 3))
     result = upload_with_fallback(
         b'image', 'image.png', [{'provider': 'boltp', 'token': '',
                                 'options': {'storage_id': 2}}])
 
     assert result.success
     assert result.url == URL
-    assert len(sent) == 2
-    assert all(request.method == 'POST' for request in sent)
+    assert [request.method for request in sent] == ['POST', 'GET', 'POST']
+    assert [_storage_id(request) for request in (sent[0], sent[2])] == [2, 3]
     assert result.attempts == ('boltp',)
-    assert [request.body for request in sent][0] != [request.body for request in sent][1]
 
 
-def test_boltp_invalid_storage_id_stops_before_http(monkeypatch):
+def test_boltp_invalid_storage_id_uses_group_selection(monkeypatch):
+    """非法手填不再提前失败：先查组再上传组列表首项。"""
     from modules.image_host.registry import upload_with_fallback
 
-    sent = []
-    monkeypatch.setattr(
-        requests.adapters.HTTPAdapter, 'send',
-        lambda adapter, request, **kwargs: sent.append(request))
+    success = json.dumps(
+        {'status': 'success', 'data': {'public_url': URL}}).encode()
+    sent = _install(monkeypatch, [success], group_ids=(2, 3))
     result = upload_with_fallback(
         b'image', 'image.png', [{'provider': 'boltp', 'token': '',
-                                'options': {'storage_id': True},
-                                'expiration': 60}])
+                                'options': {'storage_id': True}}])
 
-    assert not result.success
-    assert result.failures[0].code == 'invalid_options'
-    assert sent == []
+    assert result.success
+    assert [request.method for request in sent] == ['GET', 'POST']
+    assert _storage_id(sent[1]) == 2
 
 
-def test_boltp_candidate_exhaustion_falls_back_to_next_host(monkeypatch):
+def test_boltp_exhausted_group_falls_back_to_next_host(monkeypatch):
+    """恢复后组内无其他候选时结束本站，按原规则进入下一槽位。"""
     from modules.image_host.registry import upload_with_fallback
 
-    sent = []
-    payloads = [
-        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
-        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
-        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
-    ]
-
-    def send(adapter, request, **kwargs):
-        sent.append(request)
-        response = requests.Response()
-        response.request = request
-        response.url = request.url
-        response.status_code = 200
-        response._content = payloads.pop(0)
-        response._content_consumed = True
-        return response
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    rejection = json.dumps(
+        {'status': 'error', 'message': REJECTION}).encode()
+    success = json.dumps(
+        {'status': 'success', 'data': {'public_url': URL}}).encode()
+    sent = _install(monkeypatch, [rejection, success], group_ids=(2,))
     result = upload_with_fallback(
         b'image', 'image.png', [
             {'provider': 'boltp', 'token': '', 'options': {'storage_id': 2}},
@@ -472,15 +476,16 @@ def test_boltp_candidate_exhaustion_falls_back_to_next_host(monkeypatch):
 
     assert result.success
     assert result.attempts == ('boltp', 'boltp')
-    assert len(sent) == 3
+    assert [request.method for request in sent] == ['POST', 'GET', 'POST']
+    assert _storage_id(sent[2]) == 3
 
 
 @pytest.mark.parametrize(('provider_name', 'adapter_name', 'storage_id'), [
-    ('boltp', 'upload_boltp', 0),
+    ('boltp', 'upload_boltp', 2),
     ('beeimg_cn', 'upload_beeimg_cn', 5),
 ])
-def test_v2_adapter_accepts_allowed_storage_id(upload_adapter, provider_name,
-                                               adapter_name, storage_id):
+def test_v2_adapter_accepts_positive_storage_id(upload_adapter, provider_name,
+                                                adapter_name, storage_id):
     providers, calls = upload_adapter
 
     result = getattr(providers, adapter_name)(b'image', 'image.png', '',
@@ -493,6 +498,7 @@ def test_v2_adapter_accepts_allowed_storage_id(upload_adapter, provider_name,
 
 
 @pytest.mark.parametrize(('provider_name', 'adapter_name', 'storage_id'), [
+    ('boltp', 'upload_boltp', 0),
     ('boltp', 'upload_boltp', -1),
     ('boltp', 'upload_boltp', 1.5),
     ('boltp', 'upload_boltp', '0'),
@@ -535,31 +541,19 @@ def test_v2_adapter_requires_explicit_storage_id(upload_adapter, provider_name,
     assert calls == []
 
 
-def test_boltp_candidate_switch_counts_real_posts(monkeypatch, tmp_path):
-    """候选切换只按真实 POST 计数，且不额外产生任何查询。"""
+def test_boltp_recovery_counts_real_requests(monkeypatch, tmp_path):
+    """恢复只按真实 POST 与组查询计数，不再产生候选切换。"""
     from modules.image_host.context import UploadContext
     from modules.image_host.registry import upload_with_fallback
     from modules.image_host.storage_cache import StorageCache
     from modules.operation_trace import trace_item
     from modules.operation_trace import trace_scope
 
-    sent = []
-    responses = [
-        json.dumps({'status': 'error', 'message': '不存在的储存驱动'}).encode(),
-        json.dumps({'status': 'success', 'data': {'public_url': URL}}).encode(),
-    ]
-
-    def send(adapter, request, **kwargs):
-        sent.append(request)
-        response = requests.Response()
-        response.request = request
-        response.url = request.url
-        response.status_code = 200
-        response._content = responses.pop(0)
-        response._content_consumed = True
-        return response
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, 'send', send)
+    rejection = json.dumps(
+        {'status': 'error', 'message': REJECTION}).encode()
+    success = json.dumps(
+        {'status': 'success', 'data': {'public_url': URL}}).encode()
+    sent = _install(monkeypatch, [rejection, success], group_ids=(2, 3))
     context = UploadContext(
         cache=StorageCache(tmp_path / 'cache', clock=lambda: 1000.0))
     with trace_scope(mode='cli', images_planned=1,
@@ -573,10 +567,10 @@ def test_boltp_candidate_switch_counts_real_posts(monkeypatch, tmp_path):
     context.close()
 
     assert result.success
-    assert len(sent) == 2
-    assert all(request.method == 'POST' for request in sent)
+    assert [request.method for request in sent] == ['POST', 'GET', 'POST']
     assert summary['upload_post_attempts'] == 2
     assert (summary['group_get_attempts'],
-            summary['profile_get_attempts']) == (0, 0)
-    assert summary['boltp_candidate_switches'] == 1
+            summary['profile_get_attempts']) == (1, 0)
+    assert summary['postupload_recoveries'] == 1
+    assert summary['boltp_candidate_switches'] == 0
     assert summary['slots_succeeded'] == 1

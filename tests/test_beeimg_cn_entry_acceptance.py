@@ -372,9 +372,10 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
                  {'provider': 'boltp', 'token': SYNTHETIC_TOKEN}]
         if expiration is not None:
             hosts[1]['expiration'] = expiration
-        queues = {('boltp', 'upload'): [_success_upload()]}
-        if expiration is not None:
-            queues[('boltp', '/group')] = [_group_reply(expire=60)]
+        queues = {
+            ('boltp', 'upload'): [_success_upload()],
+            ('boltp', '/group'): [_group_reply(ids=(2,), expire=60)],
+        }
     else:
         hosts = [{'provider': 'boltp', 'token': SYNTHETIC_TOKEN,
                   'expiration': '1h'},
@@ -415,8 +416,7 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
     if victim == 'beeimg_cn':
         assert len(transport.requests_for('beeimg_cn', '/group')) == (
             1 if layer == 'http' else 0)
-        assert len(transport.requests_for('boltp', '/group')) == (
-            1 if expiration is not None else 0)
+        assert len(transport.requests_for('boltp', '/group')) == 1
         assert _storage_ids(transport, 'boltp') == [2]
         assert summary['postupload_recoveries'] == 0
     else:

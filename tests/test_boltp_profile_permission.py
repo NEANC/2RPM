@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""验证受限 Boltp 令牌的自动存储链路，所有 HTTP 响应均为合成。"""
+"""验证两站都不请求资料接口，权限仅映射为上传表单，所有 HTTP 响应均为合成。"""
 
 import json
 from pathlib import Path
@@ -13,41 +13,35 @@ from modules.image_host.registry import upload_with_fallback
 from modules.image_host.storage_cache import StorageCache
 
 
-@pytest.mark.parametrize('provider,status,expected_success', [
-    ('boltp', 403, True),
-    ('boltp', 401, True),
-    ('boltp', 500, True),
-    ('beeimg_cn', 403, True),
-])
-def test_profile_permission_does_not_block_boltp_upload(
-        monkeypatch, tmp_path, provider, status, expected_success):
-    """仅 Boltp 资料权限不足时使用组内首个存储；BeeIMG.CN 从不请求资料。"""
+URL = 'https://example.com/synthetic.png'
+STORAGE_ID = 2
+
+
+@pytest.mark.parametrize('provider', ['boltp', 'beeimg_cn'])
+def test_profile_is_never_queried_and_permission_maps_to_form(
+        monkeypatch, tmp_path, provider):
+    """资料接口零请求；组首项直接上传，权限映射为 is_public 表单值。"""
     calls = []
 
     def send(adapter, request, **kwargs):
-        """在适配器边界合成组信息、资料拒绝和上传成功。"""
+        """合成组信息与上传成功，任何资料请求立即失败。"""
         calls.append(request)
         response = requests.Response()
         response.request = request
         response.url = request.url
         response.status_code = 200
-        if provider == 'boltp':
-            assert request.url.endswith('/upload')
-            assert b'name="storage_id"\r\n\r\n2\r\n' in request.body
-            payload = {'status': 'success', 'data': {
-                'public_url': 'https://example.com/synthetic.png'}}
-        elif request.url.endswith('/group'):
+        if request.url.endswith('/group'):
             payload = {'status': 'success', 'data': {
                 'group': {'options': {'file_expire_seconds': 0}},
-                'storages': [{'id': 2}],
+                'storages': [{'id': STORAGE_ID}],
             }}
-        elif request.url.endswith('/user/profile'):
-            response.status_code = status
-            payload = {'status': 'error', 'message': '您的令牌没有权限访问此API'}
-        else:
-            assert request.url.endswith('/upload')
+        elif request.url.endswith('/upload'):
+            assert b'name="storage_id"\r\n\r\n2\r\n' in request.body
+            assert b'name="is_public"\r\n\r\n0\r\n' in request.body
             payload = {'status': 'success', 'data': {
-                'public_url': 'https://example.com/synthetic.png'}}
+                'public_url': URL}}
+        else:
+            pytest.fail('两站都不得请求资料接口')
         response._content = json.dumps(payload).encode('utf-8')
         response._content_consumed = True
         return response
@@ -62,19 +56,15 @@ def test_profile_permission_does_not_block_boltp_upload(
     try:
         result = upload_with_fallback(
             b'synthetic-png', 'synthetic.png',
-            [{'provider': provider, 'token': 'SYNTHETIC_TOKEN'}],
+            [{'provider': provider, 'token': 'SYNTHETIC_TOKEN',
+              'options': {'permission': 0}}],
             context=context)
-        assert result.success is expected_success
-        if provider == 'boltp':
-            assert len(calls) == 1
-            assert calls[0].url.endswith('/upload')
-        else:
-            assert len(calls) == 2
-            assert calls[0].url.endswith('/group')
-            assert calls[1].url.endswith('/upload')
-            assert not result.failures
-        if expected_success:
-            assert result.url == 'https://example.com/synthetic.png'
-            assert not result.failures
     finally:
         context.close()
+
+    assert result.success is True
+    assert result.url == URL
+    assert not result.failures
+    assert [request.url.rsplit('/api/v2', 1)[1] for request in calls] == [
+        '/group', '/upload']
+    assert len(calls) == 2
