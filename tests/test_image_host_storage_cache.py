@@ -526,7 +526,7 @@ def test_loaded_v1_record_reports_not_requested(tmp_path):
 
 
 def test_legacy_beeimg_default_is_normalized(tmp_path):
-    """旧 BeeIMG.CN 记录的账号默认编号在读盘归一为 None，Boltp 保留原值。"""
+    """旧 BeeIMG.CN 记录的账号默认编号在读盘归一为 None，选择只取组首项。"""
     cache = cache_module().StorageCache(tmp_path, clock=lambda: 1000.0)
     bee_identity = cache.identity('beeimg_cn', SECRET)
     boltp_identity = cache.identity('boltp', SECRET)
@@ -543,7 +543,7 @@ def test_legacy_beeimg_default_is_normalized(tmp_path):
     assert bee_loaded.default_storage_id is None
     assert bee_loaded.profile_state == 'not_requested'
     assert boltp_loaded.default_storage_id == 14
-    assert boltp.select_storage(boltp_loaded, False, None).storage_id == 14
+    assert boltp.select_storage(boltp_loaded, False, None).storage_id == 13
     bee_selected = storage_beeimg_cn.select_storage(bee_loaded, False, None)
     assert bee_selected.storage_id == 13
     assert cache.take_warnings() == ()
