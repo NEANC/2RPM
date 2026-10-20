@@ -1257,6 +1257,48 @@ def test_old_rejection_cannot_delete_new_generation(rig, monkeypatch):
     assert ctx.storage_state(second, 0, PROVIDER, SECRET).selection is not None
 
 
+def test_late_rejection_cannot_delete_regenerated_result(rig, monkeypatch):
+    """清除结束当前代次，晚到同代拒绝不得删除重新查询产生的新结果。"""
+    _, ctx, cache, calls, replies, _ = rig
+    deletes = []
+    invalidate = cache.invalidate
+
+    def tracked(identity):
+        """记录真实磁盘失效次数，不替代删除行为。"""
+        deletes.append(identity)
+        return invalidate(identity)
+
+    monkeypatch.setattr(cache, 'invalidate', tracked)
+    first, second = ctx.start_image(), ctx.start_image()
+    for image in (first, second):
+        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
+    assert ctx.begin_recovery(first, 0, PROVIDER, SECRET) is True
+    assert ctx.prepare_storage(first, 0, PROVIDER, SECRET).storage_id == 14
+    identity = ctx._identity(PROVIDER, SECRET)
+    entry = ctx._entries[identity]
+    assert (entry.version, len(calls)) == (1, 1)
+    deletes_before = len(deletes)
+    ctx.invalidate(PROVIDER, SECRET, version=1, disk_only=True)
+    assert entry.version == 2
+    assert entry.metadata is None
+    assert len(deletes) == deletes_before + 1
+    third = ctx.start_image()
+    assert ctx.prepare_storage(third, 0, PROVIDER, SECRET).storage_id == 13
+    assert len(calls) == 2
+    assert entry.version == 2
+    deletes_after = len(deletes)
+    ctx.invalidate(PROVIDER, SECRET, version=1, disk_only=True)
+    identity = cache.identity(PROVIDER, SECRET)
+    entry = ctx._entries[ctx._identity(PROVIDER, SECRET)]
+    assert entry.version == 2
+    assert entry.metadata is not None
+    assert cache.load(identity) is not None
+    assert len(deletes) == deletes_after
+    assert len(calls) == 2
+    ctx.invalidate(PROVIDER, SECRET, version=2, disk_only=True)
+    assert entry.metadata is None
+
+
 def test_local_exclusion_and_slot_budgets(rig):
     """恢复排除只作用于本图本槽，非法手填不消费预算也不写共享纠错事实。"""
     _, ctx, cache, calls, replies, _ = rig

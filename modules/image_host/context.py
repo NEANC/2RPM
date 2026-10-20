@@ -278,6 +278,8 @@ class UploadContext:
         if disk_only:
             if entry.failure is not None:
                 return
+            entry.version += 1
+            # 一次失效结束当前代次，此后重新查询产生的结果属于新代次
             entry.metadata = None
             entry.from_disk = False
             entry.invalidated = True

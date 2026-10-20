@@ -364,13 +364,18 @@ def _upload_chain(image_bytes, filename, hosts, context, image):
                     and context.begin_recovery(
                         image, index, provider, token))
                 if is_v2 and precise_rejection:
-                    state = context.storage_state(
-                        image, index, provider, token)
-                    context.invalidate(
-                        provider, token, version=state.metadata_version,
-                        disk_only=not recovery_allowed)
-                    if not recovery_allowed and transmission == 0:
-                        _skip_fallback('postupload_recovery', 'budget_used')
+                    if transmission == 0:
+                        if not recovery_allowed:
+                            _skip_fallback('postupload_recovery', 'budget_used')
+                    else:
+                        # _V2_PROVIDERS 仅含 beeimg_cn 与 boltp，而 boltp 在
+                        # 循环内提前 break，故 transmission != 0 只会由
+                        # BeeIMG.CN 的第二次精确拒绝到达，disk_only 恒定成立。
+                        state = context.storage_state(
+                            image, index, provider, token)
+                        context.invalidate(
+                            provider, token, version=state.metadata_version,
+                            disk_only=True)
                 if not recovery_allowed:
                     break
         except ImageHostError as error:
