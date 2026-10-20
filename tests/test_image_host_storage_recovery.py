@@ -1271,9 +1271,11 @@ def test_old_rejection_cannot_delete_new_generation(
     assert ctx.storage_state(second, 0, provider, SECRET).selection is not None
 
 
-def test_late_rejection_cannot_delete_regenerated_result(rig, monkeypatch):
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+def test_late_rejection_cannot_delete_regenerated_result(
+        rig_factory, monkeypatch, provider):
     """清除结束当前代次，晚到同代拒绝不得删除重新查询产生的新结果。"""
-    _, ctx, cache, calls, replies, _ = rig
+    _, _, ctx, cache, calls, replies, _, _ = rig_factory(provider)
     deletes = []
     invalidate = cache.invalidate
 
@@ -1285,31 +1287,31 @@ def test_late_rejection_cannot_delete_regenerated_result(rig, monkeypatch):
     monkeypatch.setattr(cache, 'invalidate', tracked)
     first, second = ctx.start_image(), ctx.start_image()
     for image in (first, second):
-        ctx.record_manual_selection(image, 0, PROVIDER, SECRET, 13)
-    assert ctx.begin_recovery(first, 0, PROVIDER, SECRET) is True
-    assert ctx.prepare_storage(first, 0, PROVIDER, SECRET).storage_id == 14
-    identity = ctx._identity(PROVIDER, SECRET)
+        ctx.record_manual_selection(image, 0, provider, SECRET, 13)
+    assert ctx.begin_recovery(first, 0, provider, SECRET) is True
+    assert ctx.prepare_storage(first, 0, provider, SECRET).storage_id == 14
+    identity = ctx._identity(provider, SECRET)
     entry = ctx._entries[identity]
     assert (entry.version, len(calls)) == (1, 1)
     deletes_before = len(deletes)
-    ctx.invalidate(PROVIDER, SECRET, version=1, disk_only=True)
+    ctx.invalidate(provider, SECRET, version=1, disk_only=True)
     assert entry.version == 2
     assert entry.metadata is None
     assert len(deletes) == deletes_before + 1
     third = ctx.start_image()
-    assert ctx.prepare_storage(third, 0, PROVIDER, SECRET).storage_id == 13
+    assert ctx.prepare_storage(third, 0, provider, SECRET).storage_id == 13
     assert len(calls) == 2
     assert entry.version == 2
     deletes_after = len(deletes)
-    ctx.invalidate(PROVIDER, SECRET, version=1, disk_only=True)
-    identity = cache.identity(PROVIDER, SECRET)
-    entry = ctx._entries[ctx._identity(PROVIDER, SECRET)]
+    ctx.invalidate(provider, SECRET, version=1, disk_only=True)
+    identity = cache.identity(provider, SECRET)
+    entry = ctx._entries[ctx._identity(provider, SECRET)]
     assert entry.version == 2
     assert entry.metadata is not None
     assert cache.load(identity) is not None
     assert len(deletes) == deletes_after
     assert len(calls) == 2
-    ctx.invalidate(PROVIDER, SECRET, version=2, disk_only=True)
+    ctx.invalidate(provider, SECRET, version=2, disk_only=True)
     assert entry.metadata is None
 
 
