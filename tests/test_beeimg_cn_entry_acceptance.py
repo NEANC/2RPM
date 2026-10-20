@@ -576,10 +576,13 @@ def test_diagnostics_never_expose_synthetic_secrets(diagnostics, monkeypatch,
 
 
 def test_manual_first_documentation_contract():
-    """三个说明文件都以纯文本逐字包含手填优先的三句固定文案。"""
+    """三处说明同步两站统一的存储选择、恢复与期限边界。"""
     root = Path(__file__).resolve().parents[1]
     for relative in ('modules/config.py', 'README.md', 'docs/开发者文档.md'):
         text = (root / relative).read_text(encoding='utf-8')
-        assert '手填优先' in text, relative
-        assert '自动选择组内首项' in text, relative
-        assert '首次手填不按组上限预裁剪' in text, relative
+        for fragment in ('合法手填', '手填不预查', '精确拒绝仅恢复一次',
+                         '返回顺序', '不构成永久保存保证'):
+            assert fragment in text, (relative, fragment)
+    for relative in ('README.md', 'docs/开发者文档.md'):
+        text = (root / relative).read_text(encoding='utf-8')
+        assert '同一 token 在不同站点' in text, relative

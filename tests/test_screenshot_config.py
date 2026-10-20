@@ -107,12 +107,14 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
     config_module.create_default_config(str(path))
     text = path.read_text(encoding='utf-8')
     for fragment in (
-            'boltp 默认依次尝试存储 2、3；beeimg_cn 手填优先',
-            '自动选择组内首项',
-            '首次手填不按组上限预裁剪',
-            '精确拒绝仅恢复一次；期限 0 不保证永久',
+            'beeimg_cn 与 boltp 规则相同：合法手填（正整数）零查询直传',
+            '0 或非法手填自动选择组内首个未拒绝编号',
+            '组列表按返回顺序去重，不使用默认编号或固定候选',
+            '精确拒绝仅恢复一次，最多两次 POST',
+            '首次手填不预查，自动选择与恢复可用有效磁盘缓存',
+            '期限 0 不构成永久保存保证',
             'expiration 位于图床项顶层，不放入 options',
-            '仅 wmimg / boltp / beeimg_cn 支持期限；未配置沿用站点策略',
+            '仅 wmimg / boltp / beeimg_cn 支持期限',
             '详细规则见 README「图床存储与期限」'):
         assert fragment in text
     hosts = config_module.COMMENTS['push']['screenshot']['image_host']
@@ -193,8 +195,9 @@ def test_readme_documents_runtime_contracts(contracts):
 
 
 @pytest.mark.parametrize('heading, fragments', [
-    ('BeeIMG.cn', ('手填优先', '自动选择组内首项', '首次手填不按组上限预裁剪',
-                  '精确拒绝仅恢复一次', '合法手填', '缓存')),
+    ('BeeIMG.cn', ('合法手填', '零资料查询', '组内首个未被拒绝编号',
+                   '首次手填不预查', '精确拒绝仅恢复一次', '不请求资料',
+                   '缓存')),
     ('6. CLI 与通知行为对照', ('准备上传', '正在上传', '非 TTY',
                            'diagnostics=False', '固定中文', '不额外读取凭证')),
     ('限定标量与 PowerShell 转义', ('push.screenshot.targets[].target',
