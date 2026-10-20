@@ -84,7 +84,10 @@ def _read_payload(response, operation):
 
 
 def _validate_payload(provider, stage, payload):
-    """按站点与阶段延迟导入对应解析器，避免跨站与循环依赖。"""
+    """按阶段延迟导入对应解析器，避免跨站与循环依赖。
+
+    两站组响应使用同一共享结构合同，不再保留只校验期限的特殊路由。
+    """
     if stage == 'upload':
         data = payload.get('data')
         if not isinstance(data, Mapping):
@@ -96,12 +99,9 @@ def _validate_payload(provider, stage, payload):
     elif stage == 'profile':
         from . import storage_boltp
         storage_boltp.parse_profile(payload)
-    elif provider == 'boltp':
-        from . import storage_boltp
-        storage_boltp.parse_retention(payload)
     else:
-        from . import storage_beeimg_cn
-        storage_beeimg_cn.parse_group(payload)
+        from . import storage
+        storage.parse_group(payload)
 
 
 def _send(provider, stage, kwargs):
