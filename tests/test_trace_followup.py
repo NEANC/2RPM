@@ -98,14 +98,15 @@ def test_boltp_retention_reuse_has_query_source(monkeypatch, tmp_path, failed):
 
 
 def test_beeimg_no_same_slot_second_metadata_reuse(monkeypatch, tmp_path):
-    from test_upload_stage_logging import group_reply, profile_reply, run_chain, SUCCESS_UPLOAD
+    from test_upload_stage_logging import group_reply, run_chain, SUCCESS_UPLOAD
 
     run = run_chain(monkeypatch, tmp_path,
                     [{'provider': 'beeimg_cn', 'token': 'synthetic'}], images=(1, 2),
-                    replies=[group_reply(), profile_reply(), SUCCESS_UPLOAD, SUCCESS_UPLOAD])
+                    replies=[group_reply(), SUCCESS_UPLOAD, SUCCESS_UPLOAD])
     reused = [event for event in run.events if event.cache_layer == 'event']
     assert len(reused) == 1
     assert reused[0].image_index == 2
+    assert run.transport.replies == []
 
 
 @pytest.mark.parametrize('source', ['window', 'png'])

@@ -107,10 +107,13 @@ def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
     config_module.create_default_config(str(path))
     text = path.read_text(encoding='utf-8')
     for fragment in (
-            'boltp 默认依次尝试存储 2、3；beeimg_cn 自动选择可用存储',
+            'boltp 默认依次尝试存储 2、3；beeimg_cn 手填优先',
+            '自动选择组内首项',
+            '首次手填不按组上限预裁剪',
+            '精确拒绝仅恢复一次；期限 0 不保证永久',
             'expiration 位于图床项顶层，不放入 options',
             '仅 wmimg / boltp / beeimg_cn 支持期限；未配置沿用站点策略',
-            '不保证服务端实际删除时间；详细规则见 README「图床存储与期限」'):
+            '详细规则见 README「图床存储与期限」'):
         assert fragment in text
     hosts = config_module.COMMENTS['push']['screenshot']['image_host']
     assert len(hosts.splitlines()) <= 13
@@ -168,7 +171,7 @@ def test_readme_push_examples_use_current_layout():
     [('docs/开发者文档.md', '4. 保存期限与缓存', ('expiration',
        'options.expired_at', '不代表永久', '本机本地时间', '绝不延长期限')),
      ('docs/开发者文档.md', '5. 故障转移与请求预算',
-      ('不存在的储存驱动', 'group', 'profile', '共用'))],
+      ('不存在的储存驱动', 'group', 'profile', '精确拒绝仅恢复一次'))],
     [('docs/开发者文档.md', '9. 无效项与兼容边界', ('push_settings',
        '--image-host', 'is_public', '不会自动迁移', '未知选项不等于生效'))],
 ], ids=['notification', 'cli', 'version', 'storage', 'compatibility'])
@@ -190,8 +193,8 @@ def test_readme_documents_runtime_contracts(contracts):
 
 
 @pytest.mark.parametrize('heading, fragments', [
-    ('BeeIMG.cn', ('HTTP 403', '合法手填', 'profile_state', 'forbidden',
-                  'profile_forbidden_invalid_storage', '缓存')),
+    ('BeeIMG.cn', ('手填优先', '自动选择组内首项', '首次手填不按组上限预裁剪',
+                  '精确拒绝仅恢复一次', '合法手填', '缓存')),
     ('6. CLI 与通知行为对照', ('准备上传', '正在上传', '非 TTY',
                            'diagnostics=False', '固定中文', '不额外读取凭证')),
     ('限定标量与 PowerShell 转义', ('push.screenshot.targets[].target',
