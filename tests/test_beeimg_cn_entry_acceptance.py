@@ -518,7 +518,11 @@ def test_cancel_during_recovery_propagates(provider, entry, signal_type,
     assert summary['group_get_attempts'] == len(actual_group_gets) == 1
     assert summary['group_get_cancelled'] == 1
     assert summary['profile_get_attempts'] == 0
+    assert transport.requests_for(provider, '/user/profile') == []
     assert summary['postupload_recoveries'] == 1
+    assert summary['slots_planned'] == 2
+    assert summary['slots_cancelled'] == 1
+    assert summary['slots_skipped'] == 1
 
 
 @pytest.mark.parametrize('diagnostics', [False, True])
