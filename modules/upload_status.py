@@ -252,9 +252,11 @@ class _UploadStatusConsumer:
         return sys.stdout if self._stream is None else self._stream
 
     def _terminal_line(self, event):
-        """构造安全终态行：图标、通道名与按计划量派生的后缀。
+        """构造安全终态行：图标、通道名与合并后的单个后缀括号。
 
         生成的上传终态行已带图标，输出端不能再次加图标；保持自己的格式。
+        后缀先按条件收集片段，再一次性拼接为一个全角括号：通道配置项在前、
+        截图在后，用全角逗号连接，编号与标签之间、逗号两侧都不加空格。
         """
         slot_index = event.slot_index if type(event.slot_index) is int else None
         name = upload_provider_name(event.provider, slot_index=slot_index)
@@ -262,11 +264,14 @@ class _UploadStatusConsumer:
         icon = _ICON_DONE if success else _ICON_FAIL
         action = '上传成功' if success else '上传失败'
         line = f'{icon}  通道 [{name}] {action}'
+        parts = []
+        if slot_index is not None and self._provider_repeats(event.provider):
+            parts.append(f'通道配置项{slot_index + 1}')
         if (type(self._images_planned) is int and self._images_planned > 1
                 and type(event.image_index) is int):
-            line += f'（截图 {event.image_index}）'
-        if slot_index is not None and self._provider_repeats(event.provider):
-            line += f'（配置项 {slot_index + 1}）'
+            parts.append(f'截图{event.image_index}')
+        if parts:
+            line += f'（{"，".join(parts)}）'
         return line
 
     def _provider_repeats(self, provider):
