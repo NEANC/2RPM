@@ -625,6 +625,19 @@ def test_batch_line_carries_required_summary_dimensions(tmp_path):
     assert 'stage_event ' not in text
 
 
+@pytest.mark.parametrize(('kind', 'counter'), [
+    ('preupload_refresh', 'preupload_refreshes'),
+    ('boltp_candidate', 'boltp_candidate_switches'),
+])
+def test_generic_fallback_counters_remain_independent(kind, counter):
+    """新上传链不再产生旧回退，通用计数仍按回退种类独立累计。"""
+    module = trace_module()
+    with module.trace_scope(mode='cli') as trace:
+        with module.trace_fallback(kind, 'switch', reason_code='legacy'):
+            pass
+    assert trace.summary()[counter] == 1
+
+
 @pytest.mark.parametrize('planned', [None, 0])
 def test_planned_counts_preserve_unknown_and_explicit_zero(tmp_path, planned):
     """未知计划量保留 None 且中文摘要显示未知，显式零仍为零。"""

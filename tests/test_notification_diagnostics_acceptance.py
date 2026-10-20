@@ -281,14 +281,13 @@ def test_acceptance_detects_missing_safety_layer(monkeypatch, tmp_path):
                for marker in private_markers(outcome, tmp_path / 'intact'))
 
 
-def test_cli_mixed_results_and_forbidden_profile(monkeypatch, tmp_path, capsys):
-    """命令行混合结果：权限失败零 POST，成功链接保留在结果行且不落盘。"""
+def test_cli_mixed_results_without_profile_query(monkeypatch, tmp_path, capsys):
+    """命令行混合结果：首站 HTTP 失败、备站成功，全程零资料请求。"""
     cli = _cli()
     stage = _stage()
     support = _support()
     transport = stage.Transport(monkeypatch, [
-        stage.group_reply(), stage.profile_reply(status=403),
-        (200, URL.encode())])
+        stage.group_reply(), (503, b''), (200, URL.encode())])
     monkeypatch.setattr(
         cli, 'capture', Mock(return_value=support.capture_result()))
     events, traces = [], []
@@ -318,9 +317,11 @@ def test_cli_mixed_results_and_forbidden_profile(monkeypatch, tmp_path, capsys):
     actual_get_count = len(transport.gets('group')) + len(
         transport.gets('profile'))
     actual_post_count = len(transport.posts)
+    assert transport.gets('profile') == []
+    assert summary['profile_get_attempts'] == 0
     assert actual_get_count == summary['group_get_attempts'] + summary[
         'profile_get_attempts']
-    assert actual_post_count == summary['upload_post_attempts']
+    assert actual_post_count == summary['upload_post_attempts'] == 2
     assert (summary['slots_failed'], summary['slots_succeeded']) == (1, 1)
     assert all(marker not in final_file_text
                for marker in (MARKER, str(tmp_path), successful_url))

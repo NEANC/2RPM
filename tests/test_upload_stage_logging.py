@@ -402,6 +402,24 @@ def test_boltp_zero_uses_group_then_upload(monkeypatch, tmp_path):
     assert run.summary['slots_failed'] == 0
 
 
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('expiration', [None, '1d'])
+def test_manual_expiration_never_queries_group(provider, expiration,
+                                               monkeypatch, tmp_path):
+    """两站合法手填带/不带期限都零 GET，期限只由本地算法生成。"""
+    host = {'provider': provider, 'token': '', 'options': {'storage_id': 2}}
+    if expiration is not None:
+        host['expiration'] = expiration
+    run = run_chain(monkeypatch, tmp_path, [host], replies=[SUCCESS_UPLOAD])
+    assert run.results[0].success
+    assert storage_ids(run.transport) == [2]
+    assert run.transport.gets('group') == []
+    assert run.transport.gets('profile') == []
+    assert (run.summary['group_get_attempts'],
+            run.summary['profile_get_attempts'],
+            run.summary['upload_post_attempts']) == (0, 0, 1)
+
+
 def test_boltp_group_query_is_shared_across_images(monkeypatch, tmp_path):
     """同凭证多图只共享一次组查询，且始终零 profile。"""
     run = run_chain(
@@ -416,6 +434,12 @@ def test_boltp_group_query_is_shared_across_images(monkeypatch, tmp_path):
     assert run.transport.gets('profile') == []
     assert run.summary['upload_post_attempts'] == 2
     assert run.summary['postupload_recoveries'] == 0
+    reuse = [event for event in of_stage(run.events, 'metadata_cache')
+             if event.cache_layer == 'event']
+    assert len(reuse) == 1
+    assert reuse[0].reason_code == 'reused_metadata'
+    query = of_stage(run.events, 'metadata_query')[0]
+    assert reuse[0].source_operation_id == query.operation_id
 
 
 @pytest.mark.parametrize('manual', [2, 3, 5])

@@ -224,13 +224,23 @@ class _RecordingCache(StorageCache):
         return super().invalidate(*args, **kwargs)
 
 
-def _inline_upload_text(expiration='1h'):
-    """构造一项手填 13 的 BeeIMG.CN 内联上传参数。"""
-    text = (f'provider: beeimg_cn, token: "{SYNTHETIC_TOKEN}", '
+def _inline_upload_text(provider='beeimg_cn', expiration='1h'):
+    """构造一项手填 13 的内联上传参数，可指定站点与期限。"""
+    text = (f'provider: {provider}, token: "{SYNTHETIC_TOKEN}", '
             f'options: {{storage_id: {MANUAL_STORAGE_ID}}}')
     if expiration is not None:
         text += f', expiration: {expiration}'
     return text
+
+
+def _form_fields(request):
+    """返回一次 multipart 请求的字段名，保持真实发送顺序。"""
+    content_type = request.headers.get('Content-Type', '')
+    message = BytesParser(policy=email_policy).parsebytes(
+        f'Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n'.encode()
+        + request.body)
+    return [item.get_param('name', header='content-disposition')
+            for item in message.iter_parts()]
 
 
 def _notification_config(image_host, tmp_path):
@@ -270,14 +280,21 @@ def isolate(monkeypatch, tmp_path):
     monkeypatch.setattr(requests.sessions, 'get_netrc_auth', lambda url: None)
 
 
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
+@pytest.mark.parametrize('expiration', [None, '1h'])
 @pytest.mark.parametrize('entry', ['cli', 'notification'])
-def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog):
-    """手填 13 经 CLI 与通知入口均零查询直传，计数与实际调用一致。"""
+def test_cli_and_notification_manual_first(entry, provider, expiration,
+                                           monkeypatch, tmp_path, caplog):
+    """两站手填 13 经 CLI 与通知入口均零查询直传，带/不带期限都单 POST。"""
     transport = _EntryTransport(monkeypatch, {
-        ('beeimg_cn', 'upload'): [_success_upload()],
+        (provider, 'upload'): [_success_upload()],
     })
     image = CaptureResult(_png_bytes(), 'window', SYNTHETIC_WINDOW,
                           2, 2, image_format='png')
+    host = {'provider': provider, 'token': SYNTHETIC_TOKEN,
+            'options': {'storage_id': MANUAL_STORAGE_ID}}
+    if expiration is not None:
+        host['expiration'] = expiration
 
     _RecordingCache.instances.clear()
     monkeypatch.setattr(context_module, 'StorageCache', _RecordingCache)
@@ -287,7 +304,7 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
             monkeypatch.setattr(cli, 'capture', lambda *args, **kwargs: image)
             args = cli.parse_screenshot_args([
                 '--source', f'window:{SYNTHETIC_WINDOW}',
-                '--upload', _inline_upload_text()])
+                '--upload', _inline_upload_text(provider, expiration)])
             outcome = cli.run_screenshot_cli(args, str(tmp_path))
             assert outcome == 0
         else:
@@ -296,10 +313,7 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
             notifier.notify = lambda **fields: _ok_notify_response()
             monkeypatch.setattr(
                 notification_module, 'get_notifier', lambda provider: notifier)
-            config = _notification_config(
-                [{'provider': 'beeimg_cn', 'token': SYNTHETIC_TOKEN,
-                  'options': {'storage_id': MANUAL_STORAGE_ID},
-                  'expiration': '1h'}], tmp_path)
+            config = _notification_config([deepcopy(host)], tmp_path)
             outcome = notification_module.send_notification(
                 config, TEMPLATE_KEY, process_name='demo.exe')
             assert outcome == [('serverchan', True)]
@@ -309,13 +323,15 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
     assert transport.unexpected == []
     assert transport.drained() == {}
     assert len(transport.posts()) == 1
-    assert transport.requests_for('beeimg_cn', '/group') == []
-    assert transport.requests_for('beeimg_cn', '/user/profile') == []
-    assert _storage_ids(transport, 'beeimg_cn') == [MANUAL_STORAGE_ID]
+    assert transport.requests_for(provider, '/group') == []
+    assert transport.requests_for(provider, '/user/profile') == []
+    assert _storage_ids(transport, provider) == [MANUAL_STORAGE_ID]
+    fields = _form_fields(transport.posts()[0])
+    assert ('expired_at' in fields) is (expiration is not None)
     assert [event for event in events if event.stage == 'metadata_cache'] == []
     assert not _cache_root(tmp_path).exists()
     assert _RecordingCache.instances
-    assert [cache.calls for cache in _RecordingCache.instances] == [[]]
+    assert all(cache.calls == [] for cache in _RecordingCache.instances)
     assert summary['upload_post_attempts'] == 1 == len(transport.posts())
     assert summary['upload_post_succeeded'] == 1
     assert summary['upload_post_failed'] == 0
@@ -326,7 +342,11 @@ def test_cli_and_notification_manual_first(entry, monkeypatch, tmp_path, caplog)
 
 
 def _patch_business_failure(monkeypatch, victim):
-    """在业务层把指定站点的查询函数打桩为固定失败。"""
+    """把指定站点的组查询业务入口打桩为固定失败。
+
+    该入口等价于 get_metadata/prepare_storage 实际调用的查询边界，
+    两站共用同一分发路径，无需再额外替换期限查询。
+    """
     module = import_module(f'modules.image_host.storage_{victim}')
 
     def fail_metadata(*args, **kwargs):
@@ -334,12 +354,6 @@ def _patch_business_failure(monkeypatch, victim):
         raise ImageHostError('storage_lookup_failed', '', stage='group')
 
     monkeypatch.setattr(module, 'fetch_metadata', fail_metadata)
-    if victim == 'boltp':
-        def fail_retention(*args, **kwargs):
-            """不查询组端点而直接抛出固定查询失败。"""
-            raise ImageHostError('storage_lookup_failed', '', stage='group')
-
-        monkeypatch.setattr(module, 'fetch_retention', fail_retention)
 
 
 def _run_event(monkeypatch, tmp_path, hosts, queues):
@@ -429,24 +443,27 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
             1 if layer == 'http' else 0)
 
 
-CANCEL_SLOTS = [
-    {'provider': 'beeimg_cn', 'token': SYNTHETIC_TOKEN,
-     'options': {'storage_id': MANUAL_STORAGE_ID}},
-    {'provider': 'catbox'},
-]
+def _cancel_slots(provider):
+    """构造指定站点手填 13 与真实第二槽 catbox 的取消用例配置。"""
+    return [
+        {'provider': provider, 'token': SYNTHETIC_TOKEN,
+         'options': {'storage_id': MANUAL_STORAGE_ID}},
+        {'provider': 'catbox'},
+    ]
 
 
+@pytest.mark.parametrize('provider', ['beeimg_cn', 'boltp'])
 @pytest.mark.parametrize('entry', ['cli', 'notification'])
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
-def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
-                                           tmp_path, caplog):
-    """恢复查询抛出的同一控制信号经真实入口原样传播，且后续槽不再尝试。"""
+def test_cancel_during_recovery_propagates(provider, entry, signal_type,
+                                           monkeypatch, tmp_path, caplog):
+    """恢复查询抛出的同一控制信号经真实入口原样传播，且后续槽零请求。"""
     signal_object = signal_type('synthetic-stop')
     image = CaptureResult(_png_bytes(), 'window', SYNTHETIC_WINDOW,
                           2, 2, image_format='png')
     transport = _EntryTransport(monkeypatch, {
-        ('beeimg_cn', 'upload'): [_rejected_upload()],
-        ('beeimg_cn', '/group'): [signal_object],
+        (provider, 'upload'): [_rejected_upload()],
+        (provider, '/group'): [signal_object],
     })
 
     with caplog.at_level(logging.DEBUG, logger=TRACE_LOGGER):
@@ -456,7 +473,8 @@ def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
                                     lambda *args, **kwargs: image)
                 args = cli.parse_screenshot_args([
                     '--source', f'window:{SYNTHETIC_WINDOW}',
-                    '--upload', _inline_upload_text() + '; provider: catbox'])
+                    '--upload',
+                    _inline_upload_text(provider) + '; provider: catbox'])
                 cli.run_screenshot_cli(args, str(tmp_path))
             else:
                 monkeypatch.setattr(pipeline, 'capture',
@@ -467,22 +485,26 @@ def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
                     notification_module, 'get_notifier',
                     lambda provider: notifier)
                 notification_module.send_notification(
-                    _notification_config(CANCEL_SLOTS, tmp_path),
+                    _notification_config(_cancel_slots(provider), tmp_path),
                     TEMPLATE_KEY, process_name='demo.exe')
 
     events = _stage_events(caplog)
     summary = _batch_summary(caplog)
+    actual_posts = transport.posts()
+    actual_group_gets = transport.requests_for(provider, '/group')
+    catbox_requests = [request for request in transport.sent
+                       if 'catbox' in request.url]
 
     assert caught.value is signal_object
     assert transport.unexpected == []
-    assert len(transport.posts()) == 1
     assert transport.drained() == {}
-    assert not [request for request in transport.sent
-                if 'catbox' in request.url]
-    assert len(transport.requests_for('beeimg_cn', '/group')) == 1
+    assert catbox_requests == []
+    assert len(actual_posts) == 1
+    assert len(actual_group_gets) == 1
 
     slots = [event for event in events if event.stage == 'slot']
-    assert [event.status for event in slots[:2]] == ['started', 'cancelled']
+    current = [event for event in slots if event.slot_index == 0]
+    assert [event.status for event in current] == ['started', 'cancelled']
     skipped = [event for event in slots
                if event.slot_index == 1 and event.status == 'skipped']
     assert len(skipped) == 1
@@ -492,9 +514,11 @@ def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
     assert [(event.action, event.status) for event in queries] == [
         ('group', 'started'), ('group', 'cancelled')]
 
-    assert summary['upload_post_attempts'] == 1
-    assert summary['postupload_recoveries'] == 1
+    assert summary['upload_post_attempts'] == len(actual_posts) == 1
+    assert summary['group_get_attempts'] == len(actual_group_gets) == 1
     assert summary['group_get_cancelled'] == 1
+    assert summary['profile_get_attempts'] == 0
+    assert summary['postupload_recoveries'] == 1
 
 
 @pytest.mark.parametrize('diagnostics', [False, True])
