@@ -707,15 +707,15 @@ def test_recovery_loop_preserves_each_failure(client):
     assert len(client.get_calls) == 1
 
 
-def test_manual_exact_rejection_does_not_warn_replacement(client):
-    """合法手填被精确拒绝属于恢复而非替代，不产生替代告警。"""
+def test_manual_exact_rejection_warns_replacement(client):
+    """合法手填被精确拒绝后改用其他编号，补发一次替代告警。"""
     client.response.body = json.dumps(
         {'status': 'error', 'message': '不存在的储存驱动'})
     client.response.status_code = 200
     client.responses = [client.response, Response()]
     result = upload(options={'storage_id': STORAGE_ID})
     assert result.success
-    assert result.warnings == ()
+    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
     assert len(client.calls) == 2
     assert len(client.get_calls) == 1
 

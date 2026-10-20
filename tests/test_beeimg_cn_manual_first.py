@@ -281,6 +281,7 @@ def test_precise_rejection_recovers_once(monkeypatch, provider):
         ('POST', 'upload', MANUAL_ID), ('GET', 'group', None),
         ('POST', 'upload', SECOND_ID)]
     assert run_result.result.success is True
+    assert run_result.result.warnings.count(REPLACED) == 1
     assert all('expired_at' not in form for form in run_result.forms)
 
 
@@ -312,6 +313,7 @@ def test_absent_manual_does_not_claim_replacement(monkeypatch, provider):
                                 ('POST', 'upload', SECOND_ID)]
     assert run_result.result.success is True
     assert run_result.result.warnings == ()
+    assert REPLACED not in run_result.result.warnings
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
