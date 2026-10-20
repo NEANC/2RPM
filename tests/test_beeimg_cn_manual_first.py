@@ -524,6 +524,7 @@ def test_expired_during_group_has_no_second_post(monkeypatch, provider):
         ('POST', 'upload', MANUAL_ID)]
     assert run_result.result.success is False
     assert run_result.result.failures[-1].code == 'config_error'
+    assert REPLACED not in run_result.result.warnings
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)

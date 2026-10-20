@@ -132,7 +132,8 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
     不查询组或资料、不读写存储缓存；其余情况（未填、非法手填或恢复）
     先按组顺序自动选择，再按元数据组期限计算。transmission 为当前上传
     代次，第二代为恢复，即使 options 仍保留手填也只走自动选择。
-    只要配置过合法手填且最终发送编号不同，恢复阶段也补发替代告警。
+    只要配置过合法手填且最终发送编号不同，恢复阶段也补发替代告警；
+    该告警在期限计算成功后才记录，被期限拦截时不产生。
     """
     manual = options['storage_id'] if 'storage_id' in options else None
     if transmission == 0 and type(manual) is int and manual > 0:
@@ -155,10 +156,6 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
             manual_present=transmission == 0 and 'storage_id' in options)
     finally:
         _add_warnings(warnings, context.take_warnings())
-    if (selected.replaced_manual
-            or (type(manual) is int and manual > 0
-                and selected.storage_id != manual)):
-        _add_warnings(warnings, (_WARN_REPLACED,))
     metadata = context.get_metadata(provider, token, record_reuse=False)
     state = context.storage_state(image, index, provider, token)
     decision = compute_expiration(
@@ -166,6 +163,10 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
         state.previous_deadline, context.now(),
         previous_shortened=state.previous_shortened)
     context.record_expiration(image, index, provider, token, decision)
+    if (selected.replaced_manual
+            or (type(manual) is int and manual > 0
+                and selected.storage_id != manual)):
+        _add_warnings(warnings, (_WARN_REPLACED,))
     if decision.shortened:
         _add_warnings(warnings, (_WARN_SHORTENED,))
     prepared = PreparedV2Options(deepcopy(options),
