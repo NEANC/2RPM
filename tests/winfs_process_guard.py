@@ -44,6 +44,7 @@ def run_isolated(
             sys.executable, '-B', '-m', 'pytest', node, '-q', '-rs',
             '-o', 'addopts=', '-p', 'no:cacheprovider',
             f'--basetemp={Path(folder) / "tmp"}', f'--junitxml={report}',
+            f'--confcutdir={Path(request.node.path).resolve().parent}',
         ]
         with subprocess.Popen(
             command, cwd=PROJECT_ROOT, env=env,

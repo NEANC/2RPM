@@ -117,3 +117,21 @@ def test_only_requested_node_runs_without_recursion(isolation, tmp_path, monkeyp
     monkeypatch.setenv('PYTEST_ADDOPTS', 'not_a_real_test.py')
     assert isolation.run_isolated(request, tmp_path, timeout=15)
     assert not list(tmp_path.glob('winfs-isolated-*'))
+
+
+def test_child_pytest_confcutdir_is_probe_parent(isolation, tmp_path, monkeypatch):
+    """子 pytest 必须把 conftest 扫描限制在探针文件所在目录。"""
+    request = make_probe(tmp_path, 'assert True')
+    commands = []
+
+    def capture_command(*args, **kwargs):
+        """记录启动参数后立即中止，避免真正跑完整个探针。"""
+        commands.append(list(args[0]))
+        raise LookupError('captured command')
+
+    monkeypatch.setattr(isolation.subprocess, 'Popen', capture_command)
+    with pytest.raises(LookupError, match='captured command'):
+        isolation.run_isolated(request, tmp_path, timeout=15)
+    assert len(commands) == 1
+    confcutdirs = [item for item in commands[0] if item.startswith('--confcutdir=')]
+    assert confcutdirs == [f'--confcutdir={tmp_path.resolve()}']
