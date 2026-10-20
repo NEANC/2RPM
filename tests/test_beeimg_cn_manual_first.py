@@ -551,6 +551,52 @@ def test_failed_auto_does_not_block_manual_upload(monkeypatch, provider):
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
+def test_auto_failure_then_rejected_manual_recovers_once(monkeypatch, provider):
+    """自动查询失败后手填直传，被拒只重查一次并替代成功。"""
+    moment = [STARTED_AT]
+    cache = CacheSpy()
+    context = UploadContext(cache=cache, clock=lambda: moment[0])
+    invalidations = []
+    original = UploadContext.invalidate
+
+    def capture(self, provider_name, token, *, version=None, disk_only=False):
+        """记录恢复失效使用的实际发送代次与 disk_only 语义。"""
+        invalidations.append((version, disk_only))
+        return original(self, provider_name, token, version=version,
+                        disk_only=disk_only)
+
+    monkeypatch.setattr(UploadContext, 'invalidate', capture)
+    try:
+        auto = run(monkeypatch, provider,
+                   [{'provider': provider, 'token': 'SYNTHETIC'}],
+                   [(503, b'')], clock=moment, context=context)
+        manual = run(monkeypatch, provider, [{
+            'provider': provider, 'token': 'SYNTHETIC',
+            'options': {'storage_id': MANUAL_ID}}],
+            [REJECTED_UPLOAD, group_reply(), SUCCESS_UPLOAD],
+            clock=moment, context=context)
+    finally:
+        context.close()
+    assert auto.calls == [('GET', 'group', None)]
+    assert auto.result.success is False
+    assert auto.result.failures[0].code == 'http_failed'
+    assert manual.calls == [
+        ('POST', 'upload', MANUAL_ID), ('GET', 'group', None),
+        ('POST', 'upload', SECOND_ID)]
+    assert [call[0] for call in auto.calls + manual.calls] == [
+        'GET', 'POST', 'GET', 'POST']
+    assert [call for call in auto.calls + manual.calls
+            if call[0] == 'POST'] == [
+        ('POST', 'upload', MANUAL_ID), ('POST', 'upload', SECOND_ID)]
+    assert all(call[1] != 'profile' for call in auto.calls + manual.calls)
+    assert manual.result.success is True
+    assert manual.result.url == URL
+    assert manual.result.warnings.count(REPLACED) == 1
+    assert invalidations == [(1, False)]
+    assert cache.calls == ['identity', 'load', 'invalidate', 'save']
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
 def test_rejected_manual_allows_next_manual_attempt(monkeypatch, provider):
     """手填被拒绝并完成恢复后，同事件下一次合法手填仍直接发送。"""
     moment = [STARTED_AT]
