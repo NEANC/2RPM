@@ -321,8 +321,8 @@ def test_cli_feedback_stream_matrix(
     assert '\r' not in out.text() and '\x1b' not in out.text()
     assert URL not in err.text() and saved_path not in err.text()
     assert '正在上传截图' in err.text()
-    assert '✔️ 通道 [Catbox] 上传成功' in err.text()
-    assert '✔️ 通道 [WMImg] 上传成功' in err.text()
+    assert '✔️  通道 [Catbox] 上传成功' in err.text()
+    assert '✔️  通道 [WMImg] 上传成功' in err.text()
     if stderr_tty:
         assert '\x1b' in err.text() and '\r' in err.text()
     else:

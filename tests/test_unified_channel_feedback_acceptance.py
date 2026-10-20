@@ -451,8 +451,8 @@ def test_cli_stream_stats_and_security(monkeypatch, tmp_path, capsys):
     assert saved_path in captured.out
     assert saved_path not in captured.err
     assert '正在上传截图' in captured.err
-    assert '✔️ 通道 [Catbox] 上传成功' in captured.err
-    assert '❌ 通道 [WMImg] 上传失败' in captured.err
+    assert '✔️  通道 [Catbox] 上传成功' in captured.err
+    assert '❌  通道 [WMImg] 上传失败' in captured.err
     assert EXCEPTION_SECRET not in captured.out
     assert HOST_SECRET not in captured.out + captured.err + file_text
     assert EXCEPTION_SECRET not in captured.err + file_text
@@ -477,7 +477,7 @@ def test_control_exit_across_trace_and_ui(monkeypatch, tmp_path, signal_type):
             registry.UPLOADERS, provider,
             lambda image, filename, token, options: URL)
     signal = signal_type('stop-ui')
-    stream = ControlStream(signal, '✔️ 通道 [Catbox] 上传成功')
+    stream = ControlStream(signal, '✔️  通道 [Catbox] 上传成功')
     real_make = pipeline.make_status_consumer
 
     def make(**kwargs):
@@ -526,7 +526,7 @@ def test_control_exit_across_trace_and_ui(monkeypatch, tmp_path, signal_type):
     ]
     keys = [(image, slot) for image, slot, _, _ in terminal]
     assert len(keys) == len(set(keys))
-    assert stream.text().count('✔️ 通道 [Catbox] 上传成功') == 1
+    assert stream.text().count('✔️  通道 [Catbox] 上传成功') == 1
     assert '程序已退出' not in stream.text()
 
 
