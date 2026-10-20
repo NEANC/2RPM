@@ -899,13 +899,6 @@ def _group_response(ids=(13, 14), retention=None):
     }}
 
 
-def _profile_response(default=14):
-    """构造账号默认存储合成响应。"""
-    return 200, {'status': 'success', 'data': {
-        'options': {'default_storage_id': default},
-    }}
-
-
 def _upload_response(url=URL):
     """提供包含完整签名链接的业务成功响应。"""
     return 200, {'status': 'success', 'message': SECRET, 'data': {
@@ -932,8 +925,7 @@ def test_http_batch_reuses_context_queries_and_channel_retries(
 
         monkeypatch.setattr(StorageCache, '_write_atomic', denied)
     state['replies'] = [
-        _group_response(), _profile_response(),
-        _upload_response(), _upload_response(),
+        _group_response(), _upload_response(), _upload_response(),
     ]
     seen = Counter()
 
@@ -954,10 +946,10 @@ def test_http_batch_reuses_context_queries_and_channel_retries(
     assert notifier.notify.call_count == 6
     assert len(state['contexts']) == 1
     assert [request.method for request in state['requests']] == [
-        'GET', 'GET', 'POST', 'POST']
+        'GET', 'POST', 'POST']
     assert [request.url.split('/api/v2')[1]
             for request in state['requests']] == [
-                '/group', '/user/profile', '/upload', '/upload']
+                '/group', '/upload', '/upload']
     assert len(state['images']) == 2
     assert all(context is state['contexts'][0]
                for context, _ in state['images'])
@@ -981,7 +973,7 @@ def test_http_next_event_uses_new_context_and_only_metadata_disk_cache(
     state = notification_http
     sent, _, _ = _install_onepush(monkeypatch)
     config = _http_config()
-    state['replies'] = [_group_response(), _profile_response(),
+    state['replies'] = [_group_response(),
                         _upload_response(), _upload_response()]
     assert notif.send_notification(config, 'on_end', process_name='demo')
     state['clock'][0] += 10
@@ -992,7 +984,10 @@ def test_http_next_event_uses_new_context_and_only_metadata_disk_cache(
     assert len(state['contexts']) == 2
     assert state['contexts'][0] is not state['contexts'][1]
     assert [request.method for request in state['requests']] == [
-        'GET', 'GET', 'POST', 'POST', 'POST', 'POST']
+        'GET', 'POST', 'POST', 'POST', 'POST']
+    assert [request.url.split('/api/v2')[1]
+            for request in state['requests']] == [
+                '/group', '/upload', '/upload', '/upload', '/upload']
     assert next_url not in sent[0][1]
     assert sent[1][1].count(next_url) == 2
     assert [image.started_at for _, image in state['images']] == [
@@ -1007,11 +1002,11 @@ def test_http_registry_warnings_reach_notification_once(
     reply = (_upload_response() if success else
              (200, {'status': 'error', 'message': SECRET}))
     state['replies'] = [
-        _group_response(retention=5), _profile_response(), reply, reply,
+        _group_response(retention=5), reply, reply,
     ]
     config = _http_config()
     config['push']['screenshot']['image_host'][0].update(
-        expiration='20s', options={'storage_id': 99})
+        expiration='20s', options={'storage_id': 0})
     sent, _, _ = _install_onepush(monkeypatch)
     with caplog.at_level(logging.DEBUG):
         assert notif.send_notification(config, 'on_end', process_name='demo')
@@ -1024,7 +1019,7 @@ def test_http_registry_warnings_reach_notification_once(
         assert caplog.text.count(warning) == 2
     assert ('截图上传失败：通道 BeeIMG.CN 图床拒绝上传。' in body) is not success
     assert (URL in body) is success
-    assert len(state['requests']) == 4
+    assert len(state['requests']) == 3
     assert SECRET not in str(sent) + caplog.text
     assert URL not in caplog.text
 
@@ -1038,8 +1033,8 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     state = notification_http
     rejected = (200, {'status': 'error', 'message': SECRET})
     state['replies'] = [
-        _group_response(), _profile_response(), rejected,
-        _upload_response(), rejected, _upload_response(),
+        _group_response(), rejected, _upload_response(),
+        rejected, _upload_response(),
     ]
     config = _http_config()
     config['push']['screenshot']['image_host'].append(
@@ -1053,10 +1048,10 @@ def test_http_fallback_isolates_identity_and_preserves_success(
     assert len(state['contexts']) == 1
     requests_seen = state['requests']
     assert [request.method for request in requests_seen] == [
-        'GET', 'GET', 'POST', 'POST', 'POST', 'POST']
+        'GET', 'POST', 'POST', 'POST', 'POST']
     assert requests_seen[0].headers['Authorization'] == 'Bearer ' + SECRET
-    assert requests_seen[3].headers['Authorization'] == 'Bearer ' + token
-    assert ('beeimg.cn' in requests_seen[3].url) is (provider == 'beeimg_cn')
+    assert requests_seen[2].headers['Authorization'] == 'Bearer ' + token
+    assert ('beeimg.cn' in requests_seen[2].url) is (provider == 'beeimg_cn')
     for title, body in sent:
         assert title.count(URL) == body.count(URL) == 2
         assert '截图上传失败' not in title + body
@@ -1099,10 +1094,8 @@ def test_http_recovery_budget_and_deadline_are_per_image(
         return _upload_response()
 
     state['replies'] = [
-        _group_response(), _profile_response(), rejected,
-        _group_response((21,)), _profile_response(21), next_image,
-        rejected, _group_response((22,)), _profile_response(22),
-        _upload_response(),
+        _group_response(), rejected, _group_response(), next_image,
+        rejected, _group_response(), _upload_response(),
     ]
     config = _http_config()
     config['push']['screenshot']['image_host'][0]['expiration'] = '30s'
@@ -1111,7 +1104,9 @@ def test_http_recovery_budget_and_deadline_are_per_image(
         assert notif.send_notification(config, 'on_end', process_name='demo')
     posts = [request for request in state['requests'] if request.method == 'POST']
     assert len(posts) == 4
-    assert len(state['requests']) == 10
+    assert [request.method for request in state['requests']] == [
+        'GET', 'POST', 'GET', 'POST', 'POST', 'GET', 'POST']
+    assert len(state['requests']) == 7
     assert len(state['contexts']) == 1
     assert [image.started_at for _, image in state['images']] == [
         1700000000.0, 1700000010.0]
@@ -1158,8 +1153,7 @@ def test_http_failure_categories_visible_without_server_diagnostics(
             'business': (200, {'status': 'error', 'message': SECRET}),
             'response': (200, {'message': SECRET}),
         }
-        state['replies'] = [_group_response(), _profile_response(),
-                            replies[case], replies[case]]
+        state['replies'] = [_group_response(), replies[case], replies[case]]
     sent, _, _ = _install_onepush(monkeypatch)
     with caplog.at_level(logging.DEBUG):
         result = notif.send_notification(config, 'on_end', process_name='demo')
@@ -1185,7 +1179,7 @@ def test_http_control_signal_closes_after_diagnostic_scope(
     """真实通知中控制信号原对象传播，批次关闭晚于内层诊断作用域退出。"""
     state = notification_http
     signal = signal_type(SECRET)
-    state['replies'] = [_group_response(), _profile_response(), _upload_response()]
+    state['replies'] = [_group_response(), _upload_response()]
     if stage == 'capture':
         state['capture'].side_effect = [
             CaptureResult(b'png-first', 'window', '窗口', 2, 3), signal]
@@ -1254,7 +1248,7 @@ def test_notification_early_paths_have_no_context_or_cache(
 def test_notification_keeps_backup_credentials_lazy(notification_http, monkeypatch):
     """首站成功时不提前解析备用项凭证，双图复用首站凭证快照。"""
     state = notification_http
-    state['replies'] = [_group_response(), _profile_response(),
+    state['replies'] = [_group_response(),
                         _upload_response(), _upload_response()]
     config = _http_config()
     config['push']['screenshot']['image_host'].append({
@@ -1280,7 +1274,7 @@ def test_notification_keeps_backup_credentials_lazy(notification_http, monkeypat
     assert notif.send_notification(config, 'on_end', process_name='demo')
     assert snapshots and all(SECRET in snapshot for snapshot in snapshots)
     assert values == [SECRET]
-    assert len(state['requests']) == 4
+    assert len(state['requests']) == 3
 
 
 @pytest.mark.parametrize('ordinary', [False, True])
@@ -1554,7 +1548,7 @@ def test_http_screenshot_notification_failures_reuse_batch_safely(
         notification_http, monkeypatch, caplog, recover, case):
     """真实编排与 HTTP 上传后发送失败，重试复用批次且不泄露业务原文。"""
     state = notification_http
-    state['replies'] = [_group_response(), _profile_response(),
+    state['replies'] = [_group_response(),
                         _upload_response(), _upload_response()]
     attempts = Counter()
 
@@ -1592,7 +1586,10 @@ def test_http_screenshot_notification_failures_reuse_batch_safely(
     assert all(call.args == (2,) for call in sleep.call_args_list)
     assert state['capture'].call_count == 2
     assert [request.method for request in state['requests']] == [
-        'GET', 'GET', 'POST', 'POST']
+        'GET', 'POST', 'POST']
+    assert [request.url.split('/api/v2')[1]
+            for request in state['requests']] == [
+                '/group', '/upload', '/upload']
     assert len(state['contexts']) == 1
     assert not state['replies']
     assert len(set(sent)) == 1
@@ -1781,7 +1778,7 @@ def test_parallel_notifications_keep_secret_scopes_separate(monkeypatch):
 def test_disabled_diagnostics_keeps_lazy_backup_token(notification_http, monkeypatch):
     """首站成功时不求值备用环境引用，仅注册真正解析的凭证且退出后释放。"""
     state = notification_http
-    state['replies'] = [_group_response(), _profile_response(),
+    state['replies'] = [_group_response(),
                         _upload_response(), _upload_response()]
     config = _http_config()
     config['push']['screenshot']['image_host'].append({
@@ -1804,7 +1801,7 @@ def test_disabled_diagnostics_keeps_lazy_backup_token(notification_http, monkeyp
     assert notif.send_notification(config, 'on_end', process_name='demo')
     assert resolved == [SECRET]
     assert backup_environment_reads == 0
-    assert len(state['requests']) == 4
+    assert len(state['requests']) == 3
     assert import_module('modules.log_safety').secret_snapshot() == ()
 
 
@@ -1812,7 +1809,7 @@ def test_channel_retries_display_upload_status_once(
         notification_http, monkeypatch, capsys):
     """同一截图批次的终端状态不随通知通道数量与重试重复输出。"""
     state = notification_http
-    state['replies'] = [_group_response(), _profile_response(),
+    state['replies'] = [_group_response(),
                         _upload_response(), _upload_response()]
     seen = Counter()
 
