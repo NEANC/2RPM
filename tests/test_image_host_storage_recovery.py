@@ -2154,6 +2154,32 @@ def test_registry_recovery_budget_exhausted_after_second_rejection(
     assert state['context'].begin_recovery(image, 0, PROVIDER, SECRET) is False
 
 
+def test_registry_second_rejection_uses_sent_version(
+        integration, monkeypatch):
+    """第二次精确拒绝只以实际发送代次调用磁盘失效，不改写为无条件清除。"""
+    state = integration
+    state['replies'] = [group_reply(), rejection_reply(),
+                        group_reply((21,)), rejection_reply()]
+    context = state['context']
+    calls = []
+    real = context.invalidate
+
+    def spy(provider, token, *, version=None, disk_only=False):
+        """记录真实失效调用的形参后委托实现，不替代失效行为。"""
+        calls.append((version, disk_only))
+        return real(provider, token, version=version, disk_only=disk_only)
+
+    monkeypatch.setattr(context, 'invalidate', spy)
+    result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET}])
+    entry = context._entries[context._identity(PROVIDER, SECRET)]
+
+    assert not result.success
+    assert calls[-1][1] is True                 # 最后一次是第二次拒绝的磁盘失效
+    assert calls[-1][0] == 2                    # 实测：第二次发送处于事件代次 2
+    assert calls[-1][0] == entry.version - 1    # 等于发送当时所处的代次
+    assert sum(1 for _, disk_only in calls if disk_only) == 1
+
+
 def test_registry_recovery_records_two_real_attempts(integration):
     """精确拒绝后的恢复记两次真实尝试与一次回退，槽位只有一次成功。"""
     from modules.operation_trace import trace_item

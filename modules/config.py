@@ -236,7 +236,7 @@ COMMENTS = {
                 "指组 file_expire_seconds 为 0/None 只表示不做本地裁剪；"
                 "boltp 遇精确拒绝按 2、3 候选继续，最多三个候选，"
                 "不刷新存储元数据；"
-                "也不保证服务端实际删除时间；"
+                "任何期限值都不保证服务端实际删除时间；"
                 "详细规则见 README「图床存储与期限」\n"
                 "- 示例: {provider: beeimg_cn, token: '${BEEIMG_CN_TOKEN}', "
                 "expiration: 7d}\n"
