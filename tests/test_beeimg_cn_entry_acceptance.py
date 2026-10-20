@@ -429,41 +429,68 @@ def test_cross_provider_event_isolation(victim, layer, expiration,
             1 if layer == 'http' else 0)
 
 
+CANCEL_SLOTS = [
+    {'provider': 'beeimg_cn', 'token': SYNTHETIC_TOKEN,
+     'options': {'storage_id': MANUAL_STORAGE_ID}},
+    {'provider': 'catbox'},
+]
+
+
+@pytest.mark.parametrize('entry', ['cli', 'notification'])
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
-def test_cancel_during_recovery_propagates(signal_type, monkeypatch, tmp_path):
-    """恢复查询抛出的同一控制信号原样传播，且不产生第二次 POST。"""
+def test_cancel_during_recovery_propagates(entry, signal_type, monkeypatch,
+                                           tmp_path, caplog):
+    """恢复查询抛出的同一控制信号经真实入口原样传播，且后续槽不再尝试。"""
     signal_object = signal_type('synthetic-stop')
-    hosts = [{'provider': 'beeimg_cn', 'token': SYNTHETIC_TOKEN,
-              'options': {'storage_id': MANUAL_STORAGE_ID}}]
+    image = CaptureResult(_png_bytes(), 'window', SYNTHETIC_WINDOW,
+                          2, 2, image_format='png')
     transport = _EntryTransport(monkeypatch, {
         ('beeimg_cn', 'upload'): [_rejected_upload()],
         ('beeimg_cn', '/group'): [signal_object],
     })
-    registry = import_module('modules.image_host.registry')
-    cache = StorageCache(tmp_path / 'cache', clock=lambda: 1000.0)
-    context = UploadContext(cache=cache, clock=lambda: 1000.0,
-                            resolved_tokens={0: SYNTHETIC_TOKEN})
-    events = []
-    with pytest.raises(signal_type) as caught:
-        with trace_scope(mode='cli', images_planned=1, slots_planned=1,
-                         on_status=events.append) as trace:
-            with trace_item(image_index=1):
-                registry.upload_with_fallback(
-                    b'image', 'image.png', hosts, context=context)
-    summary = trace.summary()
-    context.close()
+
+    with caplog.at_level(logging.DEBUG, logger=TRACE_LOGGER):
+        with pytest.raises(signal_type) as caught:
+            if entry == 'cli':
+                monkeypatch.setattr(cli, 'capture',
+                                    lambda *args, **kwargs: image)
+                args = cli.parse_screenshot_args([
+                    '--source', f'window:{SYNTHETIC_WINDOW}',
+                    '--upload', _inline_upload_text() + '; provider: catbox'])
+                cli.run_screenshot_cli(args, str(tmp_path))
+            else:
+                monkeypatch.setattr(pipeline, 'capture',
+                                    lambda *args, **kwargs: image)
+                notifier = type('Notifier', (), {})()
+                notifier.notify = lambda **fields: _ok_notify_response()
+                monkeypatch.setattr(
+                    notification_module, 'get_notifier',
+                    lambda provider: notifier)
+                notification_module.send_notification(
+                    _notification_config(CANCEL_SLOTS, tmp_path),
+                    TEMPLATE_KEY, process_name='demo.exe')
+
+    events = _stage_events(caplog)
+    summary = _batch_summary(caplog)
 
     assert caught.value is signal_object
+    assert transport.unexpected == []
     assert len(transport.posts()) == 1
-    assert len(transport.requests_for('beeimg_cn', '/group')) == 1
     assert transport.drained() == {}
+    assert not [request for request in transport.sent
+                if 'catbox' in request.url]
+    assert len(transport.requests_for('beeimg_cn', '/group')) == 1
+
+    slots = [event for event in events if event.stage == 'slot']
+    assert [event.status for event in slots[:2]] == ['started', 'cancelled']
+    skipped = [event for event in slots
+               if event.slot_index == 1 and event.status == 'skipped']
+    assert len(skipped) == 1
+    assert skipped[0].reason_code == 'batch_cancelled'
+
     assert summary['upload_post_attempts'] == 1
     assert summary['postupload_recoveries'] == 1
     assert summary['group_get_cancelled'] == 1
-    slots = [event for event in events if event.stage == 'slot']
-    assert [event.status for event in slots] == ['started', 'cancelled']
-    assert [event.status for event in events
-            if event.stage == 'metadata_query'] == ['started', 'cancelled']
 
 
 @pytest.mark.parametrize('diagnostics', [False, True])
