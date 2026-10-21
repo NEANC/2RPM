@@ -119,7 +119,7 @@ def test_reason_identity_order_and_success_images():
     )
     assert module.build_screenshot_fragments(batch) == (
         ('one', 'text', '截图上传失败：通道 BeeIMG.CN 图床网络传输失败。'),
-        ('one', 'text', '截图上传失败：通道 BeeIMG.CN 储存驱动不可用。'),
+        ('one', 'text', '截图上传失败：通道 BeeIMG.CN storage_id 不可用。'),
         ('image', 'image', image_markdown),
         ('three', 'text', '截图上传失败：通道 BeeIMG.CN 图床上传失败。'),
         ('four', 'text', '截图上传失败：通道 Catbox 图床网络传输失败。'),
@@ -215,7 +215,7 @@ def test_aggregate_exclusion_and_legacy_fallback():
          detail('three', 'upload', 'beeimg_cn', 'storage_unavailable')))
     assert module.build_screenshot_fragments(deduped) == (
         ('one', 'text', sentence),
-        ('three', 'text', '截图上传失败：通道 BeeIMG.CN 储存驱动不可用。'))
+        ('three', 'text', '截图上传失败：通道 BeeIMG.CN storage_id 不可用。'))
 
     legacy = module.ScreenshotBatch({'screenshot': '旧聚合'}, (), ())
     assert module.build_screenshot_fragments(legacy) == (

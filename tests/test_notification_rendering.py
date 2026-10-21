@@ -856,7 +856,7 @@ def test_body_without_reference_stays_verbatim():
 
 
 _REASON_A = '截图上传失败：通道 BeeIMG.CN 图床网络传输失败。'
-_REASON_B = '截图上传失败：通道 Catbox 储存驱动不可用。'
+_REASON_B = '截图上传失败：通道 Catbox storage_id 不可用。'
 
 
 def test_failure_fragments_all_render_modes():

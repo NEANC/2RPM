@@ -40,6 +40,11 @@ _CAPTURE_REASON_OVERRIDES = {
     'dpi_failed': '无法设置局部线程 DPI',
     'invalid_serial': 'ADB 设备标识无效',
 }
+# 通知反馈层对 storage 失败使用 storage_id 语义，后端与 CLI 不变
+_UPLOAD_REASON_OVERRIDES = {
+    'storage_lookup_failed': 'storage_id 查询失败',
+    'storage_unavailable': 'storage_id 不可用',
+}
 _BEEIMG_CN_PREFIX = 'BeeIMG.cn '
 _STORAGE_SELECTION_NOTICES = {
     'invalid_manual': (
@@ -145,6 +150,7 @@ def safe_reason_text(category: str, code: object) -> str:
     返回:
         白名单内的固定原因；capture 未知为 ``截图失败``，
         config/upload 未知回落到本类别兜底原因。
+        storage 查询与不可用使用 ``storage_id`` 语义；
         upload 权限原因去掉旧 ``BeeIMG.cn`` 前缀；
         BeeIMG.CN 完整权限句由 :func:`format_failure_sentence` 负责。
     """
@@ -159,7 +165,9 @@ def safe_reason_text(category: str, code: object) -> str:
         if fixed is not None:
             return fixed
         return ImageHostError(canonical, '').message
-    reason = ImageHostError(canonical, '').message
+    reason = _UPLOAD_REASON_OVERRIDES.get(canonical)
+    if reason is None:
+        reason = ImageHostError(canonical, '').message
     if reason.startswith(_BEEIMG_CN_PREFIX):
         return reason[len(_BEEIMG_CN_PREFIX):]
     return reason

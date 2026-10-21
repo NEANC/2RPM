@@ -18,7 +18,6 @@ import pytest
 import requests
 
 from modules.image_host.context import UploadContext
-from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.core import UploadResult
 from modules.screenshot.models import CaptureError
@@ -567,11 +566,16 @@ def test_markdown_url_escapes_only_structure_and_preserves_signature(
     assert not caplog.records
 
 
-@pytest.mark.parametrize('code', [
-    'transport_failed', 'http_failed', 'business_rejected', 'invalid_response',
-    'storage_lookup_failed', 'storage_unavailable',
+@pytest.mark.parametrize(('code', 'reason'), [
+    ('transport_failed', '图床网络传输失败'),
+    ('http_failed', '图床 HTTP 请求失败'),
+    ('business_rejected', '图床拒绝上传'),
+    ('invalid_response', '图床响应无效'),
+    ('storage_lookup_failed', 'storage_id 查询失败'),
+    ('storage_unavailable', 'storage_id 不可用'),
 ])
-def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
+def test_upload_failure_remaps_untrusted_fields(
+        monkeypatch, caplog, code, reason):
     """失败仅按核心认可代码重建摘要，不信任标签、消息或诊断。"""
     module, _, upload = boundaries(monkeypatch)
     upload.return_value = UploadResult(False, None, None, (SECRET,), (
@@ -579,10 +583,10 @@ def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
         UploadFailure(SECRET, code, SECRET, diagnostic=SECRET),
     ))
     batch = module.prepare_screenshots(section([target()]), True, ())
-    expected = '截图上传失败：' + ImageHostError(code, '').message
+    expected = '截图上传失败：' + reason
     assert batch.values['screenshot_1'] == expected
     assert batch.values['screenshot'] == (
-        '截图上传失败：通道 未知图床 ' + ImageHostError(code, '').message + '。')
+        '截图上传失败：通道 未知图床 ' + reason + '。')
     assert SECRET not in repr(batch) + caplog.text
     business = [record for record in caplog.records
                 if record.name == module.LOGGER.name]

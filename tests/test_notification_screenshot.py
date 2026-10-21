@@ -1132,8 +1132,8 @@ def test_http_recovery_budget_and_deadline_are_per_image(
     ('http', '图床 HTTP 请求失败', 2),
     ('business', '图床拒绝上传', 2),
     ('response', '图床响应无效', 2),
-    ('lookup', '储存驱动查询失败', 0),
-    ('unavailable', '储存驱动不可用', 0),
+    ('lookup', 'storage_id 查询失败', 0),
+    ('unavailable', 'storage_id 不可用', 0),
     ('config', '图床配置无效', 0),
 ])
 def test_http_failure_categories_visible_without_server_diagnostics(

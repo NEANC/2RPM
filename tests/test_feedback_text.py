@@ -12,6 +12,7 @@ from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
 from modules.feedback_text import safe_reason_text
 from modules.feedback_text import upload_provider_name
+from modules.image_host.core import ImageHostError
 from modules.screenshot.models import CaptureError
 from modules.screenshot.models import capture_failure_message
 
@@ -250,6 +251,26 @@ def test_notification_capture_reason_overrides(code, reason):
     """通知反馈层对两个捕获码使用更准确的固定原因。"""
     assert safe_reason_text('capture', code) == reason
     assert format_failure_sentence('capture', '', code) == '截图失败：' + reason
+
+
+NOTIFY_STORAGE_REASONS = (
+    ('storage_lookup_failed', 'storage_id 查询失败'),
+    ('storage_unavailable', 'storage_id 不可用'),
+)
+
+
+@pytest.mark.parametrize(('code', 'reason'), NOTIFY_STORAGE_REASONS)
+def test_notification_storage_reason_overrides(code, reason):
+    """通知反馈层用 storage_id 语义展示两类 storage 失败。"""
+    assert safe_reason_text('upload', code) == reason
+    assert format_failure_sentence('upload', 'catbox', code) == (
+        '截图上传失败：通道 Catbox ' + reason + '。')
+
+
+def test_storage_override_does_not_change_backend_mapping():
+    """后端与 CLI 仍使用原有 storage 文案，覆盖只作用于通知反馈层。"""
+    assert ImageHostError('storage_lookup_failed', '').message == '储存驱动查询失败'
+    assert ImageHostError('storage_unavailable', '').message == '储存驱动不可用'
 
 
 def test_notification_override_does_not_change_backend_mapping():
