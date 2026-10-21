@@ -160,7 +160,7 @@ def test_readme_push_examples_use_current_layout():
 
 @pytest.mark.parametrize('contracts', [
     [('README.md', '通知与推送', ('push.templates', '包含首次发送', 'on_external')),
-     ('README.md', '截图变量', ('模板不会自动附带截图变量', '自行写入 `content`')),
+     ('README.md', '截图变量', ('模板不会自动附带截图变量', '自行写入 `title` 或 `content`')),
      ('README.md', '快速开始', ('push.push_channel_settings.channels',))],
     [('README.md', '截图 CLI', ('--output', '--upload', '全部图床',
        'screenshot_YYYYMMDD_0000.jpg', '退出码', '不覆盖',

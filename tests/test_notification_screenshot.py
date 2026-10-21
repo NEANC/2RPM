@@ -2401,3 +2401,72 @@ def test_unreferenced_renamed_result_is_not_appended(monkeypatch):
     assert 'screenshot_2](' not in body
     assert body.count('截图配置提示: ') == 1
     assert body.count('![') == 1
+
+
+def test_reference_feedback_end_to_end(monkeypatch):
+    """真实编排下无引用、别名、聚合、混合失败与提示位置均按新契约。"""
+    module = _pipeline()
+    capture = Mock(side_effect=lambda source, name, **kwargs: CaptureResult(
+        b'png-' + name.encode(), source, name, 2, 3, ('合成截图提示',)))
+    upload = Mock(side_effect=[
+        UploadResult(True, 'catbox', URL, ('catbox',), ()),
+        UploadResult(False, None, None, ('catbox',), (
+            UploadFailure('catbox', 'transport_failed', SECRET),)),
+    ])
+    monkeypatch.setattr(module, 'capture', capture)
+    monkeypatch.setattr(module, 'upload_with_fallback', upload)
+    attempts = Counter()
+
+    def notify(title=None, content=None, **params):
+        """首次失败再次成功，覆盖跨通道重试复用同一批次。"""
+        attempts['send'] += 1
+        return _response(500 if attempts['send'] == 1 else 200)
+
+    sent, _, _ = _install_onepush(monkeypatch, notify)
+    config = _base_config(
+        channels=deepcopy(THREE_CHANNELS),
+        targets=_multi_window_targets(2),
+        retry={'interval': '0s', 'max_count': 2})
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {shot_1}'
+    template['content'] = '前{shot_1}中{screenshot}后'
+    before = deepcopy(config)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert len(results) == 3 and all(success for _, success in results)
+    assert capture.call_count == upload.call_count == 2
+    assert config == before
+    body = sent[0][1]
+    assert body.startswith('前![shot_1](')
+    assert body.endswith('后')
+    assert body.count('截图配置提示: ') == 2
+    assert body.count('合成截图提示') == 2
+    assert '截图上传失败：通道 Catbox 图床网络传输失败。' in body
+    assert SECRET not in body
+
+
+def test_no_reference_end_to_end_keeps_text_and_skips_uploads(monkeypatch):
+    """超时模板未引用截图时仍发送原文，不产生任何截图副作用。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    save, context = _install_side_effect_probes(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    template = config['push']['templates']['on_wait_timeout']
+    template['title'] = '等待超时未运行报告'
+    template['content'] = ('主机: {host_name}\n\n当前时间: {current_time}\n\n'
+                           '进程: {process_name} 超时未运行\n\n'
+                           '已等待时间: {process_wait_time}\n\n')
+
+    results = notif.send_notification(
+        config, 'on_wait_timeout', process_name='notepad.exe',
+        process_wait_time='0:00:11')
+
+    assert results == [('serverchan', True)]
+    assert sent[0][1].startswith('主机: ')
+    assert sent[0][1].endswith('已等待时间: 0:00:11\n\n')
+    assert '截图' not in sent[0][1]
+    capture.assert_not_called()
+    upload.assert_not_called()
+    save.assert_not_called()
+    context.assert_not_called()
