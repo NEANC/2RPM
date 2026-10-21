@@ -6,6 +6,7 @@
 缓存调用与期限数字；全部凭证、响应与时钟均为合成值，不访问真实网络。
 """
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from email.parser import BytesParser
@@ -13,13 +14,17 @@ from email.policy import default
 from importlib import import_module
 import json
 import logging
+from unittest.mock import MagicMock, Mock
 from urllib.parse import urlsplit
 
 import pytest
 import requests
 
+from modules import notification as notif
 from modules.image_host.context import UploadContext
 from modules.image_host.expiration import PreparedV2Options
+from modules.screenshot import pipeline
+from modules.screenshot.models import CaptureResult
 
 
 URL = 'https://www.beeimg.cn/20261020/synthetic.png'
@@ -27,6 +32,9 @@ REJECTION = '不存在的储存驱动'
 MANUAL_ID = 13
 SECOND_ID = 14
 MISSING_ENV = '${SYNTHETIC_MANUAL_FIRST_MISSING_ENV}'
+NOTIFICATION_ENV = 'SYNTHETIC_NOTIFICATION_SECRET_ENV'
+NOTIFICATION_TOKEN = 'FAKE_NOTIFICATION_TOKEN_8421'
+INVALID_MANUAL = 'FAKE_OPTIONS_8421'
 STARTED_AT = 1000.0
 DURATION_SECONDS = 3600
 FIRST_DEADLINE = STARTED_AT + DURATION_SECONDS
@@ -696,3 +704,82 @@ def test_group_403_remains_http_failed_without_profile(
         [('POST', 'upload', MANUAL_ID)] if phase == 'recovery' else [])
     assert all(call[1] != 'profile' for call in run_result.calls)
     assert run_result.result.warnings == ()
+
+
+def test_notification_end_to_end_uses_real_recovery_chain(
+        monkeypatch, caplog, tmp_path):
+    """真实通知链贯通非法手填恢复：7 被拒改用 23，两条提示按序进入载荷。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setenv(NOTIFICATION_ENV, NOTIFICATION_TOKEN)
+    capture = Mock(return_value=CaptureResult(b'image', 'window', '窗口', 2, 2))
+    monkeypatch.setattr(pipeline, 'capture', capture)
+    transport = Transport(monkeypatch, 'beeimg_cn', [
+        group_reply((7,)), REJECTED_UPLOAD, group_reply((23,)),
+        SUCCESS_UPLOAD])
+    sent = []
+    notifier = MagicMock()
+
+    def notify(title=None, content=None, **params):
+        """记录真实发送载荷并返回固定的业务成功响应。"""
+        sent.append((title, content))
+        response = MagicMock()
+        response.status_code = 200
+        response.text = 'ok'
+        response.json.return_value = {'code': 0}
+        return response
+
+    notifier.notify.side_effect = notify
+    monkeypatch.setattr(notif, 'get_notifier', Mock(return_value=notifier))
+    config = {
+        'push': {
+            'screenshot': {
+                'targets': [{'provider': 'window', 'target': '窗口'}],
+                'image_host': [{
+                    'provider': 'beeimg_cn',
+                    'token': '${' + NOTIFICATION_ENV + '}',
+                    'options': {'storage_id': INVALID_MANUAL},
+                }],
+            },
+            'templates': {
+                'on_end': {
+                    'enable': True,
+                    'capture_screenshot': True,
+                    'title': '标题 {screenshot}',
+                    'content': '前文\n{screenshot}\n后文',
+                },
+            },
+            'push_channel_settings': {
+                'channels': [{'provider': 'serverchan', 'sckey': 's1'}],
+            },
+            'retry': {'interval': '0s', 'max_count': 1},
+        },
+    }
+    before = deepcopy(config)
+
+    with caplog.at_level(logging.DEBUG):
+        results = notif.send_notification(
+            config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert transport.calls == [
+        ('GET', 'group', None), ('POST', 'upload', 7),
+        ('GET', 'group', None), ('POST', 'upload', 23)]
+    assert config == before
+    assert len(sent) == 1
+    title, content = sent[0]
+    first = invalid_notice(7)
+    second = invalid_notice(23)
+    assert first in title and second in title
+    assert first in content and second in content
+    assert title.index(first) < title.index(second)
+    assert content.index(first) < content.index(second)
+    assert URL in content
+    assert NOTIFICATION_TOKEN not in str(sent)
+    assert NOTIFICATION_TOKEN not in caplog.text
+    assert INVALID_MANUAL not in str(sent)
+    assert INVALID_MANUAL not in caplog.text
+    assert capture.call_count == 1
+    records = [record for record in caplog.records
+               if record.name.startswith('modules.')]
+    assert records
+    assert all(record.exc_info is None for record in records)
