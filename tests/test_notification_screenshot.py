@@ -575,18 +575,17 @@ def test_default_templates_do_not_add_missing_target_warning(monkeypatch, caplog
     assert '未配置有效截图目标' not in sent[0][1]
 
 
-def test_conflicting_out_is_renamed_and_appended(monkeypatch):
-    """out 不得覆盖普通变量，改名结果按既有规则补附到正文末尾。"""
+def test_conflicting_out_is_renamed_without_appending(monkeypatch):
+    """out 不得覆盖普通变量；无截图引用时不补附改名结果。"""
     capture, upload = _install_boundaries(monkeypatch)
     sent, _, _ = _install_onepush(monkeypatch)
     config = _base_config(targets=[{**WINDOW_TARGET, 'out': 'process_name'}])
     config['push']['templates']['on_end']['content'] = '正文 {process_name}'
     results = notif.send_notification(config, 'on_end', process_name='demo.exe')
     assert results == [('serverchan', True)]
-    body = sent[0][1]
-    assert body.startswith('正文 demo.exe')
-    assert body.count(URL) == 1
-    assert '![screenshot_1](' in body
+    assert sent == [('标题 demo.exe', '正文 demo.exe')]
+    capture.assert_not_called()
+    upload.assert_not_called()
 
 
 @pytest.mark.parametrize('capture', [True, False])
@@ -2035,7 +2034,7 @@ def test_render_context_trigger_independence(monkeypatch):
     template['content'] = '纯正文 {process_name}'
     results = notif.send_notification(config, 'on_end', process_name='demo')
     assert results == [('dingtalk', True)]
-    assert capture.call_count == upload.call_count == 1
+    assert capture.call_count == upload.call_count == 0
     assert sent == [('纯标题 demo', '纯正文 demo')]
     assert notifier.notify.call_args.kwargs['markdown'] is False
 
@@ -2155,3 +2154,192 @@ def test_disabled_multi_target_channel_content_entry(monkeypatch, provider):
     assert config == before_config
     if provider == 'dingtalk':
         assert notifier.notify.call_args.kwargs['markdown'] is True
+
+
+def _install_side_effect_probes(monkeypatch):
+    """替换保存与上传上下文的构造点，用于零副作用断言。"""
+    module = _pipeline()
+    save = Mock(return_value=Mock(warnings=()))
+    context = MagicMock()
+    monkeypatch.setattr(module, 'save_automatic', save)
+    monkeypatch.setattr(module, 'UploadContext', context)
+    return save, context
+
+
+REFERENCE_GATE_CASES = (
+    ('no_reference', '标题 {process_name}', '正文 {process_name}', None, ()),
+    ('escaped_reference', '标题 {{screenshot}}', '正文 {process_name}', None, ()),
+    ('kwargs_value_mentions', '标题 {process_name}', '正文 {note}',
+     {'note': '看图 {screenshot}'}, ()),
+    ('kwargs_overrides_aggregate', '标题 {process_name}', '正文 {screenshot}',
+     {'screenshot': 'ordinary'}, ()),
+    ('kwargs_overrides_alias', '标题 {process_name}', '正文 {shot}',
+     {'shot': 'ordinary'}, ('shot',)),
+    ('kwargs_overrides_index', '标题 {process_name}', '正文 {screenshot_1}',
+     {'screenshot_1': 'ordinary'}, ()),
+)
+
+
+@pytest.mark.parametrize('case', REFERENCE_GATE_CASES)
+def test_capture_requires_owned_reference(monkeypatch, case):
+    """有效目标但模板没有自有截图引用时，截图链路完全不启动。"""
+    _, title_template, content_template, extra_kwargs, alias = case
+    capture, upload = _install_boundaries(monkeypatch)
+    save, context = _install_side_effect_probes(monkeypatch)
+    sent, notifier, _ = _install_onepush(monkeypatch)
+    target = WINDOW_TARGET if not alias else {**WINDOW_TARGET, 'out': alias[0]}
+    config = _base_config(targets=(target,))
+    template = config['push']['templates']['on_end']
+    template['title'] = title_template
+    template['content'] = content_template
+    before_config = deepcopy(config)
+
+    results = notif.send_notification(
+        config, 'on_end', process_name='demo', **(extra_kwargs or {}))
+
+    assert results == [('serverchan', True)]
+    assert len(sent) == 1
+    capture.assert_not_called()
+    upload.assert_not_called()
+    save.assert_not_called()
+    context.assert_not_called()
+    assert config == before_config
+    assert notifier.notify.call_count == 1
+
+
+def test_plain_text_reference_gate_keeps_formatting(monkeypatch):
+    """无引用时正文与该模板的普通格式化结果逐字一致。"""
+    _install_boundaries(monkeypatch)
+    _install_side_effect_probes(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {{screenshot}} {process_name}'
+    template['content'] = '正文 {process_name}\n\n无截图\n\n'
+
+    notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert sent == [('标题 {screenshot} demo', '正文 demo\n\n无截图\n\n')]
+
+
+@pytest.mark.parametrize('variant', ('aggregate_title', 'alias_body', 'index_body'))
+def test_owned_reference_triggers_one_batch(monkeypatch, variant):
+    """聚合、实际别名与编号引用各自只触发一次批次，重试不重复捕获。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    attempts = []
+
+    def failing_notify(title=None, content=None, **params):
+        """前两次失败、第三次成功，用于覆盖多通道重试复用同一批次。"""
+        attempts.append((title, content))
+        return _response(500 if len(attempts) < 3 else 200)
+
+    sent = attempts
+    notifier = MagicMock()
+    notifier.notify.side_effect = failing_notify
+    monkeypatch.setattr(notif, 'get_notifier', Mock(return_value=notifier))
+    targets = _multi_window_targets(2)
+    config = _base_config(
+        channels=[{'provider': 'serverchan', 'sckey': 's1'}],
+        targets=targets,
+        retry={'interval': '2s', 'max_count': 3})
+    template = config['push']['templates']['on_end']
+    if variant == 'aggregate_title':
+        template['title'] = '标题 {screenshot} {screenshot}'
+        template['content'] = '正文 {process_name}'
+    elif variant == 'alias_body':
+        template['title'] = '标题 {process_name}'
+        template['content'] = '正文 {shot_1}{shot_1}'
+    else:
+        template['title'] = '标题 {process_name}'
+        template['content'] = '正文 {screenshot_2}{screenshot_2}'
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert capture.call_count == len(targets)
+    assert upload.call_count == len(targets)
+    assert len(sent) == 3
+    assert sent[0] == sent[1] == sent[2]
+
+
+def test_capture_reference_early_exit_boundaries(monkeypatch, caplog):
+    """禁用、缺通道、模板错误与非法开关都在截图前退出，不给假提示。"""
+    cases = []
+
+    config = _base_config()
+    config['push']['templates']['on_end']['capture_screenshot'] = False
+    cases.append(('disabled', config))
+
+    config = _base_config(channels=[])
+    cases.append(('no_channel', config))
+
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '正文 {missing}'
+    cases.append(('missing_variable', config))
+
+    config = _base_config()
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot'
+    cases.append(('broken_format', config))
+
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '正文 {screenshot.name}'
+    cases.append(('placeholder_attribute', config))
+
+    config = _base_config()
+    config['push']['templates']['on_end']['capture_screenshot'] = 'yes'
+    cases.append(('non_boolean_flag', config))
+
+    for name, config in cases:
+        capture, upload = _install_boundaries(monkeypatch)
+        save, context = _install_side_effect_probes(monkeypatch)
+        sent, _, _ = _install_onepush(monkeypatch)
+        before_config = deepcopy(config)
+        with caplog.at_level(logging.DEBUG):
+            results = notif.send_notification(config, 'on_end', process_name='demo')
+        if name in ('disabled', 'non_boolean_flag'):
+            assert results == [('serverchan', True)]
+            assert sent == [('标题 demo', '正文 demo\n\n')], name
+        else:
+            assert results == [], name
+            assert sent == [], name
+        capture.assert_not_called()
+        upload.assert_not_called()
+        save.assert_not_called()
+        context.assert_not_called()
+        assert config == before_config
+
+
+def test_no_target_reference_shows_unconfigured_hint(monkeypatch):
+    """无有效目标时引用聚合截图变量只显示固定配置失败提示，不启动上传。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    save, context = _install_side_effect_probes(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(targets=())
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '正文 {screenshot}'
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert sent == [('标题 demo', '正文 截图配置失败：未配置有效截图目标')]
+    capture.assert_not_called()
+    upload.assert_not_called()
+    save.assert_not_called()
+    context.assert_not_called()
+
+
+def test_unconfigured_index_shows_unconfigured_hint(monkeypatch):
+    """引用未配置的编号只显示固定缺失提示，仍按整批策略捕获已配置目标。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '正文 {screenshot_9}'
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert sent == [('标题 demo', '正文 截图失败：未配置该截图目标')]
+    assert capture.call_count == upload.call_count == 1
