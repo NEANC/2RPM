@@ -2537,7 +2537,7 @@ def test_log_count_does_not_count_aggregate_twice(monkeypatch, caplog):
 ])
 def test_log_count_matches_referenced_targets(
         monkeypatch, caplog, content, extra, expected, captured):
-    """日志计数只取本次拥有且模板直接引用的目标。"""
+    """日志计数只取本次拥有且模板字段名直接引用的目标。"""
     capture, _ = _install_boundaries(monkeypatch)
     _install_onepush(monkeypatch)
     config = _base_config(targets=_multi_window_targets(2))
@@ -2628,12 +2628,14 @@ def _config_write_probe(monkeypatch, tmp_path):
 def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
     """混合失败与提示按固定顺序进入 markdown/url 实际载荷并复用批次。"""
     capture, upload = _install_feedback_matrix(monkeypatch)
-    attempts = Counter()
+    dingtalk_attempts = Counter()
 
     def notify(title=None, content=None, **params):
-        """首个通道首次失败，验证重试复用同一批次与渲染结果。"""
-        attempts['send'] += 1
-        return _response(500 if attempts['send'] == 1 else 200)
+        """仅让 dingtalk 首次失败，避免依赖通道调度顺序。"""
+        if params.get('token') == 't1':
+            dingtalk_attempts['send'] += 1
+            return _response(500 if dingtalk_attempts['send'] == 1 else 200)
+        return _response(200)
 
     sent, _, _ = _install_onepush(monkeypatch, notify)
     config = _base_config(
@@ -2667,8 +2669,7 @@ def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
     url_payloads = [item for item in sent if '![ok]' not in item[0]]
     assert markdown_payloads == [(markdown_title, expected_markdown)] * 2
     assert url_payloads == [(url_title, expected_url)]
-    assert expected_markdown.count('截图配置提示: ') == 1
-    assert SECRET not in expected_markdown + expected_url
+    assert SECRET not in str(sent)
 
 
 def test_feedback_matrix_smtp_plain_and_html(monkeypatch, tmp_path):
