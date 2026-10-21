@@ -40,7 +40,7 @@ _CAPTURE_REASON_OVERRIDES = {
     'dpi_failed': '无法设置局部线程 DPI',
     'invalid_serial': 'ADB 设备标识无效',
 }
-# 通知反馈层对 storage 失败使用 storage_id 语义，后端与 CLI 不变
+# 通知与操作日志共用 storage_id 展示；后端与 CLI 保持原句
 _UPLOAD_REASON_OVERRIDES = {
     'storage_lookup_failed': 'storage_id 查询失败',
     'storage_unavailable': 'storage_id 不可用',

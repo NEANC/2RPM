@@ -831,7 +831,7 @@ def test_request_diagnostics_preserved():
         provider='beeimg_cn', image_index=1, slot_index=1, attempt_index=1,
         http_status=200, duration_ms=83, reason_code='storage_unavailable'))
     assert ('通道 [BeeIMG.CN] 第 1 次上传请求失败，HTTP 200，耗时 83 ms，'
-            '原因：储存驱动不可用') in full
+            '原因：storage_id 不可用') in full
     no_response = module._format_event(module._create_event(
         stage='upload_attempt', action='post', status='failed',
         provider='beeimg_cn', attempt_index=1, duration_ms=83,
