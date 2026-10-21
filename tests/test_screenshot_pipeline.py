@@ -349,23 +349,39 @@ def test_all_failed_targets_are_aggregated(monkeypatch):
     assert all('失败' in value for value in batch.values.values())
 
 
-@pytest.mark.parametrize('config', [None, False, 4, SECRET, [], {},
-                                    {'targets': None}, {'targets': []},
-                                    {'targets': {}}, {'targets': SECRET}])
+@pytest.mark.parametrize(('config', 'expected_warnings'), [
+    (None, ('截图配置必须为映射，已忽略该配置',)),
+    (False, ('截图配置必须为映射，已忽略该配置',)),
+    (4, ('截图配置必须为映射，已忽略该配置',)),
+    (SECRET, ('截图配置必须为映射，已忽略该配置',)),
+    ([], ('截图配置必须为映射，已忽略该配置',)),
+    ({}, ()),
+    ({'targets': None}, ()),
+    ({'targets': []}, ()),
+    ({'targets': {}}, ('截图 targets 配置必须为列表，已忽略该配置',)),
+    ({'targets': SECRET}, ('截图 targets 配置必须为列表，已忽略该配置',)),
+])
 @pytest.mark.parametrize('enabled', [True, False])
-def test_empty_or_bad_containers_are_safe(monkeypatch, config, enabled):
+def test_empty_or_bad_containers_are_safe(
+        monkeypatch, config, expected_warnings, enabled):
     """空目标和错误容器均不触发边界，禁用时仅返回空聚合。"""
     module, capture, upload = boundaries(monkeypatch)
+    save = Mock()
+    monkeypatch.setattr(module, 'save_automatic', save)
+    before = deepcopy(config)
     batch = module.prepare_screenshots(config, enabled, ())
+    assert config == before
     assert set(batch.values) == {'screenshot'}
     if enabled:
-        assert '配置' in batch.values['screenshot']
+        assert batch.values['screenshot'] == '截图配置失败：未配置有效截图目标'
+        assert batch.warnings == expected_warnings
     else:
         assert batch.values['screenshot'] == ''
         assert batch.warnings == batch.renamed_outputs == ()
     assert SECRET not in str(batch)
     capture.assert_not_called()
     upload.assert_not_called()
+    save.assert_not_called()
 
 
 def test_disabled_allocates_without_reading_hosts_or_environment(
