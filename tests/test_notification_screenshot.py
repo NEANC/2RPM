@@ -2523,3 +2523,152 @@ def test_log_count_does_not_count_aggregate_twice(monkeypatch, caplog):
     assert capture.call_count == upload.call_count == 2
     assert '通知发送成功 [serverchan]（含截图结果，截图项 2）' in caplog.text
     assert '截图项 3' not in caplog.text
+
+
+def _manual_recovery_notice(storage_id):
+    """构造非法手填被自动选择后的历史提示。"""
+    return ('预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+            f'{storage_id}，未修改配置文件。')
+
+
+def _feedback_matrix_targets():
+    """构造配置、捕获、上传与成功四类结果的多目标列表。"""
+    return [
+        {'provider': 'bad', 'target': '坏目标', 'out': 'cfg'},
+        {'provider': 'window', 'target': '捕获失败', 'out': 'cap'},
+        {'provider': 'window', 'target': '上传失败', 'out': 'up'},
+        {'provider': 'window', 'target': '分组拒绝', 'out': 'grp'},
+        {'provider': 'window', 'target': '成功', 'out': 'ok'},
+    ]
+
+
+def _install_feedback_matrix(monkeypatch):
+    """替换四类结果边界：配置失败、捕获失败、两类上传失败与成功图片。"""
+    capture, upload = _install_boundaries(
+        monkeypatch,
+        capture_side_effect=[
+            CaptureError('dpi_failed', ''),
+            CaptureResult(b'png-up', 'window', '上传失败', 2, 3,
+                          ('图像为纯色或低方差，可能未正确渲染或未更新',)),
+            CaptureResult(b'png-grp', 'window', '分组拒绝', 2, 3),
+            CaptureResult(b'png-ok', 'window', '成功', 2, 3),
+        ])
+    upload.side_effect = [
+        UploadResult(False, None, None, ('catbox',), (
+            UploadFailure('catbox', 'transport_failed', SECRET),),
+            (_manual_recovery_notice(7),)),
+        UploadResult(False, None, None, ('beeimg_cn',), (
+            UploadFailure('beeimg_cn', 'http_failed', SECRET, stage='group',
+                          http_status=403),),
+            (_manual_recovery_notice(23),)),
+        UploadResult(True, 'catbox', URL, ('catbox',), ()),
+    ]
+    return capture, upload
+
+
+FEEDBACK_FRAGMENTS = (
+    '截图配置失败：截图目标配置无效',
+    '截图失败：无法设置局部线程 DPI',
+    '截图上传失败：通道 Catbox 图床网络传输失败。',
+    '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。',
+)
+FEEDBACK_NOTICES = (
+    '图像为纯色或低方差，可能未正确渲染或未更新',
+    '预设的 options.storage_id 格式无效，本次已自动选择储存编号：7，未修改配置文件。',
+    '预设的 options.storage_id 格式无效，本次已自动选择储存编号：23，未修改配置文件。',
+)
+
+
+def test_feedback_matrix_end_to_end(monkeypatch):
+    """混合失败与提示按固定顺序进入 markdown/url 实际载荷并复用批次。"""
+    capture, upload = _install_feedback_matrix(monkeypatch)
+    attempts = Counter()
+
+    def notify(title=None, content=None, **params):
+        """首个通道首次失败，验证重试复用同一批次与渲染结果。"""
+        attempts['send'] += 1
+        return _response(500 if attempts['send'] == 1 else 200)
+
+    sent, _, _ = _install_onepush(monkeypatch, notify)
+    config = _base_config(
+        channels=[{'provider': 'dingtalk', 'token': 't1'},
+                  {'provider': 'discord', 'webhook': 'w1'}],
+        targets=_feedback_matrix_targets(),
+        retry={'interval': '0s', 'max_count': 2})
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {ok}'
+    template['content'] = '前文\n{screenshot}\n后文'
+    before = deepcopy(config)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('dingtalk', True), ('discord', True)]
+    assert capture.call_count == 4
+    assert upload.call_count == 3
+    assert config == before
+    assert len(sent) == 3 and sent[0] == sent[1]
+    markdown_title, markdown_body = sent[0]
+    url_title, url_body = sent[2]
+    notice_block = ('\n\n---\n\n截图配置提示: '
+                    + '\n'.join(FEEDBACK_NOTICES))
+    assert markdown_title == f'标题 ![ok]({URL})' + notice_block
+    assert url_title == f'标题 {URL}' + notice_block
+    expected = (
+        '前文\n' + '\n\n'.join(FEEDBACK_FRAGMENTS)
+        + f'\n\n![ok]({URL})\n\n---\n\n截图配置提示: '
+        + '\n'.join(FEEDBACK_NOTICES) + '\n后文')
+    assert markdown_body == expected
+    assert url_body == expected.replace(f'![ok]({URL})', URL)
+    assert markdown_body.count('截图配置提示: ') == 1
+    assert SECRET not in markdown_body + url_body
+
+
+def test_feedback_matrix_smtp_plain_and_html(monkeypatch):
+    """同一批次在 SMTP 纯文本与 HTML 中同序渲染，HTML 转义字面文本。"""
+    capture, upload = _install_feedback_matrix(monkeypatch)
+    sent, notifier, _ = _install_onepush(monkeypatch)
+    config = _base_config(
+        channels=[_smtp_channel()],
+        targets=_feedback_matrix_targets())
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '前文<{screenshot}>后文'
+    before = deepcopy(config)
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('smtp', True)]
+    assert capture.call_count == 4 and upload.call_count == 3
+    assert config == before
+    assert sent[0][0] == '标题 demo'
+    plain = sent[0][1]
+    expected = (
+        '前文<' + '\n\n'.join(FEEDBACK_FRAGMENTS)
+        + '\n\nok: ' + URL + '\n\n---\n\n截图配置提示: '
+        + '\n'.join(FEEDBACK_NOTICES) + '>后文')
+    assert plain == expected
+    msg = notifier.notify.call_args.kwargs['msg']
+    html = msg.get_body(preferencelist=('html',)).get_content()
+    assert html.startswith('前文&lt;')
+    assert '<hr>' in html
+    assert '<img src=' in html and '![ok]' not in html
+    assert '&gt;后文' in html
+    assert '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。' in html
+
+
+def test_feedback_matrix_smtp_multiline_title_is_rejected(monkeypatch):
+    """带提示的截图变量进入 SMTP 标题时按邮件头规则拒绝且不发送。"""
+    capture, _ = _install_feedback_matrix(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(
+        channels=[_smtp_channel(subject=None)],
+        targets=_feedback_matrix_targets())
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {screenshot}'
+    template['content'] = '正文'
+
+    results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('smtp', False)]
+    assert sent == []
+    assert capture.call_count == 4
