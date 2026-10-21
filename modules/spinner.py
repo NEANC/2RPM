@@ -161,7 +161,7 @@ class _SimpleTTYSpinner:
 def _format_done(message):
     """构造绿色 ✔️ 前缀的收尾文案（图标后两空格，与 ❌ 行对齐）
 
-    图标后空格及颜色属于既有输出合同，不与普通流/上传终态格式强行统一。
+    图标后两空格与普通流、上传终态的成功行一致；失败行见 `_format_fail`。
 
     Args:
         message (str): 收尾文案
@@ -175,7 +175,7 @@ def _format_done(message):
 def _format_fail(message):
     """构造红色 ❌ 前缀的收尾文案（图标后空格，与 ✔️ 行对齐）
 
-    图标后空格及颜色属于既有输出合同，不与普通流/上传终态格式强行统一。
+    图标后单空格与普通流、上传终态的失败行一致，可与 `_format_done` 的两空格行对齐。
 
     Args:
         message (str): 收尾文案

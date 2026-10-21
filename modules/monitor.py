@@ -183,7 +183,7 @@ def _write_plain_feedback(text, ok):
 
     仅用于无可借用 TTY 句柄的场景（含非 TTY、日志静音）；不经过
     _LogSpinner.write_*，避免同一反馈二次落文件；普通流不带 ANSI，
-    保持原有图标及空格
+    间距按结果选择：成功两空格、失败单空格
 
     Args:
         text (str): 通道终态文案
