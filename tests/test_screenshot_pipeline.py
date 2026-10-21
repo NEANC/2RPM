@@ -781,6 +781,7 @@ def test_capture_save_upload_share_bytes_in_order(monkeypatch):
 
 
 @pytest.mark.parametrize('retention_value, expected', [
+    (None, ()),
     ({'enabled': False}, ()),
     ({'enabled': False, 'max_days': 0}, ('截图保留天数无效，已使用 14 天',)),
     ('invalid', ('截图保留配置无效，已关闭',)),

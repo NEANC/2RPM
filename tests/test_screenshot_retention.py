@@ -324,7 +324,7 @@ def test_cli_filename_replaces_suffix_on_png_fallback(extension):
         date(2026, 10, 7)) == 'Capture.png'
 
 
-@pytest.mark.parametrize('days', [True, False, 0, -1, '7', None])
+@pytest.mark.parametrize('days', [True, False, 0, -1, 2.5, '7', None])
 def test_policy_rejects_non_positive_or_non_integer_days(days):
     """非法保留天数回退到默认值并告警，且不修改输入配置。"""
     value = {'enabled': True, 'max_days': days}
