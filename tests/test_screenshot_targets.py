@@ -59,8 +59,7 @@ def test_non_list_returns_safe_diagnostic(raw):
     """顶层类型错误不抛整批异常，也不暴露输入内容。"""
     targets, warnings = allocate(raw)
     assert targets == []
-    assert len(warnings) == 1
-    assert '列表' in warnings[0]
+    assert warnings == ['截图 targets 配置必须为列表，已忽略该配置']
     assert 'secret-token' not in warnings[0]
 
 
