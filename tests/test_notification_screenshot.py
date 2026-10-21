@@ -286,18 +286,28 @@ def test_explicit_false_is_respected(monkeypatch):
     assert sent[0][1] == '正文 demo.exe\n\n'
 
 
-def test_invalid_capture_type_disables_without_upload(monkeypatch, caplog):
+@pytest.mark.parametrize(('value', 'type_name'), [
+    ('false', 'str'), (1, 'int'), (None, 'NoneType'),
+])
+def test_invalid_capture_type_disables_without_upload(
+        monkeypatch, caplog, value, type_name):
     """错误类型不得被当作启用，诊断安全且不发生上传。"""
     capture, upload = _install_boundaries(monkeypatch)
     sent, _, _ = _install_onepush(monkeypatch)
     config = _base_config()
-    config['push']['templates']['on_end']['capture_screenshot'] = 'false'
+    config['push']['templates']['on_end']['capture_screenshot'] = value
+    before = deepcopy(config)
     with caplog.at_level(logging.WARNING, logger='modules.notification'):
         results = notif.send_notification(config, 'on_end', process_name='demo.exe')
     assert results == [('serverchan', True)]
     capture.assert_not_called()
     upload.assert_not_called()
-    assert 'capture_screenshot' in caplog.text
+    assert sent[0][1] == '正文 demo.exe\n\n'
+    assert config == before
+    warning = f'capture_screenshot 配置类型无效，已按关闭截图处理: {type_name}'
+    assert [record.getMessage() for record in caplog.records
+            if 'capture_screenshot 配置类型无效' in record.getMessage()] == [
+                warning]
     assert URL not in caplog.text
 
 
@@ -2275,6 +2285,9 @@ def test_owned_reference_triggers_one_batch(monkeypatch, variant):
     assert upload.call_count == len(targets)
     assert len(sent) == 3
     assert sent[0] == sent[1] == sent[2]
+    if variant == 'aggregate_title':
+        assert sent[0][1] == '正文 demo'
+        assert '![' in sent[0][0]
 
 
 def test_capture_reference_early_exit_boundaries(monkeypatch, caplog):
