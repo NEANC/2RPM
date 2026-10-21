@@ -15,6 +15,20 @@ from modules.screenshot.models import CaptureError
 
 
 SECRET = 'token=PRIVATE_TEST_TOKEN'
+# 通知反馈层对两个捕获码使用更准确的展示措辞，CLI 与后端保持原句
+NOTIFY_CAPTURE_OVERRIDES = {
+    'invalid_serial': 'ADB 设备标识无效',
+}
+
+
+def _notify_expected(error, fallback_message):
+    """按通知反馈层规则计算期望文案，未覆盖的码沿用后端原句。"""
+    code = getattr(error, 'code', None)
+    if type(code) is not str or code not in MESSAGES:
+        return fallback_message
+    return '截图失败：' + NOTIFY_CAPTURE_OVERRIDES.get(code, MESSAGES[code])
+
+
 MESSAGES = {
     'encode_failed': '窗口图像编码失败',
     'adb_encode_failed': 'ADB 图像编码失败',
@@ -111,20 +125,22 @@ def test_public_failure_uses_only_whitelist(
     monkeypatch.setattr(module, 'capture', Mock(side_effect=error))
     save = Mock()
     upload = Mock()
+    expected = (message if entry == 'cli'
+                else _notify_expected(error, message))
     if entry == 'cli':
         monkeypatch.setattr(module, 'save_cli', save)
         monkeypatch.setattr(module, '_upload_all', upload)
         args = Namespace(source='window', target='target',
                          output=str(tmp_path / 'shot.jpg'), hosts=None)
         assert module.run_screenshot_cli(args, str(tmp_path)) == 1
-        assert capsys.readouterr().out == message + '\n'
+        assert capsys.readouterr().out == expected + '\n'
     else:
         monkeypatch.setattr(module, 'save_automatic', save)
         monkeypatch.setattr(module, 'upload_with_fallback', upload)
         batch = module.prepare_screenshots(
             {'targets': [{'provider': 'window', 'target': 'target'}]}, True, ())
-        assert batch.values['screenshot'] == message
-        assert message in caplog.text
+        assert batch.values['screenshot'] == expected
+        assert expected in caplog.text
     assert SECRET not in caplog.text
     save.assert_not_called()
     upload.assert_not_called()

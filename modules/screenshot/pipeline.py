@@ -14,6 +14,7 @@ from modules.feedback_text import UNKNOWN_UPLOAD_PROVIDER
 from modules.feedback_text import canonical_failure_code
 from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
+from modules.feedback_text import safe_reason_text
 from modules.image_host.context import UploadContext
 from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
@@ -31,7 +32,6 @@ from modules.upload_status import upload_feedback_scope
 from modules.utils import get_program_directory
 
 from .models import CaptureError
-from .models import capture_failure_message
 from .retention import parse_policy
 from .retention import runtime_context
 from .retention import save_automatic
@@ -80,17 +80,24 @@ def markdown_image(name, url):
     return f'![{name}]({destination})'
 
 
-def _upload_failure_summary(failures):
-    """只按核心认可的代码重建固定摘要，不展示动态标签或诊断。"""
-    messages = []
-    for failure in failures:
-        if not isinstance(failure, UploadFailure):
-            continue
-        safe = ImageHostError(failure.code, '')
-        if safe.code != 'upload_failed':
-            messages.append(safe.message)
-    summary = '；'.join(dict.fromkeys(messages))
-    return '截图上传失败：' + summary if summary else '截图上传失败'
+def _failure_summary_from_details(details):
+    """按失败详情重建单项变量值，配置类与上传类分别加各自类别前缀。"""
+    groups = (
+        ('config', '截图配置失败：', [
+            detail for detail in details if detail.category == 'config']),
+        ('upload', '截图上传失败：', [
+            detail for detail in details if detail.category != 'config']),
+    )
+    parts = []
+    for category, prefix, group in groups:
+        reasons = dict.fromkeys(
+            safe_reason_text(category, detail.code) for detail in group)
+        # 守卫：未知上传码只保留裸前缀，不凭空补一个具体原因
+        if category == 'upload':
+            reasons = [reason for reason in reasons if reason != '图床上传失败']
+        if reasons:
+            parts.append(prefix + '；'.join(reasons))
+    return '\n\n'.join(parts) if parts else '截图上传失败'
 
 
 def _image_shell(name, value):
@@ -212,7 +219,7 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         raise
     except CaptureError as error:
         trace.finish_image(item['index'], 'failed')
-        failure = capture_failure_message(error)
+        failure = format_failure_sentence('capture', '', error.code)
         diagnostics.append(f'截图目标 {item["index"]}：{failure}')
         return (failure, False, False, (ScreenshotFailureDetail(
             output_name, 'capture', '',
@@ -239,8 +246,8 @@ def _prepare_target(item, hosts, warnings, diagnostics, *, context,
         warnings.extend(uploaded.warnings)
         if uploaded.success:
             return markdown_image(item['out'], uploaded.url), True, True, ()
-        failure = _upload_failure_summary(uploaded.failures)
         details = _upload_failure_details(output_name, uploaded.failures)
+        failure = _failure_summary_from_details(details)
     except Exception:
         details = (ScreenshotFailureDetail(
             output_name, 'upload', UNKNOWN_UPLOAD_PROVIDER,

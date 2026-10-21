@@ -7,9 +7,7 @@
 """
 
 from modules.image_host.core import ImageHostError
-from modules.screenshot.models import CaptureError
 from modules.screenshot.models import _CAPTURE_MESSAGES
-from modules.screenshot.models import capture_failure_message
 
 
 _KNOWN_PROVIDERS = frozenset({
@@ -28,12 +26,19 @@ UNKNOWN_UPLOAD_PROVIDER = 'unknown'
 _UNKNOWN_NAME = '未知图床'
 _CAPTURE_FALLBACK = 'capture_failed'
 _CONFIG_CODES = frozenset({
-    'config_error', 'invalid_hosts', 'invalid_input', 'no_targets',
-    'not_configured', 'target_invalid',
+    'config_error', 'invalid_host', 'invalid_hosts', 'invalid_input',
+    'invalid_environment_reference', 'invalid_options', 'invalid_provider',
+    'invalid_token', 'missing_environment', 'no_targets', 'not_configured',
+    'target_invalid', 'unknown_provider',
 })
 _CONFIG_REASONS = {
     'no_targets': '未配置有效截图目标',
     'target_invalid': '截图目标配置无效',
+}
+# 通知反馈层的展示覆盖：底层与 CLI 仍保留原有捕获文案
+_CAPTURE_REASON_OVERRIDES = {
+    'dpi_failed': '无法设置局部线程 DPI',
+    'invalid_serial': 'ADB 设备标识无效',
 }
 _BEEIMG_CN_PREFIX = 'BeeIMG.cn '
 _STORAGE_SELECTION_NOTICES = {
@@ -132,6 +137,9 @@ def safe_reason_text(category: str, code: object) -> str:
     """
     canonical = canonical_failure_code(category, code)
     if category == 'capture':
+        fixed = _CAPTURE_REASON_OVERRIDES.get(canonical)
+        if fixed is not None:
+            return fixed
         return _CAPTURE_MESSAGES.get(canonical, '截图失败')
     if category == 'config':
         fixed = _CONFIG_REASONS.get(canonical)
@@ -159,7 +167,8 @@ def format_failure_sentence(category: str, provider: str, code: str) -> str:
     """
     canonical = canonical_failure_code(category, code)
     if category == 'capture':
-        return capture_failure_message(CaptureError(canonical, ''))
+        reason = safe_reason_text('capture', canonical)
+        return '截图失败' if reason == '截图失败' else f'截图失败：{reason}'
     if category == 'config':
         return f'截图配置失败：{safe_reason_text("config", canonical)}'
     if canonical_upload_provider(provider) == 'beeimg_cn':

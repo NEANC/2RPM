@@ -12,6 +12,8 @@ from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
 from modules.feedback_text import safe_reason_text
 from modules.feedback_text import upload_provider_name
+from modules.screenshot.models import CaptureError
+from modules.screenshot.models import capture_failure_message
 
 
 SECRET_NAME = 'token=FAKE_SECRET'
@@ -235,3 +237,55 @@ def test_config_sentences(code, expected):
 def test_capture_sentences(code, expected):
     """截图失败复用既有安全映射，未知代码只显示类别。"""
     assert format_failure_sentence('capture', '配置', code) == expected
+
+
+NOTIFY_CAPTURE_OVERRIDES = (
+    ('dpi_failed', '无法设置局部线程 DPI'),
+    ('invalid_serial', 'ADB 设备标识无效'),
+)
+
+
+@pytest.mark.parametrize(('code', 'reason'), NOTIFY_CAPTURE_OVERRIDES)
+def test_notification_capture_reason_overrides(code, reason):
+    """通知反馈层对两个捕获码使用更准确的固定原因。"""
+    assert safe_reason_text('capture', code) == reason
+    assert format_failure_sentence('capture', '', code) == '截图失败：' + reason
+
+
+def test_notification_override_does_not_change_backend_mapping():
+    """后端与 CLI 仍使用原有捕获文案，覆盖只作用于通知反馈层。"""
+    assert capture_failure_message(
+        CaptureError('dpi_failed', '')) == '截图失败：无法设置局部线程 DPI 上下文'
+    assert capture_failure_message(
+        CaptureError('invalid_serial', '')) == '截图失败：ADB 序列号无效'
+
+
+CONFIG_CODE_REASONS = (
+    ('invalid_host', '图床项必须为映射'),
+    ('invalid_hosts', '图床配置必须为列表'),
+    ('invalid_input', '图片数据或文件名无效'),
+    ('invalid_environment_reference', '图床凭证环境引用格式无效'),
+    ('invalid_options', '图床参数无效或不受该图床支持'),
+    ('invalid_provider', '图床名称无效'),
+    ('invalid_token', '图床凭证必须为字符串'),
+    ('missing_environment', '图床凭证环境变量缺失或为空'),
+    ('no_targets', '未配置有效截图目标'),
+    ('not_configured', '未配置图床'),
+    ('target_invalid', '截图目标配置无效'),
+    ('unknown_provider', '图床尚未注册'),
+    ('config_error', '图床配置无效'),
+)
+
+
+@pytest.mark.parametrize(('code', 'reason'), CONFIG_CODE_REASONS)
+def test_each_config_code_has_config_sentence(code, reason):
+    """每个配置码都给出类别前缀加固定安全原因。"""
+    assert safe_reason_text('config', code) == reason
+    assert format_failure_sentence('config', '配置', code) == '截图配置失败：' + reason
+
+
+@pytest.mark.parametrize('code', ['malicious', '', None, 1, ['x'], {'k': 'v'}])
+def test_unknown_config_code_uses_fixed_fallback(code):
+    """未知配置码严格使用本类别兜底，不回显原值。"""
+    assert format_failure_sentence('config', '配置', code) == (
+        '截图配置失败：图床配置无效')

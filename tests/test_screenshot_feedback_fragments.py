@@ -285,6 +285,87 @@ def test_generic_upload_uses_known_error_message(monkeypatch):
     assert batch.values['screenshot'] == f'截图上传失败：通道 未知图床 {reason}。'
 
 
+@pytest.mark.parametrize('code', ['invalid_provider', 'invalid_options'])
+def test_single_and_aggregate_share_failure_category(monkeypatch, code):
+    """同一失败在单项、编号与聚合变量中分类与文案一致。"""
+    module, capture, upload = boundaries(monkeypatch)
+    upload.return_value = UploadResult(False, None, None, (),
+                                       (UploadFailure('配置', code, SECRET),))
+    batch = module.prepare_screenshots(section([target(out='shot')]), True, ())
+    sentence = module.format_failure_sentence('config', '配置', code)
+
+    assert batch.values['shot'] == sentence
+    assert batch.values['screenshot'] == sentence
+    assert batch.failure_details == (
+        module.ScreenshotFailureDetail('shot', 'config', '配置', code),)
+
+
+@pytest.mark.parametrize(('category', 'code', 'expected'), [
+    ('capture', 'malicious', '截图失败'),
+    ('config', 'malicious', '截图配置失败：图床配置无效'),
+    ('upload', 'malicious', '截图上传失败：通道 未知图床 图床上传失败。'),
+])
+def test_unknown_failures_do_not_cross_categories(category, code, expected):
+    """未知码只使用本类别兜底，不借用其他类别或回显原值。"""
+    module = pipeline()
+    assert module.format_failure_sentence(category, 'unknown', code) == expected
+
+
+def test_save_warning_does_not_replace_image(monkeypatch, tmp_path):
+    """保存失败只追加提示，成功图片仍按变量输出。"""
+    module, capture, _ = boundaries(monkeypatch)
+
+    def fail_write(path, data, *args, **kwargs):
+        """模拟临时目录写入失败，不触碰真实磁盘。"""
+        raise OSError(SECRET)
+
+    winfs = import_module('modules.screenshot.retention').winfs
+    monkeypatch.setattr(winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(winfs, 'write_exclusive', fail_write)
+    config = section([target(out='shot')])
+    config['retention'] = {'enabled': True}
+    batch = module.prepare_screenshots(
+        config, True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'config'})
+
+    assert batch.values['shot'] == f'![shot]({URL})'
+    assert batch.values['screenshot'] == f'![shot]({URL})'
+    assert '截图保存失败：无法写入输出路径' in batch.warnings
+    assert SECRET not in str(batch)
+
+
+def test_legacy_profile_codes_and_current_group_403():
+    """历史权限码保留兼容展示，当前组 403 只按 HTTP 失败展示。"""
+    module = pipeline()
+    legacy = (
+        ('profile_forbidden',
+         '截图上传失败：通道 BeeIMG.CN 的账号资料接口无访问权限，'
+         '请为令牌授权资料读取权限，或填写该账号可用的 options.storage_id。'),
+        ('profile_forbidden_invalid_storage',
+         '截图上传失败：通道 BeeIMG.CN 手填储存驱动无效，'
+         '请授权资料读取权限或填写当前账号可用的 options.storage_id。'),
+    )
+    for code, sentence in legacy:
+        assert module.format_failure_sentence(
+            'upload', 'beeimg_cn', code) == sentence
+
+    error = ImageHostError('http_failed', '', stage='group')
+    error.http_status = 403
+    failure = UploadFailure('beeimg_cn', error.code, error.message,
+                            stage=error.stage, http_status=403)
+    batch = module.ScreenshotBatch(
+        {'shot': '旧值'}, (), (),
+        (module.ScreenshotFailureDetail('shot', 'upload', 'beeimg_cn',
+                                        failure.code),))
+    fragments = module.build_screenshot_variable_fragments(batch, 'shot')
+    assert fragments == (
+        ('shot', 'text', '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。'),)
+    assert module.format_failure_sentence(
+        'upload', 'beeimg_cn', failure.code) == (
+            '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。')
+    assert '资料' not in fragments[0][2]
+
+
 def test_variable_fragments_place_notice_after_result():
     """提示块以分隔线接在结果之后，多条提示用单换行连接。"""
     module = pipeline()

@@ -24,7 +24,6 @@ from .providers import upload_catbox
 from .providers import upload_superbed
 from .providers import upload_wmimg
 from .providers import validate_v2_options
-from modules.feedback_text import format_storage_selection_notice
 from modules.log_safety import extend_secrets
 from modules.operation_trace import trace_operation
 from modules.operation_trace import trace_fallback
@@ -165,6 +164,8 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
         state.previous_deadline, context.now(),
         previous_shortened=state.previous_shortened)
     context.record_expiration(image, index, provider, token, decision)
+    # 延迟导入：feedback_text 依赖本包 core，模块级导入会形成循环
+    from modules.feedback_text import format_storage_selection_notice
     reason = ('invalid_manual' if invalid_manual
               else 'rejected_manual')
     if invalid_manual or (valid_manual and selected.storage_id != manual):
