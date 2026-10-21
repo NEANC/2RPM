@@ -310,3 +310,63 @@ def test_unknown_config_code_uses_fixed_fallback(code):
     """未知配置码严格使用本类别兜底，不回显原值。"""
     assert format_failure_sentence('config', '配置', code) == (
         '截图配置失败：图床配置无效')
+
+
+UPLOAD_CODE_REASONS = (
+    ('transport_failed', '图床网络传输失败'),
+    ('http_failed', '图床 HTTP 请求失败'),
+    ('business_rejected', '图床拒绝上传'),
+    ('invalid_response', '图床响应无效'),
+    ('invalid_url', '图床返回的图片链接无效'),
+    ('storage_lookup_failed', 'storage_id 查询失败'),
+    ('storage_unavailable', 'storage_id 不可用'),
+    ('upload_failed', '图床上传失败'),
+)
+
+
+@pytest.mark.parametrize(('code', 'reason'), UPLOAD_CODE_REASONS)
+def test_each_upload_code_has_sentence(code, reason):
+    """每个上传码都给出固定原因与单句号完整上传失败句。"""
+    assert safe_reason_text('upload', code) == reason
+    assert format_failure_sentence('upload', 'catbox', code) == (
+        '截图上传失败：通道 Catbox ' + reason + '。')
+
+
+CAPTURE_CODE_REASONS = (
+    ('invalid_source', '截图来源必须为 window 或 adb'),
+    ('invalid_title', '窗口标题或匹配表达式无效'),
+    ('window_not_found', '未找到匹配的窗口'),
+    ('window_ambiguous', '存在多个匹配的窗口'),
+    ('window_lookup_failed', '无法枚举目标窗口'),
+    ('window_gone', '目标窗口已失效或标题已变化'),
+    ('window_state_failed', '无法读取或恢复目标窗口状态'),
+    ('invalid_dimensions', '目标窗口尺寸无效'),
+    ('dpi_failed', '无法设置局部线程 DPI'),
+    ('gdi_failed', '无法分配或访问窗口图像资源'),
+    ('print_failed', '窗口图像绘制失败'),
+    ('image_failed', '无法构造有效窗口图像'),
+    ('encode_failed', '窗口图像编码失败'),
+    ('invalid_serial', 'ADB 设备标识无效'),
+    ('adb_version_unsupported', 'ADB 依赖版本未经支持验证'),
+    ('adb_unavailable', '无法连接已有本机 ADB Server'),
+    ('adb_not_found', '未找到指定 ADB 设备'),
+    ('adb_offline', '指定 ADB 设备处于离线状态'),
+    ('adb_unauthorized', '指定 ADB 设备尚未授权'),
+    ('adb_timeout', 'ADB 连接或读写等待超时'),
+    ('adb_protocol_failed', 'ADB 设备通信失败'),
+    ('adb_image_failed', 'ADB 未返回完整有效的图像数据'),
+    ('adb_encode_failed', 'ADB 图像编码失败'),
+)
+
+
+@pytest.mark.parametrize(('code', 'reason'), CAPTURE_CODE_REASONS)
+def test_each_capture_code_has_sentence(code, reason):
+    """23 个捕获码各自给出固定原因与单前缀完整句。"""
+    assert safe_reason_text('capture', code) == reason
+    assert format_failure_sentence('capture', '', code) == '截图失败：' + reason
+
+
+def test_capture_code_table_is_complete():
+    """字面量表必须覆盖全部 23 个捕获码且无重复。"""
+    assert len(CAPTURE_CODE_REASONS) == 23
+    assert len({code for code, _ in CAPTURE_CODE_REASONS}) == 23

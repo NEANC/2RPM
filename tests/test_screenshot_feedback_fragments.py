@@ -281,23 +281,51 @@ def test_generic_upload_uses_known_error_message(monkeypatch):
     upload.return_value = UploadResult(False, None, None, (), (
         UploadFailure(SECRET, 'http_failed', SECRET),))
     batch = module.prepare_screenshots(section([target()]), True, ())
-    reason = ImageHostError('http_failed', '').message
-    assert batch.values['screenshot'] == f'截图上传失败：通道 未知图床 {reason}。'
+    assert batch.values['screenshot'] == (
+        '截图上传失败：通道 未知图床 图床 HTTP 请求失败。')
 
 
-@pytest.mark.parametrize('code', ['invalid_provider', 'invalid_options'])
-def test_single_and_aggregate_share_failure_category(monkeypatch, code):
+@pytest.mark.parametrize(('overrides', 'names'), [
+    ({'out': 'shot'}, ('shot', 'screenshot')),
+    ({}, ('screenshot_1', 'screenshot')),
+])
+def test_single_and_aggregate_share_failure_category(
+        monkeypatch, overrides, names):
     """同一失败在单项、编号与聚合变量中分类与文案一致。"""
     module, capture, upload = boundaries(monkeypatch)
     upload.return_value = UploadResult(False, None, None, (),
-                                       (UploadFailure('配置', code, SECRET),))
-    batch = module.prepare_screenshots(section([target(out='shot')]), True, ())
-    sentence = module.format_failure_sentence('config', '配置', code)
+                                       (UploadFailure('配置', 'invalid_options',
+                                                      SECRET),))
+    batch = module.prepare_screenshots(
+        section([target(**overrides)]), True, ())
+    sentence = '截图配置失败：图床参数无效或不受该图床支持'
 
+    assert batch.values[names[0]] == sentence
+    assert batch.values[names[1]] == sentence
+    assert batch.failure_details == (
+        module.ScreenshotFailureDetail(
+            names[0], 'config', '配置', 'invalid_options'),)
+
+
+@pytest.mark.parametrize(('code', 'detail_code', 'sentence'), [
+    ('invalid_source', 'invalid_source',
+     '截图失败：截图来源必须为 window 或 adb'),
+    ('http_failed', 'capture_failed', '截图失败'),
+    ('upload_failed', 'capture_failed', '截图失败'),
+])
+def test_capture_error_name_does_not_choose_category(
+        monkeypatch, code, detail_code, sentence):
+    """捕获异常只归 capture 类别，上传码同名不改变分类或文案。"""
+    module, capture, _ = boundaries(monkeypatch)
+    capture.side_effect = CaptureError(code, SECRET)
+
+    batch = module.prepare_screenshots(
+        section([target(out='shot')]), True, ())
+
+    assert batch.failure_details == (
+        module.ScreenshotFailureDetail('shot', 'capture', '', detail_code),)
     assert batch.values['shot'] == sentence
     assert batch.values['screenshot'] == sentence
-    assert batch.failure_details == (
-        module.ScreenshotFailureDetail('shot', 'config', '配置', code),)
 
 
 @pytest.mark.parametrize(('category', 'code', 'expected'), [
