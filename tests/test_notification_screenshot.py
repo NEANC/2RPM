@@ -2610,22 +2610,18 @@ FEEDBACK_NOTICES = (
 )
 
 
-def _config_write_probe(monkeypatch, tmp_path):
-    """写入合成配置并禁止配置写入入口，返回字节是否不变的判定。"""
-    path = tmp_path / 'synthetic-config.yaml'
-    path.write_text('push:\n  templates: {}\n', encoding='utf-8')
-    original = path.read_bytes()
-
+def _forbid_config_writes(monkeypatch):
+    """禁止通知运行链触发配置加载或写入入口。"""
     def forbidden(*args, **kwargs):
-        """通知运行链不得触发配置写入。"""
+        """通知运行链不得改写或重新加载配置。"""
         pytest.fail('通知运行链改写了配置文件')
 
     monkeypatch.setattr(config_module, 'create_default_config', forbidden)
     monkeypatch.setattr(config_module, '_make_write_yaml', forbidden)
-    return lambda: path.read_bytes() == original
+    monkeypatch.setattr(config_module, 'load_config', forbidden)
 
 
-def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
+def test_feedback_matrix_end_to_end(monkeypatch):
     """混合失败与提示按固定顺序进入 markdown/url 实际载荷并复用批次。"""
     capture, upload = _install_feedback_matrix(monkeypatch)
     dingtalk_attempts = Counter()
@@ -2647,14 +2643,14 @@ def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
     template['title'] = '标题 {ok}'
     template['content'] = '前文\n{screenshot}\n后文'
     before = deepcopy(config)
-    config_unchanged = _config_write_probe(monkeypatch, tmp_path)
+    _forbid_config_writes(monkeypatch)
 
     results = notif.send_notification(config, 'on_end', process_name='demo')
 
     assert results == [('dingtalk', True), ('discord', True)]
     assert capture.call_count == 4
     assert upload.call_count == 3
-    assert config == before and config_unchanged()
+    assert config == before
     assert len(sent) == 3
     notice_block = ('\n\n---\n\n截图配置提示: '
                     + '\n'.join(FEEDBACK_NOTICES))
@@ -2672,7 +2668,7 @@ def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
     assert SECRET not in str(sent)
 
 
-def test_feedback_matrix_smtp_plain_and_html(monkeypatch, tmp_path):
+def test_feedback_matrix_smtp_plain_and_html(monkeypatch):
     """同一批次在 SMTP 纯文本与 HTML 中同序渲染，HTML 转义字面文本。"""
     capture, upload = _install_feedback_matrix(monkeypatch)
     sent, notifier, _ = _install_onepush(monkeypatch)
@@ -2683,13 +2679,13 @@ def test_feedback_matrix_smtp_plain_and_html(monkeypatch, tmp_path):
     template['title'] = '标题 {process_name}'
     template['content'] = '前文<{screenshot}>后文'
     before = deepcopy(config)
-    config_unchanged = _config_write_probe(monkeypatch, tmp_path)
+    _forbid_config_writes(monkeypatch)
 
     results = notif.send_notification(config, 'on_end', process_name='demo')
 
     assert results == [('smtp', True)]
     assert capture.call_count == 4 and upload.call_count == 3
-    assert config == before and config_unchanged()
+    assert config == before
     assert sent[0][0] == '标题 demo'
     plain = sent[0][1]
     expected = (
@@ -2707,6 +2703,10 @@ def test_feedback_matrix_smtp_plain_and_html(monkeypatch, tmp_path):
     assert '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。' in html
     positions = [html.index(text) for text in FEEDBACK_FRAGMENTS]
     assert positions == sorted(positions)
+    for notice in FEEDBACK_NOTICES:
+        assert html.count(notice) == 1
+    notice_positions = [html.index(notice) for notice in FEEDBACK_NOTICES]
+    assert notice_positions == sorted(notice_positions)
 
 
 def test_feedback_matrix_smtp_multiline_title_is_rejected(monkeypatch):
@@ -2725,3 +2725,57 @@ def test_feedback_matrix_smtp_multiline_title_is_rejected(monkeypatch):
     assert results == [('smtp', False)]
     assert sent == []
     assert capture.call_count == 4
+
+
+def test_failure_feedback_has_no_sensitive_values(monkeypatch, caplog):
+    """同一次真实失败通知的标题、正文、HTML 与日志都不回显任何合成秘密。"""
+    env_name = 'SYNTHETIC_SECRET_ENV_8421'
+    env_value = 'FAKE_ENV_VALUE_8421'
+    channel_credential = 'FAKE_TOKEN_VALUE_8421'
+    window_target = '窗口FAKE_TARGET_8421'
+    reserved_out = 'FAKE_OUT_8421'
+    options_value = 'FAKE_OPTIONS_8421'
+    message = 'FAKE_MESSAGE_8421'
+    diagnostic = 'FAKE_DIAGNOSTIC_8421'
+    unknown_provider = 'fake_provider_8421'
+    secrets = (env_name, env_value, channel_credential, window_target,
+               reserved_out, options_value, message, diagnostic,
+               unknown_provider)
+    monkeypatch.setenv(env_name, env_value)
+    failure = UploadResult(False, None, None, ('catbox',), (
+        UploadFailure(unknown_provider, 'http_failed', message,
+                      diagnostic=diagnostic),))
+    capture, upload = _install_boundaries(monkeypatch, upload_result=failure)
+    sent, notifier, _ = _install_onepush(monkeypatch)
+    config = _base_config(
+        channels=[{'provider': 'serverchan', 'sckey': channel_credential},
+                  _smtp_channel()],
+        targets=[{'provider': 'window', 'target': window_target,
+                  'out': reserved_out}],
+        image_host=[{'provider': 'catbox',
+                     'token': '${' + env_name + '}',
+                     'options': {'storage_id': options_value}}])
+    config['push']['templates']['on_end']['title'] = '标题 {screenshot}'
+
+    with caplog.at_level(logging.DEBUG):
+        results = notif.send_notification(
+            config, 'on_end', process_name='demo',
+            FAKE_OUT_8421='synthetic')
+
+    assert set(results) == {('serverchan', True), ('smtp', True)}
+    smtp_call = next(
+        item for item in notifier.notify.call_args_list
+        if 'msg' in item.kwargs)
+    msg = smtp_call.kwargs['msg']
+    plain = msg.get_body(preferencelist=('plain',)).get_content()
+    html = msg.get_body(preferencelist=('html',)).get_content()
+    for secret in secrets:
+        assert secret not in str(sent)
+        assert secret not in caplog.text
+        assert secret not in plain
+        assert secret not in html
+    records = [record for record in caplog.records
+               if record.name.startswith('modules.')]
+    assert records
+    assert all(record.exc_info is None for record in records)
+    assert capture.call_count == upload.call_count == 1
