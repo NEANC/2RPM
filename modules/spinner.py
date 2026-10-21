@@ -370,7 +370,7 @@ class _LogSpinner:
         Args:
             message (str): 收尾文案
         """
-        LOGGER.error(f"{_ICON_FAIL}  {message}")
+        LOGGER.error(f"{_ICON_FAIL} {message}")
 
     def write(self, message):
         """以 INFO 级别记录文本
@@ -394,7 +394,7 @@ class _LogSpinner:
         Args:
             message (str): 失败文案
         """
-        LOGGER.error(f"{_ICON_FAIL}  {message}")
+        LOGGER.error(f"{_ICON_FAIL} {message}")
 
 
 @contextmanager
@@ -519,7 +519,7 @@ def notify_fail(message, exc_info=False):
 
     用于致命终止、Ctrl+C 取消、程序异常等不在 spinner 上下文内的失败场景
     全量信息（含 exc_info traceback）以 CRITICAL 级别写入日志文件，
-    控台仅呈现一条干净的 ❌ 双空格行（无 levelname/时间前缀），
+    控台仅呈现一条干净的 ❌ 单空格行（无 levelname/时间前缀），
     与 spinner 的定格风格保持一致；非 TTY 环境降级为 LOGGER 输出
 
     Args:
@@ -528,7 +528,7 @@ def notify_fail(message, exc_info=False):
     """
     # 非 TTY：交由日志系统（文件全量，含 traceback）
     if not sys.stdout.isatty():
-        LOGGER.critical(f"{_ICON_FAIL}  {message}", exc_info=exc_info)
+        LOGGER.critical(f"{_ICON_FAIL} {message}", exc_info=exc_info)
         return
 
     # TTY：先把完整记录（含 traceback）写入文件，控台静音以免重复

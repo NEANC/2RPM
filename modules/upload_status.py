@@ -16,7 +16,7 @@ from modules.spinner import temporary_text
 
 # 上传阶段统一文案，进入与恢复都只围绕该文案
 _PHASE_TEXT = '正在上传截图'
-# 终态定格图标：成功 ✔️、失败 ❌（两空格后接安全通道名）
+# 终态定格图标：成功 ✔️、失败 ❌（成功两空格、失败单空格后接安全通道名）
 _ICON_DONE = '\u2714\ufe0f'
 _ICON_FAIL = '\u274c'
 # 只登记终态身份、不显示任何 UI 的槽位状态
@@ -262,8 +262,9 @@ class _UploadStatusConsumer:
         name = upload_provider_name(event.provider, slot_index=slot_index)
         success = event.status == 'succeeded'
         icon = _ICON_DONE if success else _ICON_FAIL
+        gap = '  ' if success else ' '
         action = '上传成功' if success else '上传失败'
-        line = f'{icon}  通道 [{name}] {action}'
+        line = f'{icon}{gap}通道 [{name}] {action}'
         parts = []
         if slot_index is not None and self._provider_repeats(event.provider):
             parts.append(f'通道配置项{slot_index + 1}')

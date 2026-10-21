@@ -173,7 +173,7 @@ def test_slot_identity_and_suffixes(monkeypatch):
                 consumer(event)
         assert written_lines(stream) == [
             '正在上传截图',
-            '❌  通道 [BeeIMG.CN] 上传失败（通道配置项1，截图1）',
+            '❌ 通道 [BeeIMG.CN] 上传失败（通道配置项1，截图1）',
             '✔️  通道 [BeeIMG.CN] 上传成功（通道配置项2，截图1）',
         ]
         assert stream.flush.call_count >= 3
@@ -195,7 +195,7 @@ def test_slot_identity_and_suffixes(monkeypatch):
                 consumer(event)
         assert written_lines(stream) == [
             '正在上传截图',
-            '❌  通道 [BeeIMG.CN] 上传失败（通道配置项1，截图2）',
+            '❌ 通道 [BeeIMG.CN] 上传失败（通道配置项1，截图2）',
             '✔️  通道 [BeeIMG.CN] 上传成功（通道配置项2，截图2）',
         ]
         # CLI 一图重复 provider 只加配置项，使用实际槽位序号且首条已带后缀
@@ -211,7 +211,7 @@ def test_slot_identity_and_suffixes(monkeypatch):
         assert written_lines(single) == [
             '正在上传截图',
             '✔️  通道 [Catbox] 上传成功（通道配置项1）',
-            '❌  通道 [Catbox] 上传失败（通道配置项2）',
+            '❌ 通道 [Catbox] 上传失败（通道配置项2）',
         ]
         # 未知 provider 始终安全名称加槽位数字，绝不回显原文
         unknown = plain_stream()
@@ -223,7 +223,7 @@ def test_slot_identity_and_suffixes(monkeypatch):
             unknown_consumer(
                 slot_event('d', 1, 3, 'token=' + SECRET, 'failed'))
         assert written_lines(unknown) == [
-            '正在上传截图', '❌  通道 [未知图床 第 4 项] 上传失败']
+            '正在上传截图', '❌ 通道 [未知图床 第 4 项] 上传失败']
         assert SECRET not in ''.join(written_lines(unknown))
 
 
@@ -240,7 +240,7 @@ def test_scope_laziness_and_late_terminal(monkeypatch):
         # 阶段外 started 不开动画，阶段外终态只普通行
         consumer(slot_event('a', 1, 0, 'catbox', 'started'))
         consumer(slot_event('a', 1, 0, 'catbox', 'failed'))
-        assert written_lines(stream) == ['❌  通道 [Catbox] 上传失败']
+        assert written_lines(stream) == ['❌ 通道 [Catbox] 上传失败']
         assert '正在上传截图' not in written_lines(stream)
         assert '\x1b' not in ''.join(written_lines(stream))
         assert factory.call_count == 0
@@ -314,7 +314,7 @@ def test_sink_error_and_control_stop(monkeypatch):
     consumer2(slot_event('b', 1, 0, 'catbox', 'succeeded'))
     consumer2(slot_event('b', 2, 0, 'catbox', 'failed'))
     assert [item.rstrip('\n') for item in calls] == [
-        '❌  通道 [Catbox] 上传失败']
+        '❌ 通道 [Catbox] 上传失败']
 
     calls3 = []
 
@@ -334,7 +334,7 @@ def test_sink_error_and_control_stop(monkeypatch):
             traced.finish_slot(1, 0, 'failed', reason_code='upload_failed')
     assert caught3.value is signal
     assert [item.rstrip('\n') for item in calls3] == [
-        '❌  通道 [Catbox] 上传失败']
+        '❌ 通道 [Catbox] 上传失败']
     assert traced.summary()['slots_failed'] == 1
 
 
@@ -426,7 +426,7 @@ def test_upload_terminal_result_colors():
                   + '✔️  通道 [BeeIMG.CN] 上传成功（通道配置项1，截图1）'
                   + colorama.Style.RESET_ALL)
     red_line = (colorama.Fore.RED
-                + '❌  通道 [BeeIMG.CN] 上传失败（通道配置项2，截图1）'
+                + '❌ 通道 [BeeIMG.CN] 上传失败（通道配置项2，截图1）'
                 + colorama.Style.RESET_ALL)
     plain_success = remove_terminal_sequences(green_line)
     plain_fail = remove_terminal_sequences(red_line)
@@ -494,7 +494,7 @@ def test_non_tty_shows_status_with_muted_logger():
     finally:
         root.handlers = saved
     text = stream.getvalue()
-    assert '❌  通道 [Catbox] 上传失败' in text
+    assert '❌ 通道 [Catbox] 上传失败' in text
     assert '正在上传截图' not in text
     assert '\x1b' not in text
 
@@ -689,7 +689,7 @@ def test_pipeline_failover_records_each_slot(monkeypatch, capsys):
     assert summary['slots_planned'] == 2
     assert summary['status'] == 'completed'
     out = capsys.readouterr().out
-    assert '❌  通道 [Catbox] 上传失败' in out
+    assert '❌ 通道 [Catbox] 上传失败' in out
     assert '✔️  通道 [BeeIMG] 上传成功' in out
     assert out.count('正在上传截图') == 1
     assert '\x1b' not in out
@@ -752,7 +752,7 @@ def test_cli_profile_forbidden_shows_actionable_hint(monkeypatch, tmp_path, caps
     out = captured.out
     assert code == 1
     assert transport.posts == []
-    assert terminal_lines(captured.err) == ['❌  通道 [BeeIMG.CN] 上传失败']
+    assert terminal_lines(captured.err) == ['❌ 通道 [BeeIMG.CN] 上传失败']
     assert out.count(ImageHostError('profile_forbidden', '').message) == 1
     assert 'beeimg_cn：上传失败\n' in out
     assert SECRET not in out
@@ -808,7 +808,7 @@ def test_preupload_failure_displays_one_slot_failure(monkeypatch, capsys):
     assert summary['slots_succeeded'] == 0
     assert summary['status'] == 'failed'
     out = capsys.readouterr().out
-    assert terminal_lines(out) == ['❌  通道 [Catbox] 上传失败']
+    assert terminal_lines(out) == ['❌ 通道 [Catbox] 上传失败']
 
 
 def test_recovery_success_does_not_display_intermediate_failure(
@@ -1073,9 +1073,9 @@ def test_stable_consumer_per_image_scope(monkeypatch):
     assert summary['slots_failed'] == 2
     assert handle.texts == ['正在上传截图', '监视中'] * 2
     assert handle.writes == [
-        '❌  通道 [Catbox] 上传失败（截图1）',
+        '❌ 通道 [Catbox] 上传失败（截图1）',
         '✔️  通道 [WMImg] 上传成功（截图1）',
-        '❌  通道 [Catbox] 上传失败（截图2）',
+        '❌ 通道 [Catbox] 上传失败（截图2）',
         '✔️  通道 [WMImg] 上传成功（截图2）',
     ]
     # 借用句柄收到真实结果语义，且外层 spinner 不被关闭
@@ -1128,7 +1128,7 @@ def test_automatic_first_success_and_cli_all_slots(monkeypatch, tmp_path, capsys
     assert order == [
         ('write', '正在上传截图'),
         ('call', 'catbox'),
-        ('write', '❌  通道 [Catbox] 上传失败'),
+        ('write', '❌ 通道 [Catbox] 上传失败'),
         ('call', 'wmimg'),
         ('write', '✔️  通道 [WMImg] 上传成功'),
     ]
@@ -1223,8 +1223,8 @@ def test_host_providers_consumer_normalizes_unknown_slots():
     consumer(slot_event('a', 1, 0, 'unknown', 'failed'))
     consumer(slot_event('a', 1, 1, 'unknown', 'failed'))
     assert stream.getvalue().splitlines() == [
-        '❌  通道 [未知图床 第 1 项] 上传失败（通道配置项1）',
-        '❌  通道 [未知图床 第 2 项] 上传失败（通道配置项2）',
+        '❌ 通道 [未知图床 第 1 项] 上传失败（通道配置项1）',
+        '❌ 通道 [未知图床 第 2 项] 上传失败（通道配置项2）',
     ]
     assert 'unregistered-secret' not in stream.getvalue()
     assert 'None' not in stream.getvalue()

@@ -452,7 +452,7 @@ def test_cli_stream_stats_and_security(monkeypatch, tmp_path, capsys):
     assert saved_path not in captured.err
     assert '正在上传截图' in captured.err
     assert '✔️  通道 [Catbox] 上传成功' in captured.err
-    assert '❌  通道 [WMImg] 上传失败' in captured.err
+    assert '❌ 通道 [WMImg] 上传失败' in captured.err
     assert EXCEPTION_SECRET not in captured.out
     assert HOST_SECRET not in captured.out + captured.err + file_text
     assert EXCEPTION_SECRET not in captured.err + file_text

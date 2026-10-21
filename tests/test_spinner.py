@@ -416,7 +416,7 @@ class TestNotifyFail(unittest.TestCase):
         self.root.handlers = self.saved
 
     def test_tty_prints_clean_fail_line(self):
-        """TTY：print 一条红色 ❌ 双空格行，全量记录写入文件。"""
+        """TTY：print 一条红色 ❌ 单空格行，全量记录写入文件。"""
         with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=True), \
                 patch.object(spinner_mod, 'print', create=True) as fake_print, \
                 patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
@@ -448,7 +448,7 @@ class TestNotifyFail(unittest.TestCase):
                 patch.object(spinner_mod.LOGGER, 'critical') as log_crit:
             spinner_mod.notify_fail("程序终止运行", exc_info=True)
         log_crit.assert_called_once_with(
-            spinner_mod._ICON_FAIL + "  程序终止运行", exc_info=True)
+            spinner_mod._ICON_FAIL + " 程序终止运行", exc_info=True)
 
 
 class TestSpinnerPhaseContract(unittest.TestCase):

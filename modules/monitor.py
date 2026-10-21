@@ -190,7 +190,8 @@ def _write_plain_feedback(text, ok):
         ok (bool): 该通道是否成功
     """
     icon = _ICON_DONE if ok else _ICON_FAIL
-    sys.stdout.write(f"{icon}  {text}\n")
+    gap = "  " if ok else " "
+    sys.stdout.write(f"{icon}{gap}{text}\n")
     sys.stdout.flush()
 
 

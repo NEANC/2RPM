@@ -511,7 +511,8 @@ def test_non_tty_feedback_writes_plain_stdout():
             _base_config(), 'on_end', spinner=handle, process_name='demo.exe')
 
     text = ''.join(capture.data)
-    assert '通道 [qmsg] 推送成功' in text
+    assert '✔️  通道 [qmsg] 推送成功' in text
+    assert '❌ 通道 [smtp]' in text
     assert _SMTP_FAIL in text
     assert '\x1b' not in text
     assert capture.flushed == 2
