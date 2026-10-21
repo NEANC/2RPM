@@ -22,7 +22,7 @@ from modules.notification_rendering import (
 from modules.screenshot.models import CaptureResult
 from modules.screenshot.pipeline import ScreenshotBatch
 from modules.screenshot.pipeline import ScreenshotFailureDetail
-from modules.screenshot.pipeline import build_screenshot_notice_fragments
+from modules.screenshot.pipeline import build_screenshot_variable_fragments
 from modules.screenshot.pipeline import markdown_image
 
 
@@ -218,7 +218,7 @@ def test_aggregate_fallback_modes(mode, with_empty_targets, fallback):
 @pytest.mark.parametrize(
     'fallback', ('', '截图失败', '截图配置失败：未配置有效截图目标'))
 def test_notice_order_and_fallback(fallback):
-    """追加项按既有顺序产生，无单项目标时直接使用聚合提示。"""
+    """提示块只在引用变量内部展开，未引用截图变量的正文保持原样。"""
     values = {'shot': IMAGE, 'screenshot': IMAGE}
     batch = ScreenshotBatch(values, ('W', 'W'), ('shot', 'shot'))
     before_values = dict(values)
@@ -226,13 +226,12 @@ def test_notice_order_and_fallback(fallback):
 
     body_context = ScreenshotRenderContext(
         '{screenshot}', 'body', values, batch, True)
-    assert render_screenshot_content(body_context, 'url') == (
-        f'body\n\n截图配置提示\nW\n\n{URL}')
+    assert render_screenshot_content(body_context, 'url') == 'body'
 
     direct_context = ScreenshotRenderContext(
         '{screenshot}', '{screenshot}', values, batch, True)
     assert render_screenshot_content(direct_context, 'url') == (
-        f'{URL}\n\n截图配置提示\nW')
+        f'{URL}\n\n---\n\n截图配置提示: W')
 
     fallback_batch = ScreenshotBatch({'screenshot': fallback}, (), ())
     fallback_values = {'screenshot': fallback}
@@ -820,12 +819,12 @@ def test_smtp_html_attribute_escape(url):
         f'<img src="{html_escape(destination, quote=True)}" alt="shot">\n')
 
 
-def test_html_content_appends_escaped_notice_and_renamed_image():
-    """HTML 正文转义告警、换行转 br，并把改名输出以单个 img 追加。"""
+def test_html_notice_only_inside_referenced_variable():
+    """HTML 提示块位于引用变量内部，转义一次并用 hr 分隔。"""
     batch = ScreenshotBatch(
         {'shot': M, 'screenshot': M}, ('W<&>',), ('shot',))
     values = dict(batch.values)
-    context = ScreenshotRenderContext('T', 'body', values, batch, True)
+    context = ScreenshotRenderContext('T', '{screenshot}', values, batch, True)
     before_values = dict(values)
     before_batch = ScreenshotBatch(
         dict(batch.values), batch.warnings, batch.renamed_outputs)
@@ -836,15 +835,24 @@ def test_html_content_appends_escaped_notice_and_renamed_image():
     rendered = render_screenshot_content(context, 'html')
 
     assert rendered == (
-        'body<br>\n<br>\n截图配置提示<br>\nW&lt;&amp;&gt;<br>\n<br>\n'
-        + image)
+        image + '<br>\n<br>\n<hr><br>\n<br>\n'
+        '截图配置提示: W&lt;&amp;&gt;')
     assert 'W&lt;&amp;&gt;' in rendered
-    assert 'body<br>\n' in rendered
     assert rendered.count('<img') == 1
     assert '&lt;img' not in rendered
-    assert image in rendered
     assert context.values == before_values
     assert batch == before_batch
+
+
+def test_body_without_reference_stays_verbatim():
+    """正文没有引用截图变量时，提示不会出现在变量之外。"""
+    batch = ScreenshotBatch(
+        {'shot': M, 'screenshot': M}, ('W<&>',), ('shot',))
+    context = ScreenshotRenderContext(
+        'T', '纯正文\n\n', dict(batch.values), batch, True)
+
+    assert render_screenshot_content(context, 'html') == '纯正文<br>\n<br>\n'
+    assert render_screenshot_content(context, 'markdown') == '纯正文\n\n'
 
 
 _REASON_A = '截图上传失败：通道 BeeIMG.CN 图床网络传输失败。'
@@ -880,48 +888,42 @@ def test_failure_fragments_all_render_modes():
     assert batch == before_batch
 
 
-def test_notice_subset_before_dedup():
-    """先筛未引用的改名目标再在子集内去重，保留被引用目标的同因句。"""
+def test_variable_subset_keeps_referenced_failure():
+    """每个变量只携带自己的失败片段，同一身份在不同变量内各自保留。"""
     batch = ScreenshotBatch(
         {'a': '旧A', 'b': '旧B', 'screenshot': '旧聚合'}, (), ('b',),
         (ScreenshotFailureDetail('a', 'upload', 'beeimg_cn', 'transport_failed'),
          ScreenshotFailureDetail('b', 'upload', 'beeimg_cn', 'transport_failed')))
 
-    fragments = build_screenshot_notice_fragments(batch, '{a}')
-    assert fragments == (('b', 'text', _REASON_A),)
-    notice_only = fragments[0][2]
-    assert notice_only == _REASON_A
-
-    assert build_screenshot_notice_fragments(batch, '{b}') == ()
-    assert build_screenshot_notice_fragments(batch, '{screenshot}') == ()
+    assert build_screenshot_variable_fragments(batch, 'a') == (
+        ('a', 'text', _REASON_A),)
+    assert build_screenshot_variable_fragments(batch, 'b') == (
+        ('b', 'text', _REASON_A),)
 
     warned = ScreenshotBatch(
         dict(batch.values), ('W', 'W'), ('b',), batch.failure_details)
-    assert build_screenshot_notice_fragments(warned, '{a}') == (
-        ('', 'text', '截图配置提示\nW'), ('b', 'text', _REASON_A))
-    assert build_screenshot_notice_fragments(warned, '{') == (
-        ('', 'text', '截图配置提示\nW'),)
+    assert build_screenshot_variable_fragments(warned, 'a') == (
+        ('a', 'text', _REASON_A),
+        ('', 'separator', '---'),
+        ('', 'text', '截图配置提示: W'))
 
 
 def test_html_notice_escaped_once():
-    """HTML 追加文本只转义一次，旧无详情值不被当作新失败详情。"""
+    """HTML 变量内提示只转义一次，旧无详情值不被当作新失败详情。"""
     legacy = '<旧原因>&'
-    batch = ScreenshotBatch(
-        {'legacy': legacy, 'renamed': legacy, 'screenshot': ''}, ('W',),
-        ('renamed',))
+    batch = ScreenshotBatch({'screenshot': legacy}, ('W',), ())
     values = dict(batch.values)
     before_values = dict(values)
-    before_batch = ScreenshotBatch(
-        dict(batch.values), ('W',), ('renamed',))
-    context = ScreenshotRenderContext('T', 'body', values, batch, True)
+    before_batch = ScreenshotBatch(dict(batch.values), ('W',), ())
+    context = ScreenshotRenderContext('T', '{screenshot}', values, batch, True)
 
     html_notice = render_screenshot_content(context, 'html')
 
     assert html_notice.count('&lt;旧原因&gt;&amp;') == 1
     assert '&amp;lt;' not in html_notice
     assert html_notice == (
-        'body<br>\n<br>\n截图配置提示<br>\nW<br>\n<br>\n'
-        '&lt;旧原因&gt;&amp;')
+        '&lt;旧原因&gt;&amp;<br>\n<br>\n<hr><br>\n<br>\n'
+        '截图配置提示: W')
     assert values == before_values
     assert batch == before_batch
     assert batch.failure_details == ()

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
-"""串行编排独立截图上传，并向已渲染正文追加必要提示。"""
+"""串行编排独立截图上传，并为每个截图变量构建受控结果与提示片段。"""
 
 from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 import logging
-from string import Formatter
 from urllib.parse import quote
 from urllib.parse import urlsplit
 
@@ -358,61 +357,28 @@ def prepare_screenshots(section, enabled, reserved_names, *,
     return ScreenshotBatch(values, unique_warnings, renamed, tuple(details))
 
 
-def _referenced_fields(template):
-    """递进解析正文及嵌套格式字段，畸形模板返回未知引用状态。"""
-    formatter = Formatter()
-    pending = [template]
-    fields = set()
-    try:
-        while pending:
-            for _, name, specification, _ in formatter.parse(pending.pop()):
-                if name is None:
-                    continue
-                fields.add(name)
-                if specification:
-                    pending.append(specification)
-    except ValueError:
-        return None
-    return fields
+def build_screenshot_variable_fragments(batch, output_name):
+    """构建单个截图变量的完整片段：结果在前，批次提示在后。
 
-
-def build_screenshot_notice_fragments(batch, original_template):
-    """构建追加片段：配置告警一次去重，未引用的改名结果在子集内去重。
+    结果沿用唯一受控构建器；存在非空批次提示时，在结果之后插入分隔片段
+    再输出一次提示块。没有结果时直接给出提示块，不制造空结果或前导分隔。
 
     Args:
         batch: 本次截图批次，只读。
-        original_template: 原始正文模板，用于解析实际字段引用。
+        output_name: 变量名；聚合名取全量结果，其余取该输出名子集。
 
     Returns:
-        tuple[tuple[str, str, str], ...]: 有序 (输出名, kind, 文本) 追加片段；
-        配置告警恒为单个 text 片段；仅当模板可解析且未引用聚合占位时，先
-        选出未被引用的改名输出名，再在一次构建内对该子集去重；畸形模板只
-        保留告警，不推断引用。
+        tuple[tuple[str, str, str], ...]: 有序 (输出名, kind, 文本) 片段；
+        kind 为 image、text 或 separator。
     """
-    fragments = []
+    if output_name == _AGGREGATE_NAME:
+        fragments = build_screenshot_fragments(batch)
+    else:
+        fragments = build_screenshot_fragments(batch, output_names=(output_name,))
     warnings = tuple(dict.fromkeys(batch.warnings))
-    if warnings:
-        fragments.append(('', 'text', '截图配置提示\n' + '\n'.join(warnings)))
-    fields = _referenced_fields(original_template)
-    if fields is None or _AGGREGATE_NAME in fields:
-        return tuple(fragments)
-    eligible = [
-        name for name in dict.fromkeys(batch.renamed_outputs)
-        if name not in fields and batch.values.get(name, '')
-    ]
-    fragments.extend(build_screenshot_fragments(batch, output_names=eligible))
-    return tuple(fragments)
-
-
-def append_screenshot_notices(
-        rendered_content, original_template, batch) -> str:
-    """只追加去重提示及未引用的改名结果，绝不再次格式化或上传。
-
-    畸形模板仍追加已有告警，但不推断引用或自动补附图片；普通模板
-    校验由通知层负责。转义花括号中的文字不视为实际字段引用。
-    """
-    fragments = build_screenshot_notice_fragments(batch, original_template)
+    if not warnings:
+        return fragments
+    notice = ('', 'text', '截图配置提示: ' + '\n'.join(warnings))
     if not fragments:
-        return rendered_content
-    suffix = '\n\n'.join(text for _, _, text in fragments)
-    return rendered_content + '\n\n' + suffix if rendered_content else suffix
+        return (notice,)
+    return (*fragments, ('', 'separator', '---'), notice)

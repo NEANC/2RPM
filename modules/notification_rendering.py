@@ -9,8 +9,7 @@ from string import Formatter
 
 from modules.log_safety import extend_secrets
 from modules.screenshot.pipeline import ScreenshotBatch
-from modules.screenshot.pipeline import build_screenshot_fragments
-from modules.screenshot.pipeline import build_screenshot_notice_fragments
+from modules.screenshot.pipeline import build_screenshot_variable_fragments
 
 
 _AGGREGATE_VARIABLE = 'screenshot'
@@ -75,15 +74,17 @@ def _render_text(text, mode):
 
 
 def _render_notice_fragment(name, kind, text, mode):
-    """按片段种类渲染单个受控节点：图片提取 destination，文本按模式转换。"""
+    """按片段种类渲染单个受控节点：图片提取 destination，分隔线独立输出。"""
+    if kind == 'separator':
+        return '<hr>' if mode == 'html' else text
     if kind == 'image':
         return _render_image(name, _image_destination(name, text), mode)
     return _render_text(text, mode)
 
 
 def _render_aggregate(values, batch, mode):
-    """按唯一构建器片段顺序组装单项，无片段时沿用聚合回退值。"""
-    fragments = build_screenshot_fragments(batch)
+    """按唯一构建器片段顺序组装单项与变量内提示块。"""
+    fragments = build_screenshot_variable_fragments(batch, _AGGREGATE_VARIABLE)
     if not fragments:
         return _render_text(str(values.get(_AGGREGATE_VARIABLE, '')), mode)
     separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
@@ -147,28 +148,17 @@ def render_screenshot_template(template: str, values: dict[str, object],
 
 def render_screenshot_content(context: ScreenshotRenderContext,
                               mode: str) -> str:
-    """渲染正文并追加一次既有截图提示与未引用改名结果。
+    """渲染正文；提示块已在受控截图变量内部展开，不再追加正文。
 
     Args:
         context: 本次通知的原始正文、变量与截图批次。
         mode: markdown、url、plain 或 html。
 
     Returns:
-        str: 含追加项的通道专用正文。
+        str: 通道专用正文。
     """
-    rendered = render_screenshot_template(
+    return render_screenshot_template(
         context.raw_content, context.values, context.batch, mode)
-    fragments = build_screenshot_notice_fragments(
-        context.batch, context.raw_content)
-    if not fragments:
-        return rendered
-    separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
-    suffix = separator.join(
-        _render_notice_fragment(name, kind, text, mode)
-        for name, kind, text in fragments)
-    if not rendered:
-        return suffix
-    return rendered + separator + suffix
 
 
 def _render_title(context: ScreenshotRenderContext, mode: str) -> str:

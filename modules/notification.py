@@ -32,7 +32,7 @@ from modules.notification_rendering import (
 )
 from modules.screenshot.pipeline import (
     ScreenshotBatch,
-    append_screenshot_notices,
+    build_screenshot_variable_fragments,
     prepare_screenshots,
 )
 from modules.screenshot.targets import allocate_targets
@@ -513,6 +513,20 @@ def _prepare_screenshot_batch(section, enabled, reserved_names, *,
         return ScreenshotBatch({}, (), ()), True
 
 
+def _screenshot_variable_text(batch, name):
+    """合成单个截图变量的字符串值：结果在前，批次提示在后。
+
+    Args:
+        batch (ScreenshotBatch): 本次截图批次，只读
+        name (str): 模板引用且本次已配置的截图变量名
+
+    Returns:
+        str: 变量展开文本；无结果且无提示时为空字符串
+    """
+    return '\n\n'.join(
+        text for _, _, text in build_screenshot_variable_fragments(batch, name))
+
+
 def _referenced_screenshot_count(title, content, batch):
     """统计本次通知实际引用的截图批次项数，供日志脱敏判定复用
 
@@ -655,7 +669,10 @@ def send_notification(config, template_key, **kwargs):
         hint = _INTERNAL_SCREENSHOT if internal_error else _UNCONFIGURED_SCREENSHOT
         fallback = hint if enabled else ''
         for name in placeholders:
-            values.setdefault(name, fallback)
+            if name in batch.values:
+                values[name] = _screenshot_variable_text(batch, name)
+            else:
+                values[name] = fallback
 
         try:
             title = raw_title.format(**values)
@@ -666,8 +683,6 @@ def send_notification(config, template_key, **kwargs):
             )
             return []
 
-        # 用原始正文追加一次告警与必要改名结果，不再重复格式化
-        content = append_screenshot_notices(content, raw_content, batch)
         # 本次通知是否引用截图结果，同一判定同时决定失败摘要与成功日志
         screenshot_count = _referenced_screenshot_count(title, content, batch)
         _log_rendered_notification(template_key, title, content, batch)

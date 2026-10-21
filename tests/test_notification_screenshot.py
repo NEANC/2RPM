@@ -1669,12 +1669,13 @@ def test_complete_template_is_logged_once_without_mutation(
             '{screenshot_1}\n\n{screenshot}\n\n'
             '{screenshot_1}{screenshot_1}' + '长正文内容' * 40)
         markdown = f'![screenshot_1]({SAFE_SIGNED_URL})'
-        original_title = f'标题 demo.exe {markdown!r}'
-        original_content = (
-            f"正文 demo.exe 'demo.exe'\n\n{markdown}\n\n{markdown}\n\n"
-            f'{markdown}{markdown}' + '长正文内容' * 40
-            + '\n\n截图配置提示\n'
+        variable = (
+            f'{markdown}\n\n---\n\n截图配置提示: '
             '截图目标 1：输出名“screenshot”为保留名，已改为“screenshot_1”。')
+        original_title = f'标题 demo.exe {variable!r}'
+        original_content = (
+            f"正文 demo.exe 'demo.exe'\n\n{variable}\n\n{variable}\n\n"
+            f'{variable}{variable}' + '长正文内容' * 40)
     else:
         template['title'] = '纯文本标题 {process_name:>{width}}'
         template['content'] = (
@@ -2343,3 +2344,57 @@ def test_unconfigured_index_shows_unconfigured_hint(monkeypatch):
     assert results == [('serverchan', True)]
     assert sent == [('标题 demo', '正文 截图失败：未配置该截图目标')]
     assert capture.call_count == upload.call_count == 1
+
+
+def test_variable_notice_is_inside_value(monkeypatch):
+    """批次提示只在引用变量内部展开，模板字面文本保持原位。"""
+    capture, upload = _install_boundaries(
+        monkeypatch,
+        capture_side_effect=lambda source, name, **kwargs: CaptureResult(
+            b'png-' + name.encode(), source, name, 2, 3, ('合成截图提示',)))
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '前{screenshot_1}后'
+
+    notif.send_notification(config, 'on_end', process_name='demo')
+
+    image = f'![screenshot_1]({URL})'
+    assert sent == [(
+        '标题 demo',
+        f'前{image}\n\n---\n\n截图配置提示: 合成截图提示后')]
+
+
+def test_no_warning_variable_has_no_separator(monkeypatch):
+    """无批次提示时变量内不出现分隔线。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config()
+    config['push']['templates']['on_end']['content'] = '前{screenshot_1}后'
+
+    notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert sent == [(
+        '标题 demo', f'前![screenshot_1]({URL})后')]
+
+
+def test_unreferenced_renamed_result_is_not_appended(monkeypatch):
+    """只引用一个变量时不补附未引用的改名结果。"""
+    _install_boundaries(monkeypatch)
+    sent, _, _ = _install_onepush(monkeypatch)
+    config = _base_config(targets=[
+        {**WINDOW_TARGET, 'out': 'same'},
+        {**WINDOW_TARGET, 'out': 'same'},
+    ])
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '正文 {same}'
+
+    notif.send_notification(config, 'on_end', process_name='demo')
+
+    body = sent[0][1]
+    assert body.startswith(f'正文 ![same]({URL})')
+    assert 'screenshot_2](' not in body
+    assert body.count('截图配置提示: ') == 1
+    assert body.count('![') == 1

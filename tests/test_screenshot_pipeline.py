@@ -85,6 +85,13 @@ def boundaries(monkeypatch):
     return module, capture, upload
 
 
+def _variable_text(module, batch, output_name):
+    """按通知层规则把变量片段合成为字符串值。"""
+    return '\n\n'.join(
+        text for _, _, text
+        in module.build_screenshot_variable_fragments(batch, output_name))
+
+
 @pytest.mark.parametrize('invalid_source', ['window', 'adb'])
 @pytest.mark.parametrize('invalid_target', [
     'App@{vErSiOn}', 'App@{version', 'App@{version}tail',
@@ -129,8 +136,8 @@ def test_fixed_interfaces_and_frozen_batch():
     module = pipeline()
     assert list(signature(module.prepare_screenshots).parameters) == [
         'section', 'enabled', 'reserved_names', 'runtime', 'event']
-    assert list(signature(module.append_screenshot_notices).parameters) == [
-        'rendered_content', 'original_template', 'batch']
+    assert list(signature(module.build_screenshot_variable_fragments).parameters) == [
+        'batch', 'output_name']
     assert module.ScreenshotBatch.__annotations__ == {
         'values': dict[str, str], 'warnings': tuple[str, ...],
         'renamed_outputs': tuple[str, ...],
@@ -397,7 +404,7 @@ def test_disabled_allocates_without_reading_hosts_or_environment(
 
 def test_capture_warnings_ordered_unique_and_not_in_aggregate(
         monkeypatch, caplog):
-    """成功截图告警与分配告警保序去重，在日志和附加正文各出现一次。"""
+    """成功截图告警与分配告警保序去重，只在变量提示块出现一次。"""
     module, capture, _ = boundaries(monkeypatch)
     other = '未能还原原线程 DPI 上下文'
     capture.side_effect = [captured(warnings=(SAFE_WARNING, SAFE_WARNING)),
@@ -410,90 +417,48 @@ def test_capture_warnings_ordered_unique_and_not_in_aggregate(
     assert 'same' in batch.warnings[0] and 'screenshot_2' in batch.warnings[0]
     assert batch.warnings[1:] == (SAFE_WARNING, other)
     record_count = len(caplog.records)
-    template = '{screenshot}'
-    rendered = template.format(**batch.values)
-    result = module.append_screenshot_notices(rendered, template, batch)
-    assert result.startswith(rendered + '\n\n截图配置提示')
-    assert result.count('截图配置提示') == 1
+    body = _variable_text(module, batch, 'screenshot')
+    assert body.count('截图配置提示: ') == 1
     for warning in batch.warnings:
         assert warning not in batch.values['screenshot']
-        assert result.count(warning) == 1
+        assert body.count(warning) == 1
         assert sum(warning in record.getMessage()
                    for record in caplog.records) == 1
     assert len(caplog.records) == record_count
 
 
-@pytest.mark.parametrize(('template', 'supplement'), [
-    ('正文', True),
-    ('{screenshot_2}', True),
-    ('{{screenshot}}', True),
-    ('{{screenshot_3}}', True),
-    ('{screenshot}', False),
-    ('{screenshot_3}', False),
-    ('{screenshot_3!s} {screenshot_3}', False),
-    ('{body:{screenshot_3}}', False),
-    ('{body:{screenshot}}', False),
-    ('{body:{{screenshot}}}', True),
-    ('{body:{width}.{screenshot_3}}', False),
-])
-@pytest.mark.parametrize('failure', [False, True])
-def test_renamed_supplement_uses_real_fields_only(
-        monkeypatch, template, supplement, failure):
-    """解析真实及嵌套字段，转义文字不算引用，保持既有输出归属。"""
+def test_unreferenced_renamed_result_is_not_in_other_variable(monkeypatch):
+    """未引用的改名结果不会补附到其他变量的展开文本。"""
     module, capture, _ = boundaries(monkeypatch)
-    if failure:
-        capture.side_effect = [captured(), CaptureError('adb_offline', SECRET)]
     batch = module.prepare_screenshots(section([
         target(out='screenshot_2'), target(),
     ]), True, ())
     assert batch.renamed_outputs == ('screenshot_3',)
     assert batch.values['screenshot_2'] == f'![screenshot_2]({URL})'
-    rendered = '已渲染正文 {不应再次格式化}'
-    result = module.append_screenshot_notices(rendered, template, batch)
-    value = batch.values['screenshot_3']
-    assert result.startswith(rendered + '\n\n截图配置提示')
-    assert (value in result) is supplement
-    if supplement:
-        assert result.endswith(value)
-        assert result.count(value) == 1
-    assert batch.values['screenshot_2'] not in result
+    body = _variable_text(module, batch, 'screenshot_2')
+    assert body.startswith(f'![screenshot_2]({URL})')
+    assert batch.values['screenshot_3'] not in body
     assert capture.call_count == 2
 
 
-def test_repeated_references_and_channels_do_not_repeat_work(monkeypatch):
-    """相同变量多次引用或跨通道复用结果不增加截图上传次数。"""
+def test_repeated_variable_builds_do_not_repeat_work(monkeypatch):
+    """相同变量多次构建或跨通道复用结果不增加截图上传次数。"""
     module, capture, upload = boundaries(monkeypatch)
     batch = module.prepare_screenshots(section([target(out='custom')]), True, ())
-    template = '{custom}\n{custom}\n{{screenshot}}'
-    rendered = template.format(**batch.values)
+    first = module.build_screenshot_variable_fragments(batch, 'custom')
     for _ in range(3):
-        assert module.append_screenshot_notices(
-            rendered, template, batch) == rendered
+        assert module.build_screenshot_variable_fragments(batch, 'custom') == first
     assert capture.call_count == upload.call_count == 1
-    assert module.append_screenshot_notices('普通正文', '普通正文', batch) == '普通正文'
 
 
-@pytest.mark.parametrize('template', ['{', '}', '{screenshot_3',
-                                       '{screenshot_3} {', '{x:{broken}'])
-def test_malformed_template_is_append_only_and_conservative(
-        monkeypatch, template):
-    """畸形模板不重新渲染或上传，只追加去重告警而不猜测补附。"""
+@pytest.mark.parametrize('output_name', ['screenshot_9', 'unknown'])
+def test_unknown_variable_has_no_fragments(monkeypatch, output_name):
+    """未配置的变量不构建任何片段，交由通知层给固定缺失提示。"""
     module, capture, upload = boundaries(monkeypatch)
-    batch = module.prepare_screenshots(section([
-        target(out='same'), target(out='same'),
-    ]), True, ())
-    result = module.append_screenshot_notices('已有正文 {x}', template, batch)
-    assert result.startswith('已有正文 {x}\n\n截图配置提示')
-    assert '![' not in result
-    assert capture.call_count == upload.call_count == 2
-
-
-def test_append_deduplicates_batch_warnings_without_logging(caplog):
-    """公开结果中的重复告警只在提示段出现一次，不额外写日志。"""
-    module = pipeline()
-    batch = module.ScreenshotBatch({'screenshot': ''}, ('提示', '提示'), ())
-    assert module.append_screenshot_notices('', '', batch) == '截图配置提示\n提示'
-    assert not caplog.records
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    assert module.build_screenshot_variable_fragments(
+        batch, output_name) == ()
+    assert capture.call_count == upload.call_count == 1
 
 
 @pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
@@ -668,9 +633,8 @@ def test_upload_warnings_survive_success_and_failure(monkeypatch, caplog):
     assert batch.warnings[1:] == (SAFE_WARNING, first, second)
     assert batch.values['same'] == f'![same]({URL})'
     assert batch.values['screenshot_2'] == '截图上传失败'
-    body = module.append_screenshot_notices(
-        batch.values['screenshot'], '{screenshot}', batch)
-    assert body.count('截图配置提示') == 1
+    body = _variable_text(module, batch, 'screenshot')
+    assert body.count('截图配置提示: ') == 1
     business = [record for record in caplog.records
                 if record.name == module.LOGGER.name]
     traces = [record for record in caplog.records
@@ -879,8 +843,7 @@ def test_automatic_write_cleanup_warning_does_not_block_upload(
         (captured().image_bytes, 'screenshot_2.jpg')]
     assert batch.warnings == (
         '截图保存失败：无法写入输出路径', '截图半成品清理失败')
-    body = module.append_screenshot_notices(
-        batch.values['screenshot'], '{screenshot}', batch)
+    body = _variable_text(module, batch, 'screenshot')
     for warning in batch.warnings:
         assert body.count(warning) == caplog.text.count(warning) == 1
     assert SECRET not in repr(batch) + body + caplog.text

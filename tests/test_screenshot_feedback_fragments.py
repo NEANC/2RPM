@@ -283,3 +283,67 @@ def test_generic_upload_uses_known_error_message(monkeypatch):
     batch = module.prepare_screenshots(section([target()]), True, ())
     reason = ImageHostError('http_failed', '').message
     assert batch.values['screenshot'] == f'截图上传失败：通道 未知图床 {reason}。'
+
+
+def test_variable_fragments_place_notice_after_result():
+    """提示块以分隔线接在结果之后，多条提示用单换行连接。"""
+    module = pipeline()
+    image = f'![shot]({URL})'
+    batch = module.ScreenshotBatch(
+        {'shot': image, 'screenshot': image}, ('提示甲', '提示乙'), ('shot',))
+
+    assert module.build_screenshot_variable_fragments(batch, 'shot') == (
+        ('shot', 'image', image),
+        ('', 'separator', '---'),
+        ('', 'text', '截图配置提示: 提示甲\n提示乙'),
+    )
+
+
+def test_variable_fragments_without_warnings_have_no_separator():
+    """无批次提示时不产生分隔线或空提示块。"""
+    module = pipeline()
+    image = f'![shot]({URL})'
+    batch = module.ScreenshotBatch({'shot': image, 'screenshot': image}, (), ())
+
+    assert module.build_screenshot_variable_fragments(batch, 'shot') == (
+        ('shot', 'image', image),)
+
+
+def test_variable_fragments_warning_only_has_no_leading_separator():
+    """只有提示而没有结果时直接给出提示块，不制造前导分隔线。"""
+    module = pipeline()
+    batch = module.ScreenshotBatch({'shot': ''}, ('提示甲',), ())
+
+    assert module.build_screenshot_variable_fragments(batch, 'shot') == (
+        ('', 'text', '截图配置提示: 提示甲'),)
+
+
+def test_variable_fragments_deduplicate_warnings():
+    """重复批次提示在变量值内只出现一次。"""
+    module = pipeline()
+    image = f'![shot]({URL})'
+    batch = module.ScreenshotBatch(
+        {'shot': image, 'screenshot': image}, ('提示甲', '提示甲'), ())
+
+    assert module.build_screenshot_variable_fragments(batch, 'shot') == (
+        ('shot', 'image', image),
+        ('', 'separator', '---'),
+        ('', 'text', '截图配置提示: 提示甲'),
+    )
+
+
+def test_aggregate_variable_fragments_keep_result_order():
+    """聚合变量先按既有顺序列出全部结果，再接一次提示块。"""
+    module = pipeline()
+    first = f'![one]({URL})'
+    second = f'![two]({URL})'
+    batch = module.ScreenshotBatch(
+        {'one': first, 'two': second, 'screenshot': f'{first}\n\n{second}'},
+        ('提示甲',), ())
+
+    assert module.build_screenshot_variable_fragments(batch, 'screenshot') == (
+        ('one', 'image', first),
+        ('two', 'image', second),
+        ('', 'separator', '---'),
+        ('', 'text', '截图配置提示: 提示甲'),
+    )
