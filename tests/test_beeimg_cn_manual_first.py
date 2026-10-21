@@ -703,6 +703,10 @@ def test_group_403_remains_http_failed_without_profile(
     assert failure.code == 'http_failed'
     assert failure.stage == 'group'
     assert failure.http_status == 403
+    expected_calls = (
+        [('POST', 'upload', MANUAL_ID), ('GET', 'group', None)]
+        if phase == 'recovery' else [('GET', 'group', None)])
+    assert run_result.calls == expected_calls
     assert [call for call in run_result.calls if call[0] == 'POST'] == (
         [('POST', 'upload', MANUAL_ID)] if phase == 'recovery' else [])
     assert all(call[1] != 'profile' for call in run_result.calls)
