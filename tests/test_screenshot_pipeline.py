@@ -413,8 +413,9 @@ def test_capture_warnings_ordered_unique_and_not_in_aggregate(
         target(out='same'), target(out='same'),
     ]), True, ())
     assert len(batch.warnings) == 3
-    assert '目标 2' in batch.warnings[0]
-    assert 'same' in batch.warnings[0] and 'screenshot_2' in batch.warnings[0]
+    assert '截图目标 2：输出名重复' in batch.warnings[0]
+    assert 'screenshot_2' in batch.warnings[0]
+    assert 'same' not in batch.warnings[0]
     assert batch.warnings[1:] == (SAFE_WARNING, other)
     record_count = len(caplog.records)
     body = _variable_text(module, batch, 'screenshot')
@@ -568,8 +569,7 @@ def test_markdown_url_escapes_only_structure_and_preserves_signature(
 
 @pytest.mark.parametrize('code', [
     'transport_failed', 'http_failed', 'business_rejected', 'invalid_response',
-    'storage_lookup_failed', 'storage_unavailable', 'config_error',
-    'not_configured', 'invalid_options',
+    'storage_lookup_failed', 'storage_unavailable',
 ])
 def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
     """失败仅按核心认可代码重建摘要，不信任标签、消息或诊断。"""
@@ -601,6 +601,25 @@ def test_upload_failure_remaps_untrusted_fields(monkeypatch, caplog, code):
         assert SECRET not in repr(vars(record))
         assert URL not in repr(vars(record))
         assert record.exc_info is None
+
+
+@pytest.mark.parametrize(('code', 'reason'), [
+    ('invalid_token', '图床凭证必须为字符串'),
+    ('missing_environment', '图床凭证环境变量缺失或为空'),
+    ('invalid_options', '图床参数无效或不受该图床支持'),
+])
+def test_known_provider_config_codes_are_config(monkeypatch, caplog, code, reason):
+    """已知图床携带明确配置码时归配置类，不显示为上传失败。"""
+    module, _, upload = boundaries(monkeypatch)
+    upload.return_value = UploadResult(False, None, None, (), (
+        UploadFailure('catbox', code, SECRET),))
+    batch = module.prepare_screenshots(section([target()]), True, ())
+    sentence = '截图配置失败：' + reason
+    assert batch.values['screenshot_1'] == sentence
+    assert batch.values['screenshot'] == sentence
+    assert batch.failure_details == (
+        module.ScreenshotFailureDetail('screenshot_1', 'config', 'catbox', code),)
+    assert SECRET not in repr(batch) + caplog.text
 
 
 @pytest.mark.parametrize('code', [SECRET, None, [], 'upload_failed'])

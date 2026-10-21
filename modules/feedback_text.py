@@ -122,6 +122,19 @@ def canonical_failure_code(category: str, code: object) -> str:
     return ImageHostError(code, '').code
 
 
+def is_config_code(code: object) -> bool:
+    """判断原始失败码是否属于配置类白名单，不做未知值归一。
+
+    参数:
+        code: 待判断的原始失败码。
+
+    返回:
+        bool: 仅当 ``code`` 是字符串且精确命中配置码白名单时为 True；
+        未知值不会被归一成 ``config_error``，避免误判为配置失败。
+    """
+    return type(code) is str and code in _CONFIG_CODES
+
+
 def safe_reason_text(category: str, code: object) -> str:
     """返回不含类别前缀的固定安全原因。
 

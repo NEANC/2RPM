@@ -1167,7 +1167,8 @@ def test_http_failure_categories_visible_without_server_diagnostics(
         assert len(state['requests']) == 1
     if case == 'config':
         assert state['requests'] == []
-    summary = '截图上传失败：通道 BeeIMG.CN ' + expected + '。'
+    summary = ('截图配置失败：' + expected if case == 'config'
+               else '截图上传失败：通道 BeeIMG.CN ' + expected + '。')
     assert sent[0][0].count(summary) == sent[0][1].count(summary) == 1
     assert SECRET not in str(sent) + caplog.text
     assert not any(record.exc_info for record in caplog.records)
@@ -1674,7 +1675,7 @@ def test_complete_template_is_logged_once_without_mutation(
         markdown = f'![screenshot_1]({SAFE_SIGNED_URL})'
         variable = (
             f'{markdown}\n\n---\n\n截图配置提示: '
-            '截图目标 1：输出名“screenshot”为保留名，已改为“screenshot_1”。')
+            '截图目标 1：输出名为保留名，本次已改为“screenshot_1”，未修改配置文件。')
         original_title = f'标题 demo.exe {variable!r}'
         original_content = (
             f"正文 demo.exe 'demo.exe'\n\n{variable}\n\n{variable}\n\n"
@@ -2191,6 +2192,16 @@ def test_capture_requires_owned_reference(monkeypatch, case):
     capture, upload = _install_boundaries(monkeypatch)
     save, context = _install_side_effect_probes(monkeypatch)
     sent, notifier, _ = _install_onepush(monkeypatch)
+    context_module = import_module('modules.image_host.context')
+
+    def forbidden(*args, **kwargs):
+        """无引用时凭证解析与缓存访问也必须保持未调用。"""
+        pytest.fail('无截图引用路径访问了上传前置资源')
+
+    monkeypatch.setattr(context_module, 'resolve_token', forbidden)
+    monkeypatch.setattr(StorageCache, 'identity', forbidden)
+    monkeypatch.setattr(StorageCache, 'load', forbidden)
+    monkeypatch.setattr(StorageCache, 'save', forbidden)
     target = WINDOW_TARGET if not alias else {**WINDOW_TARGET, 'out': alias[0]}
     config = _base_config(targets=(target,))
     template = config['push']['templates']['on_end']

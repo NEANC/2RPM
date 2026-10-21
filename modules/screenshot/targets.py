@@ -137,8 +137,8 @@ def allocate_targets(raw_targets=None, reserved_names=()):
         assigned.add(replacement)
         unavailable.add(replacement)
         warnings.append(
-            f'截图目标 {item["index"]}：输出名“{original}”{reason}，'
-            f'已改为“{replacement}”。'
+            f'截图目标 {item["index"]}：输出名{reason}，'
+            f'本次已改为“{replacement}”，未修改配置文件。'
         )
 
     return normalized, warnings

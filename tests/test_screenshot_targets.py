@@ -169,8 +169,8 @@ def test_declared_names_are_reserved_before_allocation(declarations, expected):
         assert actual['renamed_from'] == (original if renamed else None)
         if renamed:
             assert any(
-                str(index) in warning and original in warning
-                and actual['out'] in warning for warning in warnings)
+                str(index) in warning and actual['out'] in warning
+                and original not in warning for warning in warnings)
     assert len(warnings) == sum(
         target['renamed_from'] is not None for target in targets)
 
@@ -201,7 +201,7 @@ def test_duplicate_numbered_output_increments_without_integer_limit(
     assert all(target['error'] is None for target in targets)
     assert [target['renamed_from'] for target in targets] == [None, name, None]
     assert warnings == [
-        f'截图目标 2：输出名“{name}”重复，已改为“{replacement}”。']
+        f'截图目标 2：输出名重复，本次已改为“{replacement}”，未修改配置文件。']
     assert raw == before
 
 
@@ -228,8 +228,8 @@ def test_long_numbered_output_skips_occupied_successors(occupancy):
     assert output_names(targets) == expected
     assert all(target['error'] is None for target in targets)
     assert warnings == [
-        f'截图目标 2：输出名“{name}”重复，已改为“{prefix}2”。',
-        f'截图目标 4：输出名“{name}”重复，已改为“{prefix}3”。',
+        f'截图目标 2：输出名重复，本次已改为“{prefix}2”，未修改配置文件。',
+        f'截图目标 4：输出名重复，本次已改为“{prefix}3”，未修改配置文件。',
     ]
     assert (raw, reserved) == before
 
@@ -256,19 +256,34 @@ def test_reserved_names_and_aggregate_are_never_overwritten():
     'name\n', ' name ', 'secret-token\npassword', {'secret': 'token'}, [],
 ])
 def test_invalid_out_is_repaired_with_safe_warning(out):
-    """非法输出名修复为可用编号，原名仅保留安全概括。"""
+    """非法输出名修复为可用编号，警告不回显原值。"""
     targets, warnings = allocate([make_target(out=out), make_target()])
     assert output_names(targets) == ['screenshot_1', 'screenshot_2']
     assert targets[0]['error'] is None
     description = targets[0]['renamed_from']
     assert isinstance(description, str) and description
-    assert len(warnings) == 1
-    assert '1' in warnings[0]
-    assert description in warnings[0]
-    assert 'screenshot_1' in warnings[0]
+    assert warnings == [
+        '截图目标 1：输出名无效，本次已改为“screenshot_1”，未修改配置文件。']
+    assert description not in warnings[0]
     assert 'secret' not in warnings[0]
     assert 'password' not in warnings[0]
     assert '\n' not in warnings[0]
+
+
+def test_rename_warnings_never_echo_original_names():
+    """保留名与重复名的警告只给实际替代名，不回显任意原名。"""
+    _, reserved_warnings = allocate(
+        [make_target(out='screenshot')], ['custom'])
+    assert reserved_warnings == [
+        '截图目标 1：输出名为保留名，本次已改为“screenshot_1”，'
+        '未修改配置文件。']
+    _, duplicate_warnings = allocate([
+        make_target(out='secret_identifier'),
+        make_target(out='secret_identifier'),
+    ])
+    assert duplicate_warnings == [
+        '截图目标 2：输出名重复，本次已改为“screenshot_2”，未修改配置文件。']
+    assert 'secret_identifier' not in str(reserved_warnings + duplicate_warnings)
 
 
 @pytest.mark.parametrize('out', ['x', '_', '_A9', 'Window_1', 'screenshot_0'])
@@ -323,7 +338,8 @@ def test_inputs_remain_deeply_unchanged_and_warnings_ordered():
     assert len(warnings) == 3
     for index, (target, warning) in enumerate(zip(targets, warnings), 1):
         assert str(index) in warning
-        assert target['renamed_from'] in warning
+        assert '本次已改为' in warning
+        assert '未修改配置文件' in warning
         assert target['out'] in warning
     targets[0]['target'] = '修改返回值'
     assert (raw, reserved) == before

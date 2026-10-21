@@ -33,7 +33,6 @@ FIRST_DEADLINE = STARTED_AT + DURATION_SECONDS
 GROUP_LIMIT = 600
 PROVIDERS = ('beeimg_cn', 'boltp')
 HOSTS = {'beeimg_cn': 'www.beeimg.cn', 'boltp': 'www.boltp.com'}
-REPLACED = '手填储存驱动不可用，已自动替代'
 
 
 def invalid_notice(storage_id):

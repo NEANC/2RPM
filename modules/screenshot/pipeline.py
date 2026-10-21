@@ -14,9 +14,9 @@ from modules.feedback_text import UNKNOWN_UPLOAD_PROVIDER
 from modules.feedback_text import canonical_failure_code
 from modules.feedback_text import canonical_upload_provider
 from modules.feedback_text import format_failure_sentence
+from modules.feedback_text import is_config_code
 from modules.feedback_text import safe_reason_text
 from modules.image_host.context import UploadContext
-from modules.image_host.core import ImageHostError
 from modules.image_host.core import UploadFailure
 from modules.image_host.registry import upload_with_fallback
 from modules.log_safety import extend_secrets
@@ -116,22 +116,20 @@ def _upload_failure_details(output_name, failures):
 
     Returns:
         tuple[ScreenshotFailureDetail, ...]: 逐项去重前的详情；共享配置
-        类归为 config 类别并保留 ``配置`` provider；无有效项时给出
-        固定 ``upload`` / ``unknown`` / ``upload_failed`` 通用详情。
+        provider 或明确配置码归为 config 类别；无有效项时给出固定
+        ``upload`` / ``unknown`` / ``upload_failed`` 通用详情。
     """
     details = []
     for failure in failures:
         if not isinstance(failure, UploadFailure):
             continue
         provider = canonical_upload_provider(failure.provider)
-        if provider == SHARED_CONFIG_PROVIDER:
-            details.append(ScreenshotFailureDetail(
-                output_name, 'config', provider,
-                canonical_failure_code('config', failure.code)))
-        else:
-            details.append(ScreenshotFailureDetail(
-                output_name, 'upload', provider,
-                canonical_failure_code('upload', failure.code)))
+        category = ('config'
+                    if provider == SHARED_CONFIG_PROVIDER
+                    or is_config_code(failure.code) else 'upload')
+        details.append(ScreenshotFailureDetail(
+            output_name, category, provider,
+            canonical_failure_code(category, failure.code)))
     if not details:
         details.append(ScreenshotFailureDetail(
             output_name, 'upload', UNKNOWN_UPLOAD_PROVIDER,

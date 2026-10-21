@@ -94,11 +94,6 @@ def _render_variable(name, values, batch, mode):
         for fragment_name, kind, text in fragments)
 
 
-def _render_aggregate(values, batch, mode):
-    """按唯一构建器片段顺序组装聚合变量与变量内提示块。"""
-    return _render_variable(_AGGREGATE_VARIABLE, values, batch, mode)
-
-
 def has_direct_screenshot_reference(template: str,
                                    owned_names: frozenset[str]) -> bool:
     """判断模板顶层是否直接引用本次拥有的截图变量。
