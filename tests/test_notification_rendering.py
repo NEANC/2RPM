@@ -1018,3 +1018,96 @@ def test_smtp_failure_fragments_dual_format():
         '{screenshot}', 'BODY', dict(TWO_BATCH.values), TWO_BATCH, True)
     with pytest.raises(ValueError):
         prepare_channel(_smtp_channel(subject=None), 'T', 'BODY', two_context)
+
+
+OWNED = frozenset(('screenshot', 'shot'))
+_MODES = (
+    ('dingtalk', 'markdown', IMAGE),
+    ('discord', 'url', URL),
+    ('smtp', 'plain', f'shot: {URL}'),
+)
+
+
+@pytest.mark.parametrize('provider, mode, expected_image', _MODES)
+@pytest.mark.parametrize('variable', ('shot', 'screenshot'))
+def test_owned_alias_and_index_render_in_title_and_body(
+        provider, mode, expected_image, variable):
+    """实际别名与聚合变量在标题和正文中均按通道模式转成受控节点。"""
+    notice = '截图配置提示: W'
+    separator = '<hr>' if mode == 'html' else '---'
+    br = '<br>\n<br>\n' if mode == 'html' else '\n\n'
+    batch = ScreenshotBatch(
+        {'shot': IMAGE, 'screenshot': IMAGE}, ('W',), ())
+    context = ScreenshotRenderContext(
+        f'T-{{{variable}}}-', f'前{{{variable}}}后', dict(batch.values),
+        batch, True, OWNED)
+
+    if provider == 'smtp':
+        # 邮件头与纯文本正文同样使用 plain 语义，多行提示由头部规则拒绝
+        with pytest.raises(ValueError):
+            prepare_channel(_smtp_channel(subject=None), 'T', 'BODY', context)
+        no_warning_batch = ScreenshotBatch(
+            {'shot': IMAGE, 'screenshot': IMAGE}, (), ())
+        plain_context = ScreenshotRenderContext(
+            f'T-{{{variable}}}-', f'前{{{variable}}}后',
+            dict(no_warning_batch.values), no_warning_batch, True, OWNED)
+        title, content, params = prepare_channel(
+            _smtp_channel(subject=None), 'T', 'BODY', plain_context)
+        assert title == f'T-{expected_image}-'
+        assert content == f'前{expected_image}后'
+        return
+
+    title, content, _ = prepare_channel({'provider': provider}, 'T', 'BODY', context)
+
+    assert title == f'T-{expected_image}{br}{separator}{br}{notice}-'
+    assert content == f'前{expected_image}{br}{separator}{br}{notice}后'
+
+
+def test_owned_alias_renders_html_image_in_smtp_body():
+    """HTML 分支把别名变量渲染为受控 img 并保留变量内提示。"""
+    batch = ScreenshotBatch({'shot': IMAGE, 'screenshot': IMAGE}, ('W',), ())
+    context = ScreenshotRenderContext(
+        'T', '前{shot}后', dict(batch.values), batch, True, OWNED)
+
+    _, _, params = prepare_channel(
+        _smtp_channel(subject=None), 'T', 'BODY', context)
+
+    html_body = params['msg'].get_body(preferencelist=('html',)).get_content()
+    assert HTML_IMAGE in html_body
+    assert '<hr>' in html_body
+    assert '截图配置提示: W' in html_body
+    assert html_body.rstrip().endswith('后')
+
+
+@pytest.mark.parametrize('template', (
+    '{shot!r}', '{shot!a}', '{shot:>5}'))
+def test_non_direct_fields_keep_format_semantics(template):
+    """非空格式规格与 r/a 转换保留 Python 字符串语义，不改图片节点。"""
+    batch = ScreenshotBatch({'shot': IMAGE, 'screenshot': IMAGE}, (), ())
+    values = {'shot': IMAGE, 'screenshot': IMAGE, 'word': 'x'}
+
+    rendered = render_screenshot_template(
+        template, values, batch, 'url', OWNED)
+
+    assert rendered == template.format(**values)
+
+
+def test_kwargs_owned_value_is_not_adapted():
+    """普通变量与截图变量同名时保持普通值，不被图片适配劫持。"""
+    batch = ScreenshotBatch({'shot': IMAGE, 'screenshot': IMAGE}, (), ())
+    values = {'shot': 'ordinary', 'screenshot': IMAGE}
+
+    rendered = render_screenshot_template(
+        '{shot}|{screenshot}', values, batch, 'url', frozenset(('screenshot',)))
+
+    assert rendered == 'ordinary|' + URL
+
+
+def test_smtp_multiline_owned_title_is_rejected():
+    """标题引用带提示的截图变量时仍按邮件头规则拒绝换行。"""
+    batch = ScreenshotBatch({'shot': IMAGE, 'screenshot': IMAGE}, ('W',), ())
+    context = ScreenshotRenderContext(
+        '{shot}', 'BODY', dict(batch.values), batch, True, OWNED)
+
+    with pytest.raises(ValueError):
+        prepare_channel(_smtp_channel(subject=None), 'T', 'BODY', context)

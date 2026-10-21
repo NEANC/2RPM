@@ -32,6 +32,7 @@ class ScreenshotRenderContext:
     values: dict[str, object]
     batch: ScreenshotBatch
     screenshot_owned: bool
+    owned_names: frozenset[str] = frozenset((_AGGREGATE_VARIABLE,))
 
 
 def _image_destination(name, value):
@@ -82,15 +83,41 @@ def _render_notice_fragment(name, kind, text, mode):
     return _render_text(text, mode)
 
 
-def _render_aggregate(values, batch, mode):
-    """按唯一构建器片段顺序组装单项与变量内提示块。"""
-    fragments = build_screenshot_variable_fragments(batch, _AGGREGATE_VARIABLE)
+def _render_variable(name, values, batch, mode):
+    """按唯一构建器片段渲染单个受控截图变量，含变量内提示块。"""
+    fragments = build_screenshot_variable_fragments(batch, name)
     if not fragments:
-        return _render_text(str(values.get(_AGGREGATE_VARIABLE, '')), mode)
+        return _render_text(str(values.get(name, '')), mode)
     separator = '<br>\n<br>\n' if mode == 'html' else '\n\n'
     return separator.join(
-        _render_notice_fragment(name, kind, text, mode)
-        for name, kind, text in fragments)
+        _render_notice_fragment(fragment_name, kind, text, mode)
+        for fragment_name, kind, text in fragments)
+
+
+def _render_aggregate(values, batch, mode):
+    """按唯一构建器片段顺序组装聚合变量与变量内提示块。"""
+    return _render_variable(_AGGREGATE_VARIABLE, values, batch, mode)
+
+
+def has_direct_screenshot_reference(template: str,
+                                   owned_names: frozenset[str]) -> bool:
+    """判断模板顶层是否直接引用本次拥有的截图变量。
+
+    Args:
+        template: 待检查的原始模板字符串。
+        owned_names: 本次模板实际拥有且未被普通变量覆盖的截图变量名。
+
+    Returns:
+        bool: 字段名在 owned_names 内、转换为 None/s 且格式规格为空时为 True。
+    """
+    for _, name, specification, conversion in _FORMATTER.parse(template):
+        if (
+            name in owned_names
+            and conversion in _DIRECT_CONVERSIONS
+            and not specification
+        ):
+            return True
+    return False
 
 
 def has_direct_screenshot(template: str) -> bool:
@@ -102,25 +129,22 @@ def has_direct_screenshot(template: str) -> bool:
     Returns:
         bool: 字段名恰为 screenshot、转换为 None/s 且格式规格为空时为 True。
     """
-    for _, name, specification, conversion in _FORMATTER.parse(template):
-        if (
-            name == _AGGREGATE_VARIABLE
-            and conversion in _DIRECT_CONVERSIONS
-            and not specification
-        ):
-            return True
-    return False
+    return has_direct_screenshot_reference(
+        template, frozenset((_AGGREGATE_VARIABLE,)))
 
 
 def render_screenshot_template(template: str, values: dict[str, object],
-                               batch: ScreenshotBatch, mode: str) -> str:
-    """按顶层 formatter 结构渲染模板，仅转换直接聚合片段。
+                               batch: ScreenshotBatch, mode: str,
+                               owned_names: frozenset[str] = frozenset(
+                                   (_AGGREGATE_VARIABLE,))) -> str:
+    """按顶层 formatter 结构渲染模板，直接截图变量改用受控节点。
 
     Args:
         template: 原始模板字符串。
-        values: 本次可用的普通变量及截图聚合值。
+        values: 本次可用的普通变量及截图变量值。
         batch: 本次截图批次，只读。
         mode: markdown、url、plain 或 html。
+        owned_names: 允许图片适配的截图变量名；缺省仅聚合占位。
 
     Returns:
         str: 通道专用渲染结果。
@@ -132,11 +156,11 @@ def render_screenshot_template(template: str, values: dict[str, object],
         if name is None:
             continue
         if (
-            name == _AGGREGATE_VARIABLE
+            name in owned_names
             and conversion in _DIRECT_CONVERSIONS
             and not specification
         ):
-            parts.append(_render_aggregate(values, batch, mode))
+            parts.append(_render_variable(name, values, batch, mode))
             continue
         field, _ = _FORMATTER.get_field(name, (), values)
         field = _FORMATTER.convert_field(field, conversion)
@@ -158,13 +182,15 @@ def render_screenshot_content(context: ScreenshotRenderContext,
         str: 通道专用正文。
     """
     return render_screenshot_template(
-        context.raw_content, context.values, context.batch, mode)
+        context.raw_content, context.values, context.batch, mode,
+        context.owned_names)
 
 
 def _render_title(context: ScreenshotRenderContext, mode: str) -> str:
     """按通道模式渲染标题模板，不追加正文提示。"""
     return render_screenshot_template(
-        context.raw_title, context.values, context.batch, mode)
+        context.raw_title, context.values, context.batch, mode,
+        context.owned_names)
 
 
 def _smtp_header(name: str, value: str) -> str:

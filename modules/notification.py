@@ -27,7 +27,7 @@ from modules.log_safety import (
 )
 from modules.notification_rendering import (
     ScreenshotRenderContext,
-    has_direct_screenshot,
+    has_direct_screenshot_reference,
     prepare_channel,
 )
 from modules.screenshot.pipeline import (
@@ -687,13 +687,15 @@ def send_notification(config, template_key, **kwargs):
         screenshot_count = _referenced_screenshot_count(title, content, batch)
         _log_rendered_notification(template_key, title, content, batch)
 
-        # 仅当模板直接引用聚合占位且该值仍属于截图批次时启用通道适配
+        # 仅当模板直接引用本次拥有的截图变量时启用通道适配
+        owned_names = frozenset(
+            name for name in placeholders if name in batch.values)
         render_context = None
-        if 'screenshot' not in kwargs and (
-                has_direct_screenshot(raw_title)
-                or has_direct_screenshot(raw_content)):
+        if owned_names and (
+                has_direct_screenshot_reference(raw_title, owned_names)
+                or has_direct_screenshot_reference(raw_content, owned_names)):
             render_context = ScreenshotRenderContext(
-                raw_title, raw_content, values, batch, True)
+                raw_title, raw_content, values, batch, True, owned_names)
 
         retry_settings = push_section.get('retry', {})
         retry_interval_str = retry_settings.get('interval', '3s')
