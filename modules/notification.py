@@ -698,7 +698,7 @@ def send_notification(config, template_key, **kwargs):
         # 仅当模板直接引用本次拥有的截图变量时启用通道适配
         owned_names = frozenset(
             name for name in placeholders if name in batch.values)
-        # 本次通知是否引用截图结果，同一判定同时决定失败摘要与成功日志
+        # 本次通知引用的截图目标数，仅用于成功日志
         screenshot_count = _referenced_screenshot_count(
             raw_title, raw_content, batch, owned_names)
         _log_rendered_notification(template_key, title, content, batch)

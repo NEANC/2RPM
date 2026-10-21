@@ -2457,7 +2457,8 @@ def test_reference_feedback_end_to_end(monkeypatch):
     assert SECRET not in body
 
 
-def test_no_reference_end_to_end_keeps_text_and_skips_uploads(monkeypatch):
+def test_no_reference_end_to_end_keeps_text_and_skips_uploads(
+        monkeypatch, caplog):
     """超时模板未引用截图时仍发送原文，不产生任何截图副作用。"""
     capture, upload = _install_boundaries(monkeypatch)
     save, context = _install_side_effect_probes(monkeypatch)
@@ -2469,14 +2470,16 @@ def test_no_reference_end_to_end_keeps_text_and_skips_uploads(monkeypatch):
                            '进程: {process_name} 超时未运行\n\n'
                            '已等待时间: {process_wait_time}\n\n')
 
-    results = notif.send_notification(
-        config, 'on_wait_timeout', process_name='notepad.exe',
-        process_wait_time='0:00:11')
+    with caplog.at_level(logging.INFO):
+        results = notif.send_notification(
+            config, 'on_wait_timeout', process_name='notepad.exe',
+            process_wait_time='0:00:11')
 
     assert results == [('serverchan', True)]
     assert sent[0][1].startswith('主机: ')
     assert sent[0][1].endswith('已等待时间: 0:00:11\n\n')
     assert '截图' not in sent[0][1]
+    assert '含截图结果' not in caplog.text
     capture.assert_not_called()
     upload.assert_not_called()
     save.assert_not_called()
@@ -2523,6 +2526,34 @@ def test_log_count_does_not_count_aggregate_twice(monkeypatch, caplog):
     assert capture.call_count == upload.call_count == 2
     assert '通知发送成功 [serverchan]（含截图结果，截图项 2）' in caplog.text
     assert '截图项 3' not in caplog.text
+
+
+@pytest.mark.parametrize(('content', 'extra', 'expected', 'captured'), [
+    ('正文 {shot_1}', {}, 1, True),
+    ('正文 {shot_1!r}', {}, 1, True),
+    ('正文 {screenshot}{shot_1}', {}, 2, True),
+    ('正文 {screenshot}', {'screenshot': 'ordinary'}, 0, False),
+    ('正文 {{screenshot}}', {}, 0, False),
+])
+def test_log_count_matches_referenced_targets(
+        monkeypatch, caplog, content, extra, expected, captured):
+    """日志计数只取本次拥有且模板直接引用的目标。"""
+    capture, _ = _install_boundaries(monkeypatch)
+    _install_onepush(monkeypatch)
+    config = _base_config(targets=_multi_window_targets(2))
+    template = config['push']['templates']['on_end']
+    template['content'] = content
+
+    with caplog.at_level(logging.INFO):
+        results = notif.send_notification(
+            config, 'on_end', process_name='demo', **extra)
+
+    assert results == [('serverchan', True)]
+    assert capture.call_count == (2 if captured else 0)
+    if expected:
+        assert f'（含截图结果，截图项 {expected}）' in caplog.text
+    else:
+        assert '含截图结果' not in caplog.text
 
 
 def _manual_recovery_notice(storage_id):
@@ -2579,7 +2610,22 @@ FEEDBACK_NOTICES = (
 )
 
 
-def test_feedback_matrix_end_to_end(monkeypatch):
+def _config_write_probe(monkeypatch, tmp_path):
+    """写入合成配置并禁止配置写入入口，返回字节是否不变的判定。"""
+    path = tmp_path / 'synthetic-config.yaml'
+    path.write_text('push:\n  templates: {}\n', encoding='utf-8')
+    original = path.read_bytes()
+
+    def forbidden(*args, **kwargs):
+        """通知运行链不得触发配置写入。"""
+        pytest.fail('通知运行链改写了配置文件')
+
+    monkeypatch.setattr(config_module, 'create_default_config', forbidden)
+    monkeypatch.setattr(config_module, '_make_write_yaml', forbidden)
+    return lambda: path.read_bytes() == original
+
+
+def test_feedback_matrix_end_to_end(monkeypatch, tmp_path):
     """混合失败与提示按固定顺序进入 markdown/url 实际载荷并复用批次。"""
     capture, upload = _install_feedback_matrix(monkeypatch)
     attempts = Counter()
@@ -2599,31 +2645,33 @@ def test_feedback_matrix_end_to_end(monkeypatch):
     template['title'] = '标题 {ok}'
     template['content'] = '前文\n{screenshot}\n后文'
     before = deepcopy(config)
+    config_unchanged = _config_write_probe(monkeypatch, tmp_path)
 
     results = notif.send_notification(config, 'on_end', process_name='demo')
 
     assert results == [('dingtalk', True), ('discord', True)]
     assert capture.call_count == 4
     assert upload.call_count == 3
-    assert config == before
-    assert len(sent) == 3 and sent[0] == sent[1]
-    markdown_title, markdown_body = sent[0]
-    url_title, url_body = sent[2]
+    assert config == before and config_unchanged()
+    assert len(sent) == 3
     notice_block = ('\n\n---\n\n截图配置提示: '
                     + '\n'.join(FEEDBACK_NOTICES))
-    assert markdown_title == f'标题 ![ok]({URL})' + notice_block
-    assert url_title == f'标题 {URL}' + notice_block
-    expected = (
+    markdown_title = f'标题 ![ok]({URL})' + notice_block
+    url_title = f'标题 {URL}' + notice_block
+    expected_markdown = (
         '前文\n' + '\n\n'.join(FEEDBACK_FRAGMENTS)
         + f'\n\n![ok]({URL})\n\n---\n\n截图配置提示: '
         + '\n'.join(FEEDBACK_NOTICES) + '\n后文')
-    assert markdown_body == expected
-    assert url_body == expected.replace(f'![ok]({URL})', URL)
-    assert markdown_body.count('截图配置提示: ') == 1
-    assert SECRET not in markdown_body + url_body
+    expected_url = expected_markdown.replace(f'![ok]({URL})', URL)
+    markdown_payloads = [item for item in sent if '![ok]' in item[0]]
+    url_payloads = [item for item in sent if '![ok]' not in item[0]]
+    assert markdown_payloads == [(markdown_title, expected_markdown)] * 2
+    assert url_payloads == [(url_title, expected_url)]
+    assert expected_markdown.count('截图配置提示: ') == 1
+    assert SECRET not in expected_markdown + expected_url
 
 
-def test_feedback_matrix_smtp_plain_and_html(monkeypatch):
+def test_feedback_matrix_smtp_plain_and_html(monkeypatch, tmp_path):
     """同一批次在 SMTP 纯文本与 HTML 中同序渲染，HTML 转义字面文本。"""
     capture, upload = _install_feedback_matrix(monkeypatch)
     sent, notifier, _ = _install_onepush(monkeypatch)
@@ -2634,12 +2682,13 @@ def test_feedback_matrix_smtp_plain_and_html(monkeypatch):
     template['title'] = '标题 {process_name}'
     template['content'] = '前文<{screenshot}>后文'
     before = deepcopy(config)
+    config_unchanged = _config_write_probe(monkeypatch, tmp_path)
 
     results = notif.send_notification(config, 'on_end', process_name='demo')
 
     assert results == [('smtp', True)]
     assert capture.call_count == 4 and upload.call_count == 3
-    assert config == before
+    assert config == before and config_unchanged()
     assert sent[0][0] == '标题 demo'
     plain = sent[0][1]
     expected = (
@@ -2650,10 +2699,13 @@ def test_feedback_matrix_smtp_plain_and_html(monkeypatch):
     msg = notifier.notify.call_args.kwargs['msg']
     html = msg.get_body(preferencelist=('html',)).get_content()
     assert html.startswith('前文&lt;')
-    assert '<hr>' in html
+    assert html.count('<hr>') == 1
+    assert html.count('截图配置提示: ') == 1
     assert '<img src=' in html and '![ok]' not in html
     assert '&gt;后文' in html
     assert '截图上传失败：通道 BeeIMG.CN 图床 HTTP 请求失败。' in html
+    positions = [html.index(text) for text in FEEDBACK_FRAGMENTS]
+    assert positions == sorted(positions)
 
 
 def test_feedback_matrix_smtp_multiline_title_is_rejected(monkeypatch):
