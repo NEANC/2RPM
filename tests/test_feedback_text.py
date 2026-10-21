@@ -18,6 +18,52 @@ SECRET_NAME = 'token=FAKE_SECRET'
 SECRET_URL = 'https://user:pass@evil.example.com/a?token=FAKE_SECRET'
 
 
+class _Hostile:
+    """任何字符串化都立即失败的合成对象。"""
+
+    def __str__(self):
+        raise AssertionError('不得字符串化原始存储值')
+
+    def __repr__(self):
+        raise AssertionError('不得字符串化原始存储值')
+
+
+@pytest.mark.parametrize(('storage_id', 'reason', 'expected'), [
+    (7, 'invalid_manual',
+     '预设的 options.storage_id 格式无效，本次已自动选择储存编号：7，'
+     '未修改配置文件。'),
+    (23, 'invalid_manual',
+     '预设的 options.storage_id 格式无效，本次已自动选择储存编号：23，'
+     '未修改配置文件。'),
+    (23, 'rejected_manual',
+     '预设的 options.storage_id 被图床拒绝，'
+     '本次改用分组列表中的储存编号：23 重试，未修改配置文件。'),
+])
+def test_storage_notice_uses_selected_positive_integer(
+        storage_id, reason, expected):
+    """提示只接受已校验正整数，并精确匹配两种固定模板。"""
+    assert feedback_text.format_storage_selection_notice(
+        storage_id, reason=reason) == expected
+
+
+@pytest.mark.parametrize('storage_id', [
+    True, False, 0, -1, '7', 7.0, None, [], {}, _Hostile(),
+])
+def test_storage_notice_rejects_untrusted_values(storage_id):
+    """非正整数与非 int 对象一律不产出提示，也不转换原对象。"""
+    assert feedback_text.format_storage_selection_notice(
+        storage_id, reason='invalid_manual') == ''
+    assert feedback_text.format_storage_selection_notice(
+        storage_id, reason='rejected_manual') == ''
+
+
+@pytest.mark.parametrize('reason', ['unknown', '', None, 1, _Hostile()])
+def test_storage_notice_rejects_unknown_reason(reason):
+    """未知原因不猜测文案。"""
+    assert feedback_text.format_storage_selection_notice(
+        7, reason=reason) == ''
+
+
 @pytest.fixture(autouse=True)
 def _forbid_network(monkeypatch):
     """纯函数测试不得建立任何真实网络连接。"""

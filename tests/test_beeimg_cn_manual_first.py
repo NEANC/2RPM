@@ -34,6 +34,20 @@ GROUP_LIMIT = 600
 PROVIDERS = ('beeimg_cn', 'boltp')
 HOSTS = {'beeimg_cn': 'www.beeimg.cn', 'boltp': 'www.boltp.com'}
 REPLACED = '手填储存驱动不可用，已自动替代'
+
+
+def invalid_notice(storage_id):
+    """非法手填被自动选择后的完整安全提示。"""
+    return (f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+            f'{storage_id}，未修改配置文件。')
+
+
+def rejected_notice(storage_id):
+    """合法手填被精确拒绝后改用新编号的完整安全提示。"""
+    return (f'预设的 options.storage_id 被图床拒绝，本次改用分组列表中的储存编号：'
+            f'{storage_id} 重试，未修改配置文件。')
+
+
 SHORTENED = '保存期限已按图床上限缩短'
 UNKNOWN = {
     'beeimg_cn': 'BeeIMG.cn 存在不支持的其他选项，已忽略',
@@ -281,7 +295,7 @@ def test_precise_rejection_recovers_once(monkeypatch, provider):
         ('POST', 'upload', MANUAL_ID), ('GET', 'group', None),
         ('POST', 'upload', SECOND_ID)]
     assert run_result.result.success is True
-    assert run_result.result.warnings.count(REPLACED) == 1
+    assert run_result.result.warnings.count(rejected_notice(SECOND_ID)) == 1
     assert all('expired_at' not in form for form in run_result.forms)
 
 
@@ -299,7 +313,7 @@ def test_invalid_manual_uses_group_first(monkeypatch, caplog, provider, value):
     assert run_result.calls == [('GET', 'group', None),
                                 ('POST', 'upload', SECOND_ID)]
     assert run_result.result.success is True
-    assert run_result.result.warnings == (REPLACED,)
+    assert run_result.result.warnings == (invalid_notice(SECOND_ID),)
     assert '[' not in caplog.text and '{' not in caplog.text
 
 
@@ -313,7 +327,7 @@ def test_absent_manual_does_not_claim_replacement(monkeypatch, provider):
                                 ('POST', 'upload', SECOND_ID)]
     assert run_result.result.success is True
     assert run_result.result.warnings == ()
-    assert REPLACED not in run_result.result.warnings
+    assert invalid_notice(SECOND_ID) not in run_result.result.warnings
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
@@ -524,7 +538,7 @@ def test_expired_during_group_has_no_second_post(monkeypatch, provider):
         ('POST', 'upload', MANUAL_ID)]
     assert run_result.result.success is False
     assert run_result.result.failures[-1].code == 'config_error'
-    assert REPLACED not in run_result.result.warnings
+    assert rejected_notice(SECOND_ID) not in run_result.result.warnings
 
 
 @pytest.mark.parametrize('provider', PROVIDERS)
@@ -592,7 +606,7 @@ def test_auto_failure_then_rejected_manual_recovers_once(monkeypatch, provider):
     assert all(call[1] != 'profile' for call in auto.calls + manual.calls)
     assert manual.result.success is True
     assert manual.result.url == URL
-    assert manual.result.warnings.count(REPLACED) == 1
+    assert manual.result.warnings.count(rejected_notice(SECOND_ID)) == 1
     assert invalidations == [(1, False)]
     assert cache.calls == ['identity', 'load', 'invalidate', 'save']
 
@@ -621,3 +635,65 @@ def test_rejected_manual_allows_next_manual_attempt(monkeypatch, provider):
     assert second.calls == [('POST', 'upload', MANUAL_ID)]
     assert len(cache.calls) == before
     assert second.result.success is True
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+def test_invalid_manual_notice_on_each_successful_preparation(
+        monkeypatch, provider):
+    """非法手填在首轮与恢复轮各给出一次该轮实际编号的提示。"""
+    host = {'provider': provider, 'token': 'SYNTHETIC',
+            'options': {'storage_id': 0}}
+    run_result = run(monkeypatch, provider, [host], [
+        group_reply((7,)), REJECTED_UPLOAD, group_reply((23,)),
+        SUCCESS_UPLOAD])
+
+    assert run_result.calls == [
+        ('GET', 'group', None), ('POST', 'upload', 7),
+        ('GET', 'group', None), ('POST', 'upload', 23)]
+    assert run_result.result.success is True
+    assert run_result.result.warnings == (
+        invalid_notice(7), invalid_notice(23))
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('manual, first_notice', [
+    (0, (invalid_notice(7),)), (7, ()),
+])
+def test_recovery_candidate_exhaustion_has_no_second_upload(
+        monkeypatch, provider, manual, first_notice):
+    """恢复列表只剩被拒编号时按候选耗尽失败，不再上传或新增提示。"""
+    host = {'provider': provider, 'token': 'SYNTHETIC',
+            'options': {'storage_id': manual}}
+    replies = [REJECTED_UPLOAD, group_reply((7,))]
+    if manual == 0:
+        replies.insert(0, group_reply((7,)))
+    run_result = run(monkeypatch, provider, [host], replies)
+
+    posts = [call for call in run_result.calls if call[0] == 'POST']
+    assert posts == [('POST', 'upload', 7)]
+    assert run_result.result.success is False
+    assert run_result.result.failures[-1].code == 'storage_unavailable'
+    assert run_result.result.warnings == first_notice
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('phase', ('first', 'recovery'))
+def test_group_403_remains_http_failed_without_profile(
+        monkeypatch, provider, phase):
+    """组查询 403 归网络请求失败，不请求资料也不继续该轮上传。"""
+    host = {'provider': provider, 'token': 'SYNTHETIC'}
+    if phase == 'recovery':
+        host['options'] = {'storage_id': MANUAL_ID}
+        replies = [REJECTED_UPLOAD, group_reply(status=403)]
+    else:
+        replies = [group_reply(status=403)]
+    run_result = run(monkeypatch, provider, [host], replies)
+
+    failure = run_result.result.failures[-1]
+    assert failure.code == 'http_failed'
+    assert failure.stage == 'group'
+    assert failure.http_status == 403
+    assert [call for call in run_result.calls if call[0] == 'POST'] == (
+        [('POST', 'upload', MANUAL_ID)] if phase == 'recovery' else [])
+    assert all(call[1] != 'profile' for call in run_result.calls)
+    assert run_result.result.warnings == ()

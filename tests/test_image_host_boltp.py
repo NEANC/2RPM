@@ -298,7 +298,9 @@ def test_invalid_storage_id_uses_group_selection(client, storage_id):
     original = deepcopy(options)
     result = upload(options=options)
     assert result.success
-    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
+    assert result.warnings == (
+        '预设的 options.storage_id 格式无效，本次已自动选择储存编号：5，'
+        '未修改配置文件。',)
     assert options == original
     assert len(client.get_calls) == 1
     assert client.get_calls[0][0].endswith('/group')
@@ -715,7 +717,10 @@ def test_manual_exact_rejection_warns_replacement(client):
     client.responses = [client.response, Response()]
     result = upload(options={'storage_id': STORAGE_ID})
     assert result.success
-    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
+    assert len(result.warnings) == 1
+    notice = result.warnings[0]
+    assert notice.startswith('预设的 options.storage_id 被图床拒绝，')
+    assert notice.endswith(' 重试，未修改配置文件。')
     assert len(client.calls) == 2
     assert len(client.get_calls) == 1
 

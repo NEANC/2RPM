@@ -1010,7 +1010,10 @@ def test_http_registry_warnings_reach_notification_once(
     with caplog.at_level(logging.DEBUG):
         assert notif.send_notification(config, 'on_end', process_name='demo')
     body = sent[0][1]
-    warnings = ('手填储存驱动不可用，已自动替代', '保存期限已按图床上限缩短')
+    warnings = (
+        '预设的 options.storage_id 格式无效，本次已自动选择储存编号：13，'
+        '未修改配置文件。',
+        '保存期限已按图床上限缩短')
     assert body.count('截图配置提示') == 1
     assert body.index(warnings[0]) < body.index(warnings[1])
     for warning in warnings:

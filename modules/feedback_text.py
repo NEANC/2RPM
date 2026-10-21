@@ -36,6 +36,16 @@ _CONFIG_REASONS = {
     'target_invalid': '截图目标配置无效',
 }
 _BEEIMG_CN_PREFIX = 'BeeIMG.cn '
+_STORAGE_SELECTION_NOTICES = {
+    'invalid_manual': (
+        '预设的 options.storage_id 格式无效，'
+        '本次已自动选择储存编号：{storage_id}，未修改配置文件。'
+    ),
+    'rejected_manual': (
+        '预设的 options.storage_id 被图床拒绝，'
+        '本次改用分组列表中的储存编号：{storage_id} 重试，未修改配置文件。'
+    ),
+}
 _BEEIMG_CN_SENTENCES = {
     'profile_forbidden': (
         '截图上传失败：通道 BeeIMG.CN 的账号资料接口无访问权限，'
@@ -159,3 +169,25 @@ def format_failure_sentence(category: str, provider: str, code: str) -> str:
     name = upload_provider_name(provider)
     reason = safe_reason_text('upload', canonical).rstrip('。')
     return f'截图上传失败：通道 {name} {reason}。'
+
+
+def format_storage_selection_notice(storage_id: object, *, reason: str) -> str:
+    """构建手填储存编号被替代时的固定提示。
+
+    参数:
+        storage_id: 本次上传准备实际选中的编号。
+        reason: ``invalid_manual`` 或 ``rejected_manual``。
+
+    返回:
+        str: 含已校验正整数的完整提示；编号不是正整数或原因未知时为空。
+        不转换原始对象，也不回显旧手填值或响应内容。
+    """
+    if type(reason) is not str:
+        return ''
+    template = _STORAGE_SELECTION_NOTICES.get(reason)
+    if template is None:
+        return ''
+    # 守卫：只有已校验的正整数可以进入提示文本
+    if type(storage_id) is not int or storage_id <= 0:
+        return ''
+    return template.format(storage_id=storage_id)

@@ -1930,7 +1930,9 @@ def test_registry_manual_validity_and_group_first_with_disk_cache(
     assert [data['storage_id'] for data in post_data(state)] == [
         expected_id, expected_id]
     assert [call[0] for call in state['calls']] == ['POST', 'POST']
-    expected_warnings = (('手填储存驱动不可用，已自动替代',) if replaced else ())
+    expected_warnings = ((
+        f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+        f'{expected_id}，未修改配置文件。',) if replaced else ())
     assert first.warnings == second.warnings == expected_warnings
     assert not any(state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used
@@ -1997,7 +1999,12 @@ def test_registry_invalid_manual_keeps_recovery_budget(integration):
     image, = state['context']._images
     assert state['context'].storage_state(
         image, 0, PROVIDER, SECRET).correction_used is True
-    assert result.warnings == ('手填储存驱动不可用，已自动替代',)
+    assert result.warnings == (
+        f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+        f'13，未修改配置文件。',
+        f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+        f'21，未修改配置文件。',
+    )
 
 
 def test_registry_rejection_invalidates_disk_cache(integration):
@@ -2412,7 +2419,9 @@ def test_registry_manual_validity_and_group_first_value(
     result = registry_upload(state, [{'provider': PROVIDER, 'token': SECRET,
                                       'options': options}])
     assert result.success
-    expected_warnings = (('手填储存驱动不可用，已自动替代',) if replaced else ())
+    expected_warnings = ((
+        f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+        f'{expected_id}，未修改配置文件。',) if replaced else ())
     assert result.warnings == expected_warnings
     methods = [method for method, _, _ in state['calls']]
     assert methods == (['POST'] if manual_valid else ['GET', 'POST'])
@@ -2443,7 +2452,8 @@ def test_registry_replaced_manual_warning_is_deduplicated(integration):
     assert [method for method, _, _ in state['calls']] == [
         'GET', 'POST', 'POST']
     assert first.warnings == second.warnings == (
-        '手填储存驱动不可用，已自动替代',)
+        '预设的 options.storage_id 格式无效，本次已自动选择储存编号：7，'
+        '未修改配置文件。',)
 
 
 def test_registry_recovery_budget_exhausted_after_second_rejection(

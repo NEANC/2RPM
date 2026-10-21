@@ -303,7 +303,8 @@ def test_invalid_storage_id_is_selected_from_fresh_metadata(client, storage_id):
     assert result.success
     assert result.failures == ()
     assert result.warnings == (() if storage_id is None else (
-        '手填储存驱动不可用，已自动替代',))
+        f'预设的 options.storage_id 格式无效，本次已自动选择储存编号：'
+        f'{STORAGE_ID}，未修改配置文件。',))
     assert options == original
     assert len(client.get_calls) == 1
     assert len(client.calls) == 1

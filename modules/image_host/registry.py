@@ -24,6 +24,7 @@ from .providers import upload_catbox
 from .providers import upload_superbed
 from .providers import upload_wmimg
 from .providers import validate_v2_options
+from modules.feedback_text import format_storage_selection_notice
 from modules.log_safety import extend_secrets
 from modules.operation_trace import trace_operation
 from modules.operation_trace import trace_fallback
@@ -94,7 +95,6 @@ def _valid_input(image_bytes, filename):
 
 
 _V2_PROVIDERS = frozenset({'beeimg_cn', 'boltp'})
-_WARN_REPLACED = '手填储存驱动不可用，已自动替代'
 _WARN_SHORTENED = '保存期限已按图床上限缩短'
 _WARN_UNSUPPORTED = '该图床不支持保存期限，已忽略'
 
@@ -136,7 +136,9 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
     该告警在期限计算成功后才记录，被期限拦截时不产生。
     """
     manual = options['storage_id'] if 'storage_id' in options else None
-    if transmission == 0 and type(manual) is int and manual > 0:
+    valid_manual = type(manual) is int and manual > 0
+    invalid_manual = 'storage_id' in options and not valid_manual
+    if transmission == 0 and valid_manual:
         selected = context.record_manual_selection(
             image, index, provider, token, manual)
         state = context.storage_state(image, index, provider, token)
@@ -163,10 +165,13 @@ def _prepare_v2(context, image, index, provider, token, options, seconds,
         state.previous_deadline, context.now(),
         previous_shortened=state.previous_shortened)
     context.record_expiration(image, index, provider, token, decision)
-    if (selected.replaced_manual
-            or (type(manual) is int and manual > 0
-                and selected.storage_id != manual)):
-        _add_warnings(warnings, (_WARN_REPLACED,))
+    reason = ('invalid_manual' if invalid_manual
+              else 'rejected_manual')
+    if invalid_manual or (valid_manual and selected.storage_id != manual):
+        notice = format_storage_selection_notice(
+            selected.storage_id, reason=reason)
+        if notice:
+            _add_warnings(warnings, (notice,))
     if decision.shortened:
         _add_warnings(warnings, (_WARN_SHORTENED,))
     prepared = PreparedV2Options(deepcopy(options),
