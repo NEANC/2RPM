@@ -2481,3 +2481,45 @@ def test_no_reference_end_to_end_keeps_text_and_skips_uploads(monkeypatch):
     upload.assert_not_called()
     save.assert_not_called()
     context.assert_not_called()
+
+
+def test_log_count_includes_failed_single_reference(monkeypatch, caplog):
+    """仅引用失败目标的别名时，成功日志仍按一个截图项计数。"""
+    capture, upload = _install_boundaries(
+        monkeypatch,
+        capture_side_effect=[
+            CaptureResult(b'png-1', 'window', '窗口1', 2, 3),
+            CaptureResult(b'png-2', 'window', '窗口2', 2, 3),
+        ])
+    upload.side_effect = [
+        UploadResult(False, None, None, ('catbox',), (
+            UploadFailure('catbox', 'http_failed', SECRET),)),
+        UploadResult(True, 'catbox', URL, ('catbox',), ()),
+    ]
+    _install_onepush(monkeypatch)
+    config = _base_config(targets=_multi_window_targets(2))
+    template = config['push']['templates']['on_end']
+    template['title'] = '标题 {process_name}'
+    template['content'] = '正文 {shot_1}'
+
+    with caplog.at_level(logging.INFO):
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert '通知发送成功 [serverchan]（含截图结果，截图项 1）' in caplog.text
+    assert '截图项 0' not in caplog.text
+
+
+def test_log_count_does_not_count_aggregate_twice(monkeypatch, caplog):
+    """聚合引用按实际目标计数，不把聚合值当成额外截图项。"""
+    capture, upload = _install_boundaries(monkeypatch)
+    _install_onepush(monkeypatch)
+    config = _base_config(targets=_multi_window_targets(2))
+
+    with caplog.at_level(logging.INFO):
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert capture.call_count == upload.call_count == 2
+    assert '通知发送成功 [serverchan]（含截图结果，截图项 2）' in caplog.text
+    assert '截图项 3' not in caplog.text
