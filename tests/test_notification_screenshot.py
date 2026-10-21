@@ -2737,15 +2737,24 @@ def test_failure_feedback_has_no_sensitive_values(monkeypatch, caplog):
     options_value = 'FAKE_OPTIONS_8421'
     message = 'FAKE_MESSAGE_8421'
     diagnostic = 'FAKE_DIAGNOSTIC_8421'
+    code_value = 'FAKE_CODE_8421'
     unknown_provider = 'fake_provider_8421'
     secrets = (env_name, env_value, channel_credential, window_target,
-               reserved_out, options_value, message, diagnostic,
+               reserved_out, options_value, message, diagnostic, code_value,
                unknown_provider)
     monkeypatch.setenv(env_name, env_value)
     failure = UploadResult(False, None, None, ('catbox',), (
-        UploadFailure(unknown_provider, 'http_failed', message,
+        UploadFailure(unknown_provider, code_value, message,
                       diagnostic=diagnostic),))
     capture, upload = _install_boundaries(monkeypatch, upload_result=failure)
+
+    def upload_spy(image, filename, hosts, *, context):
+        """真实消费环境引用与图床选项后返回预置失败结果。"""
+        assert context.resolve_credential(0, hosts[0]) == env_value
+        assert hosts[0]['options']['storage_id'] == options_value
+        return failure
+
+    upload.side_effect = upload_spy
     sent, notifier, _ = _install_onepush(monkeypatch)
     config = _base_config(
         channels=[{'provider': 'serverchan', 'sckey': channel_credential},
@@ -2769,6 +2778,10 @@ def test_failure_feedback_has_no_sensitive_values(monkeypatch, caplog):
     msg = smtp_call.kwargs['msg']
     plain = msg.get_body(preferencelist=('plain',)).get_content()
     html = msg.get_body(preferencelist=('html',)).get_content()
+    fallback_sentence = '截图上传失败：通道 未知图床 图床上传失败。'
+    assert fallback_sentence in str(sent)
+    assert fallback_sentence in plain
+    assert fallback_sentence in html
     for secret in secrets:
         assert secret not in str(sent)
         assert secret not in caplog.text
