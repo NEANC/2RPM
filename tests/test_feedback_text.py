@@ -332,6 +332,14 @@ def test_each_upload_code_has_sentence(code, reason):
         '截图上传失败：通道 Catbox ' + reason + '。')
 
 
+def test_upload_code_table_covers_backend_codes():
+    """字面量表覆盖后端全部非配置、非历史权限上传码。"""
+    from modules.image_host.core import _ERROR_MESSAGES
+    expected = set(_ERROR_MESSAGES) - set(feedback_text._CONFIG_CODES) - {
+        'profile_forbidden', 'profile_forbidden_invalid_storage'}
+    assert {code for code, _ in UPLOAD_CODE_REASONS} == expected
+
+
 CAPTURE_CODE_REASONS = (
     ('invalid_source', '截图来源必须为 window 或 adb'),
     ('invalid_title', '窗口标题或匹配表达式无效'),
@@ -367,6 +375,7 @@ def test_each_capture_code_has_sentence(code, reason):
 
 
 def test_capture_code_table_is_complete():
-    """字面量表必须覆盖全部 23 个捕获码且无重复。"""
+    """字面量表键集合必须与捕获表完全一致且恰好 23 项。"""
+    from modules.screenshot.models import _CAPTURE_MESSAGES
     assert len(CAPTURE_CODE_REASONS) == 23
-    assert len({code for code, _ in CAPTURE_CODE_REASONS}) == 23
+    assert {code for code, _ in CAPTURE_CODE_REASONS} == set(_CAPTURE_MESSAGES)
