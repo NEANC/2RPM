@@ -287,6 +287,16 @@ class TestSpinnerNonTTY(unittest.TestCase):
             log_info.assert_any_call(
                 spinner_mod._ICON_DONE + "  进程已退出运行")
 
+    def test_non_tty_failure_lines_use_single_space(self):
+        """非 TTY：fail 与 write_fail 的失败行均为图标后单空格。"""
+        with patch.object(spinner_mod.sys.stdout, 'isatty', return_value=False), \
+                patch.object(spinner_mod.LOGGER, 'error') as log_error:
+            with spinner_phase("等待中...") as sp:
+                sp.fail("失败")
+                sp.write_fail("失败")
+        log_error.assert_any_call(spinner_mod._ICON_FAIL + " 失败")
+        self.assertEqual(log_error.call_count, 2)
+
 
 class TestSpinnerConsoleMute(unittest.TestCase):
     """测试控台日志静音与还原。"""
