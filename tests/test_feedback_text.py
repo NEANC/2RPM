@@ -337,6 +337,7 @@ def test_upload_code_table_covers_backend_codes():
     from modules.image_host.core import _ERROR_MESSAGES
     expected = set(_ERROR_MESSAGES) - set(feedback_text._CONFIG_CODES) - {
         'profile_forbidden', 'profile_forbidden_invalid_storage'}
+    assert len(UPLOAD_CODE_REASONS) == len(expected)
     assert {code for code, _ in UPLOAD_CODE_REASONS} == expected
 
 
