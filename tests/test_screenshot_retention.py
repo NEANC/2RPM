@@ -366,6 +366,20 @@ def test_policy_switch_boundaries(value, enabled, warnings):
     assert policy.warnings == warnings
 
 
+def test_default_retention_uses_fourteen_days():
+    """缺省与显式 None 均保留默认十四天，显式天数不被开关覆盖。"""
+    assert retention.parse_policy(None) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy({}) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy(
+        {'enabled': None}) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy(
+        {'enabled': None, 'max_days': 7}
+    ) == retention.RetentionPolicy(False, 7, ())
+    assert retention.parse_policy(
+        {'enabled': False, 'max_days': 7}
+    ) == retention.RetentionPolicy(False, 7, ())
+
+
 def test_cleanup_skips_future_and_retained_directories_without_enumerating(monkeypatch, tmp_path):
     """未来日期及保留期内日期不进入删除层。"""
     removed = []
