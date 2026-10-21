@@ -2,6 +2,7 @@
 # -_- coding: utf-8 -_-
 """验证截图本地保留策略、命名与日期目录清理。"""
 
+from copy import deepcopy
 from datetime import date
 import stat
 
@@ -323,27 +324,46 @@ def test_cli_filename_replaces_suffix_on_png_fallback(extension):
         date(2026, 10, 7)) == 'Capture.png'
 
 
-@pytest.mark.parametrize('days', [True, '2', 2.0, 0, -1])
+@pytest.mark.parametrize('days', [True, False, 0, -1, '7', None])
 def test_policy_rejects_non_positive_or_non_integer_days(days):
-    """非法保留天数回退到默认值并告警。"""
-    policy = retention.parse_policy({'enabled': True, 'max_days': days})
+    """非法保留天数回退到默认值并告警，且不修改输入配置。"""
+    value = {'enabled': True, 'max_days': days}
+    before = deepcopy(value)
+    policy = retention.parse_policy(value)
     assert policy.enabled is True
     assert policy.max_days == 14
-    assert policy.warnings
+    assert policy.warnings == ('截图保留天数无效，已使用 14 天',)
+    assert value == before
 
 
-@pytest.mark.parametrize('value, enabled, warning', [
-    ({}, False, False),
-    ({'enabled': None}, False, False),
-    ({'enabled': False}, False, False),
-    ({'enabled': True}, True, False),
-    ({'enabled': 'true'}, False, True),
+def test_policy_accepts_positive_integer_days():
+    """正整数天数被保留且不产生告警。"""
+    policy = retention.parse_policy({'enabled': True, 'max_days': 7})
+    assert policy.enabled is True
+    assert policy.max_days == 7
+    assert policy.warnings == ()
+
+
+def test_invalid_enabled_wins_over_invalid_days():
+    """非法开关优先关闭策略，且不追加天数告警。"""
+    policy = retention.parse_policy({'enabled': 'invalid', 'max_days': 0})
+    assert policy.enabled is False
+    assert policy.max_days == 14
+    assert policy.warnings == ('截图保留配置无效，已关闭',)
+
+
+@pytest.mark.parametrize('value, enabled, warnings', [
+    ({}, False, ()),
+    ({'enabled': None}, False, ()),
+    ({'enabled': False}, False, ()),
+    ({'enabled': True}, True, ()),
+    ({'enabled': 'true'}, False, ('截图保留配置无效，已关闭',)),
 ])
-def test_policy_switch_boundaries(value, enabled, warning):
-    """保留开关缺省、空值、布尔值及非法值边界。"""
+def test_policy_switch_boundaries(value, enabled, warnings):
+    """保留开关缺省、空值、布尔值及非法值边界的精确告警。"""
     policy = retention.parse_policy(value)
     assert policy.enabled is enabled
-    assert bool(policy.warnings) is warning
+    assert policy.warnings == warnings
 
 
 def test_cleanup_skips_future_and_retained_directories_without_enumerating(monkeypatch, tmp_path):

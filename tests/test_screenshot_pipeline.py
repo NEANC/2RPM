@@ -5,6 +5,7 @@
 from collections import UserDict
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
+from datetime import date
 from importlib import import_module
 from importlib.util import find_spec
 from inspect import signature
@@ -779,14 +780,73 @@ def test_capture_save_upload_share_bytes_in_order(monkeypatch):
     assert batch.values['screenshot_1'].startswith('![')
 
 
-def test_disabled_policy_does_not_touch_disk(monkeypatch):
-    """关闭保留策略时保存层不写盘。"""
-    module, _, _ = boundaries(monkeypatch)
-    winfs = import_module('modules.screenshot.retention').winfs
-    monkeypatch.setattr(
-        winfs, 'write_exclusive',
-        lambda *args, **kwargs: pytest.fail('关闭策略不得写盘'))
-    module.prepare_screenshots(section([target()]), True, ())
+@pytest.mark.parametrize('retention_value, expected', [
+    ({'enabled': False}, ()),
+    ({'enabled': False, 'max_days': 0}, ('截图保留天数无效，已使用 14 天',)),
+    ('invalid', ('截图保留配置无效，已关闭',)),
+    ({'enabled': 'invalid', 'max_days': 0}, ('截图保留配置无效，已关闭',)),
+])
+def test_disabled_policy_does_not_touch_disk(
+        monkeypatch, tmp_path, retention_value, expected):
+    """关闭保留策略时真实保存层零目录创建，且仍完成截图上传。"""
+    module, capture, upload = boundaries(monkeypatch)
+    retention_module = import_module('modules.screenshot.retention')
+
+    def fail_disk(*args, **kwargs):
+        """关闭策略不得访问保存层目录。"""
+        pytest.fail('关闭策略不得访问磁盘')
+
+    monkeypatch.setattr(retention_module.winfs, 'write_exclusive', fail_disk)
+    monkeypatch.setattr(retention_module.winfs, 'list_names', fail_disk)
+    config = section([target()])
+    config['retention'] = retention_value
+    before = deepcopy(config)
+    batch = module.prepare_screenshots(
+        config, True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'c'})
+    assert config == before
+    assert not (tmp_path / 'screenshot').exists()
+    assert batch.warnings == expected
+    assert capture.call_count == upload.call_count == 1
+
+
+def test_enabled_policy_saves_and_keeps_upload(monkeypatch, tmp_path):
+    """启用保留时真实保存到固定日期目录，且不跳过上传。"""
+    module, capture, upload = boundaries(monkeypatch)
+    retention_module = import_module('modules.screenshot.retention')
+
+    class FixedDate(date):
+        """只固定自动保存读取的当日日期。"""
+
+        @classmethod
+        def today(cls):
+            """返回固定日期，不涉及其他日期计算。"""
+            return date(2026, 10, 7)
+
+    monkeypatch.setattr(retention_module, 'date', FixedDate)
+    config = section([target()])
+    config['retention'] = {'enabled': True, 'max_days': 7}
+    batch = module.prepare_screenshots(
+        config, True, (),
+        runtime={'program_dir': str(tmp_path), 'config_stem': 'c'},
+        event='on_end')
+    saved = tmp_path / 'screenshot' / '2026_10_07' / 'c' / 'on_end_01.jpg'
+    assert saved.is_file()
+    assert saved.read_bytes() == captured().image_bytes
+    assert capture.call_count == upload.call_count == 1
+    assert batch.values['screenshot'].startswith('![')
+
+
+def test_repeated_policy_warning_is_rendered_once(monkeypatch):
+    """截图与保留策略出现同一天数告警时只保留一次。"""
+    module, capture, _ = boundaries(monkeypatch)
+    warning = '截图保留天数无效，已使用 14 天'
+    capture.side_effect = lambda source, name, **kwargs: captured(
+        source, name, warnings=(warning,))
+    config = section([target()])
+    config['retention'] = {'enabled': False, 'max_days': 0}
+    batch = module.prepare_screenshots(config, True, ())
+    assert batch.warnings == (warning,)
 
 
 def test_enabled_policy_passes_runtime_event_and_policy(monkeypatch):
