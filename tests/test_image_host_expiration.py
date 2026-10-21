@@ -157,6 +157,20 @@ def test_representative_combined_limits():
     assert result == expiration().ExpirationDecision(4600, '4600', True)
 
 
+def test_planned_numeric_combination():
+    """计划中的起点与组上限组合精确取整，未设置上限不缩短。"""
+    module = expiration()
+    limited = module.compute_expiration(
+        3600, 1000.75, 60, None, 1001, formatter=str)
+    assert limited.deadline == 1060
+    assert limited.shortened is True
+    for retention in (None, 0):
+        unlimited = module.compute_expiration(
+            3600, 1000.75, retention, None, 1001, formatter=str)
+        assert unlimited.deadline == 4600
+        assert unlimited.shortened is False
+
+
 @pytest.mark.parametrize('previous, expected, shortened', [
     (None, START + 10, False),
     (START + 10.25, START + 10, True),
