@@ -139,12 +139,15 @@ class Transport:
         self.provider = provider
         self.calls = []
         self.forms = []
+        self.authorizations = []
         self.replies = list(replies)
 
         def send(adapter, request, **kwargs):
-            """记录 (方法, 阶段, 存储编号)，返回预设响应或抛出异常。"""
+            """记录 (方法, 阶段, 存储编号) 与认证头，返回预设响应或抛出异常。"""
             host = urlsplit(request.url).hostname
             assert host == HOSTS[provider], '测试请求串到其他站点'
+            self.authorizations.append(
+                request.headers.get('Authorization'))
             self.calls.append(
                 (request.method, self._stage(request.url),
                  self._storage_id(request)))
@@ -766,14 +769,18 @@ def test_notification_end_to_end_uses_real_recovery_chain(
         ('GET', 'group', None), ('POST', 'upload', 23)]
     assert config == before
     assert len(sent) == 1
+    assert set(transport.authorizations) == {'Bearer ' + NOTIFICATION_TOKEN}
     title, content = sent[0]
     first = invalid_notice(7)
     second = invalid_notice(23)
     assert first in title and second in title
     assert first in content and second in content
+    assert title.count(first) == title.count(second) == 1
+    assert content.count(first) == content.count(second) == 1
     assert title.index(first) < title.index(second)
     assert content.index(first) < content.index(second)
     assert URL in content
+    assert REJECTION not in str(sent)
     assert NOTIFICATION_TOKEN not in str(sent)
     assert NOTIFICATION_TOKEN not in caplog.text
     assert INVALID_MANUAL not in str(sent)
