@@ -1029,54 +1029,69 @@ _MODES = (
 
 
 @pytest.mark.parametrize('provider, mode, expected_image', _MODES)
-@pytest.mark.parametrize('variable', ('shot', 'screenshot'))
+@pytest.mark.parametrize('variable', ('shot', 'screenshot', 'screenshot_1'))
+@pytest.mark.parametrize('title_only', (False, True))
 def test_owned_alias_and_index_render_in_title_and_body(
-        provider, mode, expected_image, variable):
-    """实际别名与聚合变量在标题和正文中均按通道模式转成受控节点。"""
+        provider, mode, expected_image, variable, title_only):
+    """实际别名、编号与聚合适配标题和正文，仅标题引用不改变正文。"""
+    output_name = 'screenshot_1' if variable == 'screenshot_1' else 'shot'
+    image = IMAGE.replace('shot]', f'{output_name}]')
+    expected_image = expected_image.replace('shot', output_name)
+    owned = frozenset(('screenshot', output_name))
+    body = 'BODY' if title_only else f'前{{{variable}}}后'
     notice = '截图配置提示: W'
     separator = '<hr>' if mode == 'html' else '---'
     br = '<br>\n<br>\n' if mode == 'html' else '\n\n'
     batch = ScreenshotBatch(
-        {'shot': IMAGE, 'screenshot': IMAGE}, ('W',), ())
+        {output_name: image, 'screenshot': image}, ('W',), ())
     context = ScreenshotRenderContext(
-        f'T-{{{variable}}}-', f'前{{{variable}}}后', dict(batch.values),
-        batch, True, OWNED)
+        f'T-{{{variable}}}-', body, dict(batch.values),
+        batch, True, owned)
 
     if provider == 'smtp':
         # 邮件头与纯文本正文同样使用 plain 语义，多行提示由头部规则拒绝
         with pytest.raises(ValueError):
             prepare_channel(_smtp_channel(subject=None), 'T', 'BODY', context)
         no_warning_batch = ScreenshotBatch(
-            {'shot': IMAGE, 'screenshot': IMAGE}, (), ())
+            {output_name: image, 'screenshot': image}, (), ())
         plain_context = ScreenshotRenderContext(
-            f'T-{{{variable}}}-', f'前{{{variable}}}后',
-            dict(no_warning_batch.values), no_warning_batch, True, OWNED)
+            f'T-{{{variable}}}-', body,
+            dict(no_warning_batch.values), no_warning_batch, True, owned)
         title, content, params = prepare_channel(
             _smtp_channel(subject=None), 'T', 'BODY', plain_context)
         assert title == f'T-{expected_image}-'
-        assert content == f'前{expected_image}后'
+        assert content == ('BODY' if title_only else f'前{expected_image}后')
+        assert params['msg']['Subject'] == title
         return
 
     title, content, _ = prepare_channel({'provider': provider}, 'T', 'BODY', context)
 
     assert title == f'T-{expected_image}{br}{separator}{br}{notice}-'
-    assert content == f'前{expected_image}{br}{separator}{br}{notice}后'
+    assert content == (
+        'BODY' if title_only else
+        f'前{expected_image}{br}{separator}{br}{notice}后')
 
 
-def test_owned_alias_renders_html_image_in_smtp_body():
-    """HTML 分支把别名变量渲染为受控 img 并保留变量内提示。"""
-    batch = ScreenshotBatch({'shot': IMAGE, 'screenshot': IMAGE}, ('W',), ())
+@pytest.mark.parametrize('variable', ('shot', 'screenshot', 'screenshot_1'))
+def test_owned_alias_renders_html_image_in_smtp_body(variable):
+    """HTML 分支把别名、编号及聚合渲染为 img 并精确保留变量内提示。"""
+    output_name = 'screenshot_1' if variable == 'screenshot_1' else 'shot'
+    image = IMAGE.replace('shot]', f'{output_name}]')
+    expected_image = HTML_IMAGE.replace('alt="shot"', f'alt="{output_name}"')
+    batch = ScreenshotBatch(
+        {output_name: image, 'screenshot': image}, ('W',), ())
     context = ScreenshotRenderContext(
-        'T', '前{shot}后', dict(batch.values), batch, True, OWNED)
+        'T', f'前{{{variable}}}后', dict(batch.values), batch, True,
+        frozenset(('screenshot', output_name)))
 
-    _, _, params = prepare_channel(
+    title, content, params = prepare_channel(
         _smtp_channel(subject=None), 'T', 'BODY', context)
 
+    assert title == params['msg']['Subject'] == 'T'
+    assert content == f'前{output_name}: {URL}\n\n---\n\n截图配置提示: W后'
     html_body = params['msg'].get_body(preferencelist=('html',)).get_content()
-    assert HTML_IMAGE in html_body
-    assert '<hr>' in html_body
-    assert '截图配置提示: W' in html_body
-    assert html_body.rstrip().endswith('后')
+    assert html_body == (
+        f'前{expected_image}<br>\n<br>\n<hr><br>\n<br>\n截图配置提示: W后\n')
 
 
 @pytest.mark.parametrize('template', (
