@@ -56,6 +56,7 @@ def rejected_notice(storage_id):
 
 
 SHORTENED = '保存期限已按图床上限缩短'
+CACHE_SAVE_WARNING = '存储元数据缓存保存失败'
 UNKNOWN = {
     'beeimg_cn': 'BeeIMG.cn 存在不支持的其他选项，已忽略',
     'boltp': 'Boltp 存在不支持的其他选项，已忽略',
@@ -803,10 +804,10 @@ def test_notification_end_to_end_uses_real_recovery_chain(
     ('load', '存储元数据缓存读取失败'),
     ('invalidate', '存储元数据缓存失效失败'),
 ])
-def test_notification_cache_exception_keeps_image_and_deduplicates_notice(
+def test_notification_cache_interface_error_keeps_image_and_dedupes_notice(
         monkeypatch, caplog, tmp_path, provider, duplicate_warnings,
         operation, notice):
-    """缓存异常经真实通知链安全降级，重复提示不替代图片或增加请求。"""
+    """缓存接口异常经真实通知链降级，接口提示与重复取出的固定告警各一次。"""
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.setenv(NOTIFICATION_ENV, NOTIFICATION_TOKEN)
     secrets = (str(tmp_path / 'PRIVATE_CACHE_8421'), NOTIFICATION_ENV,
@@ -814,7 +815,7 @@ def test_notification_cache_exception_keeps_image_and_deduplicates_notice(
     cache = Mock(wraps=CacheSpy())
     getattr(cache, operation).side_effect = OSError(' '.join(secrets))
     cache.take_warnings.return_value = (
-        (notice, notice) if duplicate_warnings else ())
+        (CACHE_SAVE_WARNING, CACHE_SAVE_WARNING) if duplicate_warnings else ())
     cache_factory = Mock(return_value=cache)
     monkeypatch.setattr(
         import_module('modules.image_host.context'), 'StorageCache',
@@ -875,6 +876,14 @@ def test_notification_cache_exception_keeps_image_and_deduplicates_notice(
     assert [call[0] for call in cache.mock_calls
             if call[0] != 'take_warnings'] == cache_operations
     getattr(cache, operation).assert_called_once()
+    cache.identity.assert_called_once_with(provider, NOTIFICATION_TOKEN)
+    disk_identity = (None if operation == 'identity'
+                     else 'synthetic-disk-identity')
+    cache.load.assert_called_once_with(disk_identity)
+    if operation == 'invalidate':
+        cache.invalidate.assert_called_once_with(disk_identity)
+    else:
+        cache.invalidate.assert_not_called()
     assert cache.take_warnings.call_count == len(cache_operations)
     assert transport.calls == expected_calls
     assert transport.replies == []
@@ -882,11 +891,20 @@ def test_notification_cache_exception_keeps_image_and_deduplicates_notice(
     capture.assert_called_once()
     notifier.notify.assert_called_once()
     payload = notifier.notify.call_args.kwargs
-    rendered = f'![screenshot_1]({URL})\n\n---\n\n截图配置提示: {notice}'
+    # 接口异常提示先于取出的固定告警；身份成功时该告警随首次缓存调用返回
+    warnings = [notice]
+    if duplicate_warnings:
+        warnings = ([notice, CACHE_SAVE_WARNING] if operation == 'identity'
+                    else [CACHE_SAVE_WARNING, notice])
+    rendered = (f'![screenshot_1]({URL})\n\n---\n\n截图配置提示: '
+                + '\n'.join(warnings))
     assert payload['title'] == '标题 ' + rendered
     assert payload['content'] == '前文\n' + rendered + '\n后文'
     assert payload['title'].count(notice) == 1
     assert payload['content'].count(notice) == 1
+    if duplicate_warnings:
+        assert payload['title'].count(CACHE_SAVE_WARNING) == 1
+        assert payload['content'].count(CACHE_SAVE_WARNING) == 1
     for secret in secrets:
         assert secret not in str(payload)
         assert secret not in caplog.text
