@@ -794,3 +794,103 @@ def test_notification_end_to_end_uses_real_recovery_chain(
                if record.name.startswith('modules.')]
     assert records
     assert all(record.exc_info is None for record in records)
+
+
+@pytest.mark.parametrize('provider', PROVIDERS)
+@pytest.mark.parametrize('duplicate_warnings', [False, True])
+@pytest.mark.parametrize(('operation', 'notice'), [
+    ('identity', '存储元数据缓存不可用'),
+    ('load', '存储元数据缓存读取失败'),
+    ('invalidate', '存储元数据缓存失效失败'),
+])
+def test_notification_cache_exception_keeps_image_and_deduplicates_notice(
+        monkeypatch, caplog, tmp_path, provider, duplicate_warnings,
+        operation, notice):
+    """缓存异常经真实通知链安全降级，重复提示不替代图片或增加请求。"""
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setenv(NOTIFICATION_ENV, NOTIFICATION_TOKEN)
+    secrets = (str(tmp_path / 'PRIVATE_CACHE_8421'), NOTIFICATION_ENV,
+               NOTIFICATION_TOKEN, 'https://private.invalid/SECRET_CACHE_8421')
+    cache = Mock(wraps=CacheSpy())
+    getattr(cache, operation).side_effect = OSError(' '.join(secrets))
+    cache.take_warnings.return_value = (
+        (notice, notice) if duplicate_warnings else ())
+    cache_factory = Mock(return_value=cache)
+    monkeypatch.setattr(
+        import_module('modules.image_host.context'), 'StorageCache',
+        cache_factory)
+    capture = Mock(return_value=CaptureResult(b'image', 'window', '窗口', 2, 2))
+    monkeypatch.setattr(pipeline, 'capture', capture)
+    replies = [group_reply((7,)), SUCCESS_UPLOAD]
+    expected_calls = [('GET', 'group', None), ('POST', 'upload', 7)]
+    cache_operations = ['identity', 'load', 'save']
+    if operation == 'invalidate':
+        replies = [group_reply((7,)), REJECTED_UPLOAD,
+                   group_reply((23,)), SUCCESS_UPLOAD]
+        expected_calls += [('GET', 'group', None), ('POST', 'upload', 23)]
+        cache_operations += ['invalidate', 'save']
+    transport = Transport(monkeypatch, provider, replies)
+    response = Mock(status_code=200, text='ok')
+    response.json.return_value = {'code': 0}
+    notifier = Mock()
+    notifier.notify.return_value = response
+    monkeypatch.setattr(notif, 'get_notifier', Mock(return_value=notifier))
+    config_module = import_module('modules.config')
+    config_guards = []
+    for name in ('load_config', 'create_default_config', '_make_write_yaml'):
+        guard = Mock(side_effect=AssertionError('通知不得加载或写入配置'))
+        monkeypatch.setattr(config_module, name, guard)
+        config_guards.append(guard)
+    config = {
+        'push': {
+            'screenshot': {
+                'targets': [{'provider': 'window', 'target': '窗口'}],
+                'image_host': [{'provider': provider,
+                                'token': '${' + NOTIFICATION_ENV + '}'}],
+            },
+            'templates': {
+                'on_end': {
+                    'enable': True,
+                    'capture_screenshot': True,
+                    'title': '标题 {screenshot}',
+                    'content': '前文\n{screenshot}\n后文',
+                },
+            },
+            'push_channel_settings': {
+                'channels': [{'provider': 'serverchan', 'sckey': 's1'}],
+            },
+            'retry': {'interval': '0s', 'max_count': 3},
+        },
+    }
+    before = deepcopy(config)
+
+    with caplog.at_level(logging.DEBUG):
+        results = notif.send_notification(config, 'on_end', process_name='demo')
+
+    assert results == [('serverchan', True)]
+    assert config == before
+    for guard in config_guards:
+        guard.assert_not_called()
+    cache_factory.assert_called_once()
+    assert [call[0] for call in cache.mock_calls
+            if call[0] != 'take_warnings'] == cache_operations
+    getattr(cache, operation).assert_called_once()
+    assert cache.take_warnings.call_count == len(cache_operations)
+    assert transport.calls == expected_calls
+    assert transport.replies == []
+    assert set(transport.authorizations) == {'Bearer ' + NOTIFICATION_TOKEN}
+    capture.assert_called_once()
+    notifier.notify.assert_called_once()
+    payload = notifier.notify.call_args.kwargs
+    rendered = f'![screenshot_1]({URL})\n\n---\n\n截图配置提示: {notice}'
+    assert payload['title'] == '标题 ' + rendered
+    assert payload['content'] == '前文\n' + rendered + '\n后文'
+    assert payload['title'].count(notice) == 1
+    assert payload['content'].count(notice) == 1
+    for secret in secrets:
+        assert secret not in str(payload)
+        assert secret not in caplog.text
+    records = [record for record in caplog.records
+               if record.name.startswith('modules.')]
+    assert records
+    assert all(record.exc_info is None for record in records)
