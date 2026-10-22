@@ -738,6 +738,12 @@ def test_notification_end_to_end_uses_real_recovery_chain(
 
     notifier.notify.side_effect = notify
     monkeypatch.setattr(notif, 'get_notifier', Mock(return_value=notifier))
+    config_module = import_module('modules.config')
+    config_guards = []
+    for name in ('load_config', 'create_default_config', '_make_write_yaml'):
+        guard = Mock(side_effect=AssertionError('通知不得加载或写入配置'))
+        monkeypatch.setattr(config_module, name, guard)
+        config_guards.append(guard)
     config = {
         'push': {
             'screenshot': {
@@ -773,6 +779,8 @@ def test_notification_end_to_end_uses_real_recovery_chain(
         ('GET', 'group', None), ('POST', 'upload', 7),
         ('GET', 'group', None), ('POST', 'upload', 23)]
     assert config == before
+    for guard in config_guards:
+        guard.assert_not_called()
     assert len(sent) == 1
     assert set(transport.authorizations) == {'Bearer ' + NOTIFICATION_TOKEN}
     title, content = sent[0]
