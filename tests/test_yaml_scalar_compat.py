@@ -4,8 +4,10 @@
 """验证白名单字段的受限词法兼容与原始重复键语义。"""
 
 import os
+import subprocess
 import sys
 import traceback
+import xml.etree.ElementTree as ET
 
 import pytest
 from ruamel.yaml import YAML
@@ -391,14 +393,38 @@ def test_lexical_pass_does_not_read_environment(monkeypatch):
             """禁止带默认值读取环境。"""
             raise AssertionError('environment read during lexical pass')
 
-    monkeypatch.setattr(os, 'environ', Forbidden())
-    assert normalize_inline_upload('provider: catbox, token: ${ENV_NAME}') == (
-        "provider: catbox, token: '${ENV_NAME}'")
-    assert normalize_config_scalars(
-        'push:\n  screenshot:\n    image_host:\n'
-        '      - {provider: catbox, token: ${ENV_NAME}}\n') == (
-        'push:\n  screenshot:\n    image_host:\n'
-        "      - {provider: catbox, token: '${ENV_NAME}'}\n")
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'environ', Forbidden())
+        assert normalize_inline_upload('provider: catbox, token: ${ENV_NAME}') == (
+            "provider: catbox, token: '${ENV_NAME}'")
+        assert normalize_config_scalars(
+            'push:\n  screenshot:\n    image_host:\n'
+            '      - {provider: catbox, token: ${ENV_NAME}}\n') == (
+            'push:\n  screenshot:\n    image_host:\n'
+            "      - {provider: catbox, token: '${ENV_NAME}'}\n")
+
+
+def test_lexical_environment_guard_allows_pytest_reporting(tmp_path):
+    """环境替身必须在 pytest 报告阶段前恢复，且不阻断后续测试。"""
+    report = tmp_path / 'test-results.xml'
+    result = subprocess.run(
+        [sys.executable, '-m', 'pytest',
+         f'{__file__}::test_lexical_pass_does_not_read_environment',
+         f'{__file__}::test_syntax_failure_never_writes_config',
+         '-v', '--tb=short', '--color=yes', f'--junitxml={report}',
+         '--durations=10', '-p', 'no:cacheprovider'],
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        timeout=60,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert 'Traceback' not in output
+    assert 'INTERNALERROR' not in output
+    suite = ET.parse(report).getroot().find('testsuite')
+    assert suite.attrib['tests'] == '2'
+    assert suite.attrib['failures'] == '0'
+    assert suite.attrib['errors'] == '0'
 
 
 def test_syntax_failure_never_writes_config(tmp_path, caplog):
