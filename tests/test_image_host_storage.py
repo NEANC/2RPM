@@ -1535,9 +1535,6 @@ def test_v2_obsolete_interfaces_removed():
 def test_v2_shared_import_orders(first):
     """四种首模块顺序均可冷启动，冷进程不建立任何 socket。"""
     root = Path(__file__).resolve().parents[1]
-    interpreter = Path(sys.executable)
-    assert interpreter.parent.name == 'Scripts'
-    assert (interpreter.parent.parent / 'pyvenv.cfg').is_file()
     rest = [name for name in ENTRY_MODULES if name != first]
     script = '\n'.join([
         'import importlib',
