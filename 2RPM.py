@@ -5,10 +5,16 @@ import os
 import sys
 import argparse
 import logging
+from collections.abc import Mapping
 
 from modules.config import load_config
 from modules.logger import setup_default_logging, setup_logging
+from modules.logger import screenshot_logging
 from modules.monitor import monitor_processes
+from modules.screenshot.cli import parse_screenshot_args, run_screenshot_cli
+from modules.screenshot.retention import cleanup_retention
+from modules.screenshot.retention import parse_policy
+from modules.screenshot.retention import runtime_context
 from modules.spinner import spinner_phase, notify_fail
 from modules.utils import get_program_directory
 from modules.version import VERSION, print_info
@@ -16,9 +22,29 @@ from modules.version import VERSION, print_info
 # 默认配置文件名
 DEFAULT_CONFIG_FILE = 'config.yaml'
 
+# 截图调试子命令关键字
+SCREENSHOT_COMMAND = 'screenshot'
+
 # 全局变量
 CONFIG = {}
 LOGGER = logging.getLogger(__name__)
+
+
+def _is_screenshot_command():
+    """判断命令是否确为截图调试子命令。
+
+    仅当首个命令参数为 screenshot 且其后紧跟以 - 开头的选项时才分流，
+    避免裸用 "2RPM.py screenshot" 时丢失既有的位置配置解析。
+
+    Returns:
+        bool: 形如 "2RPM.py screenshot --source ..." 时为 True。
+    """
+    return (
+        len(sys.argv) > 2
+        and sys.argv[1] == SCREENSHOT_COMMAND
+        and isinstance(sys.argv[2], str)
+        and sys.argv[2].startswith('-')
+    )
 
 
 def parse_args():
@@ -44,9 +70,17 @@ def parse_args():
 def main():
     """主函数。
 
-    初始化程序，加载配置，设置日志，并运行主监视器。
+    首个命令参数为 screenshot 时进入截图调试分流，否则初始化程序、
+    加载配置、设置日志，并运行主监视器。
     """
     global CONFIG, LOGGER
+
+    if _is_screenshot_command():
+        screenshot_args = parse_screenshot_args(sys.argv[2:])
+        program_dir = get_program_directory()
+        sys.exit(run_screenshot_cli(
+            screenshot_args, program_dir,
+            logging_scope=screenshot_logging(program_dir)))
 
     print_info()
     
@@ -87,8 +121,31 @@ def main():
         CONFIG = load_config(config_file, spinner=sp, is_user_specified=user_specified)
         LOGGER.info("配置已加载")
 
+        # 运行上下文只保存程序根与净化的配置 stem，不进入模板或配置回写
+        CONFIG['_runtime'] = runtime_context(program_dir, config_file)
+
         # 设置日志
         setup_logging(CONFIG, config_file)
+
+        # 启动时按保留策略执行一次整日期目录清理（关闭时不触碰磁盘）
+        push_section = CONFIG.get('push')
+        screenshot_section = (
+            push_section.get('screenshot')
+            if isinstance(push_section, Mapping) else None
+        )
+        retention = (
+            screenshot_section.get('retention')
+            if isinstance(screenshot_section, Mapping) else None
+        )
+        policy = parse_policy(retention)
+        for warning in policy.warnings:
+            LOGGER.warning('%s', warning)
+        try:
+            cleanup_warnings = cleanup_retention(program_dir, policy)
+        except Exception:
+            cleanup_warnings = ('截图清理失败：已跳过本次清理',)
+        for warning in cleanup_warnings:
+            LOGGER.warning('%s', warning)
         sp.done("程序初始化完成。")
 
     # 退出码：正常结束为 0，异常或手动终止为 1

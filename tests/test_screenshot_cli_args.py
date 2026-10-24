@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""验证截图调试 CLI 的参数归一、错误分类与入口分流。
+
+测试只替换截图与配置的模块级边界，使用内存合成的 CaptureResult，
+不执行真实截图、ADB、窗口或图床调用。
+"""
+
+import os
+import sys
+from argparse import Namespace
+from importlib import import_module
+from importlib.util import find_spec
+from io import BytesIO
+from unittest.mock import MagicMock, Mock
+
+from PIL import Image
+import pytest
+
+from modules.screenshot.models import CaptureError, CaptureResult
+
+
+def cli_module():
+    """导入截图 CLI，模块缺失时让测试明确失败。"""
+    assert find_spec('modules.screenshot.cli') is not None, '尚未实现截图 CLI 参数解析'
+    return import_module('modules.screenshot.cli')
+
+
+def entry_module():
+    """导入程序入口模块，用于验证命令分流。"""
+    return import_module('2RPM')
+
+
+def parse(argv):
+    """调用真实解析接口；来源语法测试默认只验证参数归一。"""
+    return cli_module().parse_screenshot_args(list(argv))
+
+
+def parse_syntax(argv):
+    """解析来源语法并附带 --output，满足“需要输出或上传”的新契约。"""
+    return cli_module().parse_screenshot_args(list(argv) + ['--output'])
+
+
+def patch_capture(monkeypatch, mock):
+    """同时替换服务层与 CLI 的截图调用，不依赖具体绑定方式。"""
+    service = import_module('modules.screenshot.service')
+    monkeypatch.setattr(service, 'capture', mock)
+    monkeypatch.setattr(cli_module(), 'capture', mock, raising=False)
+    return mock
+
+
+def _spies(monkeypatch):
+    """安装截图与配置监视，返回可直接断言的 Mock。"""
+    capture = patch_capture(monkeypatch, Mock())
+    config = import_module('modules.config')
+    config_spy = Mock()
+    monkeypatch.setattr(config, 'load_config', config_spy)
+    return capture, config_spy
+
+
+def _png_bytes(size=(4, 3)):
+    """用真实 Pillow 生成可解码的 PNG 字节。"""
+    buffer = BytesIO()
+    Image.new('RGB', size, (12, 34, 56)).save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(('argv', 'expected'), [
+    (['--source', 'adb:127.0.0.1:16384'], ('adb', '127.0.0.1:16384')),
+    (['--source', 'window:MuMu模拟器 1'], ('window', 'MuMu模拟器 1')),
+    (['--source', 'MuMu模拟器 1'], ('window', 'MuMu模拟器 1')),
+    (['--source', 'adb', '127.0.0.1:16384'], ('adb', '127.0.0.1:16384')),
+    (['--source', 'window', 'MuMu模拟器 1'], ('window', 'MuMu模拟器 1')),
+    (['--source', 'adb', '--target', '127.0.0.1:16384'],
+     ('adb', '127.0.0.1:16384')),
+    (['--source', 'window', '--target', 'MuMu模拟器 1'],
+     ('window', 'MuMu模拟器 1')),
+    (['--source', ' adb: 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
+])
+def test_each_documented_form_maps_to_expected_pair(argv, expected):
+    """逐条验证七种写法对应的来源与目标。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == expected
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'adb:127.0.0.1:16384'], id='inline'),
+    pytest.param(['--source', 'adb', '127.0.0.1:16384'], id='positional'),
+    pytest.param(['--source', 'adb', '--target', '127.0.0.1:16384'],
+                 id='option-target'),
+])
+def test_adb_forms_are_equivalent(argv):
+    """ADB 的三种等价写法归一到同一 serial。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == ('adb', '127.0.0.1:16384')
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'window:MuMu模拟器 1'], id='prefix'),
+    pytest.param(['--source', 'MuMu模拟器 1'], id='bare-title'),
+    pytest.param(['--source', 'window', 'MuMu模拟器 1'], id='positional'),
+    pytest.param(['--source', 'window', '--target', 'MuMu模拟器 1'],
+                 id='option-target'),
+])
+def test_window_forms_are_equivalent(argv):
+    """窗口标题的四种等价写法归一到 window 后端。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == ('window', 'MuMu模拟器 1')
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'window:adb'], id='inline-prefix'),
+    pytest.param(['--source', 'window', 'adb'], id='positional'),
+    pytest.param(['--source', 'window', '--target', 'adb'],
+                 id='option-target'),
+])
+def test_keyword_like_titles_use_window_form(argv):
+    """窗口名恰为 adb 时用 window: 形式明确表达。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == ('window', 'adb')
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'window:window'], id='inline-prefix'),
+    pytest.param(['--source', 'window', 'window'], id='positional'),
+])
+def test_window_title_named_window(argv):
+    """窗口名恰为 window 时仍归一到 window 后端。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == ('window', 'window')
+
+
+@pytest.mark.parametrize(('argv', 'expected'), [
+    (['--source', 'window:\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', '\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', 'window', '\t标题 \t'], ('window', '\t标题 \t')),
+    (['--source', 'window', '--target', '\t标题 \t'],
+     ('window', '\t标题 \t')),
+])
+def test_window_titles_preserve_surrounding_whitespace(argv, expected):
+    """窗口标题四种写法均保留首尾空白，供窗口匹配原样使用。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == expected
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['--source', 'window: \t'], id='inline-prefix-blank'),
+    pytest.param(['--source', ' \t '], id='bare-title-blank'),
+    pytest.param(['--source', 'window', ' \t '], id='positional-blank'),
+    pytest.param(['--source', 'window', '--target', ' \t '],
+                 id='option-target-blank'),
+])
+def test_window_titles_reject_all_whitespace(argv):
+    """窗口标题全为空白时仍然拒绝。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(argv)
+    assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(('argv', 'expected'), [
+    (['--source', ' adb: 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
+    (['--source', ' adb ', ' 127.0.0.1:16384 '], ('adb', '127.0.0.1:16384')),
+    (['--source', '  MuMu模拟器 1  '], ('window', '  MuMu模拟器 1  ')),
+    (['--source', '\twindow: 标题\t '], ('window', ' 标题\t ')),
+    (['--source', ' window\t', ' 标题 '], ('window', ' 标题 ')),
+    (['--source', '\tadb ', '--target', '\tserial '], ('adb', 'serial')),
+    (['--source', ' window ', '--target', ' MuMu模拟器 1 '],
+     ('window', ' MuMu模拟器 1 ')),
+])
+def test_source_keywords_are_normalized_without_trimming_window_titles(
+        argv, expected):
+    """来源关键字独立去空白，窗口目标保留原始取值。"""
+    args = parse_syntax(argv)
+    assert (args.source, args.target) == expected
+
+
+def test_adb_serial_is_opaque_and_not_reclassified():
+    """ADB 目标不做外形判定，不因带冒号或 window: 前缀改判。"""
+    args = parse_syntax(['--source', 'adb', 'window:测试窗口'])
+    assert (args.source, args.target) == ('adb', 'window:测试窗口')
+    args = parse_syntax(['--source', 'adb', '--target', 'emulator-5554'])
+    assert (args.source, args.target) == ('adb', 'emulator-5554')
+
+
+def test_inline_upload_option_is_parsed_and_validated():
+    """内联上传配置可被解析并保留为已校验图床列表。"""
+    args = parse([
+        '--source', 'window:MuMu模拟器 1',
+        '--output', 'debug.png',
+        '--upload', 'provider: catbox',
+    ])
+    assert (args.source, args.target) == ('window', 'MuMu模拟器 1')
+    assert args.output == 'debug.png'
+    assert args.hosts == [{'provider': 'catbox', 'options': {}}]
+
+
+@pytest.mark.parametrize('body', [
+    '{<<: {provider: catbox}, token: FIRST_SECRET, token: SECOND_SECRET}',
+    'provider: catbox, options: {<<: {mode: default}, mode: first, mode: second}',
+])
+def test_inline_merge_duplicates_are_private_parameter_errors(body, capsys):
+    """重复键使整组参数失败，错误码与输出均不泄露凭证。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox; ' + body])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第2项：mapping_syntax\n'
+
+
+@pytest.mark.parametrize('attribute', ['&credential', '!!str'])
+def test_inline_node_properties_keep_semicolons_in_values(attribute):
+    """CLI 接受节点属性后的带分号字符串而不错误分项。"""
+    args = parse(['--source', 'window:title', '--upload',
+                  f'provider: catbox, token: {attribute} "a;b"; provider: catbox'])
+    assert len(args.hosts) == 2
+    assert args.hosts[0]['token'] == 'a;b'
+
+
+@pytest.mark.parametrize('attribute', ['&credential', '!!str'])
+def test_inline_unclosed_property_quote_is_parameter_error(attribute, capsys):
+    """未闭合属性字符串返回错误码二且不输出凭证。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               f'provider: catbox, token: {attribute} "SECRET;a'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第1项：mapping_syntax\n'
+
+
+def test_source_syntax_requires_output():
+    """来源写法测试必须显式启用输出，CLI 默认无副作用。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:MuMu模拟器 1'])
+    assert exit_info.value.code == 2
+
+
+def test_argument_errors_use_fixed_output_without_secrets(capsys):
+    """未知及旧参数错误只输出固定文案，不回显输入内容。"""
+    for option in (['--config', 'FAKE_SECRET'], ['-c', 'FAKE_SECRET'],
+                   ['--image-host', 'FAKE_SECRET']):
+        with pytest.raises(SystemExit) as exit_info:
+            parse(['--source', 'window:title', '--output'] + option)
+        assert exit_info.value.code == 2
+        assert capsys.readouterr().err == '截图参数无效\n'
+
+
+@pytest.mark.parametrize('option', [
+    ['--config', 'FAKE_SECRET'], ['-c', 'FAKE_SECRET'],
+    ['--image-host', 'FAKE_SECRET'],
+])
+def test_legacy_upload_options_are_rejected(option):
+    """旧上传参数在截图前拒绝。"""
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:MuMu模拟器 1', '--output'] + option)
+    assert exit_info.value.code == 2
+
+
+def test_output_and_upload_are_required_and_legacy_options_are_rejected(capsys):
+    """输出或上传必须显式提供，旧参数安全拒绝。"""
+    for argv in [
+        ['--source', 'window:title'],
+        ['--source', 'window:title', '--config', 'SECRET_VALUE'],
+        ['--source', 'window:title', '-c', 'SECRET_VALUE'],
+        ['--source', 'window:title', '--image-host', 'SECRET_VALUE'],
+    ]:
+        with pytest.raises(SystemExit) as exit_info:
+            parse(argv)
+        assert exit_info.value.code == 2
+        assert 'SECRET_VALUE' not in capsys.readouterr().err
+
+
+def test_output_and_upload_are_single_string_options():
+    """output 可无值，upload 接收单个内联字符串且均不可重复。"""
+    assert parse(['--source', 'window:title', '--output']).output == ''
+    assert parse(['--source', 'window:title', '--upload', 'provider: catbox']).hosts
+    for option in ('--output', '--upload'):
+        with pytest.raises(SystemExit) as exit_info:
+            parse(['--source', 'window:title', option, 'one', option, 'two'])
+        assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize(('option', 'expected'), [
+    ('--output', '参数错误：--output 重复参数\n'),
+    ('--upload', '参数错误：--upload 重复参数\n'),
+])
+def test_duplicate_output_and_upload_name_error_without_echoing_values(
+        monkeypatch, capsys, option, expected):
+    """重复输出或上传选项说明参数名和错误类型，且不截图、不泄密。"""
+    capture, config_spy = _spies(monkeypatch)
+    secret = 'INLINE_SECRET_9317'
+    value = secret if option == '--upload' else 'private-path.png'
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'window:title', option, value,
+               option, value])
+    assert exit_info.value.code == 2
+    error = capsys.readouterr().err
+    assert error == expected
+    assert secret not in error
+    capture.assert_not_called()
+    config_spy.assert_not_called()
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param([], id='missing-source'),
+    pytest.param(['--source', ''], id='empty-source-value'),
+    pytest.param(['--source', '   '], id='blank-source-value'),
+    pytest.param(['--source', 'adb:127.0.0.1:16384', '--source', 'window:X'],
+                 id='duplicate-source'),
+    pytest.param(['--source', 'adb'], id='adb-keyword-without-target'),
+    pytest.param(['--source', 'window'], id='window-keyword-without-target'),
+    pytest.param(['--source', 'adb:'], id='inline-prefix-empty'),
+    pytest.param(['--source', 'window:   '], id='inline-prefix-blank'),
+    pytest.param(['--source', 'adb:127.0.0.1:16384', '127.0.0.1:16384'],
+                 id='inline-and-positional'),
+    pytest.param(['--source', 'adb:127.0.0.1:16384', '--target', 'serial'],
+                 id='inline-and-option-target'),
+    pytest.param(['--source', 'MuMu模拟器 1', '--target', 'MuMu模拟器 1'],
+                 id='title-and-option-target'),
+    pytest.param(['--source', 'adb', '127.0.0.1:16384', '--target', 'serial'],
+                 id='positional-and-option-target'),
+    pytest.param(['--source', 'adb', '127.0.0.1:16384', 'extra'],
+                 id='extra-positional'),
+    pytest.param(['--source', 'adb', '--target'], id='option-target-no-value'),
+    pytest.param(['--', 'source', 'adb:127.0.0.1:16384'],
+                 id='dash-dash-source'),
+    pytest.param(['-- source', 'adb:127.0.0.1:16384'],
+                 id='joined-dash-source'),
+])
+def test_argument_errors_exit_with_code_two(monkeypatch, argv):
+    """参数错误以退出码 2 表达，且不截图、不读取配置。"""
+    capture, config_spy = _spies(monkeypatch)
+    with pytest.raises(SystemExit) as exit_info:
+        parse(argv)
+    assert exit_info.value.code == 2
+    capture.assert_not_called()
+    config_spy.assert_not_called()
+
+
+def test_argument_error_creates_no_config_file(monkeypatch, tmp_path):
+    """参数错误不触发默认配置文件创建。"""
+    capture, config_spy = _spies(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exit_info:
+        parse(['--source', 'adb'])
+    assert exit_info.value.code == 2
+    capture.assert_not_called()
+    config_spy.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_run_prints_source_target_and_size(monkeypatch, capsys, tmp_path):
+    """run_screenshot_cli 成功时返回 0、默认请求 JPEG 并输出实际保存路径。"""
+    cli = cli_module()
+    expected = CaptureResult(
+        _png_bytes(), 'window', 'MuMu模拟器 1', 320, 240, image_format='png')
+    capture = patch_capture(monkeypatch, Mock(return_value=expected))
+    config = import_module('modules.config')
+    load_spy = Mock()
+    monkeypatch.setattr(config, 'load_config', load_spy)
+
+    args = parse(['--source', 'window:MuMu模拟器 1', '--output'])
+
+    assert cli.run_screenshot_cli(args, str(tmp_path)) == 0
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format='jpeg', purpose='cli')
+    load_spy.assert_not_called()
+    out = capsys.readouterr().out
+    saved = list((tmp_path / 'screenshot').glob('*.png'))
+    assert len(saved) == 1
+    assert str(saved[0]) in out
+
+
+def test_run_returns_one_on_capture_failure(monkeypatch, capsys):
+    """截图失败返回 1，并输出固定安全分类，不回显后端细节。"""
+    cli = cli_module()
+    error = CaptureError('backend_failed', '固定安全消息')
+    capture = patch_capture(monkeypatch, Mock(side_effect=error))
+    args = parse(['--source', 'adb:127.0.0.1:16384', '--output'])
+
+    assert cli.run_screenshot_cli(args, 'C:\\program') == 1
+    capture.assert_called_once_with(
+        'adb', '127.0.0.1:16384', image_format='jpeg', purpose='cli')
+    out = capsys.readouterr().out
+    assert '失败' in out
+    assert 'backend_failed' not in out
+    assert '固定安全消息' not in out
+
+
+def test_run_hides_unexpected_error_details(monkeypatch, capsys):
+    """未预期异常返回 1，且不把底层细节写入终端。"""
+    cli = cli_module()
+    capture = patch_capture(
+        monkeypatch, Mock(side_effect=RuntimeError('secret-token')))
+    args = parse(['--source', 'adb:127.0.0.1:16384', '--output'])
+
+    assert cli.run_screenshot_cli(args, 'C:\\program') == 1
+    assert capture.call_count == 1
+    assert 'secret-token' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('args', [
+    pytest.param(Namespace(source='auto', target='x'), id='unknown-source'),
+    pytest.param(Namespace(source='adb', target=''), id='empty-target'),
+    pytest.param(Namespace(source='window', target=None), id='none-target'),
+    pytest.param(Namespace(source=None, target='x'), id='none-source'),
+])
+def test_run_returns_two_for_invalid_arguments(monkeypatch, args):
+    """入参不合法时 run_screenshot_cli 返回 2 且不调用截图。"""
+    cli = cli_module()
+    capture = patch_capture(monkeypatch, Mock())
+
+    assert cli.run_screenshot_cli(args, 'C:\\program') == 2
+    capture.assert_not_called()
+
+
+def _capture_entry_environment(monkeypatch, tmp_path):
+    """统一替换入口副作用，返回入口模块与副作用监视集合。"""
+    entry = entry_module()
+    spies = {
+        'setup_default_logging': Mock(),
+        'setup_logging': Mock(),
+        'monitor_processes': Mock(),
+        'spinner_phase': MagicMock(),
+    }
+    for name, spy in spies.items():
+        monkeypatch.setattr(entry, name, spy)
+    monkeypatch.setattr(entry, 'print_info', Mock())
+    monkeypatch.setattr(
+        entry, 'get_program_directory', Mock(return_value=str(tmp_path)))
+    return entry, spies
+
+
+def _patch_entry_config(monkeypatch, entry):
+    """替换入口配置读取，供断言截图路径不触碰配置。"""
+    spy = Mock(return_value={})
+    monkeypatch.setattr(entry, 'load_config', spy)
+    return spy
+
+
+def test_entry_dispatches_screenshot_command(monkeypatch, tmp_path):
+    """首个命令参数为 screenshot 时进入截图 CLI，不进入常规流程。"""
+    entry, spies = _capture_entry_environment(monkeypatch, tmp_path)
+    config_spy = _patch_entry_config(monkeypatch, entry)
+    parse_spy = Mock(return_value=Namespace(source='adb', target='serial'))
+    run_spy = Mock(return_value=0)
+    monkeypatch.setattr(entry, 'parse_screenshot_args', parse_spy)
+    monkeypatch.setattr(entry, 'run_screenshot_cli', run_spy)
+    monkeypatch.setattr(
+        sys, 'argv', ['2RPM.py', 'screenshot', '--source', 'adb:serial'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main()
+
+    assert exit_info.value.code == 0
+    parse_spy.assert_called_once_with(['--source', 'adb:serial'])
+    run_spy.assert_called_once()
+    assert run_spy.call_args.args[0] is parse_spy.return_value
+    assert run_spy.call_args.args[1] == str(tmp_path)
+    config_spy.assert_not_called()
+    for spy in spies.values():
+        spy.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+    with run_spy.call_args.kwargs['logging_scope']:
+        assert [item.name for item in tmp_path.iterdir()] == ['logs']
+
+
+def test_entry_propagates_screenshot_exit_code(monkeypatch, tmp_path):
+    """截图失败时入口返回截图 CLI 的退出码。"""
+    entry, _ = _capture_entry_environment(monkeypatch, tmp_path)
+    _patch_entry_config(monkeypatch, entry)
+    monkeypatch.setattr(
+        entry, 'parse_screenshot_args',
+        Mock(return_value=Namespace(source='adb', target='serial')))
+    monkeypatch.setattr(entry, 'run_screenshot_cli', Mock(return_value=1))
+    monkeypatch.setattr(
+        sys, 'argv', ['2RPM.py', 'screenshot', '--source', 'adb:serial'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main()
+
+    assert exit_info.value.code == 1
+
+
+def test_entry_screenshot_path_never_reads_config(monkeypatch, tmp_path):
+    """入口分流使用真实解析与分派，不读取配置，写出截图及独立日志。"""
+    entry, spies = _capture_entry_environment(monkeypatch, tmp_path)
+    config_spy = _patch_entry_config(monkeypatch, entry)
+    result = CaptureResult(_png_bytes((8, 6)), 'window', 'MuMu模拟器 1', 8, 6,
+                           image_format='png')
+    capture = patch_capture(monkeypatch, Mock(return_value=result))
+    monkeypatch.setattr(
+        sys, 'argv',
+        ['2RPM.py', 'screenshot', '--source', 'MuMu模拟器 1', '--output'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main()
+
+    assert exit_info.value.code == 0
+    capture.assert_called_once_with(
+        'window', 'MuMu模拟器 1', image_format='jpeg', purpose='cli')
+    config_spy.assert_not_called()
+    for spy in spies.values():
+        spy.assert_not_called()
+    assert sorted(item.name for item in tmp_path.iterdir()) == ['logs', 'screenshot']
+    saved = list((tmp_path / 'screenshot').glob('*.png'))
+    assert len(saved) == 1
+    with Image.open(saved[0]) as image:
+        assert image.format == 'PNG'
+
+
+def test_entry_keeps_legacy_parsing_without_screenshot_command(
+        monkeypatch, tmp_path):
+    """首个命令参数不是 screenshot 时完全沿用既有配置文件解析。"""
+    entry, _ = _capture_entry_environment(monkeypatch, tmp_path)
+    config_spy = _patch_entry_config(monkeypatch, entry)
+    run_spy = Mock()
+    monkeypatch.setattr(entry, 'run_screenshot_cli', run_spy)
+    monkeypatch.setattr(sys, 'argv', ['2RPM.py', 'myconfig.yaml'])
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main()
+
+    assert exit_info.value.code == 0
+    run_spy.assert_not_called()
+    config_spy.assert_called_once()
+    assert config_spy.call_args.args[0] == os.path.join(
+        str(tmp_path), 'myconfig.yaml')
+
+
+@pytest.mark.parametrize('argv', [
+    pytest.param(['2RPM.py', '-c', 'screenshot'], id='short-option'),
+    pytest.param(['2RPM.py', '--config', 'screenshot'], id='long-option'),
+    pytest.param(['2RPM.py', 'screenshot.yaml'], id='positional-path'),
+    pytest.param(['2RPM.py', 'screenshot'], id='bare-keyword'),
+])
+def test_named_screenshot_config_stays_reachable(monkeypatch, tmp_path, argv):
+    """名为 screenshot 的配置（含裸用关键字）仍可经常规解析访问。"""
+    entry, _ = _capture_entry_environment(monkeypatch, tmp_path)
+    config_spy = _patch_entry_config(monkeypatch, entry)
+    run_spy = Mock()
+    monkeypatch.setattr(entry, 'run_screenshot_cli', run_spy)
+    monkeypatch.setattr(sys, 'argv', argv)
+
+    with pytest.raises(SystemExit) as exit_info:
+        entry.main()
+
+    assert exit_info.value.code == 0
+    run_spy.assert_not_called()
+    assert config_spy.call_args.args[0] == os.path.join(
+        str(tmp_path), 'screenshot.yaml')
+
+
+@pytest.mark.parametrize('marker', ['@{version}', '@{VERSION}', '@{Version}'])
+def test_direct_target_argv_preserves_version_markers(marker):
+    """直接 argv 的 target 不经 YAML，三种版本标记原样保留。"""
+    args = parse_syntax(['--source', 'window', '--target', f'App{marker}'])
+    assert args.target == f'App{marker}'
+
+
+@pytest.mark.parametrize(('inline', 'expected'), [
+    ('provider: catbox, token: `a;b`', 'a;b'),
+    ('{provider: catbox, token: `a;b`}', 'a;b'),
+    ('provider: catbox, token: ${UPLOAD_TOKEN}', '${UPLOAD_TOKEN}'),
+])
+def test_inline_upload_accepts_backtick_and_environment_token(inline, expected):
+    """--upload 顶层 token 支持成对反引号与裸环境引用。"""
+    args = parse(['--source', 'window:title', '--upload', inline])
+    assert args.hosts[0]['token'] == expected
+
+
+def test_inline_upload_broken_backtick_is_parameter_error(capsys):
+    """反引号 token 语法错误在截图前以退出码 2 拒绝且不回显原文。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox, token: `secret'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第1项：mapping_syntax\n'
+
+
+def test_inline_upload_lexical_error_reports_real_item(capsys):
+    """CLI 出口的内联词法错误指向真实出错项且整体以退出码 2 拒绝。"""
+    with pytest.raises(SystemExit) as caught:
+        parse(['--source', 'window:title', '--upload',
+               'provider: catbox, token: ok; provider: catbox, token: `secret'])
+    assert caught.value.code == 2
+    assert capsys.readouterr().err == '第2项：mapping_syntax\n'

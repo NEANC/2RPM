@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import copy
+import errno
+import logging
 import os
 import sys
-import logging
+import tempfile
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.composer import ComposerError
+from ruamel.yaml.constructor import ConstructorError, DuplicateKeyError
+from ruamel.yaml.error import MarkedYAMLError, YAMLError
+from ruamel.yaml.parser import ParserError
+from ruamel.yaml.reader import ReaderError
+from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
+from ruamel.yaml.scanner import ScannerError
 
 from modules.spinner import spinner_phase
 from modules.utils import (
@@ -14,36 +24,67 @@ from modules.utils import (
     parse_time_string,
     push_channel_signature,
 )
+from modules.yaml_scalar_compat import normalize_config_scalars
 
 LOGGER = logging.getLogger(__name__)
 
-# 默认配置值集中管理（V4 精简键名）
+_CONFIG_EXCEPTION_TYPES = (
+    (PermissionError, 'PermissionError'),
+    (FileNotFoundError, 'FileNotFoundError'),
+    (FileExistsError, 'FileExistsError'),
+    (IsADirectoryError, 'IsADirectoryError'),
+    (NotADirectoryError, 'NotADirectoryError'),
+    (TimeoutError, 'TimeoutError'),
+    (OSError, 'OSError'),
+    (ParserError, 'ParserError'),
+    (ScannerError, 'ScannerError'),
+    (ComposerError, 'ComposerError'),
+    (ConstructorError, 'ConstructorError'),
+    (DuplicateKeyError, 'DuplicateKeyError'),
+    (ReaderError, 'ReaderError'),
+    (MarkedYAMLError, 'MarkedYAMLError'),
+    (YAMLError, 'YAMLError'),
+    (ValueError, 'ValueError'),
+    (TypeError, 'TypeError'),
+    (RuntimeError, 'RuntimeError'),
+)
+
+# 默认配置值集中管理
 DEFAULT_VALUES = {
     'monitor': {
-        'monitor_mode': 'psutil',
-        'process_name': 'notepad.exe',
-        'timeout_interval': '15m',
-        'loop_interval': '1s',
-    },
-    'task': {
-        'task_name': '\\Custom\\MyTask',
-        'lookback_minutes': 10,
-    },
-    'launch': {
-        'type': 'program',
-        'path': 'C:\\path\\to\\target.exe',
-        'task_name': '\\Custom\\MyTask',
-        'args': None,
-        'cwd': None,
-    },
-    'wait': {
-        'max_wait': '30s',
-        'check_interval': '1s',
+        'mode': 'psutil',
+        'common': {
+            'timeout_interval': '15m',
+            'loop_interval': '1s',
+            'timeout_threshold': 3,
+            'max_wait': '30s',
+            'check_interval': '1s',
+        },
+        'psutil': {
+            'process_name': 'notepad.exe',
+        },
+        'task_scheduler': {
+            'task_name': '\\Custom\\MyTask',
+            'lookback_minutes': 10,
+        },
+        'launch': {
+            'type': 'program',
+            'path': 'C:\\path\\to\\target.exe',
+            'task_name': '\\Custom\\MyTask',
+            'args': None,
+            'cwd': None,
+        },
     },
     'push': {
+        'screenshot': {
+            'targets': [],
+            'image_host': [{'provider': 'catbox', 'token': ''}],
+            'retention': {'enabled': None, 'max_days': 14},
+        },
         'templates': {
             'on_end': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '进程结束通报',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -55,6 +96,7 @@ DEFAULT_VALUES = {
             },
             'on_timeout': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '进程超时运行警告',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -66,6 +108,7 @@ DEFAULT_VALUES = {
             },
             'on_wait_timeout': {
                 'enable': True,
+                'capture_screenshot': True,
                 'title': '等待超时未运行报告',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -76,6 +119,7 @@ DEFAULT_VALUES = {
             },
             'on_external': {
                 'enable': False,
+                'capture_screenshot': True,
                 'title': '外部程序执行通知',
                 'content': (
                     '主机: {host_name}\n\n'
@@ -104,7 +148,6 @@ DEFAULT_VALUES = {
     'external': {
         'on_end': 'C:\\path\\to\\your\\script.bat',
         'on_timeout': 'C:\\path\\to\\another_script.bat',
-        'timeout_threshold': 3,
         'on_wait_timeout': 'C:\\path\\to\\wait_timeout_script.bat',
     },
     'log': {
@@ -114,92 +157,100 @@ DEFAULT_VALUES = {
     },
 }
 
-# 注释集中管理（V4 精简键名与节名）
+# 注释集中管理
 COMMENTS = {
     'monitor': {
         '_comment': (
             "监视设置\n"
             "- 监视程序相关配置\n"
         ),
-        'monitor_mode': (
+        'mode': (
             "\n监视模式，可选值: psutil / task_scheduler / launch\n"
             "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
-            "- task_scheduler: 通过事件日志获取计划任务PID后监视\n"
+            "- task_scheduler: 通过事件日志获取计划任务 PID 后监视\n"
             "- launch: 主动拉起目标程序或计划任务并获取 PID 进行监视\n"
         ),
-        'process_name': (
-            "\n要监视的进程名称"
-        ),
-        'timeout_interval': (
-            "\n超时警告间隔，默认值15分钟，支持 H/M/S 格式\n"
-        ),
-        'loop_interval': (
-            "\n监视循环间隔，默认值1秒，支持 H/M/S 格式\n"
-        ),
-    },
-    'task': {
-        '_comment': (
-            "计划任务监视设置（仅在 monitor_mode 为 task_scheduler 时生效）\n"
-            "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
-        ),
-        'task_name': (
-            "\n要监视的计划任务名称\n"
-            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
-        ),
-        'lookback_minutes': (
-            "\n事件回溯时间（分钟），查询最近多少分钟内的事件\n"
-            "- 默认值: 10\n"
-        ),
-    },
-    'launch': {
-        '_comment': (
-            "主动拉起目标设置\n"
-            "- 配置程序主动拉起目标程序或计划任务并获取 PID 进行监视\n"
-            "- 仅在 monitor_mode 为 launch 时生效\n"
-        ),
-        'type': (
-            "\n拉起类型: program / task\n"
-            "- program: 直接启动可执行程序\n"
-            "- task: 触发 Windows 计划任务后监视其进程\n"
-        ),
-        'path': (
-            "\n要拉起的可执行文件路径\n"
-            "- 仅 type=program 时使用\n"
-            "- 例如: C:\\app\\target.exe"
-        ),
-        'args': (
-            "\n命令行参数\n"
-            "- 选填，仅 type=program 时使用\n"
-            "- 例如: --verbose --config C:\\app\\config.ini"
-        ),
-        'cwd': (
-            "\n工作目录\n"
-            "- 选填，仅 type=program 时使用\n"
-            "- 默认取 path 所在目录"
-        ),
-        'task_name': (
-            "\n要触发的计划任务名称\n"
-            "- 仅 type=task 时使用\n"
-            "- 完整路径格式: \\\\Folder\\\\TaskName\n"
-        ),
-    },
-    'wait': {
-        '_comment': (
-            "等待进程设置\n"
-            "- 配置等待进程启动的相关参数\n"
-        ),
-        'max_wait': (
-            "\n最长等待时间，默认值: 30秒，支持 H/M/S 格式\n"
-        ),
-        'check_interval': (
-            "\n等待进程检查间隔，默认值1秒，支持 H/M/S 格式\n"
-        ),
+        'common': {
+            '_comment': "\n监视通用参数设置\n",
+            'timeout_interval': "\n超时警告间隔，默认值 15 分钟，支持 H/M/S 格式\n",
+            'loop_interval': "\n监视循环间隔，默认值 1 秒，支持 H/M/S 格式\n",
+            'timeout_threshold': "\n进程超时触发外部程序前的次数阈值，默认值 3\n",
+            'max_wait': "\n最长等待时间，默认值 30 秒，支持 H/M/S 格式\n",
+            'check_interval': "\n等待进程检查间隔，默认值 1 秒，支持 H/M/S 格式\n",
+        },
+        'psutil': {
+            '_comment': "\npsutil 监视设置（仅在 mode 为 psutil 时生效）\n",
+            'process_name': "\n要监视的进程名称",
+        },
+        'task_scheduler': {
+            '_comment': (
+                "\n计划任务监视设置（仅在 mode 为 task_scheduler 时生效）\n"
+                "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
+            ),
+            'task_name': "\n要监视的计划任务名称\n- 完整路径格式: \\\\Folder\\\\TaskName\n",
+            'lookback_minutes': "\n事件回溯时间（分钟），默认值: 10\n",
+        },
+        'launch': {
+            '_comment': (
+                "\n主动拉起目标设置（仅在 mode 为 launch 时生效）\n"
+            ),
+            'type': "\n拉起类型: program / task\n",
+            'path': "\n要拉起的可执行文件路径（仅 type=program 时使用）\n",
+            'args': "\n命令行参数（选填，仅 type=program 时使用）\n",
+            'cwd': "\n工作目录（选填，仅 type=program 时使用）\n",
+            'task_name': "\n要触发的计划任务名称（仅 type=task 时使用）\n",
+        },
     },
     'push': {
         '_comment': (
             "推送设置\n"
             "- 包含推送通知的相关配置\n"
         ),
+        'screenshot': {
+            '_comment': "\n截图目标与图床配置\n",
+            'targets': (
+                "\n独立于监控目标的截图列表，默认留空，不自动匹配目标\n"
+                "- window 无标记时使用完整窗口标题精确匹配，区分大小写；"
+                "adb 使用设备地址/serial，ADB 目标不支持版本标记\n"
+                "- 非空应用名末尾仅允许一次 @{version}、@{VERSION} 或 @{Version}，"
+                "启用版本匹配\n"
+                "- 版本自由尾部可能接纳 Launcher、Settings 等辅助标题；"
+                "多个匹配时拒绝截图，不自动选取窗口\n"
+                "- 按列表位置生成 screenshot_N，可使用 out 自定义变量名\n"
+                "- 示例: {provider: window, target: MuMu模拟器 1, out: screenshot_2}\n"
+                "- 示例: {provider: window, target: 'AppName@{version}'}\n"
+                "- 示例: {provider: adb, target: 127.0.0.1:16384}\n"
+            ),
+            'image_host': (
+                "\n图床按列表顺序尝试，成功后停止\n"
+                "- 支持的 provider: catbox / wmimg / beeimg / beeimg_cn / "
+                "superbed / boltp\n"
+                "- token 可引用环境变量，配置加载时保留字面量，不展开；"
+                "options 保留各图床专属参数\n"
+                "- beeimg_cn 与 boltp 规则相同：合法手填（正整数）零查询直传；"
+                "0 或非法手填自动选择组内首个未拒绝编号\n"
+                "- 组列表按返回顺序去重，不使用默认编号或固定候选；"
+                "手填值不参与优先级\n"
+                "- 精确拒绝仅恢复一次，最多两次 POST\n"
+                "- expiration 位于图床项顶层，不放入 options；如 7d、1d12h\n"
+                "- 仅 wmimg / boltp / beeimg_cn 支持期限；首次手填不预查，"
+                "自动选择可命中有效磁盘缓存，恢复仅复用更新的网络结果或重新查询\n"
+                "- 期限 0 不构成永久保存保证；任何期限值都不保证服务端实际删除时间；"
+                "详细规则见 README「图床能力」\n"
+                "- 示例: {provider: beeimg_cn, token: '${BEEIMG_CN_TOKEN}', "
+                "expiration: 7d}\n"
+                "- 示例: {provider: boltp, token: '${BOLTP_TOKEN}', "
+                "expiration: 1d12h, options: {permission: 1}}\n"
+                "- 示例: {provider: wmimg, token: '${WMIMG_TOKEN}', "
+                "options: {strategy_id: 1, album_id: 12}}\n"
+            ),
+            'retention': (
+                "\n自动截图本地保留策略（仅自动截图生效，CLI 不清理）\n"
+                "- enabled: 是否启用本地保留清理；留空(null)表示不启用\n"
+                "- max_days: 保留天数，默认 14，必须为正整数\n"
+                "- 每次启动仅清理一次早于保留天数的日期目录\n"
+            ),
+        },
         'templates': {
             '_comment': (
                 "推送模板配置\n"
@@ -216,28 +267,35 @@ COMMENTS = {
                 "进程积累等待时间: {process_wait_time}\n"
                 "调用的程序名: {external_program_name}\n"
                 "调用的程序路径: {external_program_path}\n"
+                "截图结果聚合: {screenshot}\n"
+                "单个截图结果: {screenshot_N}，N 为目标位置；也可使用自定义 out\n"
+                "截图变量需自行加入 content，不自动修改通知正文\n"
             ),
             'on_end': (
                 "\n进程结束通知模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_timeout': (
                 "\n进程超时运行警告模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_wait_timeout': (
                 "\n等待超时未运行报告模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
             'on_external': (
                 "\n外部程序执行通知模板\n"
                 "- enable: 是否启用该通知\n"
+                "- capture_screenshot: 是否截取全部目标，默认 true\n"
                 "- title: 通知标题\n"
                 "- content: 通知内容\n"
             ),
@@ -285,9 +343,6 @@ COMMENTS = {
             "\n进程运行超时后触发的外部程序/BAT脚本的详细路径，例如: "
             "C:\\path\\timeout\\timeout_script.bat"
         ),
-        'timeout_threshold': (
-            "\n设置进程运行超时次数阈值，达到该次数后执行触发外部程序调用，默认值: 3\n"
-        ),
         'on_wait_timeout': (
             "\n等待进程启动超时后触发的外部程序/BAT脚本的详细路径\n"
             "- 例如: C:\\path\\wait_timeout\\wait_timeout_script.bat"
@@ -325,11 +380,17 @@ def _check_missing_params(config, required_params, section_name):
         if param not in config:
             if default_value is None:
                 continue  # 选填字段（值为 None），不触发迁移写回
-            config[param] = default_value
-            LOGGER.warning(
-                f"配置 '{section_name}' 中缺少参数 '{param}'，"
-                f"使用默认值: {default_value}"
-            )
+            config[param] = copy.deepcopy(default_value)
+            if (section_name == 'push' and param == 'screenshot'
+                    or section_name.startswith('push.screenshot')):
+                LOGGER.warning(
+                    f"配置 '{section_name}' 中缺少参数 '{param}'，已补充默认值"
+                )
+            else:
+                LOGGER.warning(
+                    f"配置 '{section_name}' 中缺少参数 '{param}'，"
+                    f"使用默认值: {default_value}"
+                )
             updated = True
         elif isinstance(default_value, CommentedMap) and isinstance(config.get(param), dict):
             # 递归检查嵌套配置
@@ -410,6 +471,7 @@ def _make_write_yaml():
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.preserve_quotes = True
+    yaml.width = 4096
     return yaml
 
 
@@ -425,7 +487,8 @@ def get_default_config(for_file_creation=False):
     """
     LOGGER.info("正在读取默认配置")
 
-    config = _create_commented_map(DEFAULT_VALUES)
+    config = _create_commented_map(copy.deepcopy(DEFAULT_VALUES))
+    correct_screenshot_config(config)
 
     LOGGER.info("正在应用注释到默认配置")
     apply_comments(config, COMMENTS, blank_before_section=for_file_creation)
@@ -502,6 +565,33 @@ def apply_comments(config_section, comments_section, depth=0,
         first_section_done = True
 
 
+def _config_exception_summary(exc, stage):
+    """仅提取配置异常的阶段、安全类型、数字错误码和源码位置。"""
+    error_type = 'Exception'
+    for exception_class, label in _CONFIG_EXCEPTION_TYPES:
+        if isinstance(exc, exception_class):
+            error_type = label
+            break
+    details = [f'stage={stage}', f'type={error_type}']
+    if isinstance(exc, OSError):
+        for field in ('errno', 'winerror'):
+            value = getattr(exc, field, None)
+            if type(value) is int:
+                details.append(f'{field}={value}')
+        if type(exc.errno) is int:
+            category = errno.errorcode.get(exc.errno)
+            if category is not None:
+                details.append(f'category={category}')
+    if isinstance(exc, YAMLError):
+        for kind in ('problem', 'context'):
+            mark = getattr(exc, f'{kind}_mark', None)
+            for field in ('line', 'column'):
+                value = getattr(mark, field, None)
+                if type(value) is int and value >= 0:
+                    details.append(f'{kind}_{field}={value + 1}')
+    return ' '.join(details)
+
+
 def create_default_config(config_file):
     """创建默认配置文件
 
@@ -513,13 +603,19 @@ def create_default_config(config_file):
     """
     LOGGER.info(f"正在创建配置文件: {os.path.abspath(config_file)}")
     default_config = get_default_config(for_file_creation=True)
+    stage = 'prepare'
     try:
         yaml = _make_write_yaml()
+        stage = 'create'
         with open(config_file, 'w', encoding='utf-8') as f:
+            stage = 'serialize'
             yaml.dump(default_config, f)
+            stage = 'close'
         LOGGER.info(f"配置文件创建成功: {os.path.abspath(config_file)}")
     except Exception as e:
-        LOGGER.critical(f"创建配置文件失败: {e}")
+        LOGGER.critical(
+            "创建配置文件失败: %s", _config_exception_summary(e, stage)
+        )
         raise
 
 
@@ -575,18 +671,59 @@ def correct_push_channel_config(user_config):
     return True
 
 
+def _format_screenshot_node(value, block_sequence=False):
+    """复制截图节点并调整容器风格，不解释 provider 或改写参数。"""
+    if isinstance(value, dict):
+        node = (copy.deepcopy(value) if isinstance(value, CommentedMap)
+                else CommentedMap(copy.deepcopy(value)))
+        changed = bool(node) and node.fa.flow_style() is not True
+        node.fa.set_flow_style()
+        for key, item in list(node.items()):
+            node[key], item_changed = _format_screenshot_node(item)
+            changed = item_changed or changed
+        return node, changed
+    if isinstance(value, list):
+        node = (copy.deepcopy(value) if isinstance(value, CommentedSeq)
+                else CommentedSeq(copy.deepcopy(value)))
+        flow_style = not block_sequence
+        changed = bool(node) and node.fa.flow_style() is not flow_style
+        if flow_style:
+            node.fa.set_flow_style()
+        else:
+            node.fa.set_block_style()
+        for index, item in enumerate(node):
+            node[index], item_changed = _format_screenshot_node(item)
+            changed = item_changed or changed
+        return node, changed
+    if (isinstance(value, str) and '${' in value
+            and not isinstance(value, ScalarString)):
+        return SingleQuotedScalarString(value), True
+    return copy.deepcopy(value), False
+
+
+def correct_screenshot_config(user_config):
+    """仅将截图列表格式化为块序列，保留非法输入供后续编排诊断。"""
+    push = user_config.get('push')
+    if not isinstance(push, dict):
+        return False
+    screenshot = push.get('screenshot')
+    if not isinstance(screenshot, dict):
+        return False
+    changed = False
+    for key in ('targets', 'image_host'):
+        value = screenshot.get(key)
+        if not isinstance(value, list):
+            continue
+        node, node_changed = _format_screenshot_node(
+            value, block_sequence=True
+        )
+        screenshot[key] = node
+        changed = node_changed or changed
+    return changed
+
+
 def _normalize_task_lookback_minutes(task_section):
-    """归一化 task.lookback_minutes 配置。
-
-    规则：
-    - 字符串与数值均可接受，保留字符串语义（如 '10'）
-    - 负值自动去符号为正
-    - 无法解析或非法类型回退默认值
-    - 归一化成功后回写配置原文，确保配置持久化一致
-
-    说明：
-    - 保留字符串输出（例如 '10'）可以兼容历史与手工编辑行为
-    """
+    """归一化 monitor.task_scheduler.lookback_minutes 配置。"""
     if not isinstance(task_section, dict):
         return False
 
@@ -596,8 +733,8 @@ def _normalize_task_lookback_minutes(task_section):
 
     # 空字符串回退默认值
     if isinstance(raw_value, str) and not raw_value.strip():
-        LOGGER.warning('task.lookback_minutes 不能为空，已回退默认值')
-        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        LOGGER.warning('monitor.task_scheduler.lookback_minutes 不能为空，已回退默认值')
+        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True
 
     normalized_for_store = None
@@ -606,19 +743,19 @@ def _normalize_task_lookback_minutes(task_section):
         if raw_str.startswith('-'):
             raw_str = raw_str.lstrip('-').strip()
             LOGGER.warning(
-                f"检测到 task.lookback_minutes 负值，已去除负号: {raw_value!r}"
+                f"检测到 monitor.task_scheduler.lookback_minutes 负值，已去除负号: {raw_value!r}"
             )
         if not raw_str:
-            LOGGER.warning('task.lookback_minutes 去符号后为空，已回退默认值')
-            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            LOGGER.warning('monitor.task_scheduler.lookback_minutes 去符号后为空，已回退默认值')
+            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
         try:
             normalized = abs(int(raw_str))
         except ValueError:
             LOGGER.warning(
-                f"task.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
+                f"monitor.task_scheduler.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
             )
-            task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
             return True
         normalized_for_store = str(normalized)
     elif isinstance(raw_value, (int, float)):
@@ -626,9 +763,9 @@ def _normalize_task_lookback_minutes(task_section):
         normalized_for_store = int(normalized)
     else:
         LOGGER.warning(
-            f"task.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+            f"monitor.task_scheduler.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
         )
-        task_section['lookback_minutes'] = DEFAULT_VALUES['task']['lookback_minutes']
+        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
         return True
 
     if task_section.get('lookback_minutes') == normalized_for_store:
@@ -792,41 +929,47 @@ def _normalize_config_writable_values(user_config):
     updated = False
 
     monitor_section = user_config.get('monitor', {})
-    wait_section = user_config.get('wait', {})
+    common_section = monitor_section.get('common', {}) if isinstance(monitor_section, dict) else {}
+    task_scheduler_section = monitor_section.get('task_scheduler', {}) if isinstance(monitor_section, dict) else {}
     push_section = user_config.get('push', {})
     retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
     external_section = user_config.get('external', {})
     log_section = user_config.get('log', {})
 
-    # monitor.*：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
+    # monitor.common：监控与轮询行为，支持负值仅用于兼容配置，不保留负号
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'timeout_interval',
-        DEFAULT_VALUES['monitor']['timeout_interval'],
-        'monitor.timeout_interval'
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'],
+        'monitor.common.timeout_interval'
     ) or updated
     updated = _normalize_time_like_config(
-        monitor_section,
+        common_section,
         'loop_interval',
-        DEFAULT_VALUES['monitor']['loop_interval'],
-        'monitor.loop_interval'
+        DEFAULT_VALUES['monitor']['common']['loop_interval'],
+        'monitor.common.loop_interval'
     ) or updated
-
-    # wait.*：等待行为配置，保持 H/M/S 字符串语义
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'max_wait',
-        DEFAULT_VALUES['wait']['max_wait'],
-        'wait.max_wait'
+        DEFAULT_VALUES['monitor']['common']['max_wait'],
+        'monitor.common.max_wait'
     ) or updated
     updated = _normalize_time_like_config(
-        wait_section,
+        common_section,
         'check_interval',
-        DEFAULT_VALUES['wait']['check_interval'],
-        'wait.check_interval'
+        DEFAULT_VALUES['monitor']['common']['check_interval'],
+        'monitor.common.check_interval'
     ) or updated
+    updated = _normalize_positive_int_config(
+        common_section,
+        'timeout_threshold',
+        DEFAULT_VALUES['monitor']['common']['timeout_threshold'],
+        'monitor.common.timeout_threshold'
+    ) or updated
+    updated = _normalize_task_lookback_minutes(task_scheduler_section) or updated
 
-    # push.retry.interval：重试间隔也按时间串处理
+    # push.retry.interval：重试间隔也按时间字符串处理
     updated = _normalize_time_like_config(
         retry_section,
         'interval',
@@ -842,13 +985,8 @@ def _normalize_config_writable_values(user_config):
         'push.retry.max_count'
     ) or updated
 
-    # external.timeout_threshold：超时阈值，必须为正整数
-    updated = _normalize_positive_int_config(
-        external_section,
-        'timeout_threshold',
-        DEFAULT_VALUES['external']['timeout_threshold'],
-        'external.timeout_threshold'
-    ) or updated
+    # common.timeout_threshold：超时阈值，必须为正整数
+    # 已在 monitor.common 中统一归一化
 
     # log.max_log_files、log.retention_days：日志归档参数，统一转为非负整数字符语义
     updated = _normalize_positive_int_config(
@@ -867,12 +1005,13 @@ def _normalize_config_writable_values(user_config):
     return updated
 
 
-def merge_configs(user_config, default_config):
+def merge_configs(user_config, default_config, section_name=''):
     """将用户配置合并到默认配置中
 
     Args:
         user_config (dict): 用户配置字典
         default_config (CommentedMap): 默认配置字典
+        section_name (str): 当前配置路径，用于隔离截图可变节点
 
     Returns:
         CommentedMap: 合并后的配置字典
@@ -881,9 +1020,12 @@ def merge_configs(user_config, default_config):
         return default_config
 
     for key, value in user_config.items():
+        path = f'{section_name}.{key}' if section_name else key
+        if path == 'push.screenshot':
+            value = copy.deepcopy(value)
         if key in default_config:
             if isinstance(value, dict) and isinstance(default_config[key], CommentedMap):
-                merge_configs(value, default_config[key])
+                merge_configs(value, default_config[key], path)
             else:
                 default_config[key] = value
         else:
@@ -892,6 +1034,160 @@ def merge_configs(user_config, default_config):
 
     return default_config
 
+
+
+
+def _fail_config_layout(path, message):
+    """记录配置布局错误并终止加载。"""
+    LOGGER.error(f"配置布局错误: {path}，{message}，不写回")
+    sys.exit(1)
+
+
+def _validate_config_shapes(user_config):
+    """预检新布局共享节点的映射类型。"""
+    monitor = user_config.get('monitor')
+    if monitor is not None and not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+    if isinstance(monitor, dict):
+        for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+            if key in monitor and not isinstance(monitor[key], dict):
+                _fail_config_layout(f'monitor.{key}', '必须是映射结构')
+    external = user_config.get('external')
+    if external is not None and not isinstance(external, dict):
+        _fail_config_layout('external', '必须是映射结构')
+
+
+def _set_migrated_leaf(target, target_path, old_path, old_value):
+    """按目标键存在性迁移单个旧配置叶。"""
+    target_section, target_key = target
+    if target_key in target_section:
+        if target_section[target_key] != old_value:
+            LOGGER.warning(
+                f"配置冲突: {target_path} 与 {old_path}，新字段优先"
+            )
+        return False
+    target_section[target_key] = old_value
+    return True
+
+
+def _migrate_config_layout(user_config):
+    """在默认补全前迁移旧配置布局。"""
+    changed = False
+    # 初始化监视配置节，确保旧版布局可以迁移到新结构
+    if 'monitor' not in user_config:
+        user_config['monitor'] = CommentedMap()
+        changed = True
+    monitor = user_config['monitor']
+    if not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+    for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+        if key not in monitor:
+            monitor[key] = CommentedMap()
+            changed = True
+    common = monitor['common']
+    psutil = monitor['psutil']
+    task_scheduler = monitor['task_scheduler']
+    launch = monitor['launch']
+    if 'external' not in user_config:
+        user_config['external'] = CommentedMap()
+        changed = True
+    external = user_config['external']
+
+    mappings = [
+        (monitor, 'mode', 'monitor.mode', monitor, 'monitor_mode', 'monitor.monitor_mode'),
+        (common, 'timeout_interval', 'monitor.common.timeout_interval',
+         monitor, 'timeout_interval', 'monitor.timeout_interval'),
+        (common, 'loop_interval', 'monitor.common.loop_interval',
+         monitor, 'loop_interval', 'monitor.loop_interval'),
+        (psutil, 'process_name', 'monitor.psutil.process_name',
+         monitor, 'process_name', 'monitor.process_name'),
+        (common, 'timeout_threshold', 'monitor.common.timeout_threshold',
+         external, 'timeout_threshold', 'external.timeout_threshold'),
+    ]
+    wait = user_config.get('wait')
+    task = user_config.get('task')
+    old_launch = user_config.get('launch')
+    if isinstance(wait, dict):
+        mappings.extend([
+            (common, 'max_wait', 'monitor.common.max_wait', wait, 'max_wait', 'wait.max_wait'),
+            (common, 'check_interval', 'monitor.common.check_interval', wait, 'check_interval', 'wait.check_interval'),
+        ])
+    if isinstance(task, dict):
+        mappings.extend([
+            (task_scheduler, 'task_name', 'monitor.task_scheduler.task_name', task, 'task_name', 'task.task_name'),
+            (task_scheduler, 'lookback_minutes', 'monitor.task_scheduler.lookback_minutes', task, 'lookback_minutes', 'task.lookback_minutes'),
+        ])
+    if isinstance(old_launch, dict):
+        for key in ('type', 'path', 'args', 'cwd', 'task_name'):
+            mappings.append((launch, key, f'monitor.launch.{key}', old_launch, key, f'launch.{key}'))
+
+    for target_section, target_key, target_path, source_section, source_key, source_path in mappings:
+        if source_key in source_section:
+            _set_migrated_leaf(
+                (target_section, target_key), target_path, source_path,
+                source_section[source_key]
+            )
+            if source_section is not target_section:
+                del source_section[source_key]
+                changed = True
+
+    for key in ('task', 'launch', 'wait'):
+        if key in user_config:
+            del user_config[key]
+            changed = True
+    for key in ('monitor_mode', 'timeout_interval', 'loop_interval', 'process_name'):
+        if key in monitor:
+            monitor.pop(key)
+            changed = True
+    if isinstance(external, dict) and 'timeout_threshold' in external:
+        external.pop('timeout_threshold')
+        changed = True
+    return changed
+
+
+def _validate_active_monitor_config(user_config, require_explicit=False):
+    """校验当前监视模式及其目标字段。"""
+    monitor = user_config.get('monitor', {})
+    mode = monitor.get('mode', 'psutil')
+    if mode not in ('psutil', 'task_scheduler', 'launch'):
+        _fail_config_layout('monitor.mode', '值无效')
+    section = monitor.get(mode, {})
+    required = {
+        'psutil': ('process_name',),
+        'task_scheduler': ('task_name',),
+    }
+    if require_explicit:
+        fields = required.get(mode, ())
+        for field in fields:
+            if field not in section:
+                _fail_config_layout(f'monitor.{mode}.{field}', '当前模式要求显式配置')
+        if mode == 'launch':
+            for field in ('type',):
+                if field not in section:
+                    _fail_config_layout(f'monitor.launch.{field}', '当前模式要求显式配置')
+    if mode in required:
+        value = section.get(required[mode][0])
+        if not isinstance(value, str) or not value.strip():
+            _fail_config_layout(f'monitor.{mode}.{required[mode][0]}', '当前模式值无效')
+        return
+    launch_type = section.get('type')
+    if launch_type not in ('program', 'task'):
+        _fail_config_layout('monitor.launch.type', '当前模式值无效')
+    target_key = 'path' if launch_type == 'program' else 'task_name'
+    target_value = section.get(target_key)
+    if not isinstance(target_value, str) or not target_value.strip():
+        _fail_config_layout(f'monitor.launch.{target_key}', '当前模式值无效')
+    if launch_type == 'program':
+        for key in ('args', 'cwd'):
+            if section.get(key) is not None and not isinstance(section.get(key), str):
+                _fail_config_layout(f'monitor.launch.{key}', '必须是字符串或空值')
+
+
+def _validate_active_presence(user_config):
+    """在默认补全前仅校验显式模式的目标字段。"""
+    if 'mode' not in user_config.get('monitor', {}):
+        return
+    _validate_active_monitor_config(user_config, require_explicit=True)
 
 def load_config(config_file, spinner=None, is_user_specified=False):
     """加载配置文件
@@ -923,10 +1219,20 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         sys.exit(0)
 
     # 加载用户配置
+    stage = 'prepare'
     try:
         yaml = YAML()
+        yaml.preserve_quotes = True
+        stage = 'read'
         with open(config_file, 'r', encoding='utf-8') as f:
-            user_config = yaml.load(f)
+            stage = 'parse'
+            try:
+                source = f.read()
+                user_config = yaml.load(normalize_config_scalars(source))
+            except OSError:
+                stage = 'read'
+                raise
+            stage = 'close'
         if user_config is None:
             LOGGER.warning(
                 f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，"
@@ -941,13 +1247,16 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
-        LOGGER.critical(f"无法加载配置文件: {os.path.abspath(config_file)}: {e}")
+        LOGGER.critical(
+            "无法加载配置文件: %s", _config_exception_summary(e, stage)
+        )
         sys.exit(1)
 
     # 加载默认配置
+    _validate_config_shapes(user_config)
+    updated = _migrate_config_layout(user_config)
+    _validate_active_presence(user_config)
     default_config = get_default_config()
-
-    updated = False
 
     # 确保所有必要的配置节都存在
     for section in default_config:
@@ -956,11 +1265,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
             LOGGER.warning(f"配置中缺少节 '{section}'，创建默认配置")
             updated = True
 
-    task_section = user_config.get('task', {})
-    if isinstance(task_section, dict):
-        updated = _normalize_task_lookback_minutes(task_section) or updated
-
-    # 统一处理可写配置中的负值/非法值参数（负值去除负号并回写，非法值回退默认值）
+    # 统一处理可写配置中的负值/非法值参数（负值去除负号，非法值回退默认值）
     updated = _normalize_config_writable_values(user_config) or updated
 
     # 检查每个配置节中的参数
@@ -980,16 +1285,82 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     # 规范化推送通道并统一回写为标准流式格式
     # 在合并后处理，确保流式映射节点不被 merge 递归展开而丢失流式风格
     corrected = correct_push_channel_config(merged_config)
+    corrected = correct_screenshot_config(merged_config) or corrected
+
+    _validate_active_monitor_config(merged_config)
 
     if updated or cleaned or corrected:
         LOGGER.info("配置文件已更新，正在执行无缝迁移")
+        stage = 'prepare'
         try:
             yaml = _make_write_yaml()
-            with open(config_file, 'w', encoding='utf-8') as f:
-                yaml.dump(merged_config, f)
+            stage = 'mkstemp'
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(os.path.abspath(config_file)),
+                prefix=f'.{os.path.basename(config_file)}.',
+                suffix='.tmp',
+            )
+            try:
+                stage = 'fdopen'
+                raw_stream = None
+                primary_error = None
+                stream = os.fdopen(temp_fd, 'w', encoding='utf-8')
+                try:
+                    temp_fd = None
+                    # 描述符由原始流独占；获取引用失败时仍须关闭拥有者。
+                    raw_stream = stream.buffer.raw
+                    stage = 'serialize'
+                    yaml.dump(merged_config, stream)
+                except BaseException as error:
+                    primary_error = error
+                finally:
+                    try:
+                        if primary_error is None:
+                            stage = 'close'
+                        stream.close()
+                    except BaseException as error:
+                        if primary_error is None or (
+                                isinstance(primary_error, Exception)
+                                and not isinstance(error, Exception)):
+                            primary_error = error
+                    try:
+                        # 先使原始流失效，遗留缓冲层便不能再访问复用后的描述符。
+                        if raw_stream is not None and not raw_stream.closed:
+                            raw_stream.close()
+                    except BaseException as error:
+                        if primary_error is None or (
+                                isinstance(primary_error, Exception)
+                                and not isinstance(error, Exception)):
+                            primary_error = error
+                if primary_error is not None:
+                    raise primary_error
+                stage = 'replace'
+                os.replace(temp_path, config_file)
+                temp_path = None
+            except BaseException as primary_error:
+                # 普通清理异常不覆盖主因，最先出现的控制信号仍须传播。
+                if temp_fd is not None:
+                    try:
+                        os.close(temp_fd)
+                    except BaseException as cleanup_error:
+                        if (isinstance(primary_error, Exception)
+                                and not isinstance(cleanup_error, Exception)):
+                            primary_error = cleanup_error
+                    temp_fd = None
+                if temp_path is not None:
+                    try:
+                        os.unlink(temp_path)
+                    except BaseException as cleanup_error:
+                        if (isinstance(primary_error, Exception)
+                                and not isinstance(cleanup_error, Exception)):
+                            primary_error = cleanup_error
+                raise primary_error
             LOGGER.info(f"正在写回配置信息: {os.path.abspath(config_file)}")
         except Exception as e:
-            LOGGER.error(f"无法写回配置文件 {os.path.abspath(config_file)}: {e}")
+            LOGGER.error(
+                "无法写回配置文件: %s", _config_exception_summary(e, stage)
+            )
+            return merged_config
 
     LOGGER.info("配置参数版本差异检查完成")
     return merged_config

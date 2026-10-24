@@ -8,18 +8,25 @@ import time
 import datetime
 import logging
 import sys
+import threading
+from concurrent.futures import CancelledError
+
 import psutil
 
 from modules.utils import (
     run_external_action,
     parse_time_string
 )
-from modules.notification import send_notification
+from modules.notification import feedback_scope, send_notification
 from modules.config import DEFAULT_VALUES
 from modules.task_monitor import query_task_pid
-from modules.spinner import spinner_phase, notify_fail
+from modules.spinner import current_spinner, notify_fail, spinner_phase
 
 LOGGER = logging.getLogger(__name__)
+
+# 非 TTY 反馈普通行使用的定格图标，与 spinner 的日志级反馈保持一致
+_ICON_DONE = "\u2714\ufe0f"  # ✔️
+_ICON_FAIL = "\u274c"        # ❌
 
 
 class ProcessTimeoutExitRequested(Exception):
@@ -42,7 +49,7 @@ def _get_timeout_count_threshold(raw_threshold):
     Returns:
         int: 合法化后的阈值
     """
-    default_threshold = DEFAULT_VALUES['external']['timeout_threshold']
+    default_threshold = DEFAULT_VALUES['monitor']['common']['timeout_threshold']
     try:
         threshold = int(raw_threshold)
     except (TypeError, ValueError):
@@ -85,11 +92,26 @@ def _parse_time_or_default(raw_value, default_value):
         return parse_time_string(default_value)
 
 
+def _all_push_failed(results):
+    """纯函数：结果非空且所有通道均失败时返回 True
+
+    不写任何 UI，仅做布尔聚合；空结果（禁用、缺变量、无有效通道）返回 False
+
+    Args:
+        results (list[tuple[str, bool]]): send_notification 返回的各通道结果
+
+    Returns:
+        bool: 空结果为 False；非空且全部通道失败为 True
+    """
+    return bool(results) and all(not ok for _, ok in results)
+
+
 def _render_push_results(results, sp):
     """将各通道推送结果逐条内联渲染到 spinner，并判定是否全部失败
 
-    每个通道独立输出一条 ✔️/❌（不定格 spinner）；空结果（禁用、
-    缺变量、无有效通道）不输出任何内容
+    旧批量调用兼容入口：迁移后的生产路径不再调用本函数，也不得与即时反馈
+    生命周期合并；每个通道独立输出一条 ✔️/❌（不定格 spinner）；空结果
+    （禁用、缺变量、无有效通道）不输出
 
     Args:
         results (list[tuple[str, bool]]): send_notification 返回的各通道结果，
@@ -102,11 +124,131 @@ def _render_push_results(results, sp):
     if not results:
         return False
     for provider, ok in results:
+        if provider == 'smtp':
+            if ok:
+                sp.write_done(
+                    "通道 [smtp] SMTP 服务器至少部分接受（不代表最终到达）")
+            else:
+                sp.write_fail("通道 [smtp] SMTP 未确认接受")
+            continue
         if ok:
             sp.write_done(f"通道 [{provider}] 推送成功")
         else:
             sp.write_fail(f"通道 [{provider}] 推送失败")
-    return all(not ok for _, ok in results)
+    return _all_push_failed(results)
+
+
+def _borrow_tty_handle(handle):
+    """判断句柄是否可借用：同线程、未关闭且输出流为 TTY
+
+    Args:
+        handle: 候选 spinner 句柄，可为 None
+
+    Returns:
+        可借用的 TTY 句柄；不满足任一条件时返回 None
+    """
+    if handle is None:
+        return None
+    try:
+        stream = handle.stream
+    except AttributeError:
+        return None
+    if stream is None or not stream.isatty():
+        return None
+    if handle.closed:
+        return None
+    if handle.owner_thread_id != threading.get_ident():
+        return None
+    return handle
+
+
+def _resolve_feedback_handle(spinner):
+    """解析用于反馈渲染的 TTY 句柄
+
+    显式传入的 spinner 优先；未显式给出时回退当前活动句柄。仅借用同线程、
+    未关闭且输出流为 TTY 的句柄，其余情况返回 None 以走 stdout 普通行
+
+    Args:
+        spinner: 显式 spinner 句柄，可为 None
+
+    Returns:
+        TTY 句柄；无可借用句柄时返回 None
+    """
+    candidate = spinner if spinner is not None else current_spinner()
+    return _borrow_tty_handle(candidate)
+
+
+def _write_plain_feedback(text, ok):
+    """把一条通道终态写入 stdout 普通行并立即 flush
+
+    仅用于无可借用 TTY 句柄的场景（含非 TTY、日志静音）；不经过
+    _LogSpinner.write_*，避免同一反馈二次落文件；普通流不带 ANSI，
+    间距按结果选择：成功两空格、失败单空格
+
+    Args:
+        text (str): 通道终态文案
+        ok (bool): 该通道是否成功
+    """
+    icon = _ICON_DONE if ok else _ICON_FAIL
+    gap = "  " if ok else " "
+    sys.stdout.write(f"{icon}{gap}{text}\n")
+    sys.stdout.flush()
+
+
+def _render_channel_result(result, handle):
+    """渲染单个通道终态：SMTP 与非 SMTP 使用各自固定文案
+
+    完成时单条反馈；与兼容入口保持同义文案，SMTP 接受不等于最终送达。
+
+    Args:
+        result (PushChannelResult): 单通道终态，含 provider 与 ok
+        handle: 可借用的 TTY 句柄；为空时写 stdout 普通行
+    """
+    if result.provider == 'smtp':
+        text = (
+            "通道 [smtp] SMTP 服务器至少部分接受（不代表最终到达）"
+            if result.ok else "通道 [smtp] SMTP 未确认接受"
+        )
+    else:
+        text = (
+            f"通道 [{result.provider}] 推送成功"
+            if result.ok else f"通道 [{result.provider}] 推送失败"
+        )
+
+    if handle is not None:
+        if result.ok:
+            handle.write_done(text)
+        else:
+            handle.write_fail(text)
+        return
+    _write_plain_feedback(text, result.ok)
+
+
+def _send_notification_with_feedback(config, template_key, *, spinner=None, **kwargs):
+    """monitor 私有通知入口：进入反馈作用域并恰好调用一次 send_notification
+
+    所有通道终态通过 feedback_scope 的观察者在调用线程内即时渲染；显式
+    spinner 优先，但仅借用同线程、未关闭的 TTY 句柄，其余情况写 stdout
+    普通行并 flush。包装器自身不承担任何重试，也不向模板 kwargs 注入
+    保留关键字，模板变量语义保持不变
+
+    Args:
+        config (dict): 配置信息
+        template_key (str): 模板键
+        spinner: 显式 spinner 句柄，可为 None
+        **kwargs: 模板参数
+
+    Returns:
+        list[tuple[str, bool]]: 原 send_notification 的返回契约
+    """
+    handle = _resolve_feedback_handle(spinner)
+
+    def on_result(result):
+        """在调用线程内渲染单通道终态。"""
+        _render_channel_result(result, handle)
+
+    with feedback_scope(on_result=on_result):
+        return send_notification(config, template_key, **kwargs)
 
 
 def _handle_process_end(config, process_name, pid, run_time,
@@ -131,14 +273,15 @@ def _handle_process_end(config, process_name, pid, run_time,
         f"进程结束: {process_name} (PID: {pid}) "
         f"运行时间: {formatted_run_time}"
     )
-    end_results = send_notification(
+    end_results = _send_notification_with_feedback(
         config,
         'on_end',
+        spinner=sp,
         process_name=process_name,
         process_pid=pid,
         process_run_time=formatted_run_time
     )
-    all_failed = _render_push_results(end_results, sp)
+    all_failed = _all_push_failed(end_results)
 
     # 进程结束时调用外部动作
     if external_on_end_path:
@@ -149,16 +292,19 @@ def _handle_process_end(config, process_name, pid, run_time,
             result = run_external_action(external_on_end_path)
             sp.write_done("外部动作执行完成")
             LOGGER.info(f"成功执行外部动作 {external_on_end_path}")
-            # 发送外部动作执行通知
-            ext_results = send_notification(
+            # 发送外部动作执行通知；终态由包装内观察者即时渲染
+            _send_notification_with_feedback(
                 config,
                 'on_external',
+                spinner=sp,
                 external_program_name=result['display_name'],
                 external_program_path=result['display_path'],
                 process_name=process_name,
                 process_pid=pid,
             )
-            _render_push_results(ext_results, sp)
+        except CancelledError:
+            # 通知被取消优先重抛，不记为外部动作失败后继续
+            raise
         except Exception as e:
             sp.write_fail("外部动作执行失败")
             LOGGER.error(
@@ -172,7 +318,8 @@ def _handle_process_end(config, process_name, pid, run_time,
 def _check_process_timeout(config, process_info, pid, current_time,
                             timeout_interval,
                             external_on_timeout_path,
-                            timeout_threshold):
+                            timeout_threshold,
+                            *, spinner=None):
     """检查进程超时，发送警告并在达到阈值时触发外部程序
 
     Args:
@@ -183,6 +330,7 @@ def _check_process_timeout(config, process_info, pid, current_time,
         timeout_interval (int): 超时警告间隔（秒）
         external_on_timeout_path (str): 超时后触发的外部程序路径
         timeout_threshold (int): 触发外部程序所需的超时累计次数阈值
+        spinner: 可选 spinner 句柄，用于即时渲染超时与外部动作通知终态
     """
     run_time = current_time - process_info['start_time']
     time_since_last_warning = current_time - process_info['last_warning_time']
@@ -196,10 +344,12 @@ def _check_process_timeout(config, process_info, pid, current_time,
         f"进程 {process_name} (PID: {pid}) "
         f"已运行超时 {formatted_run_time}"
     )
-    # TODO: 本函数不持有 spinner 句柄且每轮循环重复触发，故丢弃返回值不做内联渲染，避免刷屏
-    send_notification(
+    # 每次超时都是独立通知：进入包装后创建新 event_id 与独立已消费集合，
+    # 同 provider 的后续超时通知不会被吞掉
+    _send_notification_with_feedback(
         config,
         'on_timeout',
+        spinner=spinner,
         process_name=process_name,
         process_pid=pid,
         process_run_time=formatted_run_time
@@ -220,11 +370,11 @@ def _check_process_timeout(config, process_info, pid, current_time,
             LOGGER.info(
                 f"外部动作 {external_on_timeout_path} 执行成功"
             )
-            # 发送外部动作执行通知
-            # TODO: 同上，本函数不持 spinner 句柄，丢弃返回值不做内联渲染
-            send_notification(
+            # 发送外部动作执行通知；终态由包装内观察者即时渲染
+            _send_notification_with_feedback(
                 config,
                 'on_external',
+                spinner=spinner,
                 external_program_name=result['display_name'],
                 external_program_path=result['display_path'],
                 process_name=process_name,
@@ -236,6 +386,9 @@ def _check_process_timeout(config, process_info, pid, current_time,
                 pid,
             )
         except ProcessTimeoutExitRequested:
+            raise
+        except CancelledError:
+            # 通知被取消优先重抛，不记为外部动作失败后继续
             raise
         except Exception as e:
             LOGGER.error(
@@ -366,22 +519,25 @@ def _monitor_single_pid(pid_info, config, sp):
         sp: spinner 句柄
     """
     monitor_section = config.get('monitor', {})
+    common_section = monitor_section.get('common', {})
     external_section = config.get('external', {})
 
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     external_on_timeout_path = external_section.get('on_timeout', '')
     external_on_end_path = external_section.get('on_end', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
 
     LOGGER.info(
@@ -417,6 +573,7 @@ def _monitor_single_pid(pid_info, config, sp):
                     timeout_interval,
                     external_on_timeout_path,
                     timeout_threshold,
+                    spinner=sp,
                 )
             except ProcessTimeoutExitRequested as e:
                 LOGGER.info(
@@ -532,13 +689,16 @@ def _launch_task(launch_section, config):
         sys.exit(1)
 
     # 等待 PID 出现
-    wait_section = config.get('wait', {})
+    common_section = config.get('monitor', {}).get('common', {})
     max_wait = _parse_time_or_default(
-        wait_section.get('max_wait', DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
     check_interval = _parse_time_or_default(
-        wait_section.get('check_interval', DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+        common_section.get(
+            'check_interval',
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
 
     LOGGER.info(
         f"等待计划任务进程启动，每 {check_interval} 秒检查一次"
@@ -595,13 +755,14 @@ def _launch_task(launch_section, config):
         waited_time = time.time() - wait_start_time
         formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
         LOGGER.error(f"等待超时，计划任务进程未启动: {task_name}")
-        wait_results = send_notification(
+        wait_results = _send_notification_with_feedback(
             config,
             'on_wait_timeout',
+            spinner=sp,
             process_name=task_name,
             process_wait_time=formatted_waited_time
         )
-        wait_all_failed = _render_push_results(wait_results, sp)
+        wait_all_failed = _all_push_failed(wait_results)
 
         external_section = config.get('external', {})
         external_on_wait_timeout_path = external_section.get('on_wait_timeout', '')
@@ -612,15 +773,18 @@ def _launch_task(launch_section, config):
                 result = run_external_action(external_on_wait_timeout_path)
                 sp.write_done("外部动作执行成功")
                 LOGGER.info(f"外部动作 {external_on_wait_timeout_path} 执行成功")
-                ext_results = send_notification(
+                _send_notification_with_feedback(
                     config,
                     'on_external',
+                    spinner=sp,
                     external_program_name=result['display_name'],
                     external_program_path=result['display_path'],
                     process_name=task_name,
                     process_pid=None,
                 )
-                _render_push_results(ext_results, sp)
+            except CancelledError:
+                # 通知被取消优先重抛，不记为外部动作失败后继续
+                raise
             except Exception as e:
                 sp.write_fail("外部动作执行失败")
                 LOGGER.error(f"执行外部动作失败: {e}", exc_info=True)
@@ -644,7 +808,7 @@ def monitor_via_launch(config):
     Args:
         config (dict): 配置信息
     """
-    launch_section = config.get('launch', {})
+    launch_section = config.get('monitor', {}).get('launch', {})
     launch_type = launch_section.get('type', 'program')
 
     if launch_type not in ('program', 'task'):
@@ -674,53 +838,58 @@ def monitor_processes(config):
         config (dict): 配置信息
     """
     monitor_section = config.get('monitor', {})
-    wait_section = config.get('wait', {})
+    common_section = monitor_section.get('common', {})
+    psutil_section = monitor_section.get('psutil', {})
     external_section = config.get('external', {})
 
     # 检查监视模式
-    monitor_mode = monitor_section.get('monitor_mode', 'psutil')
+    mode = monitor_section.get('mode', 'psutil')
 
-    if monitor_mode == 'task_scheduler':
+    if mode == 'task_scheduler':
         LOGGER.info("读取计划任务来获取 PID 进行监视")
         monitor_via_task_scheduler(config)
         return
 
-    if monitor_mode == 'launch':
+    if mode == 'launch':
         LOGGER.info("主动拉起目标程序或任务进行监视")
         monitor_via_launch(config)
         return
 
-    process_name = monitor_section.get(
-        'process_name',
-        DEFAULT_VALUES['monitor']['process_name'])
+    if mode != 'psutil':
+        LOGGER.error(f"监视模式无效: {mode}，仅支持 psutil/task_scheduler/launch")
+        sys.exit(1)
+
+    process_name = psutil_section.get(
+        'process_name', DEFAULT_VALUES['monitor']['psutil']['process_name'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
 
     max_wait = _parse_time_or_default(
-        wait_section.get(
-            'max_wait',
-            DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
     check_interval = _parse_time_or_default(
-        wait_section.get(
+        common_section.get(
             'check_interval',
-            DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
 
     # 外部程序调用设置
     external_on_end_path = external_section.get('on_end', '')
     external_on_timeout_path = external_section.get(
         'on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
     external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
@@ -781,13 +950,14 @@ def monitor_processes(config):
             waited_time = time.time() - start_time
             formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
             LOGGER.error(f"等待超时，进程未运行: {process_name}")
-            wait_results = send_notification(
+            wait_results = _send_notification_with_feedback(
                 config,
                 'on_wait_timeout',
+                spinner=sp,
                 process_name=process_name,
                 process_wait_time=formatted_waited_time
             )
-            wait_all_failed = _render_push_results(wait_results, sp)
+            wait_all_failed = _all_push_failed(wait_results)
 
             # 执行外部动作
             if external_on_wait_timeout_path:
@@ -799,15 +969,18 @@ def monitor_processes(config):
                     LOGGER.info(
                         f"外部动作 {external_on_wait_timeout_path} "
                         f"执行成功")
-                    ext_results = send_notification(
+                    _send_notification_with_feedback(
                         config,
                         'on_external',
+                        spinner=sp,
                         external_program_name=result['display_name'],
                         external_program_path=result['display_path'],
                         process_name=process_name,
                         process_pid=None,
                     )
-                    _render_push_results(ext_results, sp)
+                except CancelledError:
+                    # 通知被取消优先重抛，不记为外部动作失败后继续
+                    raise
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(
@@ -881,6 +1054,7 @@ def monitor_processes(config):
                             timeout_interval,
                             external_on_timeout_path,
                             timeout_threshold,
+                            spinner=sp,
                         )
                     except ProcessTimeoutExitRequested as e:
                         LOGGER.info(
@@ -918,39 +1092,42 @@ def monitor_via_task_scheduler(config):
     Args:
         config (dict): 配置信息
     """
-    task_section = config.get('task', {})
+    task_section = config.get('monitor', {}).get('task_scheduler', {})
     external_section = config.get('external', {})
     monitor_section = config.get('monitor', {})
-    wait_section = config.get('wait', {})
+    common_section = monitor_section.get('common', {})
 
     task_name = task_section.get('task_name', '')
     # 关键参数：对齐 task.lookback_minutes 的边界行为，确保非法值回退默认 10 并回写已归一化后的值
-    lookback_minutes = task_section.get('lookback_minutes', DEFAULT_VALUES['task']['lookback_minutes'])
+    lookback_minutes = task_section.get(
+        'lookback_minutes',
+        DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes'])
     check_interval = _parse_time_or_default(
-        wait_section.get(
+        common_section.get(
             'check_interval',
-            DEFAULT_VALUES['wait']['check_interval']),
-        DEFAULT_VALUES['wait']['check_interval'])
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
     loop_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'loop_interval',
-            DEFAULT_VALUES['monitor']['loop_interval']),
-        DEFAULT_VALUES['monitor']['loop_interval'])
+            DEFAULT_VALUES['monitor']['common']['loop_interval']),
+        DEFAULT_VALUES['monitor']['common']['loop_interval'])
     timeout_interval = _parse_time_or_default(
-        monitor_section.get(
+        common_section.get(
             'timeout_interval',
-            DEFAULT_VALUES['monitor']['timeout_interval']),
-        DEFAULT_VALUES['monitor']['timeout_interval'])
+            DEFAULT_VALUES['monitor']['common']['timeout_interval']),
+        DEFAULT_VALUES['monitor']['common']['timeout_interval'])
     max_wait = _parse_time_or_default(
-        wait_section.get(
-            'max_wait',
-            DEFAULT_VALUES['wait']['max_wait']),
-        DEFAULT_VALUES['wait']['max_wait'])
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
 
     external_on_end_path = external_section.get('on_end', '')
     external_on_timeout_path = external_section.get('on_timeout', '')
     timeout_threshold = _get_timeout_count_threshold(
-        external_section.get('timeout_threshold', 3)
+        common_section.get(
+            'timeout_threshold',
+            DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
     )
     external_on_wait_timeout_path = external_section.get(
         'on_wait_timeout', '')
@@ -1041,13 +1218,14 @@ def monitor_via_task_scheduler(config):
             waited_time = time.time() - wait_start_time
             formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
             LOGGER.error(f"等待超时，计划任务未触发: {task_name}")
-            wait_results = send_notification(
+            wait_results = _send_notification_with_feedback(
                 config,
                 'on_wait_timeout',
+                spinner=sp,
                 process_name=task_name,
                 process_wait_time=formatted_waited_time
             )
-            wait_all_failed = _render_push_results(wait_results, sp)
+            wait_all_failed = _all_push_failed(wait_results)
 
             # 执行等待超时外部动作
             if external_on_wait_timeout_path:
@@ -1059,15 +1237,18 @@ def monitor_via_task_scheduler(config):
                     LOGGER.info(
                         f"外部动作 {external_on_wait_timeout_path} "
                         f"执行成功")
-                    ext_results = send_notification(
+                    _send_notification_with_feedback(
                         config,
                         'on_external',
+                        spinner=sp,
                         external_program_name=result['display_name'],
                         external_program_path=result['display_path'],
                         process_name=task_name,
                         process_pid=None,
                     )
-                    _render_push_results(ext_results, sp)
+                except CancelledError:
+                    # 通知被取消优先重抛，不记为外部动作失败后继续
+                    raise
                 except Exception as e:
                     sp.write_fail("外部动作执行失败")
                     LOGGER.error(

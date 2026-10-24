@@ -246,18 +246,28 @@ class TestExternalActionExecution(unittest.TestCase):
 class TestConfig(unittest.TestCase):
     """测试 config.py 模块"""
 
+    def test_runtime_fixtures_use_only_new_monitor_layout(self):
+        """运行时配置只在 monitor.common 中保存超时阈值。"""
+        for config in (
+                TestMonitorLoopSmoke()._build_config(),
+                TestLaunchSmoke()._build_config()):
+            with self.subTest(mode=config['monitor']['mode']):
+                self.assertNotIn('timeout_threshold', config['external'])
+                self.assertEqual(config['monitor']['common']['timeout_threshold'], 3)
+                self.assertFalse({'task', 'wait', 'launch'} & config.keys())
+
     def test_merge_configs(self):
         """测试配置合并（V4 键名）"""
         user_config = {
             'monitor': {
-                'process_name': 'custom.exe'
+                'psutil': {'process_name': 'custom.exe'}
             }
         }
-        
+
         default_config = get_default_config()
-        
+
         merged_config = merge_configs(user_config, default_config)
-        self.assertEqual(merged_config['monitor']['process_name'], 'custom.exe')
+        self.assertEqual(merged_config['monitor']['psutil']['process_name'], 'custom.exe')
 
 
 class TestParsePushChannels(unittest.TestCase):
@@ -607,24 +617,33 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         """构造 psutil 模式的最小监视配置（V4 键名）。
 
         Returns:
-            dict: 含 monitor / wait / external 节的配置。
+            dict: 含 monitor 新布局与 external 动作的配置。
         """
         return {
             'monitor': {
-                'monitor_mode': 'psutil',
-                'process_name': 'target.exe',
-                'timeout_interval': '15m',
-                'loop_interval': '1s',
-            },
-            'wait': {
-                'max_wait': '15m',
-                'check_interval': '1s',
+                'mode': 'psutil',
+                'common': {
+                    'timeout_interval': '15m',
+                    'loop_interval': '1s',
+                    'timeout_threshold': 3,
+                    'max_wait': '15m',
+                    'check_interval': '1s',
+                },
+                'psutil': {'process_name': 'target.exe'},
+                'task_scheduler': {
+                    'task_name': r'\Custom\MyTask',
+                    'lookback_minutes': 10,
+                },
+                'launch': {
+                    'type': 'program', 'path': r'C:\app\target.exe',
+                    'args': None, 'cwd': None,
+                    'task_name': r'\Custom\MyTask',
+                },
             },
             'external': {
                 'on_end': '',
                 'on_timeout': '',
                 'on_wait_timeout': '',
-                'timeout_threshold': 3,
             },
         }
 
@@ -663,7 +682,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         ]
         config = self._build_config()
         # timeout_interval 设为 0s，任意流逝时间均触发超时，无需 mock time.time
-        config['monitor']['timeout_interval'] = '0s'
+        config['monitor']['common']['timeout_interval'] = '0s'
         monitor_processes(config)
 
         timeout_calls = [
@@ -681,28 +700,35 @@ class TestLaunchSmoke(unittest.TestCase):
         """构造 launch 模式的最小配置。
 
         Returns:
-            dict: 含 monitor / launch / wait / external 节的配置。
+            dict: 含 monitor 新布局与 external 动作的配置。
         """
         return {
             'monitor': {
-                'monitor_mode': 'launch',
-                'timeout_interval': '15m',
-                'loop_interval': '1s',
-            },
-            'launch': {
-                'type': launch_type,
-                'path': 'C:\\app\\target.exe',
-                'task_name': '\\Custom\\MyTask',
-            },
-            'wait': {
-                'max_wait': '30s',
-                'check_interval': '1s',
+                'mode': 'launch',
+                'common': {
+                    'timeout_interval': '15m',
+                    'loop_interval': '1s',
+                    'timeout_threshold': 3,
+                    'max_wait': '30s',
+                    'check_interval': '1s',
+                },
+                'psutil': {'process_name': 'target.exe'},
+                'task_scheduler': {
+                    'task_name': r'\Custom\MyTask',
+                    'lookback_minutes': 10,
+                },
+                'launch': {
+                    'type': launch_type,
+                    'path': 'C:\\app\\target.exe',
+                    'args': None,
+                    'cwd': None,
+                    'task_name': '\\Custom\\MyTask',
+                },
             },
             'external': {
                 'on_end': '',
                 'on_timeout': '',
                 'on_wait_timeout': '',
-                'timeout_threshold': 3,
             },
         }
 
@@ -752,7 +778,7 @@ class TestLaunchSmoke(unittest.TestCase):
         ]
 
         config = self._build_config()
-        config['monitor']['timeout_interval'] = '0s'
+        config['monitor']['common']['timeout_interval'] = '0s'
         monitor_via_launch(config)
 
         timeout_calls = [

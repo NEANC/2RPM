@@ -1,0 +1,559 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""验证截图本地保留策略、命名与日期目录清理。"""
+
+from copy import deepcopy
+from datetime import date
+import stat
+
+import pytest
+
+from modules.screenshot import retention
+from modules.screenshot.models import CaptureResult
+
+
+def test_cleanup_rejects_replaced_date_directory(monkeypatch, tmp_path):
+    """枚举后替换同名普通目录，外部和替换哨兵均不得被删除。"""
+    root = tmp_path / 'screenshot'
+    candidate = root / '2020_01_01'
+    candidate.mkdir(parents=True)
+    (candidate / 'original').write_bytes(b'original')
+    outside = root / 'outside'
+    outside.mkdir()
+    (outside / 'sentinel').write_bytes(b'outside')
+    original_entries = retention.winfs._entries
+    exchanged = False
+
+    def exchange_after_enumeration(handle):
+        """真实读取 NTFS 身份记录后再交换未打开的日期目录。"""
+        nonlocal exchanged
+        entries = tuple(original_entries(handle))
+        if not exchanged and any(name == candidate.name for name, _, _ in entries):
+            exchanged = True
+            try:
+                (candidate / 'original').unlink()
+                candidate.rmdir()
+                candidate.mkdir()
+                (candidate / 'sentinel').write_bytes(b'replacement')
+            except OSError as error:
+                pytest.fail(f'目录交换失败：{error}')
+        yield from entries
+
+    monkeypatch.setattr(retention.winfs, '_entries', exchange_after_enumeration)
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
+    assert exchanged
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+    assert (candidate / 'sentinel').read_bytes() == b'replacement'
+    assert (outside / 'sentinel').read_bytes() == b'outside'
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_cleanup_propagates_candidate_signal(monkeypatch, tmp_path, signal_type):
+    """候选删除控制信号原样传播且释放枚举根句柄。"""
+    root = tmp_path / 'screenshot'
+    candidate = root / '2020_01_01'
+    candidate.mkdir(parents=True)
+    signal = signal_type('private-path')
+
+    def interrupt(name, **kwargs):
+        """模拟候选处理被中断。"""
+        raise signal
+
+    monkeypatch.setattr(retention.winfs, 'remove_tree', interrupt)
+    with pytest.raises(signal_type) as caught:
+        retention.cleanup_retention(str(tmp_path), retention.RetentionPolicy(True))
+    assert caught.value is signal
+    root.rename(tmp_path / 'released')
+
+
+def test_cleanup_skips_disappeared_candidate(monkeypatch, tmp_path):
+    """枚举后正常消失的候选无告警，其他日期树继续删除。"""
+    root = tmp_path / 'screenshot'
+    missing = root / '2020_01_01'
+    missing.mkdir(parents=True)
+    remaining = root / '2020_01_02'
+    remaining.mkdir()
+    original_entries = retention.winfs._entries
+
+    def disappear(handle):
+        """枚举后删除空候选以制造正常消失窗口。"""
+        entries = tuple(original_entries(handle))
+        if any(name == missing.name for name, _, _ in entries):
+            missing.rmdir()
+        yield from entries
+
+    monkeypatch.setattr(retention.winfs, '_entries', disappear)
+    assert retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True)) == ()
+    assert not remaining.exists()
+
+
+def test_policy_rejects_boolean_as_days():
+    """天数配置只接受严格正整数。"""
+    policy = retention.parse_policy({'enabled': True, 'max_days': True})
+    assert policy.enabled is True
+    assert policy.max_days == 14
+    assert policy.warnings
+
+
+def test_component_sanitizing_blocks_devices_and_path_separators():
+    """自动名称组件净化非法字符与设备名。"""
+    assert retention.sanitize_component('../CON.txt', 'event') == '.._CON.txt'
+    assert retention.sanitize_component('NUL', 'event') == '_NUL'
+    assert len(retention.sanitize_component('x' * 100, 'event')) == 80
+
+
+@pytest.mark.parametrize('value, fallback', [
+    ('', 'event'), ('   ', 'event'), ('.', 'event'), ('..', 'event'),
+    ('....', 'event'),
+])
+def test_component_sanitizing_names_empty_and_dot_components(value, fallback):
+    """空名及点组件回退为安全名称。"""
+    assert retention.sanitize_component(value, fallback) == fallback
+
+
+def test_component_sanitizing_limits_utf16_without_splitting_surrogate_pair():
+    """长度限制按 UTF-16 单元计算且不保留孤立代理对。"""
+    value = 'a' * 79 + '😀'
+    result = retention.sanitize_component(value, 'event')
+    assert result == 'a' * 79
+    assert len(result.encode('utf-16-le')) // 2 == 79
+    assert '\ud800' not in result
+    assert '\udc00' not in result
+
+
+def test_component_sanitizing_keeps_complete_surrogate_pair_at_boundary():
+    """恰好容纳代理对时保留完整非 BMP 字符。"""
+    value = 'a' * 78 + '😀'
+    result = retention.sanitize_component(value, 'event')
+    assert result == value
+    assert len(result.encode('utf-16-le')) // 2 == 80
+
+
+@pytest.mark.parametrize('value, expected', [
+    ('COM1.txt', '_COM1.txt'), ('LPT9.log.', '_LPT9.log'),
+    ('name\x1fpart', 'name_part'), ('  event.  ', 'event'),
+])
+def test_component_sanitizing_windows_edges(value, expected):
+    """净化 Windows 设备名、控制字符及尾部空白点号。"""
+    assert retention.sanitize_component(value, 'event') == expected
+
+
+def test_runtime_context_has_two_fields_and_uses_basename_stem(tmp_path):
+    """运行上下文只含程序根与净化的配置 stem，不持有完整路径。"""
+    runtime = retention.runtime_context(str(tmp_path), 'C:\\secret\\my.cfg.yaml')
+    assert list(runtime) == ['program_dir', 'config_stem']
+    assert runtime['program_dir'] == str(tmp_path)
+    assert runtime['config_stem'] == 'my.cfg'
+    assert 'secret' not in runtime['config_stem']
+
+
+@pytest.mark.parametrize('name', ['a?b.yaml', 'a*b.yaml'])
+def test_runtime_context_sanitizes_stem_characters(tmp_path, name):
+    """不同配置名的非法字符被净化为安全 stem，避免同名碰撞。"""
+    runtime = retention.runtime_context(str(tmp_path), name)
+    assert set(runtime) == {'program_dir', 'config_stem'}
+    assert not (set('<>:"/\\|?*') & set(runtime['config_stem']))
+    assert runtime['config_stem'] == 'a_b'
+
+
+def test_cleanup_uses_calendar_days_and_handle_tree_removal(monkeypatch, tmp_path):
+    """仅按严格有效日期计算保留边界并经 winfs 删除日期树。"""
+    removed = []
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in ('2024_02_29', '2024_03_01', '2024_02_30', '2024_03_02'):
+        (root / name).mkdir()
+    monkeypatch.setattr(retention.winfs, 'remove_tree',
+                        lambda name, **kwargs: removed.append(str(root / name)))
+    assert retention.cleanup_retention(str(tmp_path), retention.RetentionPolicy(True, 2),
+                                       today=date(2024, 3, 2)) == ()
+    assert removed == [str(tmp_path / 'screenshot' / '2024_02_29')]
+
+
+def test_automatic_save_uses_jpeg_and_starts_at_one(monkeypatch, tmp_path):
+    """自动保存使用 JPEG，并从两位序号 01 开始。"""
+    result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
+    writes = []
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive',
+                        lambda path, data: writes.append((path, data)))
+    runtime = retention.runtime_context(str(tmp_path), 'config.yaml')
+    outcome = retention.save_automatic(
+        result, runtime, 'event', retention.RetentionPolicy(True),
+        today=date(2026, 10, 6))
+    assert outcome.filename == 'event_01.jpg'
+    assert writes == [(outcome.path, result.image_bytes)]
+
+
+def test_automatic_save_scans_jpeg_and_increments_conflicts(monkeypatch, tmp_path):
+    """自动保存按 JPEG 最大序号继续，并在排他冲突后递增。"""
+    result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
+    calls = []
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: (
+        'event_02.jpg', 'event_09.JPG', 'event_100.png'))
+
+    def write(path, data):
+        calls.append(path)
+        if len(calls) == 1:
+            raise FileExistsError(path)
+
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', write)
+    runtime = retention.runtime_context(str(tmp_path), 'config.yaml')
+    outcome = retention.save_automatic(
+        result, runtime, 'event', retention.RetentionPolicy(True),
+        today=date(2026, 10, 6))
+    assert outcome.filename == 'event_11.jpg'
+    assert [retention.ntpath.basename(path) for path in calls] == [
+        'event_10.jpg', 'event_11.jpg']
+
+
+def test_cleanup_does_not_delete_date_named_file(monkeypatch, tmp_path):
+    """日期名称普通文件由安全删除层拒绝，不被清理误删。"""
+    target = tmp_path / 'screenshot' / '2024_02_29'
+    target.parent.mkdir()
+    target.write_bytes(b'preserved')
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 2), today=date(2024, 3, 2))
+    assert target.read_bytes() == b'preserved'
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+
+
+@pytest.mark.parametrize('cleanup_failed', [False, True])
+def test_automatic_save_failure_preserves_safe_notes(
+        monkeypatch, tmp_path, cleanup_failed):
+    """写入失败保留策略和固定清理告警，不暴露异常或其他附注。"""
+    result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
+    secret = str(tmp_path / 'private-token.jpg')
+    error = OSError(secret)
+    error.add_note(secret)
+    if cleanup_failed:
+        error.add_note('截图半成品清理失败')
+    calls = []
+
+    def fail_write(path, data):
+        """记录临时目录中的写入候选并模拟底层失败。"""
+        calls.append((path, data))
+        raise error
+
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', fail_write)
+    policy = retention.RetentionPolicy(True, warnings=('保留策略提示',))
+    outcome = retention.save_automatic(
+        result, retention.runtime_context(str(tmp_path), 'config.yaml'),
+        'event', policy, today=date(2026, 10, 6))
+    expected = ('保留策略提示', '截图保存失败：无法写入输出路径')
+    if cleanup_failed:
+        expected += ('截图半成品清理失败',)
+    assert outcome == retention.SaveOutcome(None, 'event_01.jpg', expected)
+    assert calls == [(str(tmp_path / 'screenshot' / '2026_10_06'
+                         / 'config' / 'event_01.jpg'), result.image_bytes)]
+    assert secret not in repr(outcome)
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, SystemExit])
+def test_automatic_save_propagates_write_control_signal(
+        monkeypatch, tmp_path, signal_type):
+    """带清理附注的写入控制信号仍以原对象传播。"""
+    signal = signal_type('private-token')
+    signal.add_note('截图半成品清理失败')
+
+    def interrupt_write(path, data):
+        """模拟底层写入被控制信号中断。"""
+        raise signal
+
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', interrupt_write)
+    with pytest.raises(signal_type) as caught:
+        retention.save_automatic(
+            CaptureResult(b'fixture', 'window', 'test', 1, 1),
+            retention.runtime_context(str(tmp_path), 'config.yaml'),
+            'event', retention.RetentionPolicy(True))
+    assert caught.value is signal
+
+
+def test_cli_save_increments_unbounded_sequence(monkeypatch, tmp_path):
+    """目录保存使用四位递增编号并保留原始载荷。"""
+    result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='png')
+    calls = []
+
+    def write(path, data):
+        calls.append((path, data))
+        if len(calls) == 1:
+            raise FileExistsError(path)
+
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', write)
+    outcome = retention.save_cli(result, str(tmp_path), False, today=date(2026, 10, 7))
+    assert outcome.filename == 'screenshot_20261007_0001.png'
+    assert calls[-1][1] == result.image_bytes
+
+
+@pytest.mark.parametrize('image_format, suffix', [
+    ('jpeg', '.jpg'), ('png', '.png'), ('webp', '.webp'), ('raw', '.raw')])
+def test_cli_filename_supports_all_capture_formats(image_format, suffix):
+    """CLI 文件名映射支持每种截图编码格式。"""
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format=image_format)
+    assert retention.cli_filename(result, 'shots', False,
+                                  date(2026, 10, 7)).endswith(suffix)
+
+
+@pytest.mark.parametrize('image_format, extension', [
+    ('png', 'png'), ('webp', 'webp'), ('raw', 'raw'),
+    ('jpeg', 'jpg'), ('jpeg', 'jpeg'),
+])
+@pytest.mark.parametrize('letter_case', ['lower', 'upper', 'title'])
+def test_cli_filename_preserves_matching_basename(
+        image_format, extension, letter_case):
+    """实际格式未改变时完整保留显式文件名及扩展名大小写。"""
+    name = 'Capture.' + getattr(extension, letter_case)()
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format=image_format)
+    assert retention.cli_filename(
+        result, 'C:\\Shots\\' + name, True, date(2026, 10, 7)) == name
+
+
+@pytest.mark.parametrize('extension', ['JPG', 'Jpeg', 'WebP', 'RAW'])
+def test_cli_filename_replaces_suffix_on_png_fallback(extension):
+    """ADB 实际回退 PNG 时只替换原后缀，保留主文件名。"""
+    result = CaptureResult(b'data', 'adb', 'device', 1, 1,
+                           image_format='png')
+    assert retention.cli_filename(
+        result, 'C:\\Shots\\Capture.' + extension, True,
+        date(2026, 10, 7)) == 'Capture.png'
+
+
+@pytest.mark.parametrize('days', [True, False, 0, -1, 2.5, '7', None])
+def test_policy_rejects_non_positive_or_non_integer_days(days):
+    """非法保留天数回退到默认值并告警，且不修改输入配置。"""
+    value = {'enabled': True, 'max_days': days}
+    before = deepcopy(value)
+    policy = retention.parse_policy(value)
+    assert policy.enabled is True
+    assert policy.max_days == 14
+    assert policy.warnings == ('截图保留天数无效，已使用 14 天',)
+    assert value == before
+
+
+def test_policy_accepts_positive_integer_days():
+    """正整数天数被保留且不产生告警。"""
+    policy = retention.parse_policy({'enabled': True, 'max_days': 7})
+    assert policy.enabled is True
+    assert policy.max_days == 7
+    assert policy.warnings == ()
+
+
+def test_invalid_enabled_wins_over_invalid_days():
+    """非法开关优先关闭策略，且不追加天数告警。"""
+    policy = retention.parse_policy({'enabled': 'invalid', 'max_days': 0})
+    assert policy.enabled is False
+    assert policy.max_days == 14
+    assert policy.warnings == ('截图保留配置无效，已关闭',)
+
+
+@pytest.mark.parametrize('value, enabled, warnings', [
+    ({}, False, ()),
+    ({'enabled': None}, False, ()),
+    ({'enabled': False}, False, ()),
+    ({'enabled': True}, True, ()),
+    ({'enabled': 'true'}, False, ('截图保留配置无效，已关闭',)),
+])
+def test_policy_switch_boundaries(value, enabled, warnings):
+    """保留开关缺省、空值、布尔值及非法值边界的精确告警。"""
+    policy = retention.parse_policy(value)
+    assert policy.enabled is enabled
+    assert policy.warnings == warnings
+
+
+def test_default_retention_uses_fourteen_days():
+    """缺省与显式 None 均保留默认十四天，显式天数不被开关覆盖。"""
+    assert retention.parse_policy(None) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy({}) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy(
+        {'enabled': None}) == retention.RetentionPolicy(False, 14, ())
+    assert retention.parse_policy(
+        {'enabled': None, 'max_days': 7}
+    ) == retention.RetentionPolicy(False, 7, ())
+    assert retention.parse_policy(
+        {'enabled': False, 'max_days': 7}
+    ) == retention.RetentionPolicy(False, 7, ())
+
+
+def test_cleanup_skips_future_and_retained_directories_without_enumerating(monkeypatch, tmp_path):
+    """未来日期及保留期内日期不进入删除层。"""
+    removed = []
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in ('2024_03_01', '2024_03_02', '2024_03_03', 'other'):
+        (root / name).mkdir()
+    monkeypatch.setattr(retention.winfs, 'remove_tree',
+                        lambda name, **kwargs: removed.append(name))
+    assert retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 2), today=date(2024, 3, 2)) == ()
+    assert removed == []
+
+
+def test_cleanup_continues_after_removal_failure_and_has_no_count_limit(monkeypatch, tmp_path):
+    """删除失败后继续清理其余过期目录，且不限制数量。"""
+    names = tuple(f'2020_01_{day:02d}' for day in range(1, 32))
+    removed = []
+
+    root = tmp_path / 'screenshot'
+    root.mkdir()
+    for name in names:
+        (root / name).mkdir()
+
+    def remove(path, **kwargs):
+        """首棵日期树失败后记录其余候选。"""
+        removed.append(path)
+        if path.endswith('2020_01_01'):
+            raise OSError('fixture')
+
+    monkeypatch.setattr(retention.winfs, 'remove_tree', remove)
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
+    assert len(removed) == len(names)
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+
+
+def test_cleanup_warns_and_continues_when_real_tree_mark_delete_fails(
+        monkeypatch, tmp_path):
+    """真实日期树删除在句柄标记失败后告警并继续删除其他日期树。"""
+    root = tmp_path / 'screenshot'
+    failed = root / '2020_01_01'
+    failed.mkdir(parents=True)
+    remaining = root / '2020_01_02'
+    remaining.mkdir()
+    with retention.winfs.directory_entries(str(root)) as (_, entries):
+        failed_identity = next(identity for name, _, identity in entries
+                               if name == failed.name)
+    original_mark_delete = retention.winfs._mark_delete
+
+    def fail_one_date_tree(handle):
+        """仅对首个日期目录的真实句柄注入删除标记失败。"""
+        if retention.winfs._identity(handle) == failed_identity:
+            raise OSError('injected delete failure')
+        original_mark_delete(handle)
+
+    monkeypatch.setattr(retention.winfs, '_mark_delete', fail_one_date_tree)
+    warnings = retention.cleanup_retention(
+        str(tmp_path), retention.RetentionPolicy(True, 1), today=date(2024, 1, 1))
+
+    assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+    assert failed.is_dir()
+    assert not remaining.exists()
+
+
+def test_cleanup_continues_after_real_readonly_file_failure(monkeypatch, tmp_path):
+    """NTFS 只读文件真实删除失败后仍清理后续过期日期树。"""
+    original_remove_tree = retention.winfs.remove_tree
+    calls = []
+
+    def record_remove_tree(path, **kwargs):
+        """记录实际删除顺序并透传到真实句柄删除实现。"""
+        calls.append(path)
+        return original_remove_tree(path, **kwargs)
+
+    root = tmp_path / 'screenshot'
+    failed = root / '2020_01_01'
+    remaining = root / '2020_01_02'
+    readonly = failed / 'config' / 'readonly.jpg'
+    readonly.parent.mkdir(parents=True)
+    remaining.mkdir()
+    (remaining / 'payload.bin').write_bytes(b'expired')
+    readonly.write_bytes(b'preserved')
+    readonly.chmod(stat.S_IREAD)
+    try:
+        assert readonly.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        with pytest.raises(OSError) as caught:
+            retention.winfs.remove_tree(str(failed))
+        assert caught.value.winerror == 5
+
+        monkeypatch.setattr(retention.winfs, 'remove_tree', record_remove_tree)
+        warnings = retention.cleanup_retention(
+            str(tmp_path), retention.RetentionPolicy(True, 1),
+            today=date(2024, 1, 1))
+
+        assert calls == [failed.name, remaining.name]
+        assert warnings == ('截图清理失败：已跳过不安全或无法删除的日期目录',)
+        assert readonly.read_bytes() == b'preserved'
+        assert not remaining.exists()
+    finally:
+        readonly.chmod(stat.S_IWRITE)
+    retention.winfs.remove_tree(str(failed))
+    root.rename(tmp_path / 'released')
+
+
+def test_automatic_save_does_not_trigger_retention_cleanup(monkeypatch, tmp_path):
+    """自动保存不调用保留清理。"""
+    result = CaptureResult(b'fixture', 'window', 'test', 1, 1)
+    monkeypatch.setattr(retention.winfs, 'list_names', lambda path: ())
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', lambda path, data: None)
+    monkeypatch.setattr(retention, 'cleanup_retention',
+                        lambda *args, **kwargs: pytest.fail('cleanup called'))
+    retention.save_automatic(
+        result, retention.runtime_context(str(tmp_path), 'config.yaml'), 'event',
+        retention.RetentionPolicy(True), today=date(2026, 10, 6))
+
+
+def test_cli_sequence_exceeds_four_digits(monkeypatch, tmp_path):
+    """CLI 目录序号超过四位后自然扩展。"""
+    result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='png')
+    calls = []
+
+    def write(path, data):
+        calls.append(path)
+        if len(calls) <= 10000:
+            raise FileExistsError(path)
+
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', write)
+    outcome = retention.save_cli(result, str(tmp_path), False, today=date(2026, 10, 7))
+    assert outcome.filename == 'screenshot_20261007_10000.png'
+
+
+def test_cli_save_failure_returns_last_candidate(monkeypatch, tmp_path):
+    """选择候选名后写入失败时返回该候选名与固定告警。"""
+    result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='png')
+    monkeypatch.setattr(retention.winfs, 'write_exclusive',
+                        lambda path, data: (_ for _ in ()).throw(OSError('fixture')))
+    outcome = retention.save_cli(result, str(tmp_path), False, today=date(2026, 10, 7))
+    assert outcome.filename == 'screenshot_20261007_0000.png'
+    assert outcome.path is None
+    assert outcome.warnings
+
+
+def test_cli_explicit_target_conflict_is_not_overwritten(monkeypatch, tmp_path):
+    """显式文件目标冲突时不覆盖且返回固定失败结果。"""
+    result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='jpeg')
+    calls = []
+
+    def write(path, data):
+        calls.append((path, data))
+        raise FileExistsError(path)
+
+    target = str(tmp_path / 'capture.jpeg')
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', write)
+    outcome = retention.save_cli(result, target, True, today=date(2026, 10, 7))
+    assert calls == [(target, result.image_bytes)]
+    assert outcome.path is None
+    assert outcome.filename == 'capture.jpeg'
+    assert outcome.warnings
+
+
+def test_cli_png_extension_replacement_conflict(monkeypatch, tmp_path):
+    """PNG 替换显式后缀后发生冲突时不重试其他名称。"""
+    result = CaptureResult(b'fixture', 'adb', 'device', 1, 1, image_format='png')
+    calls = []
+    target = str(tmp_path / 'capture.png')
+
+    def write(path, data):
+        calls.append(path)
+        raise FileExistsError(path)
+
+    monkeypatch.setattr(retention.winfs, 'write_exclusive', write)
+    outcome = retention.save_cli(result, target, True, today=date(2026, 10, 7))
+    assert calls == [str(tmp_path / 'capture.png')]
+    assert outcome.path is None
+    assert outcome.filename == 'capture.png'
+    assert outcome.warnings

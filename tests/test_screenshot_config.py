@@ -1,0 +1,1286 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+
+"""截图配置默认值、无损写回与凭证安全回归测试。"""
+
+import copy
+import os
+from pathlib import Path
+import re
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+from ruamel.yaml import YAML
+from ruamel.yaml.parser import ParserError
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from modules import config as config_module
+
+
+TEMPLATE_NAMES = ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external')
+SECRET = 'private-image-host-token-7319'
+DEFAULT_RETENTION = {'enabled': None, 'max_days': 14}
+DEFAULT_SCREENSHOT = {
+    'targets': [],
+    'image_host': [{'provider': 'catbox', 'token': ''}],
+    'retention': DEFAULT_RETENTION,
+}
+
+
+def _write_config(tmp_path, push, complete=False):
+    """使用有效监控配置写入独立临时文件。"""
+    value = config_module.get_default_config() if complete else {
+        'monitor': {'mode': 'psutil', 'psutil': {'process_name': 'ok.exe'}},
+    }
+    if complete:
+        value['push'].update(push)
+    else:
+        value['push'] = push
+    path = tmp_path / 'screenshot-config.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        config_module._make_write_yaml().dump(value, stream)
+    return path
+
+
+def _read_config(path):
+    """重新解析真实写回文件以核对语义及节点风格。"""
+    with path.open(encoding='utf-8') as stream:
+        return YAML().load(stream)
+
+
+def test_defaults_are_registered_before_templates():
+    """截图默认不指定目标，且默认图床仅含一个无凭证条目。"""
+    push = config_module.DEFAULT_VALUES['push']
+    assert push['screenshot'] == DEFAULT_SCREENSHOT
+    assert list(push).index('screenshot') < list(push).index('templates')
+    for name in TEMPLATE_NAMES:
+        assert push['templates'][name]['capture_screenshot'] is True
+        assert push['templates'][name]['enable'] is (name != 'on_external')
+
+
+def test_default_nodes_are_independent():
+    """多次获取默认值时截图列表和嵌套映射互不影响。"""
+    first = config_module.get_default_config()
+    second = config_module.get_default_config()
+    first['push']['screenshot']['targets'].append({'provider': 'window'})
+    first['push']['screenshot']['image_host'][0]['token'] = SECRET
+    first['push']['templates']['on_end']['capture_screenshot'] = False
+    assert second['push']['screenshot'] == DEFAULT_SCREENSHOT
+    assert second['push']['templates']['on_end']['capture_screenshot'] is True
+    assert config_module.DEFAULT_VALUES['push']['screenshot'] == DEFAULT_SCREENSHOT
+
+
+def test_comments_explain_independent_targets_and_template_variables():
+    """中文注释解释独立目标、图床顺序和模板变量。"""
+    comments = config_module.COMMENTS['push']
+    targets = comments['screenshot']['targets']
+    hosts = comments['screenshot']['image_host']
+    for text in ('window', 'adb', '完整窗口标题', '精确匹配', '设备地址', 'out',
+                 '位置', '独立'):
+        assert text in targets
+    assert 'PID' not in targets
+    for text in ('顺序', '成功', 'token', '环境', 'options'):
+        assert text in hosts
+    variables = comments['templates']['_comment_extra']
+    for text in ('{screenshot}', 'screenshot_N', 'out'):
+        assert text in variables
+    for name in TEMPLATE_NAMES:
+        assert 'capture_screenshot' in comments['templates'][name]
+        assert '全部目标' in comments['templates'][name]
+
+
+def test_target_comments_explain_version_matching():
+    targets = config_module.COMMENTS['push']['screenshot']['targets']
+    for text in ('@{version}', '@{VERSION}', '@{Version}', '无标记',
+                 '完整窗口标题', '精确匹配', '区分大小写', '末尾', '一次',
+                 '应用名', '自由尾部', 'Launcher', 'Settings', '多个匹配',
+                 '拒绝', 'ADB'):
+        assert text in targets
+
+
+def test_host_comments_explain_storage_selection_and_expiration(tmp_path):
+    """生成的配置只保留图床要点，详细规则集中在 README。"""
+    path = tmp_path / 'default.yaml'
+    config_module.create_default_config(str(path))
+    text = path.read_text(encoding='utf-8')
+    for fragment in (
+            'beeimg_cn 与 boltp 规则相同：合法手填（正整数）零查询直传',
+            '0 或非法手填自动选择组内首个未拒绝编号',
+            '组列表按返回顺序去重，不使用默认编号或固定候选',
+            '精确拒绝仅恢复一次，最多两次 POST',
+            '首次手填不预查，自动选择可命中有效磁盘缓存，恢复仅复用更新的网络结果或重新查询',
+            '期限 0 不构成永久保存保证',
+            'expiration 位于图床项顶层，不放入 options',
+            '仅 wmimg / boltp / beeimg_cn 支持期限',
+            '详细规则见 README「图床能力」'):
+        assert fragment in text
+    hosts = config_module.COMMENTS['push']['screenshot']['image_host']
+    assert len(hosts.splitlines()) <= 13
+    for detail in ('HTTP 200', 'profile', '磁盘存储缓存', '正数组期限'):
+        assert detail not in hosts
+    assert '必须提供 options.storage_id' not in hosts
+    assert '必须显式填写' not in hosts
+    examples = [YAML().load(line.split('示例: ', 1)[1])
+                for line in hosts.splitlines() if '示例: ' in line]
+    for provider, token, expiration in (
+            ('beeimg_cn', '${BEEIMG_CN_TOKEN}', '7d'),
+            ('boltp', '${BOLTP_TOKEN}', '1d12h')):
+        example = next(item for item in examples
+                       if item['provider'] == provider)
+        assert example['token'] == token
+        assert example['expiration'] == expiration
+        assert 'expiration' not in example.get('options', {})
+        assert 'expired_at' not in example.get('options', {})
+        assert 'storage_id' not in example.get('options', {})
+
+
+def test_readme_push_examples_use_current_layout():
+    """README 的推送 YAML 示例可解析，且与当前默认结构一致。"""
+    text = (Path(__file__).resolve().parents[1] / 'README.md').read_text(
+        encoding='utf-8')
+    examples = [YAML(typ='safe').load(block)
+                for block in re.findall(r'```yaml\n(.*?)```', text, re.S)]
+    pushes = [value['push'] for value in examples if 'push' in value]
+    assert pushes
+    assert not any('push_settings' in value for value in examples)
+    channels = [push['push_channel_settings']['channels']
+                for push in pushes if 'push_channel_settings' in push]
+    assert any(len(value) == 1 for value in channels)
+    assert any(len(value) > 1 for value in channels)
+    for push in pushes:
+        assert set(push) <= set(config_module.DEFAULT_VALUES['push'])
+        assert set(push.get('templates', {})) <= set(TEMPLATE_NAMES)
+    assert any('{screenshot}' in template['content']
+               for push in pushes
+               for template in push.get('templates', {}).values())
+
+
+@pytest.mark.parametrize('contracts', [
+    [('README.md', '通知与推送', ('push.templates', '包含首次发送', 'on_external')),
+     ('README.md', '截图变量', ('模板不会自动附带截图变量', '自行写入 `title` 或 `content`')),
+     ('README.md', '快速开始', ('push.push_channel_settings.channels',))],
+    [('README.md', '截图 CLI', ('--output', '--upload', '全部图床',
+       'screenshot_YYYYMMDD_0000.jpg', '退出码', '不覆盖',
+       'WebP 编码器不可用时直接报编码失败，不降级', 'ADB 原始采集失败')),
+     ('docs/开发者文档.md', '6. CLI 与通知行为对照', ('不读配置文件',))],
+    [('README.md', '截图变量', ('@{version}', '@{VERSION}', '@{Version}',
+       'Launcher', '多个匹配窗口时会拒绝截图')),
+     ('docs/开发者文档.md', '窗口版本匹配边界', ('2～4 段', '7～64',
+       '1.2.3.4.5', '哈希不接受自由尾部'))],
+    [('docs/开发者文档.md', '4. 保存期限与缓存', ('expiration',
+       'options.expired_at', '不代表永久', '本机本地时间', '绝不延长期限')),
+     ('docs/开发者文档.md', '5. 故障转移与请求预算',
+      ('不存在的储存驱动', 'group', 'profile', '精确拒绝仅恢复一次'))],
+    [('docs/开发者文档.md', '9. 无效项与兼容边界', ('push_settings',
+       '--image-host', 'is_public', '不会自动迁移', '未知选项不等于生效'))],
+], ids=['notification', 'cli', 'version', 'storage', 'compatibility'])
+def test_readme_documents_runtime_contracts(contracts):
+    """沿现有导航检查正式章节语义，不要求恢复已撤销的 README 段落。"""
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / 'README.md').read_text(encoding='utf-8')
+    assert '[开发者文档](docs/开发者文档.md)' in readme
+    assert '[截图变量](#截图变量)' in readme
+    for filename, heading, fragments in contracts:
+        text = (root / filename).read_text(encoding='utf-8')
+        match = re.search(r'(?m)^(#{1,6}) ' + re.escape(heading) + r'\s*$', text)
+        assert match is not None, (filename, heading)
+        remaining = text[match.end():]
+        end = re.search(r'(?m)^#{1,' + str(len(match[1])) + r'} ', remaining)
+        section = remaining[:end.start()] if end else remaining
+        for fragment in fragments:
+            assert fragment in section, (filename, heading, fragment)
+
+
+@pytest.mark.parametrize('heading, fragments', [
+    ('BeeIMG.cn', ('合法手填', '零资料查询', '组内首个未被拒绝编号',
+                   '首次手填不预查', '精确拒绝仅恢复一次', '不请求资料',
+                   '缓存')),
+    ('6. CLI 与通知行为对照', ('准备上传', '正在上传', '非 TTY',
+                           'diagnostics=False', '固定中文', '不额外读取凭证')),
+    ('限定标量与 PowerShell 转义', ('push.screenshot.targets[].target',
+        'push.screenshot.image_host[].token', '顶层 `token`', '单引号',
+        '反引号', '不递归', '跨行', 'options')),
+])
+def test_developer_document_describes_current_boundaries(heading, fragments):
+    """先锁定本次校正的正式文档边界。"""
+    text = (Path(__file__).resolve().parents[1] / 'docs/开发者文档.md').read_text(
+        encoding='utf-8')
+    match = re.search(r'(?m)^(#{1,6}) ' + re.escape(heading) + r'\s*$', text)
+    assert match is not None
+    remaining = text[match.end():]
+    end = re.search(r'(?m)^#{1,' + str(len(match[1])) + r'} ', remaining)
+    section = remaining[:end.start()] if end else remaining
+    for fragment in fragments:
+        assert fragment in section
+
+
+@pytest.mark.parametrize('provider, variable, expiration', [
+    ('beeimg_cn', 'BEEIMG_CN_TOKEN', '7d'),
+    ('boltp', 'BOLTP_TOKEN', '1d12h'),
+])
+@pytest.mark.parametrize('storage_id', [-1, 'invalid-id', False])
+def test_expiration_and_invalid_storage_survive_yaml_round_trip(
+        tmp_path, monkeypatch, provider, variable, expiration, storage_id):
+    """真实加载写回保留期限原串、环境引用及运行时才替代的非法编号。"""
+    monkeypatch.setenv(variable, 'synthetic-expanded-token-must-not-appear')
+    token = '${' + variable + '}'
+    screenshot = {
+        'targets': [{'provider': 'window', 'target': 'Synthetic Window'}],
+        'image_host': [{
+            'provider': provider, 'token': token, 'expiration': expiration,
+            'options': {
+                'storage_id': storage_id,
+                'nested': {'flag': False, 'values': ['keep', 0]},
+            },
+        }],
+        'retention': DEFAULT_RETENTION,
+    }
+    expected = copy.deepcopy(screenshot)
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    saved = None
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        persisted = _read_config(path)['push']['screenshot']
+        assert result['push']['screenshot'] == expected
+        assert persisted == expected
+        host = persisted['image_host'][0]
+        assert isinstance(host['expiration'], str)
+        assert host['expiration'] == expiration
+        assert host['token'] == token
+        assert type(host['options']['storage_id']) is type(storage_id)
+        for key in ('targets', 'image_host'):
+            assert persisted[key].fa.flow_style() is False
+            assert all(item.fa.flow_style() is True for item in persisted[key])
+        assert host['options'].fa.flow_style() is True
+        assert host['options']['nested'].fa.flow_style() is True
+        assert host['options']['nested']['values'].fa.flow_style() is True
+        text = path.read_text(encoding='utf-8')
+        assert f'- {{provider: {provider}, token: \'{token}\'' in text
+        assert 'synthetic-expanded-token-must-not-appear' not in text
+        if saved is not None:
+            assert path.read_bytes() == saved
+        saved = path.read_bytes()
+
+
+def test_missing_fields_are_completed_without_logging_host_values(
+        tmp_path, caplog):
+    """真实加载补齐缺省开关且不把截图默认映射写入日志。"""
+    path = _write_config(tmp_path, {})
+    result = config_module.load_config(str(path))
+    assert result['push']['screenshot'] == DEFAULT_SCREENSHOT
+    for name in TEMPLATE_NAMES:
+        template = result['push']['templates'][name]
+        assert template['capture_screenshot'] is True
+        assert template['enable'] is (name != 'on_external')
+    assert "'provider': 'catbox'" not in caplog.text
+    assert "'image_host':" not in caplog.text
+
+
+@pytest.mark.parametrize('missing', ['targets', 'image_host'])
+def test_partial_screenshot_only_fills_missing_field(tmp_path, missing):
+    """只补缺少的字段，不覆盖另一个显式空列表。"""
+    existing = 'image_host' if missing == 'targets' else 'targets'
+    path = _write_config(tmp_path, {'screenshot': {existing: []}})
+    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    assert screenshot[existing] == []
+    assert screenshot[missing] == (
+        [] if missing == 'targets' else [{'provider': 'catbox', 'token': ''}]
+    )
+
+
+def test_explicit_empty_lists_and_template_switches_survive(tmp_path):
+    """显式空列表、关闭截图和通知开关保持用户值。"""
+    templates = {
+        name: {'capture_screenshot': False, 'enable': name == 'on_external'}
+        for name in TEMPLATE_NAMES
+    }
+    path = _write_config(tmp_path, {
+        'screenshot': {'targets': [], 'image_host': []},
+        'templates': templates,
+    })
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        assert result['push']['screenshot'] == {
+            'targets': [], 'image_host': [], 'retention': DEFAULT_RETENTION,
+        }
+        for name in TEMPLATE_NAMES:
+            assert result['push']['templates'][name]['capture_screenshot'] is False
+            assert result['push']['templates'][name]['enable'] is (
+                name == 'on_external'
+            )
+
+
+@pytest.mark.parametrize('retention', [
+    {'enabled': 'invalid', 'max_days': 'invalid'},
+    {'enabled': True, 'max_days': -1},
+    {'enabled': None, 'max_days': 0},
+])
+def test_retention_values_survive_round_trip_without_normalization(
+        tmp_path, retention):
+    """显式 retention 原值经加载写回保持，不被数值归一化修正。"""
+    screenshot = {'targets': [], 'image_host': [], 'retention': retention}
+    expected = copy.deepcopy(screenshot)
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        assert result['push']['screenshot'] == expected
+        assert _read_config(path)['push']['screenshot'] == expected
+
+
+def test_default_file_writes_null_retention_without_extra_schema(tmp_path):
+    """新建默认文件写入 retention，enabled 为 null 且不含其它图像配置。"""
+    path = tmp_path / 'default.yaml'
+    config_module.create_default_config(str(path))
+    text = path.read_text(encoding='utf-8')
+    assert re.search(r'(?m)^\s+enabled:\s*$', text)
+    assert re.search(r'(?m)^\s+enabled:\s*(true|false)\s*$', text) is None
+    assert re.search(r'(?m)^\s+max_days:\s*14\s*$', text)
+    schema = config_module.DEFAULT_VALUES['push']['screenshot']
+    assert set(schema) == {'targets', 'image_host', 'retention'}
+    assert set(schema['retention']) == {'enabled', 'max_days'}
+    assert _read_config(path)['push']['screenshot']['retention'] == (
+        DEFAULT_RETENTION
+    )
+
+
+def test_round_trip_preserves_values_order_duplicates_and_flow_style(
+        tmp_path, monkeypatch, caplog):
+    """列表格式化保留大小写、凭证、重复 out 和嵌套 options。"""
+    monkeypatch.setenv('WMIMG_TOKEN', 'expanded-value-must-not-appear')
+    screenshot = {
+        'targets': [
+            {'provider': 'window', 'target': 'MuMu模拟器 1', 'out': 'Custom'},
+            {'provider': 'adb', 'target': '127.0.0.1:16384', 'out': 'Custom'},
+            {'provider': 'WINDOW', 'target': 'Second Window'},
+        ],
+        'image_host': [
+            {'provider': 'wmimg', 'token': SECRET,
+             'options': {'strategy_id': 1, 'album_id': 12}},
+            {'provider': 'wmimg', 'token': '${WMIMG_TOKEN}'},
+            {'provider': 'CatBox', 'token': 'another-token',
+             'options': {'nested': {'flag': False}, 'values': [1, 2]}},
+        ],
+        'retention': DEFAULT_RETENTION,
+    }
+    expected = copy.deepcopy(screenshot)
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    for _ in range(2):
+        result = config_module.load_config(str(path))
+        assert result['push']['screenshot'] == expected
+        persisted = _read_config(path)['push']['screenshot']
+        assert persisted == expected
+        for key in ('targets', 'image_host'):
+            assert persisted[key].fa.flow_style() is False
+            assert all(item.fa.flow_style() is True for item in persisted[key])
+        assert persisted['image_host'][0]['options'].fa.flow_style() is True
+        assert persisted['image_host'][2]['options']['nested'].fa.flow_style()
+    text = path.read_text(encoding='utf-8')
+    assert '- {provider: window, target: MuMu模拟器 1, out: Custom}' in text
+    assert 'target: 127.0.0.1:16384' in text
+    assert "token: '${WMIMG_TOKEN}'" in text
+    assert SECRET in text
+    assert SECRET not in caplog.text
+    assert 'expanded-value-must-not-appear' not in text + caplog.text
+
+
+def test_style_only_change_writes_once(tmp_path):
+    """字段齐全时纯格式变化也写回，第二次加载不再写回。"""
+    path = _write_config(tmp_path, {'screenshot': {
+        'targets': [{'provider': 'window', 'target': 'Window'}],
+        'image_host': [{'provider': 'catbox', 'token': ''}],
+    }}, complete=True)
+    original = path.read_bytes()
+    original_replace = os.replace
+    with patch('modules.config.os.replace', wraps=original_replace) as replace:
+        first = config_module.load_config(str(path))
+        assert first['push']['screenshot']['targets'] == [
+            {'provider': 'window', 'target': 'Window'},
+        ]
+        assert replace.call_count == 1
+        assert path.read_bytes() != original
+        saved = path.read_bytes()
+        second = config_module.load_config(str(path))
+        assert replace.call_count == 1
+    assert first == second
+    assert path.read_bytes() == saved
+
+
+@pytest.mark.parametrize('screenshot', [
+    None, '', 'legacy-string-is-not-migrated', False, 42, [],
+    {'targets': None, 'image_host': None},
+    {'targets': 'invalid', 'image_host': 42},
+    {'targets': {'token': SECRET}, 'image_host': {'token': SECRET}},
+    {'targets': [None, 42, 'invalid', ['nested'], {'out': 'same'}],
+     'image_host': [False, 'invalid', {'token': SECRET, 'options': None}]},
+])
+def test_invalid_screenshot_nodes_do_not_abort_monitor(
+        tmp_path, caplog, screenshot):
+    """非法截图类型和显式空值保留，不阻断正常监控或猜测目标。"""
+    path = _write_config(tmp_path, {'screenshot': screenshot})
+    result = config_module.load_config(str(path))
+    assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+    expected = (dict(screenshot, retention=DEFAULT_RETENTION)
+                if isinstance(screenshot, dict) else screenshot)
+    assert result['push']['screenshot'] == expected
+    assert _read_config(path)['push']['screenshot'] == expected
+    assert SECRET not in caplog.text
+
+
+def test_unknown_fields_are_cleaned_without_values(tmp_path, caplog):
+    """只清理 schema 外字段，日志仅包含字段路径而不包含值。"""
+    path = _write_config(tmp_path, {
+        'unknown_push': SECRET,
+        'screenshot': {
+            'unknown_screenshot': {'token': SECRET},
+            'targets': [],
+            'image_host': [{'provider': 'custom', 'token': SECRET,
+                            'options': {'custom': SECRET}}],
+        },
+    })
+    result = config_module.load_config(str(path))
+    assert 'unknown_push' not in result['push']
+    assert 'unknown_screenshot' not in result['push']['screenshot']
+    assert result['push']['screenshot']['image_host'][0]['options'] == {
+        'custom': SECRET,
+    }
+    assert SECRET not in caplog.text
+    assert 'unknown_screenshot' in caplog.text
+
+
+def test_yaml_parse_error_does_not_disclose_token(tmp_path, caplog):
+    """解析失败摘要不包含 YAML 源码中的凭证片段。"""
+    path = tmp_path / 'invalid.yaml'
+    path.write_text(
+        'push:\n  screenshot:\n    image_host:\n'
+        f'      - {{provider: wmimg, token: "{SECRET}\n',
+        encoding='utf-8',
+    )
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert SECRET not in caplog.text + str(error.value)
+    assert 'token:' not in caplog.text
+    assert '无法加载配置文件' in caplog.text
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('with_screenshot', [False, True])
+@pytest.mark.parametrize('stage', ['mkstemp', 'fdopen', 'dump', 'replace'])
+def test_write_error_does_not_disclose_token_and_preserves_file(
+        tmp_path, monkeypatch, caplog, stage, with_screenshot):
+    """截图配置写回异常不泄露凭证，并保留原文件及清理临时文件。"""
+    push = {'screenshot': {
+        'targets': [], 'image_host': [{'provider': 'wmimg', 'token': SECRET}],
+    }} if with_screenshot else {}
+    path = _write_config(tmp_path, push)
+    original = path.read_bytes()
+
+    def fail(*args, **kwargs):
+        """模拟错误信息携带敏感值的写回失败。"""
+        raise OSError(f'cannot write token: {SECRET}')
+
+    if stage == 'dump':
+        writer = config_module._make_write_yaml()
+        monkeypatch.setattr(writer, 'dump', fail)
+        with patch('modules.config._make_write_yaml', return_value=writer):
+            result = config_module.load_config(str(path))
+    else:
+        owner = config_module.tempfile if stage == 'mkstemp' else os
+        monkeypatch.setattr(owner, stage, fail)
+        result = config_module.load_config(str(path))
+    expected_token = SECRET if with_screenshot else ''
+    assert result['push']['screenshot']['image_host'][0]['token'] == expected_token
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+    assert SECRET not in caplog.text
+    assert 'cannot write token:' not in caplog.text
+    assert '无法写回配置文件' in caplog.text
+    expected_stage = 'serialize' if stage == 'dump' else stage
+    assert f'stage={expected_stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=' not in caplog.text
+
+
+@pytest.mark.parametrize(
+    'serialize_kind, close_kind, unlink_kind, close_before',
+    [
+        ('os', 'permission', None, False),
+        ('os', 'permission', 'os', False),
+        ('os', None, None, False),
+        (None, 'permission', None, False),
+        ('os', 'permission', None, True),
+        (None, 'permission', None, True),
+        ('os', 'permission', 'os', True),
+        ('interrupt', 'permission', 'os', True),
+        ('exit', 'permission', 'os', True),
+        ('os', 'interrupt', None, True),
+        ('os', 'exit', None, True),
+        ('os', 'permission', 'interrupt', True),
+        ('os', 'permission', 'exit', True),
+        ('interrupt', 'permission', 'os', False),
+        ('exit', 'permission', 'os', False),
+        ('interrupt', 'exit', 'os', False),
+        ('exit', 'interrupt', 'os', False),
+        ('os', 'interrupt', None, False),
+        ('os', 'exit', None, False),
+        ('os', 'permission', 'interrupt', False),
+        ('os', 'permission', 'exit', False),
+    ],
+    ids=[
+        'serialize-close', 'serialize-close-unlink', 'serialize-only',
+        'close-only', 'serialize-close-before-release', 'close-before-release',
+        'serialize-close-before-unlink', 'serialize-interrupt-close-before',
+        'serialize-exit-close-before', 'close-before-interrupt',
+        'close-before-exit', 'unlink-interrupt-close-before',
+        'unlink-exit-close-before',
+        'serialize-interrupt', 'serialize-exit', 'interrupt-before-exit',
+        'exit-before-interrupt', 'close-interrupt', 'close-exit',
+        'unlink-interrupt', 'unlink-exit',
+    ],
+)
+def test_atomic_stream_failure_preserves_primary_and_releases_resources(
+        tmp_path, caplog, serialize_kind, close_kind, unlink_kind,
+        close_before):
+    """组合故障保留主因和控制信号，关闭资源且不替换原配置。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    original_fdopen = os.fdopen
+    original_unlink = os.unlink
+    streams = []
+    descriptors = []
+    close_attempts = []
+    unlink_attempts = []
+
+    def make_failure(kind, message):
+        """构造仅含合成敏感文本的普通异常或控制信号。"""
+        if kind == 'os':
+            return OSError(28, message)
+        if kind == 'permission':
+            return PermissionError(13, message)
+        if kind == 'interrupt':
+            return KeyboardInterrupt(message)
+        if kind == 'exit':
+            return SystemExit(message)
+        return None
+
+    serialize_error = make_failure(serialize_kind, 'FAKE_PRIMARY_SECRET')
+    close_error = make_failure(close_kind, 'FAKE_CLEANUP_SECRET')
+    unlink_error = make_failure(unlink_kind, 'FAKE_UNLINK_SECRET')
+    failures = [error for error in (
+        serialize_error, close_error, unlink_error,
+    ) if error is not None]
+    control_error = next((error for error in failures
+                          if not isinstance(error, Exception)), None)
+
+    class FailingStream:
+        """包装真实临时流，模拟释放底层资源之前或之后关闭失败。"""
+
+        def __init__(self, stream):
+            """保留真实流以验证关闭状态。"""
+            self.stream = stream
+
+        def __getattr__(self, name):
+            """将普通流操作交给真实文件对象。"""
+            return getattr(self.stream, name)
+
+        def __enter__(self):
+            """兼容原有上下文管理器写回路径。"""
+            return self
+
+        def __exit__(self, *args):
+            """在退出上下文时执行同一关闭故障。"""
+            self.close()
+
+        def close(self):
+            """记录关闭尝试，并在指定释放时机抛出合成异常。"""
+            close_attempts.append(self)
+            if close_before and close_error is not None:
+                raise close_error
+            self.stream.close()
+            if close_error is not None:
+                raise close_error
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """记录实际描述符并包装生产路径创建的临时流。"""
+        descriptors.append(fd)
+        wrapped = FailingStream(original_fdopen(fd, *args, **kwargs))
+        streams.append(wrapped)
+        return wrapped
+
+    def partial_dump(value, stream):
+        """写入部分临时内容后按场景触发序列化失败。"""
+        stream.write('partial: true\n')
+        if serialize_error is not None:
+            raise serialize_error
+
+    def unlink_temp(temp_path):
+        """记录删除尝试，在故障场景模拟系统拒绝删除。"""
+        unlink_attempts.append(temp_path)
+        if unlink_error is not None:
+            raise unlink_error
+        original_unlink(temp_path)
+
+    writer = config_module._make_write_yaml()
+    caplog.set_level('INFO', logger='modules.config')
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.unlink', side_effect=unlink_temp), \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump', side_effect=partial_dump), \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            if control_error is not None:
+                with pytest.raises(BaseException) as caught:
+                    config_module.load_config(str(path))
+                assert caught.value is control_error
+            else:
+                result = config_module.load_config(str(path))
+                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                for name in TEMPLATE_NAMES:
+                    assert result['push']['templates'][name][
+                        'capture_screenshot'] is True
+            replace.assert_not_called()
+        assert path.read_bytes() == original
+        assert len(streams) == len(descriptors) == 1
+        assert close_attempts == streams
+        for fd in descriptors:
+            with pytest.raises(OSError) as caught:
+                os.fstat(fd)
+            assert caught.value.errno == 9
+        assert all(stream.stream.closed for stream in streams)
+        assert all(stream.stream.buffer.raw.closed for stream in streams)
+        assert len(unlink_attempts) == 1
+        if unlink_error is None:
+            assert list(tmp_path.iterdir()) == [path]
+        else:
+            assert os.path.exists(unlink_attempts[0])
+        if control_error is None:
+            expected = (
+                'stage=serialize type=OSError errno=28 category=ENOSPC'
+                if serialize_error is not None else
+                'stage=close type=PermissionError errno=13 category=EACCES'
+            )
+            assert expected in caplog.text
+            if serialize_error is not None:
+                assert 'type=PermissionError' not in caplog.text
+                assert 'errno=13' not in caplog.text
+        else:
+            assert '无法写回配置文件' not in caplog.text
+        for secret in ('FAKE_PRIMARY_SECRET', 'FAKE_CLEANUP_SECRET',
+                       'FAKE_UNLINK_SECRET'):
+            assert secret not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+        assert '正在写回配置信息' not in caplog.text
+        assert '配置参数版本差异检查完成' not in caplog.text
+    finally:
+        # 即使红灯阶段未释放资源，也不让测试遗留句柄和临时文件。
+        for stream in streams:
+            try:
+                stream.stream.close()
+            except OSError:
+                pass
+        for fd in descriptors:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        for temp_path in tmp_path.glob('*.tmp'):
+            original_unlink(temp_path)
+
+
+@pytest.mark.parametrize('failure_kind', ['os', 'interrupt', 'exit'])
+@pytest.mark.parametrize('close_fails', [False, True])
+def test_raw_lookup_failure_attempts_owned_stream_cleanup(
+        tmp_path, caplog, failure_kind, close_fails):
+    """获取底层流失败仍关闭拥有者，关闭失败也不覆盖原始主因。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    original_fdopen = os.fdopen
+    original_unlink = os.unlink
+    streams = []
+    descriptors = []
+    close_attempts = []
+    primary_error = {
+        'os': OSError(28, 'FAKE_RAW_SECRET', 'FAKE_FILENAME_SECRET'),
+        'interrupt': KeyboardInterrupt('FAKE_RAW_SECRET'),
+        'exit': SystemExit('FAKE_RAW_SECRET'),
+    }[failure_kind]
+
+    class RawLookupFailingStream:
+        """保留真实临时流，在获取缓冲层时注入资源准备故障。"""
+
+        def __init__(self, stream):
+            """持有真实流，避免析构掩盖生产路径遗漏的关闭。"""
+            self.stream = stream
+
+        @property
+        def buffer(self):
+            """在获取原始流引用的操作点抛出指定异常。"""
+            raise primary_error
+
+        def close(self):
+            """记录关闭尝试，并可在释放真实资源前拒绝关闭。"""
+            close_attempts.append(self)
+            if close_fails:
+                raise PermissionError(13, 'FAKE_CLOSE_SECRET')
+            self.stream.close()
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """包装生产代码创建的真实临时流并保留描述符以供验收。"""
+        descriptors.append(fd)
+        wrapped = RawLookupFailingStream(original_fdopen(fd, *args, **kwargs))
+        streams.append(wrapped)
+        return wrapped
+
+    writer = config_module._make_write_yaml()
+    caplog.set_level('INFO', logger='modules.config')
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.unlink', wraps=original_unlink) as unlink, \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump') as dump, \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            if failure_kind == 'os':
+                result = config_module.load_config(str(path))
+                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                for name in TEMPLATE_NAMES:
+                    assert result['push']['templates'][name][
+                        'capture_screenshot'] is True
+            else:
+                with pytest.raises(BaseException) as caught:
+                    config_module.load_config(str(path))
+                assert caught.value is primary_error
+            replace.assert_not_called()
+            dump.assert_not_called()
+        assert path.read_bytes() == original
+        if failure_kind == 'os':
+            assert (
+                'stage=fdopen type=OSError errno=28 category=ENOSPC'
+                in caplog.text
+            )
+            assert 'type=PermissionError' not in caplog.text
+            assert 'errno=13' not in caplog.text
+        else:
+            assert '无法写回配置文件' not in caplog.text
+        assert 'FAKE_' not in caplog.text
+        assert not any(record.exc_info for record in caplog.records)
+        assert '正在写回配置信息' not in caplog.text
+        assert '配置参数版本差异检查完成' not in caplog.text
+        assert len(streams) == len(descriptors) == 1
+        assert close_attempts == streams
+        unlink.assert_called_once()
+        if close_fails:
+            # 无法取得原始流且拥有者拒绝关闭时，不以裸描述符兜底。
+            assert not streams[0].stream.closed
+            assert not streams[0].stream.buffer.raw.closed
+            os.fstat(descriptors[0])
+        else:
+            assert streams[0].stream.closed
+            assert streams[0].stream.buffer.raw.closed
+            with pytest.raises(OSError) as caught:
+                os.fstat(descriptors[0])
+            assert caught.value.errno == 9
+            assert list(tmp_path.iterdir()) == [path]
+    finally:
+        # 红灯及关闭被拒绝时，由测试拥有的真实流显式释放资源。
+        for wrapped in streams:
+            wrapped.stream.close()
+        for temp_path in tmp_path.glob('*.tmp'):
+            original_unlink(temp_path)
+
+
+@pytest.mark.parametrize('serialize_fails', [False, True])
+@pytest.mark.parametrize('delayed_action', ['flush', 'close', 'release'])
+def test_failed_close_cannot_touch_reused_descriptor(
+        tmp_path, caplog, serialize_fails, delayed_action):
+    """关闭前失败后，旧流的延迟操作不能污染或关闭显式复用的描述符。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    unrelated = tmp_path / 'unrelated.bin'
+    expected = b'unrelated-file-must-survive'
+    original_fdopen = os.fdopen
+    streams = []
+    descriptors = []
+    reused_fd = None
+
+    class CloseBeforeFailingStream:
+        """保留真实缓冲流，并在触及底层关闭前报告失败。"""
+
+        def __init__(self, stream):
+            """保存底层流供延迟操作验收。"""
+            self.stream = stream
+
+        def __getattr__(self, name):
+            """转发真实流属性与写入操作。"""
+            return getattr(self.stream, name)
+
+        def close(self):
+            """不释放任何底层资源就抛出关闭异常。"""
+            raise PermissionError(13, 'FAKE_CLOSE_SECRET')
+
+    def wrap_fdopen(fd, *args, **kwargs):
+        """记录实际描述符和仍可能含有待写数据的真实流。"""
+        descriptors.append(fd)
+        stream = original_fdopen(fd, *args, **kwargs)
+        streams.append(stream)
+        return CloseBeforeFailingStream(stream)
+
+    def partial_dump(value, stream):
+        """留下实际缓冲内容，并按场景触发序列化主异常。"""
+        stream.write('FAKE_BUFFERED_SECRET\n')
+        if serialize_fails:
+            raise OSError(28, 'FAKE_SERIALIZE_SECRET')
+
+    writer = config_module._make_write_yaml()
+    try:
+        with patch('modules.config.os.fdopen', side_effect=wrap_fdopen), \
+                patch('modules.config.os.replace') as replace, \
+                patch.object(writer, 'dump', side_effect=partial_dump), \
+                patch('modules.config._make_write_yaml', return_value=writer):
+            result = config_module.load_config(str(path))
+            replace.assert_not_called()
+        assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+        assert path.read_bytes() == original
+        assert list(tmp_path.iterdir()) == [path]
+        assert len(streams) == len(descriptors) == 1
+        expected_summary = (
+            'stage=serialize type=OSError errno=28 category=ENOSPC'
+            if serialize_fails else
+            'stage=close type=PermissionError errno=13 category=EACCES'
+        )
+        assert expected_summary in caplog.text
+        assert 'FAKE_' not in caplog.text
+        with pytest.raises(OSError) as caught:
+            os.fstat(descriptors[0])
+        assert caught.value.errno == 9
+
+        source_fd = os.open(
+            unrelated, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_BINARY,
+            0o600,
+        )
+        reused_fd = source_fd
+        if source_fd != descriptors[0]:
+            try:
+                os.dup2(source_fd, descriptors[0])
+            finally:
+                os.close(source_fd)
+            reused_fd = descriptors[0]
+        assert reused_fd == descriptors[0]
+        assert os.fstat(reused_fd) == unrelated.stat()
+        assert os.write(reused_fd, expected) == len(expected)
+        os.lseek(reused_fd, 0, os.SEEK_SET)
+
+        old_stream = streams.pop()
+        try:
+            if delayed_action == 'release':
+                # 显式运行析构路径，不依赖垃圾回收发生的时机。
+                old_stream.__del__()
+            else:
+                getattr(old_stream, delayed_action)()
+        except (OSError, ValueError):
+            pass
+        finally:
+            streams.append(old_stream)
+        content_after = unrelated.read_bytes()
+        try:
+            os.fstat(reused_fd)
+            descriptor_alive = True
+        except OSError:
+            descriptor_alive = False
+        assert (content_after, descriptor_alive) == (expected, True)
+
+        try:
+            old_stream.close()
+        except (OSError, ValueError):
+            pass
+        streams.clear()
+        del old_stream
+        assert unrelated.read_bytes() == expected
+        os.lseek(reused_fd, 0, os.SEEK_SET)
+        assert os.read(reused_fd, len(expected)) == expected
+        os.lseek(reused_fd, 0, os.SEEK_END)
+        assert os.write(reused_fd, b'-still-writable') == 15
+        assert unrelated.read_bytes() == expected + b'-still-writable'
+    finally:
+        # 先退休旧流，再释放测试拥有的复用资源，防止失败断言遗留活流。
+        for stream in streams:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+        if reused_fd is not None:
+            try:
+                os.close(reused_fd)
+            except OSError:
+                pass
+        for temp_path in tmp_path.glob('*.tmp'):
+            os.unlink(temp_path)
+
+
+@pytest.mark.parametrize('exception', [KeyboardInterrupt, SystemExit])
+def test_load_does_not_swallow_control_exceptions(tmp_path, monkeypatch, exception):
+    """截图配置处理不能吞掉进程控制异常。"""
+    path = _write_config(tmp_path, {'screenshot': {'targets': [], 'image_host': []}})
+
+    def interrupt(*args, **kwargs):
+        """模拟创建临时文件前收到进程控制异常。"""
+        raise exception()
+
+    monkeypatch.setattr(config_module.tempfile, 'mkstemp', interrupt)
+    with pytest.raises(exception):
+        config_module.load_config(str(path))
+
+
+def test_created_default_file_has_flow_host_and_unchanged_content(tmp_path):
+    """新建文件使用流式图床条目，不向既有正文追加图片变量。"""
+    path = tmp_path / 'default.yaml'
+    config_module.create_default_config(str(path))
+    persisted = _read_config(path)
+    screenshot = persisted['push']['screenshot']
+    assert screenshot['targets'] == []
+    assert screenshot['image_host'][0].fa.flow_style() is True
+    assert "- {provider: catbox, token: ''}" in path.read_text(encoding='utf-8')
+    for name in TEMPLATE_NAMES:
+        template = persisted['push']['templates'][name]
+        assert template['content'] == (
+            config_module.DEFAULT_VALUES['push']['templates'][name]['content']
+        )
+        assert 'screenshot' not in template['content']
+
+
+def test_missing_screenshot_nodes_do_not_share_defaults():
+    """补齐截图字段后修改用户节点不会污染提供的默认结构。"""
+    defaults = config_module.get_default_config()['push']
+    user = {}
+    assert config_module._check_missing_params(user, defaults, 'push')
+    user['screenshot']['image_host'][0]['token'] = SECRET
+    user['screenshot']['targets'].append({'provider': 'window'})
+    assert defaults['screenshot']['image_host'][0]['token'] == ''
+    assert defaults['screenshot']['targets'] == []
+
+
+def test_merge_screenshot_nodes_does_not_share_user_input():
+    """合并后的截图嵌套节点与调用方输入保持独立。"""
+    user = {'push': {'screenshot': {
+        'targets': [{'provider': 'window', 'target': 'Window'}],
+        'image_host': [{'provider': 'custom', 'token': SECRET,
+                        'options': {'values': [1, 2]}}],
+    }}}
+    expected = copy.deepcopy(user)
+    merged = config_module.merge_configs(user, config_module.get_default_config())
+    merged['push']['screenshot']['targets'][0]['target'] = 'Changed'
+    merged['push']['screenshot']['image_host'][0]['options']['values'].append(3)
+    assert user == expected
+
+
+def test_screenshot_lists_bypass_channel_parser_and_preserve_environment(
+        tmp_path, monkeypatch):
+    """截图列表不经过通道语义解析，也不展开或修改环境变量。"""
+    monkeypatch.setenv('WMIMG_TOKEN', 'fake-environment-secret')
+    environment = dict(os.environ)
+    path = _write_config(tmp_path, {
+        'screenshot': {
+            'targets': [{'provider': 'window', 'target': 'MuMu模拟器 1'}],
+            'image_host': [{'provider': 'wmimg', 'token': '${WMIMG_TOKEN}'}],
+        },
+        'templates': {name: {'content': '用户正文 {screenshot}'}
+                      for name in TEMPLATE_NAMES},
+    })
+    parser = config_module.parse_push_channels
+    with patch('modules.config.parse_push_channels', wraps=parser) as parsed:
+        result = config_module.load_config(str(path))
+    for call in parsed.call_args_list:
+        assert call.args[0] not in (
+            result['push']['screenshot']['targets'],
+            result['push']['screenshot']['image_host'],
+        )
+    assert dict(os.environ) == environment
+    assert result['push']['screenshot']['image_host'][0]['token'] == (
+        '${WMIMG_TOKEN}'
+    )
+    for name in TEMPLATE_NAMES:
+        assert result['push']['templates'][name]['content'] == '用户正文 {screenshot}'
+
+
+@pytest.mark.parametrize('with_errno', [False, True])
+def test_read_failure_keeps_safe_diagnostics_and_exit(
+        tmp_path, monkeypatch, caplog, with_errno):
+    """读取失败保留阶段及数字错误码，不输出异常原文或文件名。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    monkeypatch.setenv('CONFIG_TEST_TOKEN', 'expanded-config-secret')
+    message = f'{SECRET}\n{os.environ["CONFIG_TEST_TOKEN"]}'
+    failure = (PermissionError(13, message, f'{message}.yaml')
+               if with_errno else OSError(message))
+    failure.filename = f'{message}.yaml'
+    with patch('modules.config.open', side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert SECRET not in caplog.text
+    assert 'expanded-config-secret' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+    assert 'stage=read' in caplog.text
+    if with_errno:
+        assert 'type=PermissionError' in caplog.text
+        assert 'errno=13' in caplog.text
+        assert 'category=EACCES' in caplog.text
+    else:
+        assert 'type=OSError' in caplog.text
+        assert 'errno=' not in caplog.text
+
+
+def test_yaml_error_without_screenshot_reports_one_based_positions(
+        tmp_path, caplog):
+    """无截图的坏 YAML 也保留行列，且不输出凭证源码。"""
+    path = tmp_path / 'invalid.yaml'
+    path.write_text(f'token: ["{SECRET}"\n', encoding='utf-8')
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert 'stage=parse' in caplog.text
+    assert 'type=ParserError' in caplog.text
+    assert 'problem_line=2 problem_column=1' in caplog.text
+    assert 'context_line=1 context_column=8' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'token:' not in caplog.text
+
+
+def test_yaml_context_is_not_used_as_diagnostic_text(
+        tmp_path, monkeypatch, caplog):
+    """解析上下文及标记中的原文不进入摘要，只保留数字位置。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    monkeypatch.setenv('CONFIG_TEST_TOKEN', 'expanded-config-secret')
+    message = f'{SECRET}\n{os.environ["CONFIG_TEST_TOKEN"]}'
+    context_mark = SimpleNamespace(
+        line=2, column=4, buffer=message, name=message,
+    )
+    problem_mark = SimpleNamespace(
+        line=6, column=8, buffer=message, name=message,
+    )
+    failure = ParserError(message, context_mark, message, problem_mark)
+    with patch.object(YAML, 'load', side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert 'stage=parse' in caplog.text
+    assert 'type=ParserError' in caplog.text
+    assert 'problem_line=7 problem_column=9' in caplog.text
+    assert 'context_line=3 context_column=5' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'expanded-config-secret' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('push', [
+    {},
+    {'screenshot': {}},
+    {'screenshot': []},
+    {'screenshot': {'image_host': [{'provider': 'wmimg', 'token': SECRET}]}},
+], ids=['missing', 'empty-map', 'empty-list', 'credentials'])
+@pytest.mark.parametrize('stage', ['mkstemp', 'fdopen', 'dump', 'replace'])
+def test_write_errno_diagnostics_do_not_depend_on_screenshot(
+        tmp_path, monkeypatch, caplog, push, stage):
+    """所有截图形态使用相同安全诊断，保留磁盘错误码与原文件。"""
+    path = _write_config(tmp_path, push)
+    original = path.read_bytes()
+    failure = OSError(28, SECRET, f'{SECRET}.yaml')
+    failure.winerror = 112
+
+    def fail(*args, **kwargs):
+        """模拟带敏感消息和文件名的磁盘空间不足。"""
+        raise failure
+
+    if stage == 'dump':
+        writer = config_module._make_write_yaml()
+        monkeypatch.setattr(writer, 'dump', fail)
+        with patch('modules.config._make_write_yaml', return_value=writer):
+            result = config_module.load_config(str(path))
+    else:
+        owner = config_module.tempfile if stage == 'mkstemp' else os
+        monkeypatch.setattr(owner, stage, fail)
+        result = config_module.load_config(str(path))
+    assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+    assert path.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [path]
+    expected_stage = 'serialize' if stage == 'dump' else stage
+    assert f'stage={expected_stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=28' in caplog.text
+    assert 'winerror=112' in caplog.text
+    assert 'category=ENOSPC' in caplog.text
+    assert SECRET not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('name, base, module, expected_type', [
+    ('FakeToken_7319', OSError, 'custom', 'OSError'),
+    ('FakeGenericToken_7319', Exception, 'custom', 'Exception'),
+    ('FakePermissionToken_7319', PermissionError, 'custom', 'PermissionError'),
+    ('PermissionError', Exception, 'builtins', 'Exception'),
+    ('PermissionError', OSError, 'builtins', 'OSError'),
+    ('ParserError', Exception, 'ruamel.yaml.parser', 'Exception'),
+    ('FakeParserToken_7319', ParserError, 'custom', 'ParserError'),
+])
+def test_custom_exception_names_never_become_diagnostic_labels(
+        tmp_path, caplog, name, base, module, expected_type):
+    """自定义类名及伪装模块不能成为日志标签，安全错误码仍保留。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    failure_type = type(name, (base,), {'__module__': module})
+    message = 'FAKE_MESSAGE_SECRET'
+    if issubclass(base, OSError):
+        code = 13 if issubclass(base, PermissionError) else 28
+        failure = failure_type(code, message, 'FAKE_FILENAME_SECRET')
+        failure.winerror = 112
+        expected_stage = 'read'
+    else:
+        failure = failure_type(message)
+        expected_stage = 'parse'
+    if isinstance(failure, ParserError):
+        failure.problem_mark = SimpleNamespace(
+            line=2, column=4, buffer=message, name=message,
+        )
+    with patch.object(YAML, 'load', side_effect=failure):
+        with pytest.raises(SystemExit) as caught:
+            config_module.load_config(str(path))
+    assert caught.value.code == 1
+    assert path.read_bytes() == original
+    messages = [record.getMessage() for record in caplog.records
+                if '无法加载配置文件' in record.getMessage()]
+    assert len(messages) == 1
+    diagnostic = messages[0]
+    assert f'stage={expected_stage} type={expected_type}' in diagnostic
+    assert diagnostic.split('type=', 1)[1].split()[0] == expected_type
+    for secret in ('FakeToken_7319', 'FakeGenericToken_7319',
+                   'FakePermissionToken_7319', 'FakeParserToken_7319',
+                   message, 'FAKE_FILENAME_SECRET'):
+        assert secret not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+    if isinstance(failure, OSError):
+        assert f'errno={code}' in diagnostic
+        assert 'winerror=112' in diagnostic
+        category = 'EACCES' if code == 13 else 'ENOSPC'
+        assert f'category={category}' in diagnostic
+    else:
+        assert 'errno=' not in diagnostic
+        assert 'winerror=' not in diagnostic
+    if isinstance(failure, ParserError):
+        assert 'problem_line=3 problem_column=5' in diagnostic
+    else:
+        assert '_line=' not in diagnostic
+        assert '_column=' not in diagnostic
+
+
+@pytest.mark.parametrize('failure, expected_type', [
+    (PermissionError(13, 'FAKE_MESSAGE_SECRET'), 'PermissionError'),
+    (FileNotFoundError(2, 'FAKE_MESSAGE_SECRET'), 'FileNotFoundError'),
+    (FileExistsError(17, 'FAKE_MESSAGE_SECRET'), 'FileExistsError'),
+    (IsADirectoryError(21, 'FAKE_MESSAGE_SECRET'), 'IsADirectoryError'),
+    (NotADirectoryError(20, 'FAKE_MESSAGE_SECRET'), 'NotADirectoryError'),
+    (TimeoutError(110, 'FAKE_MESSAGE_SECRET'), 'TimeoutError'),
+    (OSError(28, 'FAKE_MESSAGE_SECRET'), 'OSError'),
+    (ValueError('FAKE_MESSAGE_SECRET'), 'ValueError'),
+    (TypeError('FAKE_MESSAGE_SECRET'), 'TypeError'),
+    (RuntimeError('FAKE_MESSAGE_SECRET'), 'RuntimeError'),
+    (Exception('FAKE_MESSAGE_SECRET'), 'Exception'),
+])
+def test_builtin_exception_labels_remain_specific(failure, expected_type):
+    """固定类型分派保留常见内置异常的具体标签且不输出消息。"""
+    summary = config_module._config_exception_summary(failure, 'serialize')
+    assert summary.split()[:2] == [
+        'stage=serialize', f'type={expected_type}',
+    ]
+    assert 'FAKE_MESSAGE_SECRET' not in summary
+    if isinstance(failure, OSError):
+        assert f'errno={failure.errno}' in summary
+
+
+@pytest.mark.parametrize('failure_kind', ['os', 'yaml', 'generic'])
+def test_untrusted_exception_fields_do_not_enter_summary(
+        tmp_path, caplog, failure_kind):
+    """异常元数据只接受数值，通用异常仅记录安全类型及阶段。"""
+    path = _write_config(tmp_path, {})
+    original = path.read_bytes()
+    message = f'{SECRET}\nforged-log-entry'
+    if failure_kind == 'os':
+        failure = OSError(message)
+        failure.errno = message
+        failure.winerror = message
+        target = 'modules.config.open'
+        expected_type = 'OSError'
+        expected_stage = 'read'
+    elif failure_kind == 'yaml':
+        mark = SimpleNamespace(line=message, column=message, buffer=message)
+        failure = ParserError(message, mark, message, mark)
+        target = 'ruamel.yaml.YAML.load'
+        expected_type = 'ParserError'
+        expected_stage = 'parse'
+    else:
+        failure = ValueError(message)
+        target = 'ruamel.yaml.YAML.load'
+        expected_type = 'ValueError'
+        expected_stage = 'parse'
+    with patch(target, side_effect=failure):
+        with pytest.raises(SystemExit) as error:
+            config_module.load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    assert f'stage={expected_stage}' in caplog.text
+    assert f'type={expected_type}' in caplog.text
+    assert SECRET not in caplog.text
+    assert 'forged-log-entry' not in caplog.text
+    assert 'errno=' not in caplog.text
+    assert 'winerror=' not in caplog.text
+    assert '_line=' not in caplog.text
+    assert '_column=' not in caplog.text
+    assert not any(record.exc_info for record in caplog.records)
+
+
+@pytest.mark.parametrize('stage', ['create', 'serialize'])
+def test_default_creation_error_keeps_safe_summary_and_reraises(
+        tmp_path, caplog, stage):
+    """默认文件创建异常继续抛出，但日志不使用异常消息或文件名。"""
+    path = tmp_path / 'default.yaml'
+    failure = OSError(28, SECRET, f'{SECRET}.yaml')
+    target = 'modules.config.open' if stage == 'create' else (
+        'ruamel.yaml.YAML.dump'
+    )
+    with patch(target, side_effect=failure):
+        with pytest.raises(OSError) as error:
+            config_module.create_default_config(str(path))
+    assert error.value is failure
+    assert f'stage={stage}' in caplog.text
+    assert 'type=OSError' in caplog.text
+    assert 'errno=28' in caplog.text
+    assert 'category=ENOSPC' in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_flow_version_marker_and_backtick_token_load_then_write(tmp_path):
+    """裸 flow 版本标记与反引号 token 经真实加载写回为合法 YAML 字符串。"""
+    path = tmp_path / 'scalar-compat.yaml'
+    path.write_text(
+        'monitor:\n  mode: psutil\n  psutil:\n    process_name: ok.exe\n'
+        'push:\n  screenshot:\n'
+        '    targets:\n'
+        '      - {provider: window, target: App@{version}, out: shot}\n'
+        '    image_host:\n'
+        '      - {provider: catbox, token: `a;b`}\n',
+        encoding='utf-8',
+    )
+    screenshot = config_module.load_config(str(path))['push']['screenshot']
+    assert screenshot['targets'][0]['target'] == 'App@{version}'
+    assert screenshot['targets'][0]['out'] == 'shot'
+    assert screenshot['image_host'][0]['token'] == 'a;b'
+    persisted = _read_config(path)['push']['screenshot']
+    assert persisted['targets'][0]['target'] == 'App@{version}'
+    assert persisted['image_host'][0]['token'] == 'a;b'
