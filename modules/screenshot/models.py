@@ -13,6 +13,7 @@ _CAPTURE_MESSAGES = {
     'window_lookup_failed': '无法枚举目标窗口',
     'window_gone': '目标窗口已失效或标题已变化',
     'window_state_failed': '无法读取或恢复目标窗口状态',
+    'window_ready_timeout': '窗口几何就绪等待预算耗尽',
     'invalid_dimensions': '目标窗口尺寸无效',
     'dpi_failed': '无法设置局部线程 DPI 上下文',
     'gdi_failed': '无法分配或访问窗口图像资源',

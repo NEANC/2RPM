@@ -87,7 +87,26 @@ class WindowEnvironment:
         monkeypatch.setattr(backend, 'win32gui', self.gui)
         monkeypatch.setattr(backend, '_user32', self.user32)
         monkeypatch.setattr(backend, '_gdi32', self.gdi32)
-        monkeypatch.setattr(backend.time, 'sleep', Mock())
+        self.now = 0.0
+        self.sleep_calls = []
+        self.clock = Mock(side_effect=self.read_clock)
+        self.sleep = Mock(side_effect=self.advance_sleep)
+        self.time = SimpleNamespace(monotonic=self.clock, sleep=self.sleep)
+        monkeypatch.setattr(backend, 'time', self.time)
+
+    def read_clock(self):
+        """返回假单调时钟的当前秒数。"""
+        return self.now
+
+    def advance(self, seconds):
+        """按模拟耗时推进假时钟。"""
+        self.now += seconds
+
+    def advance_sleep(self, seconds):
+        """记录一次等待并推进假时钟，禁止真实休眠。"""
+        assert seconds >= 0
+        self.sleep_calls.append((self.now, seconds))
+        self.now += seconds
 
     def get_cloaked(self, handle, attribute, value, size):
         """模拟 DWM 隐藏标志，保留真实 DWORD 输出参数约定。"""
@@ -1539,3 +1558,327 @@ def test_total_events_do_not_carry_private_values(monkeypatch):
     assert repr(result.image_bytes) not in rendered
     assert all(event.stage == 'window_capture' for event in totals)
     assert all(event.action == 'total' for event in totals)
+
+
+def test_non_minimized_capture_skips_ready_wait(monkeypatch):
+    """非最小化窗口不恢复、不等待，仅做一次尺寸读取后直接捕获。"""
+    backend, env = environment(monkeypatch)
+    result = backend.capture_window(TITLE)
+    assert (result.width, result.height) == (2, 2)
+    env.gui.ShowWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_not_called()
+    env.time.sleep.assert_not_called()
+    env.time.monotonic.assert_not_called()
+
+
+def test_minimized_ready_wait_needs_two_matching_samples(monkeypatch):
+    """最小化恢复后两次相同有效矩形即捕获，等待远小于 200 ms。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    result = backend.capture_window(TITLE)
+    assert (result.width, result.height) == (2, 2)
+    assert env.time.sleep.call_count == 1
+    assert env.time.sleep.call_args.args == (0.01,)
+    assert env.now < 0.2
+    assert env.gui.GetWindowRect.call_count == 3
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.iconic
+    env.gui.SetForegroundWindow.assert_not_called()
+    env.gui.BringWindowToTop.assert_not_called()
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_minimized_rect_volatility_resets_consecutive_samples(monkeypatch):
+    """矩形波动不提前捕获，连续两次相同后才调用 PrintWindow。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    stable = (10, 20, 12, 22)
+    env.gui.GetWindowRect.side_effect = [
+        stable, (10, 20, 13, 23), stable, stable, stable]
+    result = backend.capture_window(TITLE)
+    assert (result.width, result.height) == (2, 2)
+    assert env.time.sleep.call_count == 3
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    env.time.sleep.assert_any_call(0.01)
+
+
+@pytest.mark.parametrize('rectangle', [
+    (0, 0, 0, 2), (2, 0, 1, 2), (0, 1, 2, 1), (0, 0, 20000, 20000),
+])
+def test_minimized_invalid_geometry_never_becomes_ready(
+        monkeypatch, rectangle):
+    """零、负或超限尺寸不被视为就绪，预算耗尽前不分配 GDI。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.gui.GetWindowRect.return_value = rectangle
+    error = assert_error(backend, 'window_ready_timeout')
+    assert str(error) == '窗口几何就绪等待预算耗尽'
+    env.user32.GetWindowDC.assert_not_called()
+    env.gdi32.CreateCompatibleDC.assert_not_called()
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.iconic
+    assert env.events[-1] == ('dpi', OLD_DPI)
+    assert env.now == pytest.approx(0.2)
+
+
+def test_minimized_never_ready_fails_at_deadline_without_busy_wait(monkeypatch):
+    """始终最小化时在截止点失败，每次等待不超过轮询间隔。"""
+    backend, env = environment(monkeypatch)
+
+    def show_without_restoring(handle, command):
+        """模拟 ShowWindow 返回但窗口仍保持最小化。"""
+        env.events.append(('show', handle))
+        return 0
+
+    env.iconic = True
+    env.gui.ShowWindow.side_effect = show_without_restoring
+    assert_error(backend, 'window_ready_timeout')
+    assert env.time.sleep.call_count >= 2
+    assert env.sleep_calls
+    assert all(seconds <= 0.01 for _, seconds in env.sleep_calls)
+    assert env.gui.GetWindowRect.call_count == env.time.sleep.call_count + 1
+    assert env.now == pytest.approx(0.2)
+    env.user32.GetWindowDC.assert_not_called()
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_ready_wait_partial_sleep_never_exceeds_remaining_budget(monkeypatch):
+    """查询自身耗时会压缩剩余预算，最后一次等待不超过剩余时间。"""
+    backend, env = environment(monkeypatch)
+    calls = {'count': 0}
+
+    def slow_iconic(handle):
+        """进入等待后的每次查询消耗 6 ms 假耗时。"""
+        calls['count'] += 1
+        if calls['count'] >= 2:
+            env.advance(0.006)
+        return True
+
+    env.iconic = True
+    env.gui.IsIconic.side_effect = slow_iconic
+    assert_error(backend, 'window_ready_timeout')
+    assert env.sleep_calls
+    for before, seconds in env.sleep_calls:
+        assert seconds <= 0.2 - before + 1e-12
+        assert seconds <= 0.01
+    assert env.sleep_calls[-1][1] < 0.01
+    env.user32.PrintWindow.assert_not_called()
+
+
+def test_ready_sample_returned_after_deadline_is_rejected(monkeypatch):
+    """查询晚返回超过预算时不接受已满足的几何结果。"""
+    backend, env = environment(monkeypatch)
+    calls = {'count': 0}
+
+    def slow_rect(handle):
+        """第二次采样与上次相同，但同步查询耗时超过剩余预算。"""
+        calls['count'] += 1
+        if calls['count'] == 2:
+            env.advance(0.3)
+        return (10, 20, 12, 22)
+
+    env.iconic = True
+    env.gui.GetWindowRect.side_effect = slow_rect
+    assert_error(backend, 'window_ready_timeout')
+    env.user32.GetWindowDC.assert_not_called()
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+@pytest.mark.parametrize('loss', ['destroy', 'rename', 'hide', 'cloak'])
+def test_minimized_identity_loss_during_ready_wait_is_window_gone(
+        monkeypatch, loss):
+    """恢复后身份失效不用于还原，安全错误传播且 DPI 仍清理。"""
+    backend, env = environment(monkeypatch)
+
+    def show_then_lose(handle, command):
+        """ShowWindow 返回后窗口销毁、改名、隐藏或被 DWM 隐藏。"""
+        env.events.append(('show', handle))
+        if loss == 'destroy':
+            env.alive = False
+        elif loss == 'rename':
+            env.windows[handle] = '改名窗口'
+        elif loss == 'hide':
+            env.visible[handle] = False
+        else:
+            env.cloaked[handle] = 2
+        return 0
+
+    env.iconic = True
+    env.gui.ShowWindow.side_effect = show_then_lose
+    assert_error(backend, 'window_gone')
+    env.user32.GetWindowDC.assert_not_called()
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_not_called()
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+@pytest.mark.parametrize('operation', ['IsIconic', 'GetWindowRect'])
+def test_ready_wait_query_errors_map_to_state_failure(monkeypatch, operation):
+    """等待期查询异常映射为安全状态错误，不泄漏底层文本并完成还原。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    if operation == 'IsIconic':
+        calls = {'count': 0}
+
+        def iconic_or_fail(handle):
+            """首次返回最小化，等待期查询抛出底层异常。"""
+            calls['count'] += 1
+            if calls['count'] == 2:
+                raise OSError('secret-token')
+            return calls['count'] == 1
+
+        env.gui.IsIconic.side_effect = iconic_or_fail
+    else:
+        env.gui.GetWindowRect.side_effect = OSError('secret-token')
+    error = assert_error(backend, 'window_state_failed')
+    assert 'secret-token' not in str(error)
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_show_window_error_restores_state_and_keeps_mapping(monkeypatch):
+    """恢复调用异常保持原有状态错误映射，仍尝试还原 placement。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.gui.ShowWindow.side_effect = OSError('secret-token')
+    error = assert_error(backend, 'window_state_failed')
+    assert 'secret-token' not in str(error)
+    env.user32.GetWindowDC.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+@pytest.mark.parametrize('signal', [KeyboardInterrupt, SystemExit])
+def test_control_signal_during_ready_wait_still_restores(
+        monkeypatch, signal):
+    """等待期控制信号不吞掉，清理完成后传播且总事件只结束一次。"""
+    backend, env = environment(monkeypatch)
+    calls = {'count': 0}
+
+    def iconic_signal(handle):
+        """等待期查询直接抛出控制信号。"""
+        calls['count'] += 1
+        if calls['count'] == 2:
+            raise signal()
+        return calls['count'] == 1
+
+    env.iconic = True
+    env.gui.IsIconic.side_effect = iconic_signal
+    events = []
+    with pytest.raises(signal):
+        with trace_scope(
+                mode='cli', images_planned=1, on_status=events.append):
+            backend.capture_window(TITLE)
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'cancelled']
+    assert totals[0].operation_id == totals[1].operation_id
+    env.user32.PrintWindow.assert_not_called()
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_ready_timeout_cleanup_failure_keeps_primary_error(monkeypatch):
+    """预算耗尽后的还原失败不覆盖主错误，DPI 仍清理。"""
+    backend, env = environment(monkeypatch)
+
+    def show_without_restoring(handle, command):
+        """模拟窗口仍最小化。"""
+        return 0
+
+    env.iconic = True
+    env.gui.ShowWindow.side_effect = show_without_restoring
+    env.gui.SetWindowPlacement.side_effect = OSError('secret-token')
+    error = assert_error(backend, 'window_ready_timeout')
+    assert 'secret-token' not in str(error)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_slow_print_window_time_is_included_in_total(monkeypatch):
+    """同步 PrintWindow 慢返回计入总耗时，等待期间不释放 GDI。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    observed = []
+
+    def slow_print(*args):
+        """记录绘制开始时的资源状态并推进 500 ms。"""
+        observed.append(env.gdi32.DeleteObject.called)
+        env.advance(0.5)
+        return 1
+
+    env.user32.PrintWindow.side_effect = slow_print
+    events = []
+    with trace_scope(
+            mode='automatic', images_planned=1, clock=env.time.monotonic,
+            on_status=events.append):
+        result = backend.capture_window(TITLE)
+    assert observed == [False]
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'succeeded']
+    assert totals[1].duration_ms >= 500
+    assert result.warnings == ()
+    assert not any('超时' in warning for warning in result.warnings)
+
+
+def test_minimized_stable_geometry_keeps_low_variance_warning(monkeypatch):
+    """几何稳定但纯色帧仍成功返回并保留低方差告警。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.buffer = ctypes.create_string_buffer(bytes([80, 80, 80, 0]) * 4)
+    result = backend.capture_window(TITLE)
+    assert (result.width, result.height) == (2, 2)
+    assert any('纯色' in warning for warning in result.warnings)
+    env.user32.PrintWindow.assert_called_once_with(HWND, MEMORY_DC, 0x2)
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+
+
+def test_minimized_encode_failure_releases_gdi_and_restores(monkeypatch):
+    """最小化捕获的编码异常保持原有映射并释放全部资源。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    monkeypatch.setattr(
+        Image.Image, 'save', Mock(side_effect=OSError('secret-token')))
+    error = assert_error(backend, 'encode_failed')
+    assert 'secret-token' not in str(error)
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.gdi32.DeleteDC.assert_called_once_with(MEMORY_DC)
+    env.user32.ReleaseDC.assert_called_once_with(HWND, WINDOW_DC)
+    env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
+    assert env.events[-1] == ('dpi', OLD_DPI)
+
+
+def test_minimized_capture_has_no_file_network_or_process_io(monkeypatch):
+    """最小化等待路径同样不写文件、不联网、不启动进程。"""
+    backend, env = environment(monkeypatch)
+    Image.init()
+    forbidden = Mock(side_effect=AssertionError('截图不得执行外部 IO'))
+    monkeypatch.setattr(builtins, 'open', forbidden)
+    monkeypatch.setattr(socket, 'socket', forbidden)
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    env.iconic = True
+    result = backend.capture_window(TITLE, image_format='png')
+    assert result.image_bytes.startswith(b'\x89PNG\r\n\x1a\n')
+    forbidden.assert_not_called()
+
+
+def test_minimized_total_events_do_not_carry_private_values(monkeypatch):
+    """等待路径的总事件不含标题、像素或异常原文。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    marker = 'PRIVATE_TITLE_8823'
+    env.windows[HWND] = marker
+    events = []
+    with trace_scope(
+            mode='cli', images_planned=1, on_status=events.append):
+        result = backend.capture_window(marker)
+    totals = total_events(events)
+    rendered = repr(totals)
+    assert marker not in rendered
+    assert repr(result.image_bytes) not in rendered
+    assert all(event.stage == 'window_capture' for event in totals)
