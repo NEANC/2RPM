@@ -508,6 +508,69 @@ def test_milliseconds_truncates_fractional_millisecond():
     assert module._milliseconds(0.0019) == 1
 
 
+def test_window_capture_total_is_whitelisted_and_labeled():
+    """窗口截图全流程为独立阶段，动作与中文标签进入固定白名单。"""
+    module = trace_module()
+    whitelists = module._CLASSIFICATION_WHITELISTS
+    assert 'window_capture' in whitelists['stage']
+    assert 'total' in whitelists['action']
+    for status, word in (
+            ('started', '开始'), ('succeeded', '成功'),
+            ('failed', '失败'), ('cancelled', '取消')):
+        line = module._format_event(module._create_event(
+            stage='window_capture', action='total', status=status))
+        assert line == f'窗口截图全流程{word}'
+
+
+def test_window_capture_total_levels(caplog):
+    """总耗时观察的开始为 DEBUG，成功与取消为 INFO，失败为 WARNING。"""
+    module = trace_module()
+    with caplog.at_level(logging.DEBUG, logger='modules.operation_trace'):
+        with module.trace_scope(mode='cli'):
+            with module.trace_operation('window_capture', 'total'):
+                pass
+            with module.trace_operation(
+                    'window_capture', 'total') as operation:
+                operation.finish('failed', reason_code='window_gone')
+            with pytest.raises(KeyboardInterrupt):
+                with module.trace_operation('window_capture', 'total'):
+                    raise KeyboardInterrupt('cancel')
+    levels = {}
+    for record in caplog.records:
+        event = getattr(record, 'stage_event', None)
+        if event is None or event.stage != 'window_capture':
+            continue
+        levels.setdefault(event.status, []).append(record.levelno)
+    assert levels['started'] == [logging.DEBUG] * 3
+    assert levels['succeeded'] == [logging.INFO]
+    assert levels['failed'] == [logging.WARNING]
+    assert levels['cancelled'] == [logging.INFO]
+
+
+def test_window_capture_total_keeps_capture_identity_and_counts():
+    """总耗时只作观察，不冒充截图关联标识，也不增加截图与编码计数。"""
+    module = trace_module()
+    events = []
+    with module.trace_scope(
+            mode='cli', images_planned=1, on_status=events.append) as trace:
+        with module.trace_operation('window_capture', 'total'):
+            pass
+        assert module.current_capture_operation_id() is None
+        with module.trace_operation('capture', 'read', source='window'):
+            pass
+        capture_id = next(
+            event.operation_id for event in events
+            if event.stage == 'capture' and event.status == 'started')
+        assert module.current_capture_operation_id() == capture_id
+        summary = trace.summary()
+    assert summary['capture_started'] == summary['capture_succeeded'] == 1
+    assert summary['encode_started'] == 0
+    totals = [event for event in events if event.stage == 'window_capture']
+    assert [event.status for event in totals] == ['started', 'succeeded']
+    assert totals[0].operation_id == totals[1].operation_id
+    assert capture_id not in {event.operation_id for event in totals}
+
+
 BATCH_LINE_SUMMARY_KEYS = (
     'mode', 'status', 'images_planned', 'images_processed',
     'images_succeeded', 'images_failed', 'images_cancelled', 'images_skipped',

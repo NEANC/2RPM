@@ -19,6 +19,8 @@ from unittest.mock import Mock
 from PIL import Image
 import pytest
 
+from modules.operation_trace import trace_scope
+
 
 HWND = 0x100000123
 WINDOW_DC = 0x200000123
@@ -1347,3 +1349,193 @@ def test_window_backend_exports_capture_interface():
     assert callable(backend.capture_window)
     assert package.capture_window is backend.capture_window
     assert package.CaptureError is backend.CaptureError
+
+
+class TimedCaptureLock:
+    """用假时钟模拟锁等待，并记录进入与退出顺序。"""
+
+    def __init__(self, advance, marks):
+        """保存耗时推进函数与顺序标记列表。"""
+        self._advance = advance
+        self._marks = marks
+
+    def __enter__(self):
+        """进入前推进锁等待耗时，代表排队时间计入总耗时。"""
+        self._advance(0.030)
+        self._marks.append('lock_enter')
+        return self
+
+    def __exit__(self, *exc_info):
+        """离开时记录顺序，不吞掉任何异常。"""
+        self._marks.append('lock_exit')
+        return False
+
+
+def total_events(events):
+    """返回窗口截图全流程阶段事件，保持真实发生顺序。"""
+    return [event for event in events if event.stage == 'window_capture']
+
+
+def test_total_covers_lock_read_encode_and_restore(monkeypatch):
+    """锁等待、读取、编码与 finally 还原耗时全部计入总耗时。"""
+    backend, env = environment(monkeypatch)
+    now = [0.0]
+
+    def clock():
+        """返回可控的单调时钟原点。"""
+        return now[0]
+
+    def advance(seconds):
+        """推进假时钟，代表一次真实耗时步骤。"""
+        now[0] += seconds
+
+    marks = []
+    monkeypatch.setattr(
+        backend, '_CAPTURE_LOCK', TimedCaptureLock(advance, marks))
+    env.user32.PrintWindow.side_effect = lambda *args: (advance(0.040), 1)[1]
+    encoding = import_module('modules.screenshot.encoding')
+    original_payload = encoding._encode_payload
+
+    def payload_with_time(image, image_format):
+        """在编码开始后、结束前推进 50 ms。"""
+        advance(0.050)
+        return original_payload(image, image_format)
+
+    monkeypatch.setattr(encoding, '_encode_payload', payload_with_time)
+    dpi_calls = []
+    original_dpi = env.set_dpi
+
+    def set_dpi(context):
+        """仅在 finally 还原 DPI 时推进 60 ms。"""
+        dpi_calls.append(context)
+        if len(dpi_calls) == 2:
+            advance(0.060)
+        return original_dpi(context)
+
+    env.user32.SetThreadDpiAwarenessContext.side_effect = set_dpi
+    events = []
+    with trace_scope(
+            mode='automatic', images_planned=1, clock=clock,
+            on_status=events.append):
+        result = backend.capture_window(TITLE)
+    assert result.width == result.height == 2
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'succeeded']
+    assert totals[0].operation_id == totals[1].operation_id
+    assert totals[1].duration_ms == 180
+    capture = next(event for event in events
+                   if event.stage == 'capture' and event.status == 'succeeded')
+    encode = next(event for event in events
+                  if event.stage == 'encode' and event.status == 'succeeded')
+    assert capture.duration_ms == 40
+    assert encode.duration_ms == 50
+    assert events.index(capture) < events.index(encode)
+    assert totals[1].duration_ms != capture.duration_ms + encode.duration_ms
+    assert marks.count('lock_enter') == 1
+    assert marks.count('lock_exit') == 1
+
+
+def test_total_terminal_is_recorded_after_restore_and_lock_exit(monkeypatch):
+    """总终态在窗口/DPI 还原与锁退出之后才记录。"""
+    backend, env = environment(monkeypatch)
+    marks = []
+    dpi_calls = []
+    original_dpi = env.set_dpi
+
+    def set_dpi(context):
+        """记录 finally 还原 DPI 的顺序。"""
+        result = original_dpi(context)
+        dpi_calls.append(context)
+        if len(dpi_calls) == 2:
+            marks.append('dpi_restore')
+        return result
+
+    env.user32.SetThreadDpiAwarenessContext.side_effect = set_dpi
+    monkeypatch.setattr(
+        backend, '_CAPTURE_LOCK',
+        TimedCaptureLock(lambda seconds: None, marks))
+
+    def on_status(event):
+        """按真实记录顺序标记总阶段开始与唯一终态。"""
+        if event.stage != 'window_capture':
+            return
+        if event.status == 'started':
+            marks.append('total_started')
+        else:
+            marks.append(('total_terminal', event.status))
+
+    with trace_scope(
+            mode='automatic', images_planned=1, on_status=on_status):
+        backend.capture_window(TITLE)
+    assert marks.index('total_started') < marks.index('lock_enter')
+    assert marks.index(('total_terminal', 'succeeded')) > marks.index(
+        'dpi_restore')
+    assert marks.index(('total_terminal', 'succeeded')) > marks.index(
+        'lock_exit')
+
+
+def test_total_reports_failure_when_window_lookup_fails(monkeypatch):
+    """入口查找失败仍产生唯一失败总终态。"""
+    backend, env = environment(monkeypatch)
+    env.windows = {}
+    events = []
+    with trace_scope(
+            mode='cli', images_planned=1, on_status=events.append):
+        with pytest.raises(backend.CaptureError) as caught:
+            backend.capture_window(TITLE)
+    assert caught.value.code == 'window_not_found'
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'failed']
+    assert totals[0].operation_id == totals[1].operation_id
+    assert totals[1].reason_code == 'window_not_found'
+    assert totals[1].duration_ms is not None
+
+
+@pytest.mark.parametrize('signal', [KeyboardInterrupt, SystemExit])
+def test_total_records_cancelled_when_capture_is_interrupted(
+        monkeypatch, signal):
+    """控制信号清理后传播，总阶段记录唯一取消终态。"""
+    backend, env = environment(monkeypatch)
+    env.user32.PrintWindow.side_effect = signal()
+    events = []
+    with pytest.raises(signal):
+        with trace_scope(
+                mode='cli', images_planned=1, on_status=events.append):
+            backend.capture_window(TITLE)
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'cancelled']
+    assert totals[0].operation_id == totals[1].operation_id
+    env.gdi32.DeleteObject.assert_called_once_with(BITMAP)
+    env.user32.ReleaseDC.assert_called_once()
+
+
+def test_total_stays_succeeded_when_restore_adds_warning(monkeypatch):
+    """恢复告警保持可返回结果语义，总阶段仍为成功。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.gui.SetWindowPlacement.side_effect = OSError('secret-token')
+    events = []
+    with trace_scope(
+            mode='automatic', images_planned=1, on_status=events.append):
+        result = backend.capture_window(TITLE)
+    assert any('还原' in warning for warning in result.warnings)
+    totals = total_events(events)
+    assert [event.status for event in totals] == ['started', 'succeeded']
+
+
+def test_total_events_do_not_carry_private_values(monkeypatch):
+    """总阶段事件不含标题、图像字节、路径或异常原文。"""
+    backend, env = environment(monkeypatch)
+    marker = 'PRIVATE_TITLE_8823'
+    env.windows[HWND] = marker
+    events = []
+    with trace_scope(
+            mode='cli', images_planned=1, on_status=events.append):
+        result = backend.capture_window(marker)
+    totals = total_events(events)
+    assert totals
+    rendered = repr(totals)
+    assert marker not in rendered
+    assert repr(result.image_bytes) not in rendered
+    assert all(event.stage == 'window_capture' for event in totals)
+    assert all(event.action == 'total' for event in totals)

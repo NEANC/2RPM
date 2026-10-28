@@ -311,54 +311,61 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
     同步 PrintWindow 无可强制终止的线程超时。等待重绘仅为有限延迟，
     不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
     """
-    with _CAPTURE_LOCK:
-        hwnd, actual_title = _find_window(title)
-        warnings = []
+    with trace_operation('window_capture', 'total') as operation:
         try:
-            old_dpi = _user32.SetThreadDpiAwarenessContext(
-                _DPI_PER_MONITOR_AWARE)
-        except Exception:
-            raise _error('dpi_failed') from None
-        if not old_dpi:
-            raise _error('dpi_failed')
-        restore_needed = False
-        placement = None
-        try:
-            _ensure_window(hwnd, actual_title)
-            placement = win32gui.GetWindowPlacement(hwnd)
-            _ensure_window(hwnd, actual_title)
-            if win32gui.IsIconic(hwnd):
-                restore_needed = True
-                _ensure_window(hwnd, actual_title)
-                win32gui.ShowWindow(hwnd, win32con.SW_SHOWNOACTIVATE)
-                time.sleep(_REPAINT_WAIT_SECONDS)
-                _ensure_window(hwnd, actual_title)
-                if win32gui.IsIconic(hwnd):
-                    raise _error('window_state_failed')
-            encoded, width, height = _capture_bitmap(
-                hwnd, actual_title, warnings, image_format)
-        except CaptureError:
-            raise
-        except Exception:
-            raise _error('window_state_failed') from None
-        finally:
-            try:
-                if restore_needed:
-                    try:
-                        _ensure_window(hwnd, actual_title)
-                        win32gui.SetWindowPlacement(hwnd, placement)
-                        _ensure_window(hwnd, actual_title)
-                        if not win32gui.IsIconic(hwnd):
-                            warnings.append(_STATE_WARNING)
-                    except Exception:
-                        warnings.append(_STATE_WARNING)
-            finally:
+            with _CAPTURE_LOCK:
+                hwnd, actual_title = _find_window(title)
+                warnings = []
                 try:
-                    if not _user32.SetThreadDpiAwarenessContext(old_dpi):
-                        warnings.append(_DPI_WARNING)
+                    old_dpi = _user32.SetThreadDpiAwarenessContext(
+                        _DPI_PER_MONITOR_AWARE)
                 except Exception:
-                    warnings.append(_DPI_WARNING)
-        _ensure_window(hwnd, actual_title)
-        return CaptureResult(
-            encoded, 'window', title, width, height, tuple(warnings),
-            image_format)
+                    raise _error('dpi_failed') from None
+                if not old_dpi:
+                    raise _error('dpi_failed')
+                restore_needed = False
+                placement = None
+                try:
+                    _ensure_window(hwnd, actual_title)
+                    placement = win32gui.GetWindowPlacement(hwnd)
+                    _ensure_window(hwnd, actual_title)
+                    if win32gui.IsIconic(hwnd):
+                        restore_needed = True
+                        _ensure_window(hwnd, actual_title)
+                        win32gui.ShowWindow(
+                            hwnd, win32con.SW_SHOWNOACTIVATE)
+                        time.sleep(_REPAINT_WAIT_SECONDS)
+                        _ensure_window(hwnd, actual_title)
+                        if win32gui.IsIconic(hwnd):
+                            raise _error('window_state_failed')
+                    encoded, width, height = _capture_bitmap(
+                        hwnd, actual_title, warnings, image_format)
+                except CaptureError:
+                    raise
+                except Exception:
+                    raise _error('window_state_failed') from None
+                finally:
+                    try:
+                        if restore_needed:
+                            try:
+                                _ensure_window(hwnd, actual_title)
+                                win32gui.SetWindowPlacement(hwnd, placement)
+                                _ensure_window(hwnd, actual_title)
+                                if not win32gui.IsIconic(hwnd):
+                                    warnings.append(_STATE_WARNING)
+                            except Exception:
+                                warnings.append(_STATE_WARNING)
+                    finally:
+                        try:
+                            if not _user32.SetThreadDpiAwarenessContext(
+                                    old_dpi):
+                                warnings.append(_DPI_WARNING)
+                        except Exception:
+                            warnings.append(_DPI_WARNING)
+                _ensure_window(hwnd, actual_title)
+                return CaptureResult(
+                    encoded, 'window', title, width, height, tuple(warnings),
+                    image_format)
+        except CaptureError as error:
+            operation.finish('failed', reason_code=error.code)
+            raise

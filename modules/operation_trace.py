@@ -65,6 +65,7 @@ _STATUS_WORDS = {
 _MODE_LABELS = {'automatic': '自动', 'cli': '命令行'}
 _STAGE_LABELS = {
     'capture': '截图',
+    'window_capture': '窗口截图全流程',
     'encode': '编码',
     'save': '保存',
     'metadata_cache': '缓存',
@@ -156,13 +157,14 @@ _CLASSIFICATION_WHITELISTS = {
     }),
     'image_format': frozenset({'jpeg', 'png', 'webp', 'raw'}),
     'stage': frozenset({
-        'capture', 'encode', 'save', 'metadata_cache', 'metadata_query',
-        'storage_select', 'upload_attempt', 'fallback', 'slot', 'batch',
+        'capture', 'window_capture', 'encode', 'save', 'metadata_cache',
+        'metadata_query', 'storage_select', 'upload_attempt', 'fallback',
+        'slot', 'batch',
     }),
     'action': frozenset({
         'read', 'write', 'encode', 'select', 'load', 'save', 'invalidate',
         'refresh', 'recover', 'switch', 'failover', 'capture_retry',
-        'capture_format', 'post', 'group', 'profile', 'upload',
+        'capture_format', 'post', 'group', 'profile', 'upload', 'total',
         'automatic', 'cli',
     }),
     'status': frozenset({
@@ -184,7 +186,7 @@ _DEBUG_STAGES = frozenset({
     'metadata_query', 'storage_select',
 })
 _INFO_STAGES = frozenset({
-    'capture', 'encode', 'save', 'upload_attempt', 'slot',
+    'capture', 'window_capture', 'encode', 'save', 'upload_attempt', 'slot',
 })
 
 _REQUEST_STAGES = {
