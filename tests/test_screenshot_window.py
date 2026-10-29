@@ -1554,8 +1554,9 @@ def test_minimized_print_failure_logs_safe_diagnostics(monkeypatch, caplog):
                if record.name == 'modules.screenshot.window']
     assert len(records) == 1
     message = records[0].getMessage()
-    for field in ('reason=print_failed', 'wait_ms=300', 'print_return=0',
-                  'iconic_before=True', 'exception_type=None'):
+    for field in ('reason=print_failed', 'wait_ms=300 print_return',
+                  'print_return=0', 'iconic_before=True',
+                  'exception_type=None'):
         assert field in message
     assert TITLE not in message
     assert hex(HWND) not in message
@@ -1577,3 +1578,21 @@ def test_normal_print_failure_diagnostics_omit_restore_fields(
     assert 'print_return=0' in message
     assert 'iconic_before=None' in message
     assert 'wait_ms=None' in message
+
+
+def test_print_exception_logs_exception_type(monkeypatch, caplog):
+    """PrintWindow 抛异常时记录异常类型且不泄漏异常消息与标题。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.user32.PrintWindow.side_effect = OSError('boom')
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'print_failed')
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert 'reason=print_failed' in message
+    assert 'exception_type=OSError' in message
+    assert 'boom' not in message
+    assert TITLE not in message
