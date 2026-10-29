@@ -344,7 +344,7 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                         win32gui.ShowWindow(
                             hwnd, win32con.SW_SHOWNOACTIVATE)
                         time.sleep(_REPAINT_WAIT_SECONDS)
-                        diagnostics['wait_called'] = True
+                        diagnostics['wait_completed'] = True
                         _ensure_window(hwnd, actual_title)
                         if win32gui.IsIconic(hwnd):
                             raise _error('window_state_failed')
@@ -382,11 +382,11 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
             if diagnostics:
                 _LOGGER.warning(
                     '窗口截图失败诊断: reason=%s iconic_before=%s '
-                    'wait_requested_ms=%s wait_called=%s '
+                    'wait_requested_ms=%s wait_completed=%s '
                     'print_return=%s exception_type=%s size=%sx%s',
                     error.code, diagnostics.get('iconic_before'),
                     diagnostics.get('wait_requested_ms'),
-                    diagnostics.get('wait_called'),
+                    diagnostics.get('wait_completed'),
                     diagnostics.get('print_return'),
                     diagnostics.get('exception_type'),
                     diagnostics.get('width'), diagnostics.get('height'))

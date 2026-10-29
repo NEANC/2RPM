@@ -1554,7 +1554,7 @@ def test_minimized_print_failure_logs_safe_diagnostics(monkeypatch, caplog):
                if record.name == 'modules.screenshot.window']
     assert len(records) == 1
     message = records[0].getMessage()
-    for field in ('reason=print_failed', 'wait_requested_ms=300 wait_called=True '
+    for field in ('reason=print_failed', 'wait_requested_ms=300 wait_completed=True '
                   'print_return', 'print_return=0', 'iconic_before=True',
                   'exception_type=None'):
         assert field in message
@@ -1578,7 +1578,7 @@ def test_normal_print_failure_diagnostics_omit_restore_fields(
     assert 'print_return=0' in message
     assert 'iconic_before=None' in message
     assert 'wait_requested_ms=None' in message
-    assert 'wait_called=None' in message
+    assert 'wait_completed=None' in message
 
 
 def test_print_exception_logs_exception_type(monkeypatch, caplog):
@@ -1600,7 +1600,7 @@ def test_print_exception_logs_exception_type(monkeypatch, caplog):
 
 
 def test_restore_failure_logs_exception_type(monkeypatch, caplog):
-    """恢复窗口抛异常时记录异常类型并标记等待未执行。"""
+    """恢复窗口抛异常时记录异常类型且等待无正常完成记录。"""
     backend, env = environment(monkeypatch)
     env.iconic = True
     env.gui.ShowWindow.side_effect = OSError('boom')
@@ -1614,8 +1614,29 @@ def test_restore_failure_logs_exception_type(monkeypatch, caplog):
     assert 'reason=window_state_failed' in message
     assert 'exception_type=OSError' in message
     assert 'wait_requested_ms=300' in message
-    assert 'wait_called=None' in message
+    assert 'wait_completed=None' in message
     assert 'boom' not in message
+    assert TITLE not in message
+
+
+def test_sleep_failure_does_not_claim_wait_completed(monkeypatch, caplog):
+    """sleep 已调用但抛异常时，不宣称正常完成或实测耗时。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    backend.time.sleep.side_effect = OSError('private-sleep-error')
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'window_state_failed')
+    backend.time.sleep.assert_called_once_with(0.3)
+    env.user32.PrintWindow.assert_not_called()
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert 'wait_requested_ms=300 wait_completed=None' in message
+    assert 'exception_type=OSError' in message
+    assert 'wait_called' not in message
+    assert 'private-sleep-error' not in message
     assert TITLE not in message
 
 
