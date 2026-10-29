@@ -576,6 +576,7 @@ def test_normal_and_maximized_windows_are_not_changed(
     backend.capture_window(TITLE)
     env.gui.ShowWindow.assert_not_called()
     env.gui.SetWindowPlacement.assert_not_called()
+    backend.time.sleep.assert_not_called()
 
 
 def test_window_destroyed_during_print_is_reported(monkeypatch):
