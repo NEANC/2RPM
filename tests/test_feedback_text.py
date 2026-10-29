@@ -349,7 +349,6 @@ CAPTURE_CODE_REASONS = (
     ('window_lookup_failed', '无法枚举目标窗口'),
     ('window_gone', '目标窗口已失效或标题已变化'),
     ('window_state_failed', '无法读取或恢复目标窗口状态'),
-    ('window_ready_timeout', '窗口几何就绪等待预算耗尽'),
     ('invalid_dimensions', '目标窗口尺寸无效'),
     ('dpi_failed', '无法设置局部线程 DPI'),
     ('gdi_failed', '无法分配或访问窗口图像资源'),
@@ -371,13 +370,13 @@ CAPTURE_CODE_REASONS = (
 
 @pytest.mark.parametrize(('code', 'reason'), CAPTURE_CODE_REASONS)
 def test_each_capture_code_has_sentence(code, reason):
-    """24 个捕获码各自给出固定原因与单前缀完整句。"""
+    """23 个捕获码各自给出固定原因与单前缀完整句。"""
     assert safe_reason_text('capture', code) == reason
     assert format_failure_sentence('capture', '', code) == '截图失败：' + reason
 
 
 def test_capture_code_table_is_complete():
-    """字面量表键集合必须与捕获表完全一致且恰好 24 项。"""
+    """字面量表键集合必须与捕获表完全一致且恰好 23 项。"""
     from modules.screenshot.models import _CAPTURE_MESSAGES
-    assert len(CAPTURE_CODE_REASONS) == 24
+    assert len(CAPTURE_CODE_REASONS) == 23
     assert {code for code, _ in CAPTURE_CODE_REASONS} == set(_CAPTURE_MESSAGES)

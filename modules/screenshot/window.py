@@ -30,8 +30,7 @@ from .title_match import parse_window_target
 
 PW_RENDERFULLCONTENT = 0x2
 _DWMWA_CLOAKED = 14
-_READY_WAIT_BUDGET_SECONDS = 0.2
-_READY_POLL_SECONDS = 0.01
+_REPAINT_WAIT_SECONDS = 0.2
 _DPI_PER_MONITOR_AWARE = -3
 _CAPTURE_LOCK = threading.Lock()
 _MESSAGES = {
@@ -41,7 +40,6 @@ _MESSAGES = {
     'window_lookup_failed': '无法枚举目标窗口',
     'window_gone': '目标窗口已失效、隐藏或标题已变化',
     'window_state_failed': '无法读取或恢复目标窗口状态',
-    'window_ready_timeout': '窗口几何就绪等待预算耗尽',
     'invalid_dimensions': '目标窗口尺寸无效',
     'dpi_failed': '无法设置局部线程 DPI 上下文',
     'gdi_failed': '无法分配或访问窗口图像资源',
@@ -142,47 +140,6 @@ def _ensure_window(hwnd, title):
         raise _error('window_gone') from None
     if not valid:
         raise _error('window_gone')
-
-
-def _wait_window_ready(hwnd, title):
-    """在有限预算内等待恢复后的窗口获得稳定有效几何。
-
-    首轮立即采样；仅在连续两次非最小化且矩形完全相同的有效采样后返回。
-    查询返回后重新检查时钟，达到截止点即失败，不接受超预算返回的就绪结果。
-
-    Args:
-        hwnd: 目标窗口句柄。
-        title: 锁定后的实际窗口标题，用于每轮身份校验。
-
-    Raises:
-        CaptureError: 窗口失效、查询异常或几何就绪预算耗尽。
-    """
-    deadline = time.monotonic() + _READY_WAIT_BUDGET_SECONDS
-    previous = None
-    while True:
-        try:
-            _ensure_window(hwnd, title)
-            iconic = win32gui.IsIconic(hwnd)
-            rectangle = win32gui.GetWindowRect(hwnd)
-        except CaptureError:
-            raise
-        except Exception:
-            raise _error('window_state_failed') from None
-        now = time.monotonic()
-        if now >= deadline:
-            raise _error('window_ready_timeout')
-        left, top, right, bottom = rectangle
-        width, height = right - left, bottom - top
-        valid = (
-            not iconic
-            and 0 < width <= 0x7fffffff
-            and 0 < height <= 0x7fffffff
-            and width * height <= Image.MAX_IMAGE_PIXELS
-        )
-        if valid and rectangle == previous:
-            return
-        previous = rectangle if valid else None
-        time.sleep(min(_READY_POLL_SECONDS, deadline - now))
 
 
 def _find_window(title: str) -> tuple[int, str]:
@@ -351,9 +308,8 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
     Raises:
         CaptureError: 标题、窗口状态、DPI、GDI、绘制或编码失败。
 
-    同步 PrintWindow 无可强制终止的线程超时。最小化恢复后仅在有限预算内
-    轮询几何就绪，不是新帧保证；目标未响应时不承诺绝对硬截止。
-    临时恢复不主动激活窗口。
+    同步 PrintWindow 无可强制终止的线程超时。等待重绘仅为有限延迟，
+    不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
     """
     with trace_operation('window_capture', 'total') as operation:
         try:
@@ -378,7 +334,10 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                         _ensure_window(hwnd, actual_title)
                         win32gui.ShowWindow(
                             hwnd, win32con.SW_SHOWNOACTIVATE)
-                        _wait_window_ready(hwnd, actual_title)
+                        time.sleep(_REPAINT_WAIT_SECONDS)
+                        _ensure_window(hwnd, actual_title)
+                        if win32gui.IsIconic(hwnd):
+                            raise _error('window_state_failed')
                     encoded, width, height = _capture_bitmap(
                         hwnd, actual_title, warnings, image_format)
                 except CaptureError:
