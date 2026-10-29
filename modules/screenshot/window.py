@@ -7,6 +7,7 @@
 """
 
 import ctypes
+import logging
 from ctypes import wintypes
 import threading
 import time
@@ -31,6 +32,7 @@ from .title_match import parse_window_target
 PW_RENDERFULLCONTENT = 0x2
 _DWMWA_CLOAKED = 14
 _REPAINT_WAIT_SECONDS = 0.3
+_LOGGER = logging.getLogger(__name__)
 _DPI_PER_MONITOR_AWARE = -3
 _CAPTURE_LOCK = threading.Lock()
 _MESSAGES = {
@@ -225,7 +227,7 @@ def _encode_pixels(pixels, width, height, warnings, image_format):
             raise _error('encode_failed') from None
 
 
-def _capture_bitmap(hwnd, title, warnings, image_format):
+def _capture_bitmap(hwnd, title, warnings, image_format, diagnostics):
     """使用完整窗口 DC 和固定 32 位 DIB 执行唯一 PrintWindow 路径。"""
     window_dc = memory_dc = bitmap = old_bitmap = None
     captured = False
@@ -239,6 +241,7 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
                 raise _error('invalid_dimensions')
             if width * height > Image.MAX_IMAGE_PIXELS:
                 raise _error('invalid_dimensions')
+            diagnostics['width'], diagnostics['height'] = width, height
             stage = 'gdi_failed'
             _ensure_window(hwnd, title)
             window_dc = _user32.GetWindowDC(hwnd)
@@ -266,6 +269,7 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
             stage = 'print_failed'
             _ensure_window(hwnd, title)
             printed = _user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT)
+            diagnostics['print_return'] = int(printed)
             _ensure_window(hwnd, title)
             if not printed:
                 raise _error(stage)
@@ -285,7 +289,8 @@ def _capture_bitmap(hwnd, title, warnings, image_format):
                 operation.finish('failed', reason_code=error.code)
                 trace_skipped('encode', reason_code='capture_failed')
             raise
-        except Exception:
+        except Exception as error:
+            diagnostics['exception_type'] = type(error).__name__
             if not captured:
                 operation.finish('failed', reason_code=stage)
                 trace_skipped('encode', reason_code='capture_failed')
@@ -312,6 +317,7 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
     不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
     """
     with trace_operation('window_capture', 'total') as operation:
+        diagnostics = {}
         try:
             with _CAPTURE_LOCK:
                 hwnd, actual_title = _find_window(title)
@@ -331,6 +337,9 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                     _ensure_window(hwnd, actual_title)
                     if win32gui.IsIconic(hwnd):
                         restore_needed = True
+                        diagnostics['iconic_before'] = True
+                        diagnostics['wait_ms'] = int(
+                            _REPAINT_WAIT_SECONDS * 1000)
                         _ensure_window(hwnd, actual_title)
                         win32gui.ShowWindow(
                             hwnd, win32con.SW_SHOWNOACTIVATE)
@@ -339,7 +348,7 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                         if win32gui.IsIconic(hwnd):
                             raise _error('window_state_failed')
                     encoded, width, height = _capture_bitmap(
-                        hwnd, actual_title, warnings, image_format)
+                        hwnd, actual_title, warnings, image_format, diagnostics)
                 except CaptureError:
                     raise
                 except Exception:
@@ -368,4 +377,12 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                     image_format)
         except CaptureError as error:
             operation.finish('failed', reason_code=error.code)
+            if diagnostics:
+                _LOGGER.warning(
+                    '窗口截图失败诊断: reason=%s iconic_before=%s wait_ms=%s '
+                    'print_return=%s exception_type=%s size=%sx%s',
+                    error.code, diagnostics.get('iconic_before'),
+                    diagnostics.get('wait_ms'), diagnostics.get('print_return'),
+                    diagnostics.get('exception_type'),
+                    diagnostics.get('width'), diagnostics.get('height'))
             raise

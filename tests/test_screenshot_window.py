@@ -10,6 +10,7 @@ from importlib import import_module
 from importlib.util import find_spec
 import inspect
 from io import BytesIO
+import logging
 import socket
 import subprocess
 import threading
@@ -1539,3 +1540,40 @@ def test_total_events_do_not_carry_private_values(monkeypatch):
     assert repr(result.image_bytes) not in rendered
     assert all(event.stage == 'window_capture' for event in totals)
     assert all(event.action == 'total' for event in totals)
+
+
+def test_minimized_print_failure_logs_safe_diagnostics(monkeypatch, caplog):
+    """最小化窗口绘制失败时输出不含标题与句柄的安全诊断。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.user32.PrintWindow.return_value = 0
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'print_failed')
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    for field in ('reason=print_failed', 'wait_ms=300', 'print_return=0',
+                  'iconic_before=True', 'exception_type=None'):
+        assert field in message
+    assert TITLE not in message
+    assert hex(HWND) not in message
+
+
+def test_normal_print_failure_diagnostics_omit_restore_fields(
+        monkeypatch, caplog):
+    """非最小化窗口绘制失败时不记录恢复分支字段。"""
+    backend, env = environment(monkeypatch)
+    env.user32.PrintWindow.return_value = 0
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'print_failed')
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert 'reason=print_failed' in message
+    assert 'print_return=0' in message
+    assert 'iconic_before=None' in message
+    assert 'wait_ms=None' in message
