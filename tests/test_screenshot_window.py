@@ -526,9 +526,8 @@ def test_minimized_window_restores_original_placement(monkeypatch, fails):
     assert env.iconic
     env.gui.ShowWindow.assert_called_once()
     env.gui.SetWindowPlacement.assert_called_once_with(HWND, env.placement)
-    assert backend.time.sleep.called
-    assert all(0 <= call.args[0] <= 1
-               for call in backend.time.sleep.call_args_list)
+    assert backend._REPAINT_WAIT_SECONDS == 0.3
+    backend.time.sleep.assert_called_once_with(0.3)
     env.gui.SetForegroundWindow.assert_not_called()
     env.gui.BringWindowToTop.assert_not_called()
 
