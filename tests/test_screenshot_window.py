@@ -1554,8 +1554,8 @@ def test_minimized_print_failure_logs_safe_diagnostics(monkeypatch, caplog):
                if record.name == 'modules.screenshot.window']
     assert len(records) == 1
     message = records[0].getMessage()
-    for field in ('reason=print_failed', 'wait_ms=300 print_return',
-                  'print_return=0', 'iconic_before=True',
+    for field in ('reason=print_failed', 'wait_requested_ms=300 wait_called=True '
+                  'print_return', 'print_return=0', 'iconic_before=True',
                   'exception_type=None'):
         assert field in message
     assert TITLE not in message
@@ -1577,7 +1577,8 @@ def test_normal_print_failure_diagnostics_omit_restore_fields(
     assert 'reason=print_failed' in message
     assert 'print_return=0' in message
     assert 'iconic_before=None' in message
-    assert 'wait_ms=None' in message
+    assert 'wait_requested_ms=None' in message
+    assert 'wait_called=None' in message
 
 
 def test_print_exception_logs_exception_type(monkeypatch, caplog):
@@ -1595,4 +1596,41 @@ def test_print_exception_logs_exception_type(monkeypatch, caplog):
     assert 'reason=print_failed' in message
     assert 'exception_type=OSError' in message
     assert 'boom' not in message
+    assert TITLE not in message
+
+
+def test_restore_failure_logs_exception_type(monkeypatch, caplog):
+    """恢复窗口抛异常时记录异常类型并标记等待未执行。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = True
+    env.gui.ShowWindow.side_effect = OSError('boom')
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'window_state_failed')
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert 'reason=window_state_failed' in message
+    assert 'exception_type=OSError' in message
+    assert 'wait_requested_ms=300' in message
+    assert 'wait_called=None' in message
+    assert 'boom' not in message
+    assert TITLE not in message
+
+
+def test_invalid_dimensions_logs_measured_size(monkeypatch, caplog):
+    """尺寸无效时日志记录测得宽高，便于区分零宽或零高。"""
+    backend, env = environment(monkeypatch)
+    env.iconic = False
+    env.gui.GetWindowRect.return_value = (0, 0, 0, 2)
+    with caplog.at_level(
+            logging.WARNING, logger='modules.screenshot.window'):
+        assert_error(backend, 'invalid_dimensions')
+    records = [record for record in caplog.records
+               if record.name == 'modules.screenshot.window']
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert 'reason=invalid_dimensions' in message
+    assert 'size=0x2' in message
     assert TITLE not in message

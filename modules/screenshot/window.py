@@ -237,11 +237,11 @@ def _capture_bitmap(hwnd, title, warnings, image_format, diagnostics):
             _ensure_window(hwnd, title)
             left, top, right, bottom = win32gui.GetWindowRect(hwnd)
             width, height = right - left, bottom - top
+            diagnostics['width'], diagnostics['height'] = width, height
             if not (0 < width <= 0x7fffffff and 0 < height <= 0x7fffffff):
                 raise _error('invalid_dimensions')
             if width * height > Image.MAX_IMAGE_PIXELS:
                 raise _error('invalid_dimensions')
-            diagnostics['width'], diagnostics['height'] = width, height
             stage = 'gdi_failed'
             _ensure_window(hwnd, title)
             window_dc = _user32.GetWindowDC(hwnd)
@@ -338,12 +338,13 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                     if win32gui.IsIconic(hwnd):
                         restore_needed = True
                         diagnostics['iconic_before'] = True
-                        diagnostics['wait_ms'] = int(
+                        diagnostics['wait_requested_ms'] = int(
                             _REPAINT_WAIT_SECONDS * 1000)
                         _ensure_window(hwnd, actual_title)
                         win32gui.ShowWindow(
                             hwnd, win32con.SW_SHOWNOACTIVATE)
                         time.sleep(_REPAINT_WAIT_SECONDS)
+                        diagnostics['wait_called'] = True
                         _ensure_window(hwnd, actual_title)
                         if win32gui.IsIconic(hwnd):
                             raise _error('window_state_failed')
@@ -351,7 +352,8 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
                         hwnd, actual_title, warnings, image_format, diagnostics)
                 except CaptureError:
                     raise
-                except Exception:
+                except Exception as error:
+                    diagnostics['exception_type'] = type(error).__name__
                     raise _error('window_state_failed') from None
                 finally:
                     try:
@@ -379,10 +381,13 @@ def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
             operation.finish('failed', reason_code=error.code)
             if diagnostics:
                 _LOGGER.warning(
-                    '窗口截图失败诊断: reason=%s iconic_before=%s wait_ms=%s '
+                    '窗口截图失败诊断: reason=%s iconic_before=%s '
+                    'wait_requested_ms=%s wait_called=%s '
                     'print_return=%s exception_type=%s size=%sx%s',
                     error.code, diagnostics.get('iconic_before'),
-                    diagnostics.get('wait_ms'), diagnostics.get('print_return'),
+                    diagnostics.get('wait_requested_ms'),
+                    diagnostics.get('wait_called'),
+                    diagnostics.get('print_return'),
                     diagnostics.get('exception_type'),
                     diagnostics.get('width'), diagnostics.get('height'))
             raise
