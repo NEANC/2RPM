@@ -30,7 +30,7 @@ from .title_match import parse_window_target
 
 PW_RENDERFULLCONTENT = 0x2
 _DWMWA_CLOAKED = 14
-_REPAINT_WAIT_SECONDS = 0.2
+_REPAINT_WAIT_SECONDS = 0.3
 _DPI_PER_MONITOR_AWARE = -3
 _CAPTURE_LOCK = threading.Lock()
 _MESSAGES = {
