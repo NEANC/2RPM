@@ -1,0 +1,599 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""
+实现已核验契约的图床上传，不执行链接探测或自动重试。
+"""
+
+from collections.abc import Mapping
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import PurePath
+import logging
+import re
+import sys
+import uuid
+
+import requests
+
+from .core import ImageHostError
+from .core import validate_image_url
+from .expiration import PreparedV2Options
+from .v2_http import request_json
+from modules.log_safety import guard_dependency_logging
+from modules.operation_trace import current_request_id
+from modules.operation_trace import trace_request
+from modules.operation_trace import trace_fallback
+
+
+LOGGER = logging.getLogger(__name__)
+CATBOX_ENDPOINT = 'https://catbox.moe/user/api.php'
+WMIMG_ENDPOINT = 'https://wmimg.com/api/v1/upload'
+BEEIMG_ENDPOINT = 'https://beeimg.com/api/upload/file/json/'
+SUPERBED_DOMAINS = ('https://api.superbed.cc', 'https://api.superbed.cn')
+SUPERBED_CONTRACTS = {
+    'v1': ('/api/v1/upload/', 'files'),
+    'legacy': ('/upload', 'file'),
+}
+BEEIMG_CN_ENDPOINT = 'https://www.beeimg.cn/api/v2/upload'
+BOLTP_ENDPOINT = 'https://www.boltp.com/api/v2/upload'
+V2_SUCCESS_STATUS = 'success'
+CONNECT_TIMEOUT = 5
+READ_TIMEOUT = 15
+GUARDED_LOGGERS = ('requests', 'urllib3')
+
+
+@contextmanager
+def _upload_attempt(provider):
+    """把一次真实上传 POST 包进固定请求尝试事实，失败只记固定分类。"""
+    with guard_dependency_logging(GUARDED_LOGGERS):
+        with trace_request(provider, 'upload_attempt') as operation:
+            try:
+                yield operation
+            except ImageHostError as error:
+                operation.finish('failed', reason_code=error.code,
+                                 http_status=error.http_status)
+                raise
+            except Exception:
+                operation.finish('failed', reason_code='upload_failed')
+                raise
+
+
+def _prepare_post(session, url, *, data, files, headers=None):
+    with guard_dependency_logging(GUARDED_LOGGERS):
+        prepared = session.prepare_request(requests.Request(
+            'POST', url, data=data, files=files, headers=headers))
+        settings = session.merge_environment_settings(
+            prepared.url, {}, True, True, None)
+    settings.update(timeout=(CONNECT_TIMEOUT, READ_TIMEOUT), allow_redirects=False)
+    return prepared, settings
+
+
+def _image_mime(filename):
+    """从与图像载荷匹配的文件名后缀选择固定 MIME。"""
+    suffix = PurePath(filename).suffix.lower()
+    mime = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+    }.get(suffix)
+    if mime is None:
+        raise ImageHostError('invalid_input', '')
+    return mime
+
+
+def _read_response_body(response, attempt):
+    """读取完整响应正文，并在读取返回或抛出时立即冻结请求耗时。"""
+    try:
+        return response.content
+    finally:
+        attempt.mark_end()
+
+
+def _read_response_text(response, attempt):
+    """读取文本正文，并在读取返回或抛出时立即冻结请求耗时。"""
+    if not isinstance(response, requests.Response):
+        try:
+            return response.text
+        finally:
+            attempt.mark_end()
+    content = _read_response_body(response, attempt)
+    encoding = response.encoding
+    if encoding is None:
+        encoding = response.apparent_encoding
+    return content.decode(encoding or 'utf-8', errors='replace')
+
+
+def _read_response_json(response, attempt):
+    """在正文读取耗时冻结后按 Requests 的响应编码语义解析 JSON。"""
+    if not isinstance(response, requests.Response):
+        try:
+            return response.json()
+        finally:
+            attempt.mark_end()
+    content = _read_response_body(response, attempt)
+    buffered = requests.Response()
+    buffered._content = content
+    buffered._content_consumed = True
+    buffered.encoding = response.encoding
+    buffered.headers = response.headers.copy()
+    return buffered.json()
+
+
+def upload_catbox(image_bytes, filename, token, options) -> str:
+    """将内存 PNG 上传到 Catbox，返回经核心校验的完整候选链接。
+
+    契约来源：https://catbox.moe/tools.php 和
+    https://catbox.moe/sharexcode.txt；只核验官方文档，未做真实上传。
+    token 已由注册表解析，非空时原样用作 userhash。服务未确认
+    支持私有上传，因此显式权限只接受公开值 1，其余安全拒绝。
+    连接和读取超时不是整个操作的硬总时限；发生超时也不能保证
+    服务端尚未保存图片。每次调用最多发送一次上传请求。
+    """
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission != 1):
+        raise ImageHostError('invalid_options', '')
+    for name in ('album_id', 'strategy_id'):
+        if name in options:
+            LOGGER.warning('Catbox 不支持选项 %s，已忽略', name)
+    if any(name not in {'permission', 'album_id', 'strategy_id'}
+           for name in options):
+        LOGGER.warning('Catbox 存在不支持的其他选项，已忽略')
+
+    data = {'reqtype': 'fileupload'}
+    if token:
+        data['userhash'] = token
+    mime = _image_mime(filename)
+    url = None
+    try:
+        with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, CATBOX_ENDPOINT, data=data,
+                files={'fileToUpload': (filename, image_bytes, mime)})
+            with _upload_attempt('catbox') as attempt:
+                try:
+                    attempt.mark_transport_started()
+                    with session.send(prepared, **settings) as response:
+                        status_code = response.status_code
+                        if not 200 <= status_code < 300:
+                            attempt.mark_end()
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        text = _read_response_text(response, attempt)
+                        url = validate_image_url(text)
+                except BaseException:
+                    attempt.mark_end()
+                    raise
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except requests.exceptions.RequestException:
+        pass
+    raise ImageHostError('upload_failed', '')
+
+
+def upload_wmimg(image_bytes, filename, token, options) -> str:
+    """依据 WMIMG 官方契约上传内存 PNG，返回经校验的完整直链。
+
+    契约来源：https://wmimg.com/page/api-docs.html。
+    2026-10-04 已通过独立脚本验证账号 Bearer Token 直连上传成功，
+    无需先生成临时 Token。token 已由注册表解析，仅用作 Bearer
+    账号凭证；空值允许尝试游客上传，但本次匿名实测超时，尚未
+    验证成功，是否接受由服务器决定。项目默认显式发送公开权限，
+    私有值不代表直链必然限制访问。每次调用最多发送一次请求。
+    文档仅规定相册和策略 ID 为整数，显式值的有效性由服务端判断。
+    连接和读取超时不构成总时限，也不能保证超时后服务端未保存。
+    原生 API 支持 expired_at（yyyy-MM-dd HH:mm:ss）。2026-10-13
+    独立请求按本机 UTC+08:00 设置五分钟后到期，上传成功但未回显期限；
+    到期后手动确认图片已删除、直链返回 404，期间未调用主动删除接口。
+    此为该次样本的到期失效验证，不保证其他账号的时区或精确删除时刻。
+    当前适配器已支持顶层 expiration，并将期限转换为 expired_at 传递。
+    """
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission not in (0, 1)):
+        raise ImageHostError('invalid_options', '')
+    data = {'permission': permission}
+    expired_at = _prepared_expiration(options)
+    if expired_at is not None:
+        data['expired_at'] = expired_at
+    for name in ('album_id', 'strategy_id'):
+        if name not in options:
+            continue
+        value = options[name]
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ImageHostError('invalid_options', '')
+        data[name] = value
+    if any(name not in {'permission', 'album_id', 'strategy_id'}
+           for name in options):
+        LOGGER.warning('WMIMG 存在不支持的其他选项，已忽略')
+
+    headers = {'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    mime = _image_mime(filename)
+    url = None
+    try:
+        with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, WMIMG_ENDPOINT, data=data, headers=headers,
+                files={'file': (filename, image_bytes, mime)})
+            with _upload_attempt('wmimg') as attempt:
+                try:
+                    attempt.mark_transport_started()
+                    with session.send(prepared, **settings) as response:
+                        status_code = response.status_code
+                        if not 200 <= status_code < 300:
+                            attempt.mark_end()
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        payload = _read_response_json(response, attempt)
+                        if (not isinstance(payload, Mapping)
+                                or payload.get('status') is not True):
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        result = payload.get('data')
+                        if not isinstance(result, Mapping):
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        links = result.get('links')
+                        if not isinstance(links, Mapping):
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        url = validate_image_url(links.get('url'))
+                except BaseException:
+                    attempt.mark_end()
+                    raise
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except requests.exceptions.RequestException:
+        pass
+    raise ImageHostError('upload_failed', '')
+
+
+def upload_beeimg(image_bytes, filename, token, options) -> str:
+    """依据 BeeIMG.com 官方契约上传内存 PNG，不适用于 BeeIMG.cn。
+
+    契约来源：https://beeimg.com/api/ 和 https://beeimg.com/faq，
+    核验日期为 2026-09-29；仅核验文档，未做真实上传。
+    token 已由注册表解析，非空时仅作为表单 apikey。公开权限转为
+    privacy=public；private 只是持链可访问的非公开列出状态。
+    truly-private 依赖 Premium 且到期后会降级，文档未明确无有效
+    Premium 时的 API 行为，因此当前拒绝严格私有请求和原生 privacy。
+    albumid 按文档接受五位相册或九位文件夹字符串，并要求账号凭证。
+    每次最多发送一次请求；连接及读取超时不是整个操作的硬总时限，
+    超时不能保证服务器尚未保存图片。
+    """
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission != 1 or 'privacy' in options):
+        raise ImageHostError('invalid_options', '')
+
+    data = {'privacy': 'public'}
+    if token:
+        data['apikey'] = token
+    if 'albumid' in options:
+        albumid = options['albumid']
+        if (not isinstance(albumid, str) or len(albumid) not in (5, 9)
+                or not token):
+            raise ImageHostError('invalid_options', '')
+        data['albumid'] = albumid
+    if any(name not in {'permission', 'albumid'} for name in options):
+        LOGGER.warning('BeeIMG 存在不支持的其他选项，已忽略')
+
+    mime = _image_mime(filename)
+    url = None
+    try:
+        with requests.Session() as session:
+            prepared, settings = _prepare_post(
+                session, BEEIMG_ENDPOINT, data=data,
+                files={'file': (filename, image_bytes, mime)})
+            with _upload_attempt('beeimg') as attempt:
+                try:
+                    attempt.mark_transport_started()
+                    with session.send(prepared, **settings) as response:
+                        status_code = response.status_code
+                        if not 200 <= status_code < 300:
+                            attempt.mark_end()
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        payload = _read_response_json(response, attempt)
+                        if not isinstance(payload, Mapping):
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        result = payload.get('files')
+                        if (not isinstance(result, Mapping)
+                                or result.get('status') != 'Success'):
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code)
+                        url = validate_image_url(result.get('url'))
+                except BaseException:
+                    attempt.mark_end()
+                    raise
+                attempt.finish('succeeded', http_status=status_code)
+                return url
+    except ImageHostError:
+        raise
+    except Exception:
+        pass
+    # 在异常处理器之外抛出固定错误，不保留含敏感正文的原始异常链。
+    raise ImageHostError('upload_failed', '')
+
+
+def upload_superbed(image_bytes, filename, token, options) -> str:
+    """按 Superbed 的默认 v1 或显式 legacy 契约上传内存 PNG。
+
+    缺省及显式 ``api_version='v1'`` 使用 ``X-API-Key``、``files``
+    和 ``/api/v1/upload/``；显式 ``api_version='legacy'`` 使用表单
+    ``token``、``file`` 和 ``/upload``。每个版本先请求 ``api.superbed.cc``，
+    失败后最多再请求一次 ``api.superbed.cn``，不跨版本回退或混用认证。
+    v1 要求 ``success``、``total``、``succeed``、``failed`` 及唯一文件的
+    ``url``；legacy 要求 ``err == 0`` 及根级 ``url``，两个 URL 均经过核心
+    校验。token 必须为非空凭证；``folder_id`` 仅用于 v1，``categories``
+    仅用于 legacy，公开权限是项目约定，不代表服务端权限保证。
+    每次最多发送两次请求，连接和读取超时不保证服务端尚未保存图片。
+    """
+    materials, code = _prepare_superbed(token, options, filename)
+    if code is not None:
+        raise ImageHostError(code, '')
+    version, headers, data, file_key, mime = materials
+    domains = SUPERBED_DOMAINS
+    endpoint_path = SUPERBED_CONTRACTS[version][0]
+    source_operation_id = None
+    for position, domain in enumerate(domains):
+        fallback_scope = None
+        if position:
+            fallback_scope = trace_fallback(
+                'host_failover', 'failover', reason_code='domain_failed',
+                provider='superbed', source_operation_id=source_operation_id)
+            fallback = fallback_scope.__enter__()
+        try:
+            session = requests.Session()
+            response = None
+            status_code = None
+            try:
+                prepared, settings = _prepare_post(
+                    session, domain + endpoint_path, data=data, headers=headers,
+                    files={file_key: (filename, image_bytes, mime)})
+                with _upload_attempt('superbed') as attempt:
+                    source_operation_id = current_request_id()
+                    try:
+                        attempt.mark_transport_started()
+                        response = session.send(prepared, **settings)
+                        status_code = response.status_code
+                        if not 200 <= status_code < 300:
+                            attempt.mark_end()
+                            raise ImageHostError(
+                                'upload_failed', '', http_status=status_code
+                            ) from None
+                        payload = _read_response_json(response, attempt)
+                        url, code = _parse_superbed(version, payload)
+                        attempt.finish(
+                            'succeeded' if code is None else 'failed',
+                            reason_code='' if code is None else code,
+                            http_status=status_code)
+                    except BaseException:
+                        attempt.mark_end()
+                        raise
+            finally:
+                pending = sys.exc_info()[1]
+                interrupted = pending is not None and not isinstance(
+                    pending, Exception)
+                cleanup_failed = False
+                try:
+                    if response is not None:
+                        try:
+                            response.close()
+                        except Exception:
+                            cleanup_failed = True
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        cleanup_failed = True
+                if cleanup_failed and not interrupted:
+                    raise ImageHostError('upload_failed', '') from None
+        except Exception:
+            code = 'upload_failed'
+        except BaseException:
+            if fallback_scope is not None:
+                fallback_scope.__exit__(*sys.exc_info())
+            raise
+        if fallback_scope is not None:
+            fallback.finish('succeeded' if code is None else 'failed',
+                            reason_code='domain_failed')
+            fallback_scope.__exit__(None, None, None)
+        if code is None:
+            return url
+    raise ImageHostError(code, '')
+
+
+def _parse_superbed(version, payload):
+    """通过安全结果区分响应结构与链接校验失败，不传递底层异常。"""
+    if not isinstance(payload, Mapping):
+        return None, 'upload_failed'
+    if version == 'v1':
+        if (payload.get('success') is False or payload.get('status') is False
+                or payload.get('error')):
+            return None, 'upload_failed'
+        if (payload.get('success') is not True
+                or type(payload.get('total')) is not int
+                or payload.get('total') != 1
+                or type(payload.get('succeed')) is not int
+                or payload.get('succeed') != 1
+                or type(payload.get('failed')) is not int
+                or payload.get('failed') != 0):
+            return None, 'upload_failed'
+        files = payload.get('files')
+        if (not isinstance(files, list) or len(files) != 1
+                or not isinstance(files[0], Mapping)):
+            return None, 'upload_failed'
+        candidate = files[0].get('url')
+    else:
+        if (payload.get('error') or payload.get('success') is False
+                or payload.get('status') is False):
+            return None, 'upload_failed'
+        if type(payload.get('err')) is not int or payload.get('err') != 0:
+            return None, 'upload_failed'
+        candidate = payload.get('url')
+    try:
+        return validate_image_url(candidate), None
+    except Exception:
+        return None, 'invalid_url'
+
+
+def _prepare_superbed(token, options, filename):
+    if not isinstance(token, str) or not token:
+        return None, 'invalid_token'
+    if not isinstance(options, Mapping):
+        return None, 'invalid_options'
+    version = options.get('api_version', 'v1')
+    if not isinstance(version, str) or version not in SUPERBED_CONTRACTS:
+        return None, 'invalid_options'
+    permission = options.get('permission', 1)
+    if type(permission) is not int or permission != 1 or 'privacy' in options:
+        return None, 'invalid_options'
+    forbidden = 'categories' if version == 'v1' else 'folder_id'
+    if forbidden in options:
+        return None, 'invalid_options'
+    headers = None
+    data = {}
+    if version == 'v1':
+        try:
+            requests.utils.check_header_validity(('X-API-Key', token))
+            token.encode('latin-1')
+        except Exception:
+            return None, 'invalid_token'
+        headers = {'X-API-Key': token}
+        if 'folder_id' in options:
+            folder = options['folder_id']
+            if not isinstance(folder, str) or not folder:
+                return None, 'invalid_options'
+            try:
+                uuid.UUID(folder)
+            except Exception:
+                return None, 'invalid_options'
+            data['folder_id'] = folder
+    else:
+        data['token'] = token
+        if 'categories' in options:
+            categories = options['categories']
+            if not isinstance(categories, str):
+                return None, 'invalid_options'
+            data['categories'] = categories
+    try:
+        mime = _image_mime(filename)
+    except Exception:
+        return None, 'invalid_input'
+    known = {'api_version', 'permission',
+             'folder_id' if version == 'v1' else 'categories'}
+    if any(name not in known for name in options):
+        LOGGER.warning('Superbed 存在不支持的其他选项，已忽略')
+    return (version, headers, data, SUPERBED_CONTRACTS[version][1], mime), None
+
+
+def validate_v2_options(options, *, require_storage=True):
+    """无日志校验两站通用选项，两站存储编号均为非布尔正整数。"""
+    permission = options.get('permission', 1)
+    if (not isinstance(permission, int) or isinstance(permission, bool)
+            or permission not in (0, 1) or 'is_public' in options):
+        raise ImageHostError('invalid_options', '')
+    if require_storage:
+        storage_id = options.get('storage_id')
+        if type(storage_id) is not int or storage_id < 1:
+            raise ImageHostError('invalid_options', '')
+    if 'album_id' in options:
+        album_id = options['album_id']
+        if not isinstance(album_id, int) or isinstance(album_id, bool):
+            raise ImageHostError('invalid_options', '')
+
+
+def _prepared_expiration(options):
+    """只读取内部容器属性，拒绝非字符串和不符合契约的日期。"""
+    if not isinstance(options, PreparedV2Options) or options.expired_at is None:
+        return None
+    value = options.expired_at
+    if (not isinstance(value, str)
+            or re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2} '
+                            r'[0-9]{2}:[0-9]{2}:[0-9]{2}', value) is None):
+        raise ImageHostError('invalid_options', '')
+    try:
+        datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+        return value
+    except ValueError:
+        pass
+    raise ImageHostError('invalid_options', '')
+
+
+def _upload_v2_storage(provider, label, image_bytes, filename, token,
+                       options) -> str:
+    """按 v2 图床契约上传内存 PNG，返回经核心校验的完整直链。
+
+    契约来源：官方接口文档页面 /api/v2/upload。BeeIMG.cn 与 Boltp 分别于
+    2026-09-30、2026-10-03 用账号令牌完成真实上传验证。
+    multipart 必填 file 与 storage_id，可选整数 album_id。合法手填存储编号
+    首次零查询直接使用；未填或非法手填时，注册表调用 storage.select_storage
+    按 /api/v2/group 返回的 data.storages 顺序取首个未被本图本槽拒绝的编号，
+    不请求账号资料，也没有账号默认编号参与选择，不猜测文档示例编号。
+    直接调用适配器时两站都要求非布尔正整数 storage_id；本层仅校验参数并
+    上传，不负责查询存储、缓存或重传。
+    项目 permission 缺省为公开，而文档称 is_public 默认 false，因此以
+    字符串 "1"/"0" 显式表达该布尔表单字段，不省略该字段；原生 is_public
+    不作为可覆盖权限语义的选项，显式传入即安全拒绝。
+    编码依据 2026-09-30 实测：带账号令牌上传时发送 is_public="1" 未触发类型
+    校验错误（HTTP 200 且 status 为 success），返回的 public_url 经确认可
+    匿名访问。但该账号所属用户组的 allow_public_upload 为 false，响应中的
+    data.is_public 仍为 false，说明是否真正公开由账号策略决定：本实现只表达
+    用户意图，不能保证服务端采纳，也不得据此声称已实现私有访问控制。
+    非空令牌原样作为 Bearer 账号凭证，空令牌按文档允许匿名上传。
+    每次最多发送一次请求；连接和读取超时不是整个操作的硬总时限，超时
+    也不能保证服务端尚未保存图片。
+    """
+    validate_v2_options(options)
+    expired_at = _prepared_expiration(options)
+    data = {'storage_id': options['storage_id'],
+            'is_public': str(options.get('permission', 1))}
+    if 'album_id' in options:
+        data['album_id'] = options['album_id']
+    if expired_at is not None:
+        data['expired_at'] = expired_at
+    if any(name not in {'permission', 'storage_id', 'album_id'}
+           for name in options):
+        LOGGER.warning('%s 存在不支持的其他选项，已忽略', label)
+
+    payload = request_json(
+        provider, 'upload', token, data=data,
+        files={'file': (filename, image_bytes, _image_mime(filename))})
+    result = payload.get('data')
+    if isinstance(result, Mapping):
+        try:
+            return validate_image_url(result.get('public_url'))
+        except ImageHostError:
+            pass
+    # 保留核心校验，仅将两站无效直链映射为响应错误。
+    raise ImageHostError('invalid_response', '', stage='upload')
+
+
+def upload_beeimg_cn(image_bytes, filename, token, options) -> str:
+    """依据 BeeIMG.cn 官方文档上传内存 PNG，不适用于 BeeIMG.com。
+
+    契约来源：https://www.beeimg.cn/api/v2/pages/api-docs 与站点 Apifox，
+    核对日期 2026-09-30。已于同日用账号令牌完成真实上传验证：使用该账号
+    实际可用存储编号时返回 status 为 success 且 public_url 可匿名访问；
+    文档示例编号在该账号上会返回“不存在的储存驱动”。
+    """
+    return _upload_v2_storage(
+        'beeimg_cn', 'BeeIMG.cn', image_bytes, filename, token, options)
+
+
+def upload_boltp(image_bytes, filename, token, options) -> str:
+    """依据 Boltp 官方文档上传内存 PNG。
+
+    契约来源：https://www.boltp.com/api/v2/pages/api-docs，文档核对日期
+    2026-09-30。2026-10-03 已用 Bearer 令牌完成真实上传验证：组接口返回
+    可用存储编号 2，上传返回 status 为 success 及 data.public_url。
+    经注册表调用时，合法手填编号直接使用，非法手填由注册表自动替代，
+    组选择阶段手填值不参与优先级；精确存储拒绝仅允许一次恢复，不再
+    枚举固定候选，也不再预查账号期限或资料。直接调用时仍须在 options
+    中提供非布尔正整数 storage_id，本适配器不查询存储。
+    """
+    return _upload_v2_storage(
+        'boltp', 'Boltp', image_bytes, filename, token, options)

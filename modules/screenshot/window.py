@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+"""使用同步 PrintWindow 捕获完整窗口，不提供桌面回退或硬超时。
+
+最小化窗口会以非激活方式临时恢复，仍可能闪烁。图像告警不能识别全部旧帧，
+硬件加速窗口的兼容性需另行实机验证。
+"""
+
+import ctypes
+import logging
+from ctypes import wintypes
+import threading
+import time
+
+from PIL import Image
+from PIL import ImageStat
+import win32con
+import win32gui
+
+from modules.operation_trace import trace_operation
+from modules.operation_trace import trace_skipped
+
+from .encoding import encode_image
+from .encoding import window_image
+
+from .models import CaptureError
+from .models import CaptureResult
+from .title_match import matches_window_title
+from .title_match import parse_window_target
+
+
+PW_RENDERFULLCONTENT = 0x2
+_DWMWA_CLOAKED = 14
+_REPAINT_WAIT_SECONDS = 0.3
+_LOGGER = logging.getLogger(__name__)
+_DPI_PER_MONITOR_AWARE = -3
+_CAPTURE_LOCK = threading.Lock()
+_MESSAGES = {
+    'invalid_title': '窗口标题或匹配表达式无效',
+    'window_not_found': '未找到匹配的窗口',
+    'window_ambiguous': '存在多个匹配的窗口',
+    'window_lookup_failed': '无法枚举目标窗口',
+    'window_gone': '目标窗口已失效、隐藏或标题已变化',
+    'window_state_failed': '无法读取或恢复目标窗口状态',
+    'invalid_dimensions': '目标窗口尺寸无效',
+    'dpi_failed': '无法设置局部线程 DPI 上下文',
+    'gdi_failed': '无法分配或访问窗口图像资源',
+    'print_failed': '窗口图像绘制失败',
+    'image_failed': '无法构造有效窗口图像',
+    'encode_failed': '窗口图像编码失败',
+}
+_GDI_WARNING = '部分截图 GDI 资源未能正常释放'
+_STATE_WARNING = '未能还原目标窗口的原最小化状态'
+_DPI_WARNING = '未能还原原线程 DPI 上下文'
+
+
+class _BitmapInfoHeader(ctypes.Structure):
+    """保存 Win32 的 40 字节 BITMAPINFOHEADER。"""
+
+    _fields_ = [
+        ('biSize', wintypes.DWORD),
+        ('biWidth', wintypes.LONG),
+        ('biHeight', wintypes.LONG),
+        ('biPlanes', wintypes.WORD),
+        ('biBitCount', wintypes.WORD),
+        ('biCompression', wintypes.DWORD),
+        ('biSizeImage', wintypes.DWORD),
+        ('biXPelsPerMeter', wintypes.LONG),
+        ('biYPelsPerMeter', wintypes.LONG),
+        ('biClrUsed', wintypes.DWORD),
+        ('biClrImportant', wintypes.DWORD),
+    ]
+
+
+class _BitmapInfo(ctypes.Structure):
+    """包含未压缩 32 位 DIB 的头和一个保留 RGBQUAD。"""
+
+    _fields_ = [
+        ('bmiHeader', _BitmapInfoHeader),
+        ('bmiColors', wintypes.DWORD * 1),
+    ]
+
+
+_dwmapi = ctypes.WinDLL('dwmapi', use_last_error=True)
+_dwmapi.DwmGetWindowAttribute.argtypes = [
+    wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+]
+_dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+_user32 = ctypes.WinDLL('user32', use_last_error=True)
+_gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
+_user32.PrintWindow.argtypes = [wintypes.HWND, wintypes.HDC, wintypes.UINT]
+_user32.PrintWindow.restype = wintypes.BOOL
+_user32.GetWindowDC.argtypes = [wintypes.HWND]
+_user32.GetWindowDC.restype = wintypes.HDC
+_user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+_user32.ReleaseDC.restype = ctypes.c_int
+_user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+_user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+_gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
+_gdi32.CreateCompatibleDC.restype = wintypes.HDC
+_gdi32.CreateDIBSection.argtypes = [
+    wintypes.HDC, ctypes.POINTER(_BitmapInfo), wintypes.UINT,
+    ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.DWORD,
+]
+_gdi32.CreateDIBSection.restype = wintypes.HBITMAP
+_gdi32.SelectObject.argtypes = [wintypes.HDC, wintypes.HANDLE]
+_gdi32.SelectObject.restype = wintypes.HANDLE
+_gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+_gdi32.DeleteObject.restype = wintypes.BOOL
+_gdi32.DeleteDC.argtypes = [wintypes.HDC]
+_gdi32.DeleteDC.restype = wintypes.BOOL
+_gdi32.GdiFlush.argtypes = []
+_gdi32.GdiFlush.restype = wintypes.BOOL
+
+
+def _error(code):
+    """构造固定安全消息，不将底层异常内容带入业务错误。"""
+    return CaptureError(code, _MESSAGES[code])
+
+
+def _is_cloaked(hwnd):
+    """查询 DWM 隐藏状态，不能仅凭 WS_VISIBLE 判断窗口实际可见性。"""
+    cloaked = wintypes.DWORD()
+    result = _dwmapi.DwmGetWindowAttribute(
+        hwnd, _DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+    if result != 0:
+        raise _error('window_lookup_failed')
+    return bool(cloaked.value)
+
+
+def _ensure_window(hwnd, title):
+    """校验句柄、可见性、标题和 DWM 状态，不要求前台、无遮挡或有新帧。"""
+    try:
+        valid = bool(hwnd) and win32gui.IsWindow(hwnd)
+        if valid:
+            valid = win32gui.IsWindowVisible(hwnd)
+        if valid:
+            valid = win32gui.GetWindowText(hwnd) == title
+        if valid:
+            valid = not _is_cloaked(hwnd)
+    except Exception:
+        raise _error('window_gone') from None
+    if not valid:
+        raise _error('window_gone')
+
+
+def _find_window(title: str) -> tuple[int, str]:
+    """枚举匹配且未被 DWM 隐藏的可见顶层窗口，保留实际标题。"""
+    try:
+        target = parse_window_target(title)
+    except ValueError:
+        raise _error('invalid_title') from None
+    matches = []
+
+    def collect(hwnd, argument):
+        """收集实际可见的匹配项，不因最小化或遮挡排除。"""
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return True
+        actual_title = win32gui.GetWindowText(hwnd)
+        if (matches_window_title(target, actual_title)
+                and not _is_cloaked(hwnd)):
+            matches.append((hwnd, actual_title))
+        return True
+
+    try:
+        win32gui.EnumWindows(collect, None)
+    except Exception:
+        raise _error('window_lookup_failed') from None
+    if not matches:
+        raise _error('window_not_found')
+    if len(matches) != 1:
+        raise _error('window_ambiguous')
+    _ensure_window(*matches[0])
+    return matches[0]
+
+
+def _release_gdi(hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings):
+    """恢复旧对象并释放自有资源，部分失败仍清理其余资源。"""
+    signals = []
+
+    def release(function, *args):
+        """执行一次清理，记录故障并在全部清理后重新传播控制信号。"""
+        try:
+            if function(*args):
+                return True
+        except Exception:
+            pass
+        except BaseException as signal:
+            signals.append(signal)
+        if _GDI_WARNING not in warnings:
+            warnings.append(_GDI_WARNING)
+        return False
+
+    deselected = not old_bitmap
+    if old_bitmap:
+        deselected = release(_gdi32.SelectObject, memory_dc, old_bitmap)
+    if not deselected and memory_dc:
+        # 恢复旧对象失败时先销毁 DC，不能删除仍被选中的位图。
+        deselected = release(_gdi32.DeleteDC, memory_dc)
+        memory_dc = None
+    if bitmap and deselected:
+        release(_gdi32.DeleteObject, bitmap)
+    if memory_dc:
+        release(_gdi32.DeleteDC, memory_dc)
+    if window_dc:
+        release(_user32.ReleaseDC, hwnd, window_dc)
+    if signals:
+        raise signals[0]
+
+
+def _encode_pixels(pixels, width, height, warnings, image_format):
+    """将顶向下 BGRX 像素直接编码为指定格式。"""
+    try:
+        image = window_image(pixels, width, height)
+    except Exception:
+        raise _error('image_failed') from None
+    with image:
+        if image.size != (width, height):
+            raise _error('image_failed')
+        try:
+            if max(ImageStat.Stat(image).var) < 1.0:
+                warnings.append('图像为纯色或低方差，可能未正确渲染或未更新')
+            return encode_image(image, image_format)
+        except CaptureError:
+            raise
+        except Exception:
+            raise _error('encode_failed') from None
+
+
+def _capture_bitmap(hwnd, title, warnings, image_format, diagnostics):
+    """使用完整窗口 DC 和固定 32 位 DIB 执行唯一 PrintWindow 路径。"""
+    window_dc = memory_dc = bitmap = old_bitmap = None
+    captured = False
+    stage = 'window_state_failed'
+    with trace_operation('capture', 'read', source='window') as operation:
+        try:
+            _ensure_window(hwnd, title)
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            width, height = right - left, bottom - top
+            diagnostics['width'], diagnostics['height'] = width, height
+            if not (0 < width <= 0x7fffffff and 0 < height <= 0x7fffffff):
+                raise _error('invalid_dimensions')
+            if width * height > Image.MAX_IMAGE_PIXELS:
+                raise _error('invalid_dimensions')
+            stage = 'gdi_failed'
+            _ensure_window(hwnd, title)
+            window_dc = _user32.GetWindowDC(hwnd)
+            if not window_dc:
+                raise _error(stage)
+            memory_dc = _gdi32.CreateCompatibleDC(window_dc)
+            if not memory_dc:
+                raise _error(stage)
+            info = _BitmapInfo()
+            info.bmiHeader.biSize = ctypes.sizeof(_BitmapInfoHeader)
+            info.bmiHeader.biWidth = width
+            info.bmiHeader.biHeight = -height
+            info.bmiHeader.biPlanes = 1
+            info.bmiHeader.biBitCount = 32
+            info.bmiHeader.biCompression = win32con.BI_RGB
+            bits = ctypes.c_void_p()
+            bitmap = _gdi32.CreateDIBSection(
+                window_dc, ctypes.byref(info), win32con.DIB_RGB_COLORS,
+                ctypes.byref(bits), None, 0)
+            if not bitmap or not bits.value:
+                raise _error(stage)
+            old_bitmap = _gdi32.SelectObject(memory_dc, bitmap)
+            if not old_bitmap:
+                raise _error(stage)
+            stage = 'print_failed'
+            _ensure_window(hwnd, title)
+            printed = _user32.PrintWindow(hwnd, memory_dc, PW_RENDERFULLCONTENT)
+            diagnostics['print_return'] = int(printed)
+            _ensure_window(hwnd, title)
+            if not printed:
+                raise _error(stage)
+            stage = 'gdi_failed'
+            if not _gdi32.GdiFlush():
+                raise _error(stage)
+            stage = 'image_failed'
+            pixels = ctypes.string_at(bits, width * height * 4)
+            operation.finish('succeeded', width=width, height=height)
+            captured = True
+            encoded = _encode_pixels(
+                pixels, width, height, warnings, image_format)
+            _ensure_window(hwnd, title)
+            return encoded, width, height
+        except CaptureError as error:
+            if not captured:
+                operation.finish('failed', reason_code=error.code)
+                trace_skipped('encode', reason_code='capture_failed')
+            raise
+        except Exception as error:
+            diagnostics['exception_type'] = type(error).__name__
+            if not captured:
+                operation.finish('failed', reason_code=stage)
+                trace_skipped('encode', reason_code='capture_failed')
+            raise _error(stage) from None
+        finally:
+            _release_gdi(
+                hwnd, window_dc, memory_dc, bitmap, old_bitmap, warnings)
+
+
+def capture_window(title: str, *, image_format='jpeg') -> CaptureResult:
+    """按标题或版本表达式选择唯一窗口，锁定实际标题后捕获内存图像。
+
+    Args:
+        title: 完整窗口标题或末尾带版本标记的表达式；不剥离两端空格。
+        image_format: 输出格式，可选 jpeg、png、webp 或 raw。
+
+    Returns:
+        包含图像字节、原始请求目标、尺寸和安全告警的不可变结果。
+
+    Raises:
+        CaptureError: 标题、窗口状态、DPI、GDI、绘制或编码失败。
+
+    同步 PrintWindow 无可强制终止的线程超时。等待重绘仅为有限延迟，
+    不是新帧保证；目标未响应时不承诺绝对硬截止。临时恢复不主动激活窗口。
+    """
+    with trace_operation('window_capture', 'total') as operation:
+        diagnostics = {}
+        try:
+            with _CAPTURE_LOCK:
+                hwnd, actual_title = _find_window(title)
+                warnings = []
+                try:
+                    old_dpi = _user32.SetThreadDpiAwarenessContext(
+                        _DPI_PER_MONITOR_AWARE)
+                except Exception:
+                    raise _error('dpi_failed') from None
+                if not old_dpi:
+                    raise _error('dpi_failed')
+                restore_needed = False
+                placement = None
+                try:
+                    _ensure_window(hwnd, actual_title)
+                    placement = win32gui.GetWindowPlacement(hwnd)
+                    _ensure_window(hwnd, actual_title)
+                    if win32gui.IsIconic(hwnd):
+                        restore_needed = True
+                        diagnostics['iconic_before'] = True
+                        diagnostics['wait_requested_ms'] = int(
+                            _REPAINT_WAIT_SECONDS * 1000)
+                        _ensure_window(hwnd, actual_title)
+                        win32gui.ShowWindow(
+                            hwnd, win32con.SW_SHOWNOACTIVATE)
+                        time.sleep(_REPAINT_WAIT_SECONDS)
+                        diagnostics['wait_completed'] = True
+                        _ensure_window(hwnd, actual_title)
+                        if win32gui.IsIconic(hwnd):
+                            raise _error('window_state_failed')
+                    encoded, width, height = _capture_bitmap(
+                        hwnd, actual_title, warnings, image_format, diagnostics)
+                except CaptureError:
+                    raise
+                except Exception as error:
+                    diagnostics['exception_type'] = type(error).__name__
+                    raise _error('window_state_failed') from None
+                finally:
+                    try:
+                        if restore_needed:
+                            try:
+                                _ensure_window(hwnd, actual_title)
+                                win32gui.SetWindowPlacement(hwnd, placement)
+                                _ensure_window(hwnd, actual_title)
+                                if not win32gui.IsIconic(hwnd):
+                                    warnings.append(_STATE_WARNING)
+                            except Exception:
+                                warnings.append(_STATE_WARNING)
+                    finally:
+                        try:
+                            if not _user32.SetThreadDpiAwarenessContext(
+                                    old_dpi):
+                                warnings.append(_DPI_WARNING)
+                        except Exception:
+                            warnings.append(_DPI_WARNING)
+                _ensure_window(hwnd, actual_title)
+                return CaptureResult(
+                    encoded, 'window', title, width, height, tuple(warnings),
+                    image_format)
+        except CaptureError as error:
+            operation.finish('failed', reason_code=error.code)
+            if diagnostics:
+                _LOGGER.warning(
+                    '窗口截图失败诊断: reason=%s iconic_before=%s '
+                    'wait_requested_ms=%s wait_completed=%s '
+                    'print_return=%s exception_type=%s size=%sx%s',
+                    error.code, diagnostics.get('iconic_before'),
+                    diagnostics.get('wait_requested_ms'),
+                    diagnostics.get('wait_completed'),
+                    diagnostics.get('print_return'),
+                    diagnostics.get('exception_type'),
+                    diagnostics.get('width'), diagnostics.get('height'))
+            raise

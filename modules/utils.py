@@ -166,7 +166,7 @@ def _assemble_channel(provider, named, positional):
                 slot += 1
             if slot >= len(order):
                 LOGGER.warning(
-                    f"推送通道 '{provider}' 的位置参数过多，已忽略多余值: {value}"
+                    f"推送通道位置参数超出第 {slot + 1} 个槽位，已忽略"
                 )
                 break
             params[order[slot]] = value
