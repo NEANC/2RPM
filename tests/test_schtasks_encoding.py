@@ -9,7 +9,7 @@ import sys
 import textwrap
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, PROJECT_ROOT)
@@ -238,6 +238,75 @@ def test_launch_task_failure_without_output_does_not_crash():
     assert '未知错误' in log_mock.call_args[0][0]
 
 
+def test_launch_task_failure_falls_back_to_stdout_when_stderr_blank():
+    """触发失败且错误输出为空白时，日志应改用标准输出中的消息。"""
+    config = _launch_config()
+    error = subprocess.CalledProcessError(
+        1, ['schtasks'],
+        output=READABLE_STDOUT.encode(OEM_CODEC), stderr=b'  \r\n')
+
+    with patch('modules.monitor.subprocess.run', side_effect=error), \
+            patch('modules.monitor.LOGGER.error') as log_mock, \
+            patch('modules.monitor.notify_fail'):
+        with pytest.raises(SystemExit) as exc_info:
+            monitor._launch_task(config['monitor']['launch'], config)
+
+    assert exc_info.value.code == 1
+    log_mock.assert_called_once()
+    assert READABLE_STDOUT in log_mock.call_args[0][0]
+
+
+def test_launch_task_failure_handles_invalid_bytes():
+    """触发失败输出为非法字节时按替换字符解码，不抛解码异常。"""
+    config = _launch_config()
+    raw_stderr = INVALID_UTF8_BYTES
+    error = subprocess.CalledProcessError(
+        1, ['schtasks'], output=b'', stderr=raw_stderr)
+
+    with patch('modules.monitor.subprocess.run', side_effect=error), \
+            patch('modules.monitor.LOGGER.error') as log_mock, \
+            patch('modules.monitor.notify_fail'):
+        with pytest.raises(SystemExit) as exc_info:
+            monitor._launch_task(config['monitor']['launch'], config)
+
+    assert exc_info.value.code == 1
+    log_mock.assert_called_once()
+    message = log_mock.call_args[0][0]
+    assert message.strip()
+    assert '触发计划任务失败' in message
+
+
+def test_launch_task_success_does_not_decode_undecodable_output():
+    """触发成功时完全不解码原始输出，直接进入 PID 等待并返回进程信息。"""
+    config = _launch_config()
+    config['monitor']['common']['max_wait'] = '10s'
+    task_name = config['monitor']['launch']['task_name']
+    running_result = {
+        'state': 'running', 'pid': 4242, 'process_name': 'demo'}
+
+    with patch('modules.monitor.subprocess.run',
+               return_value=_completed(0, stdout=b'\xb3\x00\xff')) as run_mock, \
+            patch('modules.monitor.decode_process_output') as decode_mock, \
+            patch('modules.monitor.query_task_pid',
+                  return_value=running_result), \
+            patch('modules.monitor.psutil.Process') as process_mock, \
+            patch('modules.monitor.spinner_phase',
+                  return_value=MagicMock()) as spinner_mock, \
+            patch('modules.monitor.notify_fail') as fail_mock:
+        process_mock.return_value.create_time.return_value = 1000.0
+        pid_info = monitor._launch_task(config['monitor']['launch'], config)
+
+    assert pid_info['pid'] == 4242
+    run_mock.assert_called_once_with(
+        ['schtasks', '/run', '/tn', task_name],
+        capture_output=True,
+        check=True,
+    )
+    decode_mock.assert_not_called()
+    fail_mock.assert_not_called()
+    spinner_mock.assert_called()
+
+
 _DRIVER_TEMPLATE = textwrap.dedent(
     '''
     import subprocess
@@ -291,6 +360,33 @@ _DRIVER_TEMPLATE = textwrap.dedent(
 
     utils.run_task_action(r'\\Custom\\OkTask')
     print('SUCCESS_OK')
+
+    from modules import monitor
+
+
+    def _capture_monitor_error(message, *args, **kwargs):
+        """把监控入口的错误日志打印成可断言的单行输出。"""
+        print('MONITOR_MESSAGE:' + str(message))
+
+
+    monitor.LOGGER.error = _capture_monitor_error
+    monitor.notify_fail = lambda *args, **kwargs: None
+
+    _launch_section = {'type': 'task', 'task_name': r'\\Custom\\InvalidFailTask'}
+    _monitor_config = {
+        'monitor': {
+            'mode': 'launch',
+            'common': {'max_wait': '0s', 'check_interval': '1s'},
+            'launch': _launch_section,
+        },
+    }
+
+    try:
+        monitor._launch_task(_launch_section, _monitor_config)
+    except SystemExit:
+        pass
+    else:
+        print('MONITOR_MESSAGE:<missing>')
     '''
 )
 
@@ -338,3 +434,8 @@ def test_real_pipe_decoding_has_no_reader_thread_error(tmp_path):
     assert invalid_line[len('INVALID_MESSAGE:'):].strip()
     assert READABLE_ERROR in stdout
     assert 'SUCCESS_OK' in stdout
+    assert 'MONITOR_MESSAGE:<missing>' not in stdout
+    monitor_line = next(
+        line for line in stdout.splitlines()
+        if line.startswith('MONITOR_MESSAGE:'))
+    assert monitor_line[len('MONITOR_MESSAGE:'):].strip()
