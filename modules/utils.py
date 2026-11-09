@@ -561,7 +561,7 @@ def _has_executable_suffix(value):
     return os.path.splitext(value.strip())[1].lower() in EXTERNAL_PROGRAM_EXTENSIONS
 
 
-def _decode_process_output(raw):
+def decode_process_output(raw):
     """容错解码子进程捕获的原始输出字节。
 
     Args:
@@ -611,8 +611,8 @@ def run_task_action(task_name):
         LOGGER.info(f"成功触发计划任务: {task_name}")
         return
 
-    message = (_decode_process_output(result.stderr)
-               or _decode_process_output(result.stdout)
+    message = (decode_process_output(result.stderr)
+               or decode_process_output(result.stdout)
                or '未知错误')
     raise RuntimeError(f"触发计划任务失败: {task_name}，{message}")
 

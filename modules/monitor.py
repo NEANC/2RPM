@@ -14,7 +14,7 @@ from concurrent.futures import CancelledError
 import psutil
 
 from modules.utils import (
-    _decode_process_output,
+    decode_process_output,
     run_external_action,
     parse_time_string
 )
@@ -685,8 +685,8 @@ def _launch_task(launch_section, config):
             capture_output=True, check=True
         )
     except subprocess.CalledProcessError as e:
-        message = (_decode_process_output(e.stderr)
-                   or _decode_process_output(e.stdout)
+        message = (decode_process_output(e.stderr)
+                   or decode_process_output(e.stdout)
                    or '未知错误')
         LOGGER.error(f"触发计划任务失败: {message}")
         notify_fail(f"触发计划任务失败: {task_name}")
