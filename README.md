@@ -26,7 +26,7 @@
 ## 主要功能
 
 - 支持配置文件运行，默认配置文件为 `config.yaml`
-- 支持 CLI 与配置文件双入口：`-c/--config` 或直接传入配置文件路径
+- 支持 CLI 与配置文件双入口：`-c/--config` 或直接传入配置文件路径（见[指定配置文件](#3指定配置文件)）
 - 通知模板化（支持多种消息类型）
 - 异步主循环，减少阻塞影响
 - 外部程序联动：进程结束/超时场景可自动执行脚本
@@ -41,19 +41,42 @@
 ### 1.安装
 
 1. 从 [Releases](https://github.com/NEANC/2RPM/releases/latest)，下载 `2RPM-Nuitka-*.exe` 或 `2RPM-PyInstaller-*.exe`
-2. 首次运行会生成 `config.yaml` 配置文件
+2. 未指定配置文件时，首次运行会在程序目录生成 `config.yaml`
 3. 编辑 `config.yaml` 文件
 4. 再次运行程序，开始监控目标进程
 
 ### 2.首次运行
 
-首次运行时程序会在程序目录生成 `config.yaml`，并提示「配置文件已生成」，此时按任意键退出：
+仅在未指定配置文件、且程序目录下不存在 `config.yaml` 时，首次运行才会生成默认配置，并提示「配置文件已生成」，此时按任意键退出：
 
 ```powershell
 python .\2RPM.py
 ```
 
-### 3.最少需要修改的字段
+### 3.指定配置文件
+
+默认读取程序目录下的 `config.yaml`。需要换用其他配置时，可用 `-c/--config` 指定，或直接把配置文件路径作为位置参数传入（文件关联与拖拽打开也走位置参数）：
+
+```powershell
+# 源码运行
+python .\2RPM.py -c baah
+python .\2RPM.py --config "D:\监控配置\工作配置.yml"
+python .\2RPM.py "D:\监控配置\工作配置.yml"
+
+# EXE 运行
+.\2RPM.exe -c baah
+.\2RPM.exe --config "D:\监控配置\工作配置.yml"
+```
+
+- 选项别名为 `-c`、`-C`、`-config`、`-Config`、`--config`、`--Config`；重复给出同一选项时以最后一次为准。`--config-path` 不是有效选项，会被当作未知参数并退出。
+- 相对路径基于**程序目录**（`2RPM.py` 或 EXE 所在目录），不是终端当前工作目录；绝对路径原样使用。路径含空格时用引号包住，否则会被拆成多个参数。
+- 位置参数优先于 `-c/--config`。两者同时给出时只加载位置参数，不会合并。
+- 后缀规则：仅以小写 `.yaml` / `.yml` 结尾时保留原后缀，其余一律直接追加 `.yaml`。例如 `-c work` 读取 `work.yaml`，`-c work.json` 读取 `work.json.yaml`，`-c work.YAML` 读取 `work.YAML.yaml`。
+- 显式指定（选项或位置参数）的配置文件不存在时，程序报错并以退出码 1 结束，不会生成默认配置，也不会回退到 `config.yaml`。
+- 正常加载配置时可能自动迁移旧版 layout 并写回配置文件，迁移范围见 [开发者文档](docs/开发者文档.md)。
+- `-c/--config` 只属于监控入口，不能与 `screenshot` 子命令混用；裸写 `2RPM.py screenshot` 仍按监控配置解析。截图 CLI 的 `--output` 相对路径基于当前工作目录，与配置路径基准不同。
+
+### 4.最少需要修改的字段
 
 打开 `config.yaml`，把下面两处改成自己的目标即可，其余字段保持默认：
 
