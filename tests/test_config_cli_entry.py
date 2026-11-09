@@ -115,11 +115,41 @@ def test_config_path_option_is_unknown_and_exits_with_code_two(monkeypatch):
     monkeypatch.setattr(entry, 'print_info', MagicMock())
     monkeypatch.setattr(entry, 'setup_default_logging', MagicMock())
     monkeypatch.setattr(entry, 'spinner_phase', MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(entry, 'get_program_directory', lambda: PROGRAM_DIR)
+    # 若 argparse 回归为接受该选项，则在此以 SystemExit(None) 终止，断言会暴露退出码不符
+    monkeypatch.setattr(entry, 'load_config', MagicMock(side_effect=SystemExit))
 
     with pytest.raises(SystemExit) as excinfo:
         entry.main()
 
     assert excinfo.value.code == 2
+
+
+def test_relative_path_basis_is_script_directory_not_cwd(monkeypatch, tmp_path):
+    """使用真实 get_program_directory 断言相对路径基于脚本目录。"""
+    entry = entry_module()
+    script_dir = tmp_path / 'script-home'
+    script_dir.mkdir()
+    other_cwd = tmp_path / 'other-cwd'
+    other_cwd.mkdir()
+    script = script_dir / '2RPM.py'
+    loader = MagicMock(side_effect=SystemExit)
+
+    monkeypatch.setattr(sys, 'argv', [str(script), '-c', 'relative'])
+    monkeypatch.setattr(entry, 'print_info', MagicMock())
+    monkeypatch.setattr(entry, 'setup_default_logging', MagicMock())
+    monkeypatch.setattr(entry, 'spinner_phase', MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(entry, 'load_config', loader)
+    monkeypatch.chdir(other_cwd)
+
+    with pytest.raises(SystemExit):
+        entry.main()
+
+    loader.assert_called_once()
+    loaded_path = os.path.normcase(loader.call_args.args[0])
+    expected_path = os.path.normcase(str(script_dir / 'relative.yaml'))
+    assert loaded_path == expected_path
+    assert os.path.normcase(str(other_cwd)) not in loaded_path
 
 
 def test_repeated_option_uses_last_value(monkeypatch):
