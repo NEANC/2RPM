@@ -26,6 +26,7 @@ PARENT_MARK = 'PARENT_SCOPE_MARK_7723'
 WORKER_MARK = 'WORKER_SCOPE_MARK_3187'
 LOCAL_MARK = 'LOCAL_PAYLOAD_MARK_4402'
 CHAIN_MARK = 'INNER_CHAIN_MARK_2081'
+SOURCE_LINE_MARK = 'SOURCE_LINE_MARK_6014'
 METADATA_MARK = 'METADATA_VALUE_7741'
 PRIVATE_URL_MARKER = 'PRIVATE_URL_TAIL'
 NO_HANDLER_MARK = 'NO_HANDLER_BODY_MARK_9931'
@@ -40,8 +41,7 @@ def _boom(secret):
     try:
         raise KeyError('INNER ' + CHAIN_MARK + ANSI_RED)
     except KeyError as exc:
-        raise ValueError(
-            'BODY ' + secret + ' ' + local_value + ANSI_RED) from exc
+        raise ValueError('BODY ' + secret + ' ' + local_value + ' SOURCE_LINE_MARK_6014 \x1b[31m') from exc
 
 
 def _worker_boom():
@@ -167,10 +167,12 @@ def test_thread_exception_records_metadata_only(scope, thread_log, capsys):
     assert 'type=ValueError' in text
     assert '异常正文已省略' in text
     assert text.count('线程异常') == 1
-    for secret in (PARENT_MARK, WORKER_MARK, LOCAL_MARK, CHAIN_MARK):
+    for secret in (
+            PARENT_MARK, WORKER_MARK, LOCAL_MARK, CHAIN_MARK, SOURCE_LINE_MARK):
         assert secret not in text
         assert secret not in stderr
     assert ANSI_RED not in text
+    assert '\\x1b[31m' not in text
     assert 'Traceback' not in stderr
 
 
@@ -440,6 +442,9 @@ try:
     hook_thread.join(30)
     assert not migration_thread.is_alive(), '迁移线程未结束'
     assert not hook_thread.is_alive(), '异常线程未结束'
+    assert logger_mod._FILE_HANDLER is not None
+    assert logger_mod._FILE_HANDLER.backupCount == 15, \
+        logger_mod._FILE_HANDLER.backupCount
 
     texts = {}
     for path in log_dir.rglob('*.log'):

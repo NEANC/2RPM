@@ -443,9 +443,11 @@ def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
             root_logger.removeHandler(_FILE_HANDLER)
             _FILE_HANDLER = _apply_log_path(_FILE_HANDLER, log_dir, target_prefix)
             root_logger.addHandler(_FILE_HANDLER)
+        # 备份数量须在挂回后、释放共享锁前更新，避免 hook 并发发射时仍按旧数量滚动
+        if _FILE_HANDLER is not None:
+            _FILE_HANDLER.backupCount = max_files
 
-    # 统一设置滚动备份数量与清理（使用文件真实所在目录）
+    # 清理过期日志（使用文件真实所在目录）
     if _FILE_HANDLER is not None:
-        _FILE_HANDLER.backupCount = max_files
         actual_log_dir = os.path.dirname(_FILE_HANDLER.baseFilename)
         _cleanup_old_logs(actual_log_dir, max_files, max_days)
