@@ -243,6 +243,7 @@ def test_setup_default_logging_is_idempotent(
 def test_system_exit_is_ignored(thread_log, capsys):
     """SystemExit 由线程 hook 明确忽略，不写日志也不输出原始堆栈。"""
     logger_mod._install_thread_exception_logging()
+    assert threading.excepthook is logger_mod._log_thread_exception
 
     def target():
         raise SystemExit('SYSTEM_EXIT_BODY_5510')
@@ -653,7 +654,7 @@ def test_shared_lock_is_reentrant_for_setup(tmp_path):
 
 def test_dynamic_metadata_boundary(thread_log, capsys):
     """自定义异常类型、文件名与函数名中的动态文本先脱敏再裁剪。"""
-    payload = 'token=' + METADATA_MARK + ' ' + ANSI_RED + '\r\n\t'
+    payload = 'token=' + METADATA_MARK + ' ' + ANSI_RED + '\r\n\t\u2028\u2029'
     exc_type = type('Injected ' + payload, (ValueError,), {})
     raiser = _build_raiser(
         exc_type,
@@ -684,6 +685,8 @@ def test_dynamic_metadata_boundary(thread_log, capsys):
     assert '\x1b' not in stderr
     assert '\r' not in text
     assert '\t' not in text
+    assert '\u2028' not in text
+    assert '\u2029' not in text
 
 
 @pytest.mark.parametrize('field', ['type', 'filename', 'function'])

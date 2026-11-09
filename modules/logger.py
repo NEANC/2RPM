@@ -215,8 +215,8 @@ def screenshot_logging(program_dir):
 def _sanitize_thread_metadata(value: str) -> str:
     """按脱敏、压平换行的固定顺序清洗线程异常元数据。
 
-    完整原值先交给 redact_text，再把 CR/LF/TAB 替换为空格，避免动态
-    文本伪造新的日志行。
+    完整原值先交给 redact_text，再把 CR/LF/TAB 与 Unicode 行分隔符
+    （U+2028/U+2029）替换为空格，避免动态文本伪造新的日志行。
 
     Args:
         value: 元数据完整原值。
@@ -225,7 +225,8 @@ def _sanitize_thread_metadata(value: str) -> str:
         str: 可安全写入单行日志的展示文本。
     """
     redacted = redact_text(value)
-    return redacted.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
+    flattened = redacted.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
+    return flattened.replace('\u2028', ' ').replace('\u2029', ' ')
 
 
 def _frame_location(frame, lineno: int) -> str:
