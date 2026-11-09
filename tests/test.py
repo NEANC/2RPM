@@ -5,6 +5,7 @@
 """
 
 import os
+import subprocess
 import sys
 import unittest
 
@@ -229,16 +230,16 @@ class TestExternalActionExecution(unittest.TestCase):
         run_mock.assert_called_once_with(
             ['schtasks', '/query', '/tn', r'\Custom\MyTask'],
             shell=False,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
     @patch('modules.utils.subprocess.run')
     def test_run_task_action_raises_on_failure(self, run_mock):
         """计划任务触发失败时抛出异常。"""
         run_mock.return_value.returncode = 1
-        run_mock.return_value.stderr = 'ERROR'
-        run_mock.return_value.stdout = ''
+        run_mock.return_value.stderr = b'ERROR'
+        run_mock.return_value.stdout = b''
         with self.assertRaises(RuntimeError):
             run_task_action(r'\Custom\MyTask')
 

@@ -561,6 +561,20 @@ def _has_executable_suffix(value):
     return os.path.splitext(value.strip())[1].lower() in EXTERNAL_PROGRAM_EXTENSIONS
 
 
+def _decode_process_output(raw):
+    """容错解码子进程捕获的原始输出字节。
+
+    Args:
+        raw (bytes | None): 子进程捕获的原始字节，允许为 None。
+
+    Returns:
+        str: 按 OEM 代码页解码并去除首尾空白后的文本；无内容时为空字符串。
+    """
+    if not raw:
+        return ''
+    return raw.decode(encoding='oem', errors='replace').strip()
+
+
 def task_action_exists(task_name):
     """精确探测 Windows 计划任务是否存在。
 
@@ -573,8 +587,8 @@ def task_action_exists(task_name):
     result = subprocess.run(
         ['schtasks', '/query', '/tn', task_name],
         shell=False,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     return result.returncode == 0
 
@@ -592,13 +606,14 @@ def run_task_action(task_name):
         ['schtasks', '/run', '/tn', task_name],
         shell=False,
         capture_output=True,
-        text=True,
     )
     if result.returncode == 0:
         LOGGER.info(f"成功触发计划任务: {task_name}")
         return
 
-    message = result.stderr.strip() or result.stdout.strip() or '未知错误'
+    message = (_decode_process_output(result.stderr)
+               or _decode_process_output(result.stdout)
+               or '未知错误')
     raise RuntimeError(f"触发计划任务失败: {task_name}，{message}")
 
 
