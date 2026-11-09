@@ -5,6 +5,8 @@ import os
 import sys
 import time
 import logging
+import threading
+import traceback
 from contextlib import ExitStack
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,6 +16,7 @@ import colorama
 from modules.log_safety import SafeFormatter
 from modules.log_safety import SafeRotatingFileHandler
 from modules.log_safety import SafeStreamHandler
+from modules.log_safety import redact_text
 from modules.screenshot import winfs
 from modules.utils import get_program_directory
 
@@ -30,6 +33,13 @@ _LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # 启动阶段建立的文件处理器，供 setup_logging 复用
 _FILE_HANDLER = None
+
+# 线程异常发射与日志初始化/迁移共用的互斥锁
+_LOGGING_LOCK = threading.RLock()
+
+# 线程异常单行日志模板
+_THREAD_EXCEPTION_SUMMARY = '线程异常（异常正文已省略）'
+_THREAD_FRAME_SEPARATOR = ' -> '
 
 
 class ColoredConsoleFormatter(SafeFormatter):
@@ -202,6 +212,73 @@ def screenshot_logging(program_dir):
             pass
 
 
+def _sanitize_thread_metadata(value: str) -> str:
+    """按脱敏、压平换行的固定顺序清洗线程异常元数据。
+
+    完整原值先交给 redact_text，再把 CR/LF/TAB 与 Unicode 行分隔符
+    （U+2028/U+2029）替换为空格，避免动态文本伪造新的日志行。
+
+    Args:
+        value: 元数据完整原值。
+
+    Returns:
+        str: 可安全写入单行日志的展示文本。
+    """
+    redacted = redact_text(value)
+    flattened = redacted.replace('\r', ' ').replace('\n', ' ').replace('\t', ' ')
+    return flattened.replace('\u2028', ' ').replace('\u2029', ' ')
+
+
+def _frame_location(frame, lineno: int) -> str:
+    """生成单帧的 basename、行号与函数名定位文本。
+
+    Args:
+        frame: 异常回溯中的栈帧。
+        lineno: 该帧对应的行号。
+
+    Returns:
+        str: 形如 ``logger.py:120:setup_logging`` 的定位文本。
+    """
+    filename = os.path.basename(
+        _sanitize_thread_metadata(frame.f_code.co_filename))
+    return f'{filename}:{lineno}:{_sanitize_thread_metadata(frame.f_code.co_name)}'
+
+
+def _log_thread_exception(args: threading.ExceptHookArgs) -> None:
+    """将线程未捕获异常以受限元数据写入安全日志。
+
+    只读取线程数字标识、异常类型名称与帧定位，不读取异常正文、
+    源码行、局部变量或异常链。
+
+    Args:
+        args: threading 模块传入的 ExceptHookArgs。
+    """
+    if issubclass(args.exc_type, SystemExit):
+        return
+
+    locations = [
+        _frame_location(frame, lineno)
+        for frame, lineno in traceback.walk_tb(args.exc_traceback)
+    ]
+    frames = _THREAD_FRAME_SEPARATOR.join(locations) if locations else '-'
+    ident = args.thread.ident if args.thread is not None else None
+    ident_text = '-' if ident is None else str(ident)
+    message = (
+        f'{_THREAD_EXCEPTION_SUMMARY}: thread={ident_text} '
+        f'type={_sanitize_thread_metadata(args.exc_type.__name__)} '
+        f'frames={frames}'
+    )
+    with _LOGGING_LOCK:
+        LOGGER.error(message)
+
+
+def _install_thread_exception_logging() -> None:
+    """幂等安装线程未捕获异常日志 hook。"""
+    if threading.excepthook is _log_thread_exception:
+        return
+    threading.excepthook = _log_thread_exception
+
+
 def setup_default_logging() -> None:
     """设置程序启动阶段的默认日志配置。
 
@@ -216,26 +293,30 @@ def setup_default_logging() -> None:
     """
     global _FILE_HANDLER
 
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
+    with _LOGGING_LOCK:
+        _install_thread_exception_logging()
 
-    # 守卫：已初始化过则不重复建立
-    if root_logger.handlers:
-        return
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
 
-    # 控制台 handler：双轨制下持久静音（提级到 CRITICAL+1），
-    # 保留 ColoredConsoleFormatter 仅为兼容潜在的级别临时调整场景
-    console_handler = SafeStreamHandler(sys.stdout)
-    console_handler.setLevel(logging.CRITICAL + 1)
-    console_handler.setFormatter(
-        ColoredConsoleFormatter(_LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
-    root_logger.addHandler(console_handler)
+        # 守卫：已初始化过则不重复建立
+        if root_logger.handlers:
+            return
 
-    # 文件日志：启动阶段早于配置加载，前缀固定为 '2RPM'
-    default_dir = _resolve_log_dir('logs')
-    _FILE_HANDLER = _create_file_handler(default_dir, '2RPM')
-    if _FILE_HANDLER is not None:
-        root_logger.addHandler(_FILE_HANDLER)
+        # 控制台 handler：双轨制下持久静音（提级到 CRITICAL+1），
+        # 保留 ColoredConsoleFormatter 仅为兼容潜在的级别临时调整场景
+        console_handler = SafeStreamHandler(sys.stdout)
+        console_handler.setLevel(logging.CRITICAL + 1)
+        console_handler.setFormatter(
+            ColoredConsoleFormatter(
+                _LOG_CONSOLE_FORMAT, datefmt=_LOG_CONSOLE_DATEFMT))
+        root_logger.addHandler(console_handler)
+
+        # 文件日志：启动阶段早于配置加载，前缀固定为 '2RPM'
+        default_dir = _resolve_log_dir('logs')
+        _FILE_HANDLER = _create_file_handler(default_dir, '2RPM')
+        if _FILE_HANDLER is not None:
+            root_logger.addHandler(_FILE_HANDLER)
 
 
 def _set_console_level(root_logger: logging.Logger, level: int) -> None:
@@ -353,18 +434,21 @@ def setup_logging(config: dict, config_file: str = 'config.yaml') -> None:
     _set_console_level(root_logger, logging.CRITICAL + 1)
 
     # 强制启用文件日志：启动阶段文件创建失败时尝试补建，否则复用并迁移到配置目录
-    if _FILE_HANDLER is None:
-        _FILE_HANDLER = _create_file_handler(log_dir, target_prefix)
-        if _FILE_HANDLER is not None:
+    with _LOGGING_LOCK:
+        if _FILE_HANDLER is None:
+            _FILE_HANDLER = _create_file_handler(log_dir, target_prefix)
+            if _FILE_HANDLER is not None:
+                root_logger.addHandler(_FILE_HANDLER)
+        else:
+            # 先摘除再调用 _apply_log_path，避免内部 close 时 handler 仍挂在 logger 上
+            root_logger.removeHandler(_FILE_HANDLER)
+            _FILE_HANDLER = _apply_log_path(_FILE_HANDLER, log_dir, target_prefix)
             root_logger.addHandler(_FILE_HANDLER)
-    else:
-        # 先摘除再调用 _apply_log_path，避免内部 close 时 handler 仍挂在 logger 上
-        root_logger.removeHandler(_FILE_HANDLER)
-        _FILE_HANDLER = _apply_log_path(_FILE_HANDLER, log_dir, target_prefix)
-        root_logger.addHandler(_FILE_HANDLER)
+        # 备份数量须在挂回后、释放共享锁前更新，避免 hook 并发发射时仍按旧数量滚动
+        if _FILE_HANDLER is not None:
+            _FILE_HANDLER.backupCount = max_files
 
-    # 统一设置滚动备份数量与清理（使用文件真实所在目录）
+    # 清理过期日志（使用文件真实所在目录）
     if _FILE_HANDLER is not None:
-        _FILE_HANDLER.backupCount = max_files
         actual_log_dir = os.path.dirname(_FILE_HANDLER.baseFilename)
         _cleanup_old_logs(actual_log_dir, max_files, max_days)
