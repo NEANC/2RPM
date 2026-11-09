@@ -149,12 +149,18 @@ def test_launch_task_failure_logs_decoded_stderr():
     error = subprocess.CalledProcessError(
         1, ['schtasks'], output=b'', stderr=raw_stderr)
 
-    with patch('modules.monitor.subprocess.run', side_effect=error), \
+    with patch('modules.monitor.subprocess.run', side_effect=error) as run_mock, \
             patch('modules.monitor.LOGGER.error') as log_mock, \
             patch('modules.monitor.notify_fail') as fail_mock:
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc_info:
             monitor._launch_task(config['monitor']['launch'], config)
 
+    assert exc_info.value.code == 1
+    run_mock.assert_called_once_with(
+        ['schtasks', '/run', '/tn', config['monitor']['launch']['task_name']],
+        capture_output=True,
+        check=True,
+    )
     log_mock.assert_called_once()
     assert CHINESE_ERROR in log_mock.call_args[0][0]
     fail_mock.assert_called_once_with(
@@ -169,9 +175,10 @@ def test_launch_task_failure_without_output_does_not_crash():
     with patch('modules.monitor.subprocess.run', side_effect=error), \
             patch('modules.monitor.LOGGER.error') as log_mock, \
             patch('modules.monitor.notify_fail'):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exc_info:
             monitor._launch_task(config['monitor']['launch'], config)
 
+    assert exc_info.value.code == 1
     log_mock.assert_called_once()
     assert '未知错误' in log_mock.call_args[0][0]
 
