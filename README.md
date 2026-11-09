@@ -55,15 +55,19 @@ python .\2RPM.py
 
 ### 3.指定配置文件
 
-默认读取程序目录下的 `config.yaml`。需要换用其他配置时，可用 `-c/--config` 指定，或直接把配置文件路径作为位置参数传入（文件关联与拖拽打开也走位置参数）：
+默认读取程序目录下的 `config.yaml`。需要换用其他配置时，可用 `-c/--config` 指定，或直接把配置文件路径作为位置参数传入（文件关联与拖拽打开也走位置参数）。
+
+源码运行：
 
 ```powershell
-# 源码运行
 python .\2RPM.py -c baah
 python .\2RPM.py --config "D:\监控配置\工作配置.yml"
 python .\2RPM.py "D:\监控配置\工作配置.yml"
+```
 
-# EXE 运行
+EXE 运行：
+
+```powershell
 .\2RPM.exe -c baah
 .\2RPM.exe --config "D:\监控配置\工作配置.yml"
 ```
