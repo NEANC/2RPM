@@ -66,7 +66,7 @@ def test_short_option_appends_yaml_suffix_under_program_dir(monkeypatch):
 
 def test_long_option_keeps_absolute_path_with_spaces(monkeypatch):
     """--config 的含空格绝对路径应原样使用，不被拆词或改后缀。"""
-    config_path = r'D:\监控配置\工作配置.yml'
+    config_path = r'D:\监控 配置\工作 配置.yml'
     loader = run_main(monkeypatch, ['--config', config_path])
 
     assert_loaded_once(loader, config_path, True)
