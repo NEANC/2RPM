@@ -259,7 +259,8 @@ def test_launch_task_failure_falls_back_to_stdout_when_stderr_blank():
 def test_launch_task_failure_handles_invalid_bytes():
     """触发失败输出为非法字节时按替换字符解码，不抛解码异常。"""
     config = _launch_config()
-    raw_stderr = INVALID_UTF8_BYTES
+    raw_stderr = b'\xb3\x00\xff'
+    expected = raw_stderr.decode(OEM_CODEC, 'replace')
     error = subprocess.CalledProcessError(
         1, ['schtasks'], output=b'', stderr=raw_stderr)
 
@@ -274,6 +275,8 @@ def test_launch_task_failure_handles_invalid_bytes():
     message = log_mock.call_args[0][0]
     assert message.strip()
     assert '触发计划任务失败' in message
+    if '\ufffd' in expected:
+        assert '\ufffd' in message
 
 
 def test_launch_task_success_does_not_decode_undecodable_output():
@@ -283,15 +286,17 @@ def test_launch_task_success_does_not_decode_undecodable_output():
     task_name = config['monitor']['launch']['task_name']
     running_result = {
         'state': 'running', 'pid': 4242, 'process_name': 'demo'}
+    spinner = MagicMock()
 
     with patch('modules.monitor.subprocess.run',
                return_value=_completed(0, stdout=b'\xb3\x00\xff')) as run_mock, \
             patch('modules.monitor.decode_process_output') as decode_mock, \
             patch('modules.monitor.query_task_pid',
-                  return_value=running_result), \
+                  return_value=running_result) as query_mock, \
             patch('modules.monitor.psutil.Process') as process_mock, \
             patch('modules.monitor.spinner_phase',
-                  return_value=MagicMock()) as spinner_mock, \
+                  return_value=spinner) as spinner_mock, \
+            patch('modules.monitor.LOGGER.error') as log_error_mock, \
             patch('modules.monitor.notify_fail') as fail_mock:
         process_mock.return_value.create_time.return_value = 1000.0
         pid_info = monitor._launch_task(config['monitor']['launch'], config)
@@ -302,7 +307,10 @@ def test_launch_task_success_does_not_decode_undecodable_output():
         capture_output=True,
         check=True,
     )
+    query_mock.assert_called_once_with(task_name, lookback_minutes=1)
+    spinner.__enter__.return_value.done.assert_called_once_with("任务进程已启动")
     decode_mock.assert_not_called()
+    log_error_mock.assert_not_called()
     fail_mock.assert_not_called()
     spinner_mock.assert_called()
 
