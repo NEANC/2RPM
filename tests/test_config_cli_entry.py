@@ -80,6 +80,14 @@ def test_positional_path_wins_over_option_without_merging(monkeypatch):
     assert_loaded_once(loader, positional, True)
 
 
+def test_positional_path_keeps_absolute_path_with_spaces(monkeypatch):
+    """位置参数含空格的绝对路径应原样使用，不被拆词或改后缀。"""
+    config_path = r'D:\监控配置\工作配置.yml'
+    loader = run_main(monkeypatch, [config_path])
+
+    assert_loaded_once(loader, config_path, True)
+
+
 def test_no_arguments_uses_default_config_not_user_specified(monkeypatch):
     """无参数时应加载程序目录下的默认 config.yaml。"""
     loader = run_main(monkeypatch, [])
