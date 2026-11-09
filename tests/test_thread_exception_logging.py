@@ -363,12 +363,14 @@ migration_entered = threading.Event()
 release_migration = threading.Event()
 hook_attempted = threading.Event()
 error_entered = threading.Event()
+observed = {}
 
 
 class LockProxy:
     def __init__(self, real):
         self._real = real
         self.watch_ident = None
+        self.migration_ident = None
 
     def acquire(self, *args, **kwargs):
         return self._real.acquire(*args, **kwargs)
@@ -383,6 +385,10 @@ class LockProxy:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_tb):
+        if threading.get_ident() == self.migration_ident:
+            handler = logger_mod._FILE_HANDLER
+            observed['backup_count_at_release'] = (
+                None if handler is None else handler.backupCount)
         self._real.release()
         return False
 
@@ -414,9 +420,10 @@ os.replace = blocking_replace
 
 
 def migrate():
+    logger_mod._LOGGING_LOCK.migration_ident = threading.get_ident()
     logger_mod.setup_logging(
         {'log': {'log_directory': str(log_dir),
-                 'max_log_files': 15, 'retention_days': 3}},
+                 'max_log_files': 7, 'retention_days': 3}},
         'other.yaml')
 
 
@@ -444,7 +451,8 @@ try:
     assert not migration_thread.is_alive(), '迁移线程未结束'
     assert not hook_thread.is_alive(), '异常线程未结束'
     assert logger_mod._FILE_HANDLER is not None
-    assert logger_mod._FILE_HANDLER.backupCount == 15, \
+    assert observed.get('backup_count_at_release') == 7, observed
+    assert logger_mod._FILE_HANDLER.backupCount == 7, \
         logger_mod._FILE_HANDLER.backupCount
 
     texts = {}
