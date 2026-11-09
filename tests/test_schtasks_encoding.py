@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """计划任务命令输出边界的解码回归测试。"""
 
+import ctypes
 import os
 import subprocess
 import sys
@@ -17,8 +18,44 @@ from modules import monitor, utils
 from modules.utils import run_task_action, task_action_exists
 
 
+def _get_oem_codec():
+    """获取当前 Windows OEM 代码页对应的 Python 编码名。
+
+    Returns:
+        str: 形如 ``cp936`` / ``cp437`` 的编码名。
+    """
+    if sys.platform != 'win32':
+        return 'cp437'
+    return f'cp{ctypes.windll.kernel32.GetOEMCP()}'
+
+
+def _oem_can_encode(text):
+    """判断文本能否用当前 OEM 代码页表示。
+
+    Args:
+        text (str): 待判断文本。
+
+    Returns:
+        bool: 可编码时返回 True，否则返回 False。
+    """
+    try:
+        text.encode(OEM_CODEC)
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+OEM_CODEC = _get_oem_codec()
+
 CHINESE_ERROR = '错误: 无法运行任务'
 CHINESE_STDOUT = '输出: 任务已触发'
+ASCII_ERROR = 'ERROR: cannot run task'
+ASCII_STDOUT = 'OUTPUT: task triggered'
+# 当前 OEM 代码页无法表示中文时退化为 ASCII 文案，保证解码可逆
+READABLE_ERROR = CHINESE_ERROR if _oem_can_encode(CHINESE_ERROR) else ASCII_ERROR
+READABLE_STDOUT = CHINESE_STDOUT if _oem_can_encode(CHINESE_STDOUT) else ASCII_STDOUT
+# 真实管道用例使用的 UTF-8 非法字节
+INVALID_UTF8_BYTES = b'\xb3\x81'
 
 
 def _completed(returncode, stdout=b'', stderr=b''):
@@ -79,7 +116,7 @@ def test_task_action_exists_returns_false_for_nonzero_code():
 
 def test_run_task_action_success_keeps_raw_output_untouched():
     """触发成功时不解码输出，只记录 INFO 日志。"""
-    raw_stdout = CHINESE_STDOUT.encode('cp936')
+    raw_stdout = READABLE_STDOUT.encode(OEM_CODEC)
     with patch('modules.utils.subprocess.run',
                return_value=_completed(0, stdout=raw_stdout)) as run_mock, \
             patch('modules.utils.LOGGER.info') as info_mock:
@@ -100,9 +137,22 @@ def test_run_task_action_success_tolerates_undecodable_output():
         run_task_action(r'\Custom\MyTask')
 
 
-def test_run_task_action_failure_uses_cp936_stderr_message():
-    """失败时 CP936 中文错误输出应解码为可读消息。"""
-    raw_stderr = CHINESE_ERROR.encode('cp936')
+def test_run_task_action_failure_uses_oem_stderr_message():
+    """失败时按当前 OEM 代码页解码错误输出为可读消息。"""
+    raw_stderr = READABLE_ERROR.encode(OEM_CODEC)
+    with patch('modules.utils.subprocess.run',
+               return_value=_completed(1, stderr=raw_stderr)):
+        with pytest.raises(RuntimeError) as excinfo:
+            run_task_action(r'\Custom\MyTask')
+
+    assert READABLE_ERROR in str(excinfo.value)
+
+
+@pytest.mark.skipif(not _oem_can_encode(CHINESE_ERROR),
+                    reason='当前 OEM 代码页无法表示中文')
+def test_run_task_action_failure_reads_chinese_error_in_oem():
+    """当前 OEM 可表示中文时，中文错误输出应解码为可读消息。"""
+    raw_stderr = CHINESE_ERROR.encode(OEM_CODEC)
     with patch('modules.utils.subprocess.run',
                return_value=_completed(1, stderr=raw_stderr)):
         with pytest.raises(RuntimeError) as excinfo:
@@ -113,13 +163,13 @@ def test_run_task_action_failure_uses_cp936_stderr_message():
 
 def test_run_task_action_failure_falls_back_to_stdout_when_stderr_blank():
     """错误输出为空白时不得掩盖标准输出中的消息。"""
-    raw_stdout = CHINESE_STDOUT.encode('cp936')
+    raw_stdout = READABLE_STDOUT.encode(OEM_CODEC)
     with patch('modules.utils.subprocess.run',
                return_value=_completed(1, stdout=raw_stdout, stderr=b'  \r\n')):
         with pytest.raises(RuntimeError) as excinfo:
             run_task_action(r'\Custom\MyTask')
 
-    assert CHINESE_STDOUT in str(excinfo.value)
+    assert READABLE_STDOUT in str(excinfo.value)
 
 
 def test_run_task_action_failure_without_output_uses_unknown_error():
@@ -134,18 +184,23 @@ def test_run_task_action_failure_without_output_uses_unknown_error():
 
 def test_run_task_action_failure_replaces_invalid_bytes():
     """非法字节按替换字符处理，不抛 UnicodeDecodeError。"""
+    raw = b'\xb3\x00\xff'
+    expected = raw.decode(OEM_CODEC, 'replace')
     with patch('modules.utils.subprocess.run',
-               return_value=_completed(1, stderr=b'\xb3\x00\xff')):
+               return_value=_completed(1, stderr=raw)):
         with pytest.raises(RuntimeError) as excinfo:
             run_task_action(r'\Custom\MyTask')
 
-    assert '\ufffd' in str(excinfo.value)
+    message = str(excinfo.value)
+    assert message.strip()
+    if '\ufffd' in expected:
+        assert '\ufffd' in message
 
 
 def test_launch_task_failure_logs_decoded_stderr():
     """触发计划任务失败时日志使用解码后的可读消息并退出。"""
     config = _launch_config()
-    raw_stderr = CHINESE_ERROR.encode('cp936')
+    raw_stderr = READABLE_ERROR.encode(OEM_CODEC)
     error = subprocess.CalledProcessError(
         1, ['schtasks'], output=b'', stderr=raw_stderr)
 
@@ -162,7 +217,7 @@ def test_launch_task_failure_logs_decoded_stderr():
         check=True,
     )
     log_mock.assert_called_once()
-    assert CHINESE_ERROR in log_mock.call_args[0][0]
+    assert READABLE_ERROR in log_mock.call_args[0][0]
     fail_mock.assert_called_once_with(
         f"触发计划任务失败: {config['monitor']['launch']['task_name']}")
 
@@ -193,7 +248,8 @@ _DRIVER_TEMPLATE = textwrap.dedent(
     from modules import utils
 
     _REAL_RUN = subprocess.run
-    _FAIL_OUTPUT = __FAIL_OUTPUT__
+    _INVALID_OUTPUT = __INVALID_OUTPUT__
+    _READABLE_OUTPUT = __READABLE_OUTPUT__
     _SUCCESS_OUTPUT = __SUCCESS_OUTPUT__
 
 
@@ -201,16 +257,18 @@ _DRIVER_TEMPLATE = textwrap.dedent(
         """把 schtasks 命令换成写固定字节的 Python 子进程，其余参数透传。"""
         kwargs['timeout'] = 30
         if cmd and str(cmd[0]).lower() == 'schtasks':
-            if 'FailTask' in str(cmd[-1]):
-                script = (
-                    'import sys; sys.stderr.buffer.write(' + repr(_FAIL_OUTPUT) + ');'
-                    ' sys.stderr.buffer.flush(); sys.exit(1)'
-                )
+            target = str(cmd[-1])
+            if 'InvalidFailTask' in target:
+                output, stream = _INVALID_OUTPUT, 'stderr'
+            elif 'ReadableFailTask' in target:
+                output, stream = _READABLE_OUTPUT, 'stderr'
             else:
-                script = (
-                    'import sys; sys.stdout.buffer.write(' + repr(_SUCCESS_OUTPUT) + ');'
-                    ' sys.stdout.buffer.flush(); sys.exit(0)'
-                )
+                output, stream = _SUCCESS_OUTPUT, 'stdout'
+            exit_code = 0 if stream == 'stdout' else 1
+            script = (
+                'import sys; sys.' + stream + '.buffer.write(' + repr(output) + ');'
+                ' sys.' + stream + '.buffer.flush(); sys.exit(' + str(exit_code) + ')'
+            )
             cmd = [sys.executable, '-c', script]
         return _REAL_RUN(cmd, *args, **kwargs)
 
@@ -218,11 +276,18 @@ _DRIVER_TEMPLATE = textwrap.dedent(
     utils.subprocess.run = _fake_run
 
     try:
-        utils.run_task_action(r'\\Custom\\FailTask')
+        utils.run_task_action(r'\\Custom\\InvalidFailTask')
     except RuntimeError as exc:
-        print('FAIL_MESSAGE:' + str(exc))
+        print('INVALID_MESSAGE:' + str(exc))
     else:
-        print('FAIL_MESSAGE:<missing>')
+        print('INVALID_MESSAGE:<missing>')
+
+    try:
+        utils.run_task_action(r'\\Custom\\ReadableFailTask')
+    except RuntimeError as exc:
+        print('READABLE_MESSAGE:' + str(exc))
+    else:
+        print('READABLE_MESSAGE:<missing>')
 
     utils.run_task_action(r'\\Custom\\OkTask')
     print('SUCCESS_OK')
@@ -238,8 +303,9 @@ def _build_driver():
     """
     return (_DRIVER_TEMPLATE
             .replace('__PROJECT_ROOT__', repr(PROJECT_ROOT))
-            .replace('__FAIL_OUTPUT__', repr(CHINESE_ERROR.encode('cp936')))
-            .replace('__SUCCESS_OUTPUT__', repr(CHINESE_STDOUT.encode('cp936'))))
+            .replace('__INVALID_OUTPUT__', repr(INVALID_UTF8_BYTES))
+            .replace('__READABLE_OUTPUT__', repr(READABLE_ERROR.encode(OEM_CODEC)))
+            .replace('__SUCCESS_OUTPUT__', repr(READABLE_STDOUT.encode(OEM_CODEC))))
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='仅在 Windows 验证真实管道解码')
@@ -263,6 +329,12 @@ def test_real_pipe_decoding_has_no_reader_thread_error(tmp_path):
     assert proc.returncode == 0, stderr
     assert 'UnicodeDecodeError' not in stderr
     assert 'Exception in thread' not in stderr
-    assert 'FAIL_MESSAGE:<missing>' not in stdout
-    assert CHINESE_ERROR in stdout
+    assert 'readerthread' not in stderr.lower()
+    assert 'INVALID_MESSAGE:<missing>' not in stdout
+    assert 'READABLE_MESSAGE:<missing>' not in stdout
+    invalid_line = next(
+        line for line in stdout.splitlines()
+        if line.startswith('INVALID_MESSAGE:'))
+    assert invalid_line[len('INVALID_MESSAGE:'):].strip()
+    assert READABLE_ERROR in stdout
     assert 'SUCCESS_OK' in stdout
