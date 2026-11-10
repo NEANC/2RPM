@@ -153,7 +153,7 @@ class _Harness:
         self.bind = self.order.bind_task_event
         self.bind.return_value = None
         self.boundary = self.order.get_task_event_boundary
-        self.boundary.return_value = 100
+        self.boundary.return_value = SimpleNamespace(record_id=100, xml='anchor')
         self.run = self.order.subprocess_run
         self.run.return_value = SimpleNamespace(
             returncode=0, stdout=b'', stderr=b'')
@@ -300,7 +300,7 @@ def test_launch_boundary_filters_old_events(env):
     old = _event(99, 1111)
     new = _event(101, 2222)
     env.query.return_value = [old, new]
-    env.boundary.return_value = 100
+    env.boundary.return_value = SimpleNamespace(record_id=100, xml='anchor')
     env.bind.return_value = {'pid': 2222, 'name': 'new.exe', 'create_time': 555.0}
 
     pid_info = monitor._launch_task_target(config, TASK_TARGET)
@@ -324,7 +324,7 @@ def test_launch_ignores_zero_watch_lookback(env):
         },
     }
     env.query.return_value = [_event(101, 2222)]
-    env.boundary.return_value = 100
+    env.boundary.return_value = SimpleNamespace(record_id=100, xml='anchor')
     env.bind.return_value = {'pid': 2222, 'name': 'new.exe', 'create_time': 555.0}
 
     pid_info = monitor._launch_task_target(config, TASK_TARGET)

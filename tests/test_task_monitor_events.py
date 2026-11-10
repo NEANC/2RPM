@@ -271,7 +271,8 @@ class TestQueryTaskEvents(unittest.TestCase):
                              side_effect=_fake_render):
             boundary = task_monitor.get_task_event_boundary()
 
-        self.assertEqual(boundary, 339373)
+        self.assertEqual(boundary.record_id, 339373)
+        self.assertEqual(boundary.xml, event_handle.xml_text)
         self.assertEqual(query_handle.close_calls, 1)
         self.assertEqual(event_handle.close_calls, 1)
 

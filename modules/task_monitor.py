@@ -304,14 +304,13 @@ def query_task_events(task_path, lookback_minutes):
     return events
 
 
-def get_task_event_boundary():
-    """读取当前最新一条事件的事件记录号
+@dataclass(frozen=True)
+class TaskEventBoundary:
+    record_id: int
+    xml: str
 
-    调用方用该值作为触发前的边界，只接受边界之后的事件。
 
-    Returns:
-        int: 最新事件的 EventRecordID，没有事件或查询失败时返回 0
-    """
+def get_task_event_boundary(record_id=None):
     flags = (
         win32evtlog.EvtQueryChannelPath
         | win32evtlog.EvtQueryReverseDirection
@@ -319,9 +318,16 @@ def get_task_event_boundary():
     query_handle = None
     try:
         query_handle = win32evtlog.EvtQuery(
-            TASK_LOG_CHANNEL, flags, '*', None
+            TASK_LOG_CHANNEL, flags,
+            '*' if record_id is None else f'*[System[EventRecordID={record_id}]]',
+            None,
         )
-        handles = win32evtlog.EvtNext(query_handle, 1)
+        try:
+            handles = win32evtlog.EvtNext(query_handle, 1)
+        except Exception as e:
+            if _is_no_more_items(e):
+                return 0
+            raise
         if not handles:
             return 0
 
@@ -332,13 +338,15 @@ def get_task_event_boundary():
                 'e:System/e:EventRecordID', _EVT_NS
             )
             if record_elem is None or not record_elem.text:
-                return 0
-            return int(record_elem.text.strip())
+                raise TaskQueryError('事件边界缺少记录号')
+            boundary_id = int(record_elem.text.strip())
+            if boundary_id <= 0:
+                raise TaskQueryError('事件边界记录号无效')
+            return TaskEventBoundary(boundary_id, xml_text)
         finally:
             _close_handle(handle)
     except Exception as e:
-        LOGGER.debug(f"读取事件日志边界失败: {e}")
-        return 0
+        raise TaskQueryError(f"读取事件日志边界失败: {e}") from e
     finally:
         _close_handle(query_handle)
 

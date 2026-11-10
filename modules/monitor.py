@@ -983,8 +983,8 @@ def _wait_task_process(
     Args:
         config (dict): 配置信息
         target (MonitorTarget): 计划任务目标，使用其 value 作为任务路径
-        boundary_record_id (int | None): 触发前的记录号边界，
-            非 None 时只接受记录号更大的事件
+        boundary_record_id (TaskEventBoundary | None): 触发前的事件身份边界，
+            非 None 时核验原事件仍存在且未改变，只接受记录号更大的事件
         start_from_create_time (bool): 为 True 时 start_time 取进程创建时间，
             否则取绑定成功的时刻
         lookback_minutes (int | None): 事件查询回溯分钟数；
@@ -1020,6 +1020,10 @@ def _wait_task_process(
             while True:
                 waited_time = time.time() - wait_start_time
                 if waited_time > max_wait:
+                    if (boundary_record_id is not None
+                            and get_task_event_boundary(boundary_record_id.record_id)
+                            != boundary_record_id):
+                        raise TaskQueryError('事件日志边界失效')
                     LOGGER.info("等待计划任务触发已超时")
                     sp.fail("等待超时，计划任务未触发")
                     return None
@@ -1028,9 +1032,12 @@ def _wait_task_process(
                 if boundary_record_id is None:
                     candidates = list(events)
                 else:
+                    if (get_task_event_boundary(boundary_record_id.record_id)
+                            != boundary_record_id):
+                        raise TaskQueryError('事件日志边界失效')
                     candidates = [
                         event for event in events
-                        if event.record_id > boundary_record_id
+                        if event.record_id > boundary_record_id.record_id
                     ]
 
                 # 事件已按从新到旧排列，第一个绑定成功即采用，失败则看更早的候选
@@ -1209,13 +1216,13 @@ def _launch_task_target(config, target):
     """
     try:
         query_task_events(target.value, 1)
+        boundary_record_id = get_task_event_boundary()
     except TaskQueryError as e:
         LOGGER.error(f"读取计划任务事件日志失败: {e}")
         notify_fail("无法读取计划任务事件日志，未触发任务")
         sys.exit(1)
 
-    boundary_record_id = get_task_event_boundary()
-    if boundary_record_id <= 0:
+    if not boundary_record_id:
         # 边界不可用时无法区分新旧实例，拒绝触发以免接管触发前的旧进程
         LOGGER.error("无法建立计划任务事件边界，已取消触发")
         notify_fail(
