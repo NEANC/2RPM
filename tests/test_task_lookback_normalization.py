@@ -105,6 +105,28 @@ class TestTaskLookbackConfig(unittest.TestCase):
                 finally:
                     os.unlink(config_file)
 
+    def test_non_finite_lookback_falls_back_to_default(self):
+        """NaN 与无穷大不抛异常，按非法值回退默认 10。"""
+        for raw in ('.nan', '.inf'):
+            with self.subTest(value=raw):
+                config_file = self._write_config(
+                    "monitor:\n"
+                    "  mode: watch\n"
+                    "  target: task_a\n"
+                    "  watch:\n"
+                    f"    lookback_minutes: {raw}\n"
+                )
+                try:
+                    config = load_config(config_file)
+                    with open(config_file, 'r', encoding='utf-8') as stream:
+                        persisted = YAML().load(stream)
+                    for result in (config, persisted):
+                        value = result['monitor']['watch']['lookback_minutes']
+                        self.assertEqual(value, 10)
+                        self.assertIsInstance(value, int)
+                finally:
+                    os.unlink(config_file)
+
 
 class TestTaskMonitorLookbackQuery(unittest.TestCase):
     """在可控环境验证规范化后的 lookback_minutes 被传入事件查询。"""

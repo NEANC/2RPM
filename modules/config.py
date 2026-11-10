@@ -4,6 +4,7 @@
 import copy
 import errno
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -853,6 +854,13 @@ def _normalize_watch_lookback_minutes(watch_section):
             return True
         normalized_for_store = str(normalized)
     elif isinstance(raw_value, (int, float)):
+        # NaN 与无穷大无法截断为整数，按非法值回退，避免加载抛出 traceback
+        if not math.isfinite(raw_value):
+            LOGGER.warning(
+                f"monitor.watch.lookback_minutes 不是有限数值: {raw_value!r}，已回退默认值"
+            )
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
         normalized_for_store = int(abs(raw_value))
     else:
         LOGGER.warning(
