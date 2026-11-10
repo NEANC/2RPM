@@ -8,6 +8,7 @@
 """
 
 import logging
+import ntpath
 import os
 import sys
 from unittest.mock import patch
@@ -247,6 +248,28 @@ def test_ps1_falls_back_to_windows_powershell():
     )
 
 
+@pytest.mark.parametrize('environ,expected_root', [
+    ({'SystemRoot': r'D:\Windows'}, r'D:\Windows'),
+    ({}, r'C:\Windows'),
+])
+def test_ps1_system_candidate_uses_systemroot(environ, expected_root):
+    """第三级候选应基于 SystemRoot 拼装，缺失时退回 C:\\Windows。"""
+    from modules.monitor_launch import build_launch_command
+
+    expected_path = ntpath.join(
+        expected_root, r'System32\WindowsPowerShell\v1.0\powershell.exe')
+    which = _which_factory({})
+    with patch('modules.monitor_launch.shutil.which', side_effect=which):
+        with patch.dict('modules.monitor_launch.os.environ', environ,
+                        clear=True):
+            with patch('modules.monitor_launch.os.path.isfile',
+                       side_effect=lambda path: path == expected_path):
+                command = build_launch_command(
+                    _file_target(r'C:\prog\a.ps1'), None)
+
+    assert command.executable == expected_path
+
+
 def test_py_falls_back_to_py_launcher():
     """python.exe 缺失时应回退到 py.exe 并附加 -3。"""
     from modules.monitor_launch import build_launch_command
@@ -262,14 +285,14 @@ def test_py_falls_back_to_py_launcher():
 
 
 def test_missing_interpreter_raises_without_popen():
-    """解释器全部缺失时应报错且不得调用 Popen。"""
-    from modules.monitor_launch import build_launch_command
+    """解释器全部缺失时启动应报错且不得调用 Popen。"""
+    from modules.monitor_launch import launch_file
 
     which = _which_factory({})
     with patch('modules.monitor_launch.shutil.which', side_effect=which):
         with patch('modules.monitor_launch.subprocess.Popen') as popen:
             with pytest.raises(RuntimeError):
-                build_launch_command(_file_target(r'C:\prog\s.py'))
+                launch_file(_file_target(r'C:\prog\s.py'))
 
     assert popen.call_count == 0
 
@@ -323,6 +346,22 @@ def test_fast_exit_reports_immediately():
                    return_value=_FakePopen(pid=999)):
             with patch('modules.monitor_launch.psutil.Process',
                        return_value=fake_process):
+                with pytest.raises(RuntimeError) as error:
+                    launch_file(_file_target(r'C:\prog\a.exe'))
+
+    assert '立即退出' in str(error.value)
+
+
+def test_psutil_construction_failure_reports_immediately():
+    """psutil.Process 构造即抛 NoSuchProcess 时应映射为“立即退出”。"""
+    from modules.monitor_launch import launch_file
+
+    which = _which_factory({'python.exe': PYTHON})
+    with patch('modules.monitor_launch.shutil.which', side_effect=which):
+        with patch('modules.monitor_launch.subprocess.Popen',
+                   return_value=_FakePopen(pid=999)):
+            with patch('modules.monitor_launch.psutil.Process',
+                       side_effect=psutil.NoSuchProcess(pid=999)):
                 with pytest.raises(RuntimeError) as error:
                     launch_file(_file_target(r'C:\prog\a.exe'))
 

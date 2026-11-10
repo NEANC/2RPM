@@ -21,9 +21,12 @@ from modules.monitor_target import MonitorTarget
 
 LOGGER = logging.getLogger(__name__)
 
-# 系统自带 Windows PowerShell 的固定位置
-WINDOWS_POWERSHELL = (
-    r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+# 系统盘缺失时的兜底根目录
+SYSTEM_ROOT_FALLBACK = r'C:\Windows'
+
+# 系统自带 Windows PowerShell 相对系统盘的路径
+SYSTEM_POWERSHELL_RELATIVE = (
+    r'System32\WindowsPowerShell\v1.0\powershell.exe'
 )
 
 # 直接执行的扩展名
@@ -208,8 +211,10 @@ def _resolve_powershell():
         if path:
             return path
 
-    if os.path.isfile(WINDOWS_POWERSHELL):
-        return WINDOWS_POWERSHELL
+    system_root = os.environ.get('SystemRoot') or SYSTEM_ROOT_FALLBACK
+    system_powershell = ntpath.join(system_root, SYSTEM_POWERSHELL_RELATIVE)
+    if os.path.isfile(system_powershell):
+        return system_powershell
 
     raise RuntimeError("未找到 PowerShell 解释器：pwsh.exe 与 powershell.exe 均不可用")
 
@@ -247,9 +252,8 @@ def _resolve_identity(pid, executable):
     Raises:
         RuntimeError: 进程立即退出或权限不足
     """
-    process = psutil.Process(pid)
-
     try:
+        process = psutil.Process(pid)
         create_time = process.create_time()
     except psutil.NoSuchProcess as error:
         raise RuntimeError(f"程序启动后立即退出，PID: {pid}") from error
