@@ -77,18 +77,28 @@ EXE 运行：
 - 位置参数优先于 `-c/--config`。两者同时给出时只加载位置参数，不会合并。
 - 后缀规则：仅以小写 `.yaml` / `.yml` 结尾时保留原后缀，其余一律直接追加 `.yaml`。例如 `-c work` 读取 `work.yaml`，`-c work.json` 读取 `work.json.yaml`，`-c work.YAML` 读取 `work.YAML.yaml`。
 - 显式指定（选项或位置参数）的配置文件不存在时，程序报错并以退出码 1 结束，不会生成默认配置，也不会回退到 `config.yaml`。
-- 正常加载配置时可能自动迁移旧版 layout 并写回配置文件，迁移范围见 [开发者文档](docs/开发者文档.md)。
+- 正常加载配置时可能自动迁移旧版 layout 并写回配置文件，但**旧监视配置不在迁移范围**，会直接报错退出（见 [监控模式](#5监控模式)）；其他迁移范围见 [开发者文档](docs/开发者文档.md)。
 - `-c/--config` 只属于监控入口，不能与 `screenshot` 子命令混用；裸写 `2RPM.py screenshot` 仍按监控配置解析。截图 CLI 的 `--output` 相对路径基于当前工作目录，与配置路径基准不同。
 
 ### 4.最少需要修改的字段
 
-打开 `config.yaml`，把下面两处改成自己的目标即可，其余字段保持默认：
+打开 `config.yaml`，把 `monitor.mode` 与 `monitor.target` 改成自己的目标即可，其余字段保持默认：
 
 ```yaml
 monitor:
-  mode: psutil
-  psutil:
-    process_name: notepad.exe
+  mode: watch
+  target: notepad.exe
+  common:
+    timeout_interval: 15m
+    loop_interval: 1s
+    timeout_threshold: 3
+    max_wait: 30s
+    check_interval: 1s
+  launch:
+    args:
+    cwd:
+  watch:
+    lookback_minutes: 10
 
 push:
   push_channel_settings:
@@ -96,22 +106,83 @@ push:
       - { provider: serverchan, sckey: SCTxxxx }
 ```
 
-- `monitor.psutil.process_name`：要监视的进程名（如 `notepad.exe`），不是窗口标题，也不是完整路径。使用其他模式时改填对应字段，见 [监控模式](#监控模式)。
+- `monitor.mode`：`watch`（等待目标出现）或 `launch`（主动启动目标），缺省为 `watch`。
+- `monitor.target`：唯一的监视目标，必填。写法决定目标类型，见 [监控模式](#5监控模式) 中的写法规则表。
 - `push.push_channel_settings.channels`：至少留一个有效通道，否则不会收到通知。参数填写参考 [推送通道](#推送通道)。
+
+> [!WARNING]
+> 旧监视配置不再兼容。`mode: psutil`、`mode: task_scheduler`、`monitor.psutil`、`monitor.task_scheduler`、`monitor.launch.type` 等旧字段不会迁移，加载时直接报错退出，也不会自动改写文件。请按新结构手动改写。
 
 ---
 
 ## 5.监控模式
 
-模式由 `monitor.mode` 指定，程序只读取当前模式对应的小节。必须显式配置目标字段，否则加载配置时会报错退出。
+`monitor.mode` 只有 `watch` 与 `launch` 两种取值，`monitor.target` 是唯一的目标字段且必填。程序先按 target 的写法判定目标类型，再按 mode 进入对应流程；目标缺失、为空或写法非法时，加载配置即报错退出。
 
-| `monitor.mode`   | 检测方式                                               | 必填字段                                                          | 适用场景                   |
-| ---------------- | ------------------------------------------------------ | ----------------------------------------------------------------- | -------------------------- |
-| `psutil`（默认） | 按进程名轮询检测进程是否运行                           | `monitor.psutil.process_name`                                     | 已经或随时会运行的普通进程 |
-| `task_scheduler` | 通过 Windows 事件日志获取计划任务创建的进程 PID 后监视 | `monitor.task_scheduler.task_name`                                | 由计划任务拉起的进程       |
-| `launch`         | 主动拉起目标程序或计划任务并获取 PID 进行监视          | `monitor.launch.type`；`program` 填 `path`，`task` 填 `task_name` | 需要由 2RPM 主动启动目标   |
+### 目标写法规则
 
-> 从旧版本升级时，旧 layout 会在加载配置时自动迁移；迁移范围与边界见 [开发者文档](docs/开发者文档.md)。
+| `monitor.target` 写法                        | 判定结果     | 说明                                                       |
+| -------------------------------------------- | ------------ | ---------------------------------------------------------- |
+| `C:\Apps\a.exe`、`C:/Apps/a.exe`             | 文件目标     | 盘符绝对路径，正反斜杠均可                                 |
+| `\\server\share\a.exe`                       | 文件目标     | UNC 路径，先于计划任务判断                                 |
+| `.\a.exe`、`..\a.exe`（含 `/` 写法）         | 文件目标     | 显式相对路径，基于**配置文件所在目录**解析为绝对路径       |
+| `\Task`、`\Folder\Task`                      | 计划任务目标 | 单个反斜杠开头，填写完整任务路径，支持根目录任务           |
+| `notepad.exe`                                | 进程名       | 仅 `watch` 可用；`launch` 直接拒绝裸名称                   |
+| `C:a.exe`、`dir/a.exe`                       | 拒绝         | 盘符相对路径，或未带显式相对前缀的目录路径，不作为可猜测输入接受 |
+
+补充规则：
+
+- 文件目标还按模式校验扩展名：`watch` 仅接受 `.exe`；`launch` 接受 `.exe`、`.bat`、`.cmd`、`.ps1`、`.py`，扩展名大小写等价。
+- 裸 `worker.py` 在 `watch` 下按进程名处理，不是脚本路径。
+- 计划任务路径必须包含任务名，单独的 `\` 或以 `\` 结尾的写法都会报错；匹配按完整路径、不区分大小写精确比较，不使用子串匹配。
+- 支持的是 Windows 常规路径与上述相对写法；设备路径（`\\?\`、`\\.\`）不支持，环境变量不展开。目标分类不依赖文件是否存在，也不因查询失败而切换类型。
+
+### `watch`：等待目标出现
+
+不主动启动任何程序。
+
+- 裸进程名与 EXE 路径：走进程集合监视。首次非空扫描确定监视集合，之后新启动的同名进程不会加入；通知与外部动作按 PID 处理。
+- 计划任务路径：走单实例监视。在 `watch.lookback_minutes` 回溯窗口内，按启动事件从新到旧查找仍运行且通过身份校验的实例，选中最新有效实例后固定监视，不切换到其他并行实例；无候选则继续等待，受 `max_wait` 限制。
+- `watch` 的文件目标仅支持 EXE，不支持根据脚本路径识别解释器中的脚本。
+
+### `launch`：主动启动后监视
+
+- 文件目标：按扩展名构建启动命令，支持 EXE / BAT / CMD / PS1 / PY。
+- 计划任务目标：先读取事件日志边界，再执行 `schtasks /run`，只接受触发之后出现、任务路径精确匹配且通过身份校验的新实例。`max_wait` 内没有有效实例即失败，不接管旧实例。
+
+### 脚本启动
+
+- BAT / CMD 通过 `cmd.exe` 执行。
+- PS1 优先使用 PATH 中的 `pwsh.exe`，缺失时回退系统 Windows PowerShell。
+- PY 优先使用 PATH 中的 `python.exe`，缺失时回退 `py.exe -3`。
+- 找不到解释器时直接报错，不自动安装、不提权、不自动绕过 PowerShell 执行策略；候选存在但启动失败时不会换解释器重试。
+- 只监视启动所得的进程，不追踪其分离出的子进程；启动成功也不等于业务执行成功。
+
+### `launch.args` 与 `cwd`
+
+`monitor.launch.args` 是**一段 Windows 参数文本**，程序原样拼接到命令行，不拆分、不补引号，也不做跨类型统一转义。不同文件类型由各自的解析器处理（例如 PowerShell 不按 Windows 反斜杠规则解析），同一段文本在不同目标上可能有不同结果。
+
+- 参数中含空格的路径、特殊字符请自行加引号，并按目标类型确认引号与反斜杠写法。
+- `monitor.launch.cwd` 为空时使用目标文件所在目录；显式相对 cwd 基于配置文件所在目录解析。
+- `launch.args` / `launch.cwd` 只对 `launch` 的文件目标生效；计划任务目标与 `watch` 模式不使用它们，也不会透传给 `schtasks`。
+
+### 旧配置不再兼容
+
+旧监视配置（`mode: psutil`、`mode: task_scheduler`、`monitor.psutil`、`monitor.task_scheduler`、`monitor.launch.type/path/task_name`、顶层 `task`/`launch`/`wait`、`monitor.monitor_mode`/`process_name`/`timeout_interval`/`loop_interval`、`external.timeout_threshold`）只做识别，不做迁移，加载时直接报错并以退出码 1 结束，文件字节不会被自动改写。请手动改写为 `mode` + `target` 结构。
+
+### 计划任务监视的限制
+
+以下限制是当前实现的真实能力边界，无法通过配置规避：
+
+- Windows 事件日志（Event 129）只提供 `TaskName`、`Path`、`ProcessID` 与时间，**没有实例标识**。程序使用“PID 存活 + 可执行路径与事件 `Path` 一致 + 进程创建时间与事件时间相差 ±1 秒”做弱身份校验。1 秒是工程容差，不是实例级严格关联。
+- 因此**无法证明**某个实例一定来自本次触发；并发触发同一任务时，可能绑定到同一时刻的另一实例。
+- `schtasks /run` 返回成功不代表任务真的启动（任务已有实例运行时也可能返回成功，但没有新进程）。程序以“是否出现通过身份校验的新事件”为准，不以返回码为准。
+- 需要任务计划程序 Operational 日志可用。程序不会自动启用该日志、不会提权；日志不可用时会在触发前取消操作。
+- 同一任务存在多个并行实例时，绑定后只监视选中的那一个。
+
+### 运行期权限风险
+
+已绑定进程在运行期间若无法读取进程信息（如权限被拒绝），程序会按“进程已结束”处理，可能触发结束通知与 `on_end` 外部动作。这是**已知且保留的现有行为**，尚未修复。
 
 ---
 
@@ -119,11 +190,11 @@ push:
 
 配置文件是注释型 YAML，生成时已带完整注释，可直接按注释修改。核心结构如下：
 
-- `monitor.mode`：监控模式（`psutil`、`task_scheduler` 或 `launch`）
+- `monitor.mode`：监控模式（`watch` 或 `launch`）
+- `monitor.target`：唯一的监视目标，必填
 - `monitor.common`：共用的超时、轮询、等待与外部动作触发阈值
-- `monitor.psutil`：按进程名监控的目标
-- `monitor.task_scheduler`：计划任务名称与事件回溯窗口
-- `monitor.launch`：主动启动的程序或计划任务
+- `monitor.launch`：`launch` 文件目标的参数与工作目录
+- `monitor.watch`：计划任务的事件回溯窗口
 - `push`：推送模板与通道参数
 - `external`：`on_end`、`on_timeout`、`on_wait_timeout` 三个外部动作
 - `log`：日志输出与清理策略
@@ -140,28 +211,18 @@ push:
 | `max_wait`          | `30s`  | 等待进程启动的最长时间           |
 | `check_interval`    | `1s`   | 等待进程时的检查间隔             |
 
-### `monitor.psutil`
-
-| 字段           | 默认值        | 说明             |
-| -------------- | ------------- | ---------------- |
-| `process_name` | `notepad.exe` | 要监视的进程名称 |
-
-### `monitor.task_scheduler`
-
-| 字段               | 默认值           | 说明                                                  |
-| ------------------ | ---------------- | ----------------------------------------------------- |
-| `task_name`        | `\Custom\MyTask` | 要监视的计划任务名称，完整路径格式 `\Folder\TaskName` |
-| `lookback_minutes` | `10`             | 事件回溯时间（分钟）                                  |
-
 ### `monitor.launch`
 
-| 字段        | 默认值                  | 说明                                   |
-| ----------- | ----------------------- | -------------------------------------- |
-| `type`      | `program`               | 拉起类型：`program` / `task`           |
-| `path`      | `C:\path\to\target.exe` | 要拉起的可执行文件路径（仅 `program`） |
-| `args`      | `null`                  | 命令行参数（选填，仅 `program`）       |
-| `cwd`       | `null`                  | 工作目录（选填，仅 `program`）         |
-| `task_name` | `\Custom\MyTask`        | 要触发的计划任务名称（仅 `task`）      |
+| 字段   | 默认值 | 说明                                                       |
+| ------ | ------ | ---------------------------------------------------------- |
+| `args` | `null` | 一段 Windows 参数文本，原样拼接；空值表示无参数            |
+| `cwd`  | `null` | 工作目录（选填）；空值或留空时使用目标文件所在目录         |
+
+### `monitor.watch`
+
+| 字段               | 默认值 | 说明                                     |
+| ------------------ | ------ | ---------------------------------------- |
+| `lookback_minutes` | `10`   | 事件回溯时间（分钟），仅 `watch` 任务目标生效 |
 
 ### `push`
 
@@ -473,8 +534,8 @@ python .\2RPM.py screenshot --source 'window:完整窗口标题' --output --uplo
 **没收到通知？**
 依次检查：`push.push_channel_settings.channels` 是否至少有一个有效通道；对应 `push.templates.<事件>.enable` 是否为 `true`；通道凭证是否正确。推送结果会逐条输出到控制台，失败原因也会写入日志。
 
-**`process_name` 该填什么？**
-填进程名（如 `notepad.exe`），不是窗口标题，也不是完整路径。可以在任务管理器的「详细信息」里查看进程名。
+**`monitor.target` 该填什么？**
+`watch` 模式可填裸进程名（如 `notepad.exe`，可在任务管理器「详细信息」查看）、EXE 绝对路径或计划任务完整路径；`launch` 模式可填可执行文件路径或计划任务完整路径。具体写法与限制见 [监控模式](#5监控模式)。
 
 **日志在哪里？**
 程序目录下的 `logs` 文件夹，文件名形如 `2RPM_2026-10-12_10-20-30.123.log`；可用 `log.log_directory` 改成其他目录。
