@@ -146,11 +146,17 @@ class _Harness:
         """初始化替身默认行为。"""
         self.spinner = _FakeSpinner()
         self.clock = _FakeClock()
-        self.query = Mock(return_value=[])
-        self.bind = Mock(return_value=None)
-        self.boundary = Mock(return_value=0)
-        self.run = Mock(return_value=SimpleNamespace(
-            returncode=0, stdout=b'', stderr=b''))
+        # 同一父替身下的子替身，便于用 mock_calls 断言跨函数调用顺序
+        self.order = Mock()
+        self.query = self.order.query_task_events
+        self.query.return_value = []
+        self.bind = self.order.bind_task_event
+        self.bind.return_value = None
+        self.boundary = self.order.get_task_event_boundary
+        self.boundary.return_value = 100
+        self.run = self.order.subprocess_run
+        self.run.return_value = SimpleNamespace(
+            returncode=0, stdout=b'', stderr=b'')
         self.notify_fail = Mock()
         self.send = Mock(return_value=[('console', True)])
         self.action = Mock(return_value={
@@ -266,17 +272,41 @@ def test_launch_precheck_failure_does_not_trigger(env):
 
 
 def test_launch_boundary_filters_old_events(env):
-    """只采用边界之后的事件。"""
+    """只采用边界之后的事件，边界先于触发读取，回溯参数取自配置。"""
+    config = {
+        'monitor': {
+            'common': {'max_wait': '3s', 'check_interval': '1s'},
+            'watch': {'lookback_minutes': 7},
+        },
+    }
     old = _event(99, 1111)
     new = _event(101, 2222)
     env.query.return_value = [old, new]
     env.boundary.return_value = 100
     env.bind.return_value = {'pid': 2222, 'name': 'new.exe', 'create_time': 555.0}
 
-    pid_info = monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+    pid_info = monitor._launch_task_target(config, TASK_TARGET)
 
     assert pid_info['pid'] == 2222
     assert [call.args[0] for call in env.bind.call_args_list] == [new]
+    called_names = [call[0] for call in env.order.mock_calls]
+    assert (
+        called_names.index('get_task_event_boundary')
+        < called_names.index('subprocess_run')
+    )
+    env.query.assert_any_call(TASK_VALUE, 7)
+
+
+def test_launch_zero_boundary_does_not_trigger(env):
+    """边界不可用时直接退出，不调用触发命令。"""
+    env.boundary.return_value = 0
+
+    with pytest.raises(SystemExit) as exc:
+        monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    assert exc.value.code == 1
+    assert env.run.call_count == 0
+    assert '事件边界' in env.notify_fail.call_args.args[0]
 
 
 def test_launch_trigger_called_once(env):

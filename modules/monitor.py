@@ -1628,6 +1628,12 @@ def _launch_task_target(config, target):
         sys.exit(1)
 
     boundary_record_id = get_task_event_boundary()
+    if boundary_record_id <= 0:
+        # 边界不可用时无法区分新旧实例，拒绝触发以免接管触发前的旧进程
+        LOGGER.error("无法建立计划任务事件边界，已取消触发")
+        notify_fail(
+            f"无法建立计划任务事件边界，已取消触发: {target.value}")
+        sys.exit(1)
 
     try:
         _trigger_task(target)
