@@ -359,6 +359,28 @@ def test_launch_trigger_rc_nonzero_exits(env):
     assert '未检测到新的任务进程' not in env.notify_fail.call_args.args[0]
 
 
+def test_launch_wait_timeout_sends_wait_timeout_notification_and_action(env):
+    """launch 等待新事件超时时发送 on_wait_timeout 并执行外部动作。"""
+    config = {
+        'monitor': {'common': {'max_wait': '2s', 'check_interval': '1s'}},
+        'external': {'on_wait_timeout': 'C:\\Tools\\alert.exe'},
+    }
+
+    with pytest.raises(SystemExit) as exc:
+        monitor._launch_task_target(config, TASK_TARGET)
+
+    assert exc.value.code == 1
+    timeout_calls = [
+        call for call in env.send.call_args_list
+        if call.args[1] == 'on_wait_timeout'
+    ]
+    assert len(timeout_calls) == 1
+    assert timeout_calls[0].kwargs['process_name'] == TASK_VALUE
+    env.action.assert_called_once_with('C:\\Tools\\alert.exe')
+    assert env.notify_fail.call_args.args[0] == '未检测到新的任务进程'
+    env.run.assert_called_once()
+
+
 def test_watch_timeout_sends_notification_and_action(env):
     """watch 超时发送 on_wait_timeout 通知并执行一次外部动作。"""
     config = {

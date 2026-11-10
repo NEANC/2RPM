@@ -1098,32 +1098,14 @@ def _trigger_task(target):
     )
 
 
-def _watch_task_target(config, target):
-    """watch：等待绑定；超时走 on_wait_timeout 与外部动作后 sys.exit(1)。
+def _notify_task_wait_timeout(config, target, waited_time):
+    """发送计划任务等待超时通知，并按配置执行 on_wait_timeout 外部动作
 
     Args:
         config (dict): 配置信息
         target (MonitorTarget): 计划任务目标
-
-    Returns:
-        dict: 已绑定的 pid_info
-
-    Raises:
-        SystemExit: 等待超时或事件日志查询失败
+        waited_time (float): 已等待秒数
     """
-    wait_start_time = time.time()
-    try:
-        pid_info = _wait_task_process(
-            config, target, start_from_create_time=True)
-    except TaskQueryError as e:
-        LOGGER.error(f"查询计划任务事件日志失败: {e}")
-        notify_fail("查询计划任务事件日志失败，无法确认监视实例")
-        sys.exit(1)
-
-    if pid_info is not None:
-        return pid_info
-
-    waited_time = time.time() - wait_start_time
     formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
     external_section = config.get('external', {})
     external_on_wait_timeout_path = external_section.get(
@@ -1173,6 +1155,35 @@ def _watch_task_target(config, target):
         else:
             sp.done("通知推送完成")
 
+
+def _watch_task_target(config, target):
+    """watch：等待绑定；超时走 on_wait_timeout 与外部动作后 sys.exit(1)。
+
+    Args:
+        config (dict): 配置信息
+        target (MonitorTarget): 计划任务目标
+
+    Returns:
+        dict: 已绑定的 pid_info
+
+    Raises:
+        SystemExit: 等待超时或事件日志查询失败
+    """
+    wait_start_time = time.time()
+    try:
+        pid_info = _wait_task_process(
+            config, target, start_from_create_time=True)
+    except TaskQueryError as e:
+        LOGGER.error(f"查询计划任务事件日志失败: {e}")
+        notify_fail("查询计划任务事件日志失败，无法确认监视实例")
+        sys.exit(1)
+
+    if pid_info is not None:
+        return pid_info
+
+    waited_time = time.time() - wait_start_time
+    _notify_task_wait_timeout(config, target, waited_time)
+
     notify_fail("未能获取有效的 PID 信息")
     sys.exit(1)
 
@@ -1212,6 +1223,7 @@ def _launch_task_target(config, target):
         notify_fail(str(e))
         sys.exit(1)
 
+    wait_start_time = time.time()
     try:
         pid_info = _wait_task_process(
             config,
@@ -1225,6 +1237,8 @@ def _launch_task_target(config, target):
         sys.exit(1)
 
     if pid_info is None:
+        waited_time = time.time() - wait_start_time
+        _notify_task_wait_timeout(config, target, waited_time)
         notify_fail("未检测到新的任务进程")
         sys.exit(1)
 
