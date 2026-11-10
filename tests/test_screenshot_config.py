@@ -33,7 +33,7 @@ DEFAULT_SCREENSHOT = {
 def _write_config(tmp_path, push, complete=False):
     """使用有效监控配置写入独立临时文件。"""
     value = config_module.get_default_config() if complete else {
-        'monitor': {'mode': 'psutil', 'psutil': {'process_name': 'ok.exe'}},
+        'monitor': {'target': 'ok.exe'},
     }
     if complete:
         value['push'].update(push)
@@ -421,7 +421,7 @@ def test_invalid_screenshot_nodes_do_not_abort_monitor(
     """非法截图类型和显式空值保留，不阻断正常监控或猜测目标。"""
     path = _write_config(tmp_path, {'screenshot': screenshot})
     result = config_module.load_config(str(path))
-    assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+    assert result['monitor']['target'] == 'ok.exe'
     expected = (dict(screenshot, retention=DEFAULT_RETENTION)
                 if isinstance(screenshot, dict) else screenshot)
     assert result['push']['screenshot'] == expected
@@ -638,7 +638,7 @@ def test_atomic_stream_failure_preserves_primary_and_releases_resources(
                 assert caught.value is control_error
             else:
                 result = config_module.load_config(str(path))
-                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                assert result['monitor']['target'] == 'ok.exe'
                 for name in TEMPLATE_NAMES:
                     assert result['push']['templates'][name][
                         'capture_screenshot'] is True
@@ -745,7 +745,7 @@ def test_raw_lookup_failure_attempts_owned_stream_cleanup(
                 patch('modules.config._make_write_yaml', return_value=writer):
             if failure_kind == 'os':
                 result = config_module.load_config(str(path))
-                assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+                assert result['monitor']['target'] == 'ok.exe'
                 for name in TEMPLATE_NAMES:
                     assert result['push']['templates'][name][
                         'capture_screenshot'] is True
@@ -842,7 +842,7 @@ def test_failed_close_cannot_touch_reused_descriptor(
                 patch('modules.config._make_write_yaml', return_value=writer):
             result = config_module.load_config(str(path))
             replace.assert_not_called()
-        assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+        assert result['monitor']['target'] == 'ok.exe'
         assert path.read_bytes() == original
         assert list(tmp_path.iterdir()) == [path]
         assert len(streams) == len(descriptors) == 1
@@ -1108,7 +1108,7 @@ def test_write_errno_diagnostics_do_not_depend_on_screenshot(
         owner = config_module.tempfile if stage == 'mkstemp' else os
         monkeypatch.setattr(owner, stage, fail)
         result = config_module.load_config(str(path))
-    assert result['monitor']['psutil']['process_name'] == 'ok.exe'
+    assert result['monitor']['target'] == 'ok.exe'
     assert path.read_bytes() == original
     assert list(tmp_path.iterdir()) == [path]
     expected_stage = 'serialize' if stage == 'dump' else stage
@@ -1269,7 +1269,7 @@ def test_flow_version_marker_and_backtick_token_load_then_write(tmp_path):
     """裸 flow 版本标记与反引号 token 经真实加载写回为合法 YAML 字符串。"""
     path = tmp_path / 'scalar-compat.yaml'
     path.write_text(
-        'monitor:\n  mode: psutil\n  psutil:\n    process_name: ok.exe\n'
+        'monitor:\n  target: ok.exe\n'
         'push:\n  screenshot:\n'
         '    targets:\n'
         '      - {provider: window, target: App@{version}, out: shot}\n'

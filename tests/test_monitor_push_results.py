@@ -9,7 +9,6 @@
 
 import ast
 import os
-import subprocess
 import sys
 import threading
 from unittest.mock import MagicMock, patch
@@ -166,24 +165,18 @@ def _make_feedback_send(channel_map, *, raise_on=None, sink=None):
 
 
 def _base_config(**external):
-    """构造 psutil 模式的最小监视配置。"""
+    """构造 watch 模式的最小监视配置。"""
     return {
         'monitor': {
-            'mode': 'psutil',
+            'mode': 'watch',
+            'target': 'missing.exe',
             'common': {
                 'timeout_interval': '1s', 'loop_interval': '1s',
                 'timeout_threshold': 1, 'max_wait': '0s',
                 'check_interval': '1s',
             },
-            'psutil': {'process_name': 'missing.exe'},
-            'task_scheduler': {
-                'task_name': r'\Custom\MainTask',
-                'lookback_minutes': 5,
-            },
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
+            'launch': {'args': None, 'cwd': None},
+            'watch': {'lookback_minutes': 5},
         },
         'external': {
             'on_end': '', 'on_timeout': '',
@@ -242,54 +235,54 @@ def _drive_check_timeout_external(handle):
                 r'task:\Custom\MyTask', 1, spinner=handle)
 
 
-def _drive_launch_task(handle):
-    """事件 on_wait_timeout：launch task 等待启动超时。"""
+def _drive_watch_task(handle):
+    """事件 on_wait_timeout：watch 任务等待触发超时。"""
     config = _base_config()
-    with patch('modules.monitor.subprocess.run',
-               return_value=subprocess.CompletedProcess(args=[], returncode=0)), \
-            patch('modules.monitor.query_task_pid',
-                  return_value={'state': 'not_found'}), \
+    config['monitor']['target'] = r'\Custom\MainTask'
+    with patch('modules.monitor._wait_task_process', return_value=None), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor.notify_fail'), \
+            patch('modules.monitor.time.time', return_value=1.0), \
             patch('modules.monitor.time.sleep'):
         with pytest.raises(SystemExit):
-            monitor._launch_task(config['monitor']['launch'], config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
-def _drive_launch_task_external(handle):
-    """事件 on_external：launch task 等待超时后的外部动作通知。"""
+def _drive_watch_task_external(handle):
+    """事件 on_external：watch 任务等待超时后的外部动作通知。"""
     config = _base_config(on_wait_timeout=r'task:\Custom\MyTask')
-    with patch('modules.monitor.subprocess.run',
-               return_value=subprocess.CompletedProcess(args=[], returncode=0)), \
-            patch('modules.monitor.query_task_pid',
-                  return_value={'state': 'not_found'}), \
+    config['monitor']['target'] = r'\Custom\MainTask'
+    with patch('modules.monitor._wait_task_process', return_value=None), \
             patch('modules.monitor.run_external_action',
                   return_value=_external_result()), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor.notify_fail'), \
+            patch('modules.monitor.time.time', return_value=1.0), \
             patch('modules.monitor.time.sleep'):
         with pytest.raises(SystemExit):
-            monitor._launch_task(config['monitor']['launch'], config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
 def _drive_monitor_processes(handle):
     """事件 on_wait_timeout：进程名多 PID 模式等待启动超时。"""
     config = _base_config()
-    with patch('modules.monitor._collect_matching_processes', return_value={}), \
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               return_value={}), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor.notify_fail'), \
             patch('modules.monitor.time.sleep'):
         with pytest.raises(SystemExit):
-            monitor.monitor_processes(config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
 def _drive_monitor_processes_external(handle):
     """事件 on_external：进程名多 PID 模式等待超时后的外部动作通知。"""
     config = _base_config(on_wait_timeout=r'task:\Custom\MyTask')
-    with patch('modules.monitor._collect_matching_processes', return_value={}), \
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               return_value={}), \
             patch('modules.monitor.run_external_action',
                   return_value=_external_result()), \
             patch('modules.monitor.spinner_phase',
@@ -297,40 +290,10 @@ def _drive_monitor_processes_external(handle):
             patch('modules.monitor.notify_fail'), \
             patch('modules.monitor.time.sleep'):
         with pytest.raises(SystemExit):
-            monitor.monitor_processes(config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
-def _drive_task_scheduler(handle):
-    """事件 on_wait_timeout：计划任务调度模式等待触发超时。"""
-    config = _base_config()
-    config['monitor']['mode'] = 'task_scheduler'
-    with patch('modules.monitor.query_task_pid',
-               return_value={'state': 'not_found'}), \
-            patch('modules.monitor.spinner_phase',
-                  side_effect=lambda *a, **k: _PhaseStub(handle)), \
-            patch('modules.monitor.notify_fail'), \
-            patch('modules.monitor.time.sleep'):
-        with pytest.raises(SystemExit):
-            monitor.monitor_via_task_scheduler(config)
-
-
-def _drive_task_scheduler_external(handle):
-    """事件 on_external：计划任务调度等待超时后的外部动作通知。"""
-    config = _base_config(on_wait_timeout=r'task:\Custom\MyTask')
-    config['monitor']['mode'] = 'task_scheduler'
-    with patch('modules.monitor.query_task_pid',
-               return_value={'state': 'not_found'}), \
-            patch('modules.monitor.run_external_action',
-                  return_value=_external_result()), \
-            patch('modules.monitor.spinner_phase',
-                  side_effect=lambda *a, **k: _PhaseStub(handle)), \
-            patch('modules.monitor.notify_fail'), \
-            patch('modules.monitor.time.sleep'):
-        with pytest.raises(SystemExit):
-            monitor.monitor_via_task_scheduler(config)
-
-
-_TEN_SITES = [
+_NOTIFICATION_SITES = [
     ('handle_process_end_on_end', _drive_handle_process_end,
      {'on_end': [('qmsg', True), ('smtp', False)]},
      ['通道 [qmsg] 推送成功', _SMTP_FAIL]),
@@ -340,19 +303,15 @@ _TEN_SITES = [
      {'on_timeout': [('qmsg', True)]}, ['通道 [qmsg] 推送成功']),
     ('check_timeout_on_external', _drive_check_timeout_external,
      {'on_external': [('qmsg', False)]}, ['通道 [qmsg] 推送失败']),
-    ('launch_task_on_wait_timeout', _drive_launch_task,
+    ('watch_task_on_wait_timeout', _drive_watch_task,
      {'on_wait_timeout': [('qmsg', True), ('smtp', True)]},
      ['通道 [qmsg] 推送成功', _SMTP_OK]),
-    ('launch_task_on_external', _drive_launch_task_external,
+    ('watch_task_on_external', _drive_watch_task_external,
      {'on_external': [('qmsg', False)]}, ['通道 [qmsg] 推送失败']),
     ('monitor_processes_on_wait_timeout', _drive_monitor_processes,
      {'on_wait_timeout': [('qmsg', False)]}, ['通道 [qmsg] 推送失败']),
     ('monitor_processes_on_external', _drive_monitor_processes_external,
      {'on_external': [('qmsg', False)]}, ['通道 [qmsg] 推送失败']),
-    ('task_scheduler_on_wait_timeout', _drive_task_scheduler,
-     {'on_wait_timeout': [('smtp', False)]}, [_SMTP_FAIL]),
-    ('task_scheduler_on_external', _drive_task_scheduler_external,
-     {'on_external': [('qmsg', True)]}, ['通道 [qmsg] 推送成功']),
 ]
 
 
@@ -414,9 +373,9 @@ def test_feedback_wrapper_single_send():
 
 @pytest.mark.parametrize(
     'site_id,driver,channel_map,expected',
-    _TEN_SITES, ids=[s[0] for s in _TEN_SITES])
-def test_monitor_all_ten_feedback_sites(site_id, driver, channel_map, expected):
-    """十处调用点：每通道恰一条终态，且不调用后置渲染补打。"""
+    _NOTIFICATION_SITES, ids=[s[0] for s in _NOTIFICATION_SITES])
+def test_monitor_all_feedback_sites(site_id, driver, channel_map, expected):
+    """全部调用点：每通道恰一条终态，且不调用后置渲染补打。"""
     handle = _RecordingHandle()
     send = _make_feedback_send(channel_map)
     render = MagicMock()
@@ -481,18 +440,18 @@ def test_timeout_handle_forwarding_process_name():
     """进程名多 PID 监视把活动 spinner 传入超时检查。"""
     handle = _RecordingHandle()
     config = _base_config()
-    config['monitor']['psutil']['process_name'] = 'target.exe'
+    config['monitor']['target'] = 'target.exe'
     timeout_mock = MagicMock(
         side_effect=ProcessTimeoutExitRequested('stop', 1234))
 
-    with patch('modules.monitor._collect_matching_processes',
+    with patch('modules.monitor._collect_matching_processes_for_target',
                return_value={1234: {'name': 'target.exe', 'create_time': 100.0}}), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor._check_process_timeout', timeout_mock), \
             patch('modules.monitor.time.sleep'), \
             patch('modules.monitor.notify_fail'):
-        monitor.monitor_processes(config)
+        monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
     timeout_mock.assert_called_once()
     assert timeout_mock.call_args.kwargs['spinner'] is handle
@@ -556,16 +515,16 @@ def test_monitor_bare_send_notification_only_inside_wrapper():
     assert wrapper.lineno <= calls[0].lineno <= wrapper.end_lineno
 
 
-def test_monitor_ten_sites_use_wrapper():
-    """十个业务点均调用包装，模板键分布符合十处迁移表。"""
+def test_monitor_notification_sites_use_wrapper():
+    """全部业务点均调用包装，模板键分布符合当前通知点表。"""
     tree = _monitor_tree()
     calls = _bare_calls(tree, '_send_notification_with_feedback')
-    assert len(calls) == 10
+    assert len(calls) == 8
     keys = [call.args[1].value for call in calls]
     assert keys.count('on_end') == 1
     assert keys.count('on_timeout') == 1
-    assert keys.count('on_wait_timeout') == 3
-    assert keys.count('on_external') == 5
+    assert keys.count('on_wait_timeout') == 2
+    assert keys.count('on_external') == 4
 
 
 def test_monitor_render_push_results_not_invoked_outside_facade():

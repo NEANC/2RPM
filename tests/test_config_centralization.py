@@ -23,9 +23,7 @@ def test_new_config_validation():
     # 创建一个缺少参数的新版本配置文件
     new_config = {
         'monitor': {
-            'psutil': {
-                'process_name': 'notepad.exe'
-            }
+            'target': 'notepad.exe'
             # 缺少 common 中的时间参数
         },
         'push': {
@@ -66,11 +64,9 @@ def test_existing_common_section_is_recursively_completed():
     """验证已有 common 节缺少单字段时仍会递归补齐。"""
     new_config = {
         'monitor': {
+            'target': 'notepad.exe',
             'common': {
                 'timeout_interval': '20m',
-            },
-            'psutil': {
-                'process_name': 'notepad.exe',
             },
         },
     }
@@ -99,6 +95,7 @@ def test_load_config_normalizes_new_schema_values_without_mocking():
     """验证真实加载流程归一化新 schema 的时间、阈值和任务回溯值。"""
     new_config = {
         'monitor': {
+            'target': 'notepad.exe',
             'common': {
                 'timeout_interval': '-5m',
                 'loop_interval': '0s',
@@ -106,7 +103,7 @@ def test_load_config_normalizes_new_schema_values_without_mocking():
                 'max_wait': '0s',
                 'check_interval': '2s',
             },
-            'task_scheduler': {'lookback_minutes': -7},
+            'watch': {'lookback_minutes': -7},
         },
     }
 
@@ -124,7 +121,7 @@ def test_load_config_normalizes_new_schema_values_without_mocking():
         assert common['timeout_threshold'] == 2
         assert common['max_wait'] == '0s'
         assert common['check_interval'] == '2s'
-        assert config['monitor']['task_scheduler']['lookback_minutes'] == 7
+        assert config['monitor']['watch']['lookback_minutes'] == 7
     finally:
         if os.path.exists(temp_config_file):
             os.unlink(temp_config_file)
@@ -173,8 +170,9 @@ def test_user_specified_config_missing_should_exit_with_error():
 def test_centralized_defaults():
     """测试集中管理的新配置默认值结构。"""
     monitor = DEFAULT_VALUES['monitor']
-    assert set(monitor) == {'mode', 'common', 'psutil', 'task_scheduler', 'launch'}
-    assert monitor['mode'] == 'psutil'
+    assert set(monitor) == {'mode', 'target', 'common', 'launch', 'watch'}
+    assert monitor['mode'] == 'watch'
+    assert monitor['target'] == 'notepad.exe'
     assert monitor['common'] == {
         'timeout_interval': '15m',
         'loop_interval': '1s',
@@ -182,18 +180,8 @@ def test_centralized_defaults():
         'max_wait': '30s',
         'check_interval': '1s',
     }
-    assert monitor['psutil'] == {'process_name': 'notepad.exe'}
-    assert monitor['task_scheduler'] == {
-        'task_name': '\\Custom\\MyTask',
-        'lookback_minutes': 10,
-    }
-    assert monitor['launch'] == {
-        'type': 'program',
-        'path': 'C:\\path\\to\\target.exe',
-        'task_name': '\\Custom\\MyTask',
-        'args': None,
-        'cwd': None,
-    }
+    assert monitor['launch'] == {'args': None, 'cwd': None}
+    assert monitor['watch'] == {'lookback_minutes': 10}
     assert 'timeout_threshold' not in DEFAULT_VALUES['external']
     assert DEFAULT_VALUES['push']['retry'] == {'interval': '3s', 'max_count': 3}
     assert DEFAULT_VALUES['log'] == {

@@ -197,20 +197,15 @@ def test_task_target_rejected():
         monitor._collect_matching_processes_for_target(task_target)
 
 
-def test_returned_structure_matches_existing():
-    """返回结构必须与既有收集函数一致。"""
+def test_returned_structure_matches_collector_contract():
+    """返回结构保持 {pid: {'name', 'create_time'}} 的既有契约。"""
     process = _FakeProcess(60, name='app.exe', create_time=1234.5)
-
-    with patch('modules.monitor._collect_matching_processes') as existing_mock:
-        existing_mock.return_value = {60: {'name': 'app.exe', 'create_time': 1234.5}}
-        expected = monitor._collect_matching_processes('app.exe')
 
     result = _collect(_process_target('app.exe'), [process])
 
     assert set(result.keys()) == {60}
     assert set(result[60].keys()) == {'name', 'create_time'}
-    assert set(result[60].keys()) == set(expected[60].keys())
-    assert result[60] == expected[60]
+    assert result[60] == {'name': 'app.exe', 'create_time': 1234.5}
 
 
 def test_initial_pid_set_is_frozen():

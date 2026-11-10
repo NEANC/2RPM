@@ -3,7 +3,6 @@
 """monitor.py external action 调用点回归测试。"""
 
 import os
-import subprocess
 import sys
 import threading
 from concurrent.futures import CancelledError
@@ -32,37 +31,32 @@ def _config_with_external(key, value):
     """构造只包含 external 触发项的测试配置。"""
     return {
         'monitor': {
-            'mode': 'psutil',
+            'mode': 'watch',
+            'target': 'missing.exe',
             'common': {
                 'timeout_interval': '1s', 'loop_interval': '1s',
                 'timeout_threshold': 1, 'max_wait': '0s',
                 'check_interval': '1s',
             },
-            'psutil': {'process_name': 'missing.exe'},
-            'task_scheduler': {
-                'task_name': r'\Custom\MainTask',
-                'lookback_minutes': 5,
-            },
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
+            'launch': {'args': None, 'cwd': None},
+            'watch': {'lookback_minutes': 5},
         },
         'external': {key: value}
     }
 
 
 def test_monitor_processes_rejects_invalid_mode_without_fallback():
-    """直接调用时非法 mode 应记录错误并停止，不应回退到 psutil。"""
+    """直接调用时非法 mode 应提示并停止，不应回退到其他模式。"""
     config = _config_with_external('on_end', '')
     config['monitor']['mode'] = 'invalid'
 
-    with patch('modules.monitor.LOGGER.error') as error_mock, \
-            patch('modules.monitor._collect_matching_processes') as collect_mock:
+    with patch('modules.monitor.notify_fail') as fail_mock, \
+            patch('modules.monitor._collect_matching_processes_for_target') \
+            as collect_mock:
         with pytest.raises(SystemExit):
-            monitor.monitor_processes(config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
-    error_mock.assert_called_once()
+    fail_mock.assert_called_once()
     collect_mock.assert_not_called()
 
 
@@ -129,37 +123,21 @@ def test_check_process_timeout_uses_external_action_metadata():
 
 def test_monitor_processes_wait_timeout_uses_external_action():
     """普通进程等待启动超时的 on_wait_timeout 应调用统一入口。"""
-    config = {
-        'monitor': {
-            'mode': 'psutil',
-            'common': {
-                'timeout_interval': '0s', 'loop_interval': '1s',
-                'timeout_threshold': 1, 'max_wait': '0s',
-                'check_interval': '1s',
-            },
-            'psutil': {'process_name': 'missing.exe'},
-            'task_scheduler': {
-                'task_name': r'\Custom\MainTask',
-                'lookback_minutes': 5,
-            },
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
-        },
-        'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
-    }
+    config = _config_with_external(
+        'on_wait_timeout', r'task:\Custom\MyTask')
+    config['monitor']['common']['timeout_interval'] = '0s'
     spinner = MagicMock()
     spinner.__enter__.return_value = spinner
     spinner.__exit__.return_value = False
 
-    with patch('modules.monitor._collect_matching_processes', return_value={}), \
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               return_value={}), \
             patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
             patch('modules.monitor.spinner_phase', return_value=spinner), \
             patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
             patch('modules.monitor.notify_fail'):
         with pytest.raises(SystemExit):
-            monitor.monitor_processes(config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
     action_mock.assert_called_once_with(r'task:\Custom\MyTask')
     notify_mock.assert_any_call(
@@ -172,25 +150,19 @@ def test_monitor_processes_wait_timeout_uses_external_action():
     )
 
 
-def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
-    """task_scheduler 模式等待触发超时时 on_wait_timeout 应调用统一入口。"""
+def test_watch_task_wait_timeout_uses_external_action():
+    """watch 任务等待触发超时时 on_wait_timeout 应调用统一入口。"""
     config = {
         'monitor': {
-            'mode': 'task_scheduler',
+            'mode': 'watch',
+            'target': r'\Custom\MainTask',
             'common': {
                 'timeout_interval': '1s', 'loop_interval': '1s',
                 'timeout_threshold': 1, 'max_wait': '0s',
                 'check_interval': '1s',
             },
-            'psutil': {'process_name': 'missing.exe'},
-            'task_scheduler': {
-                'task_name': r'\Custom\MainTask',
-                'lookback_minutes': 10,
-            },
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
+            'launch': {'args': None, 'cwd': None},
+            'watch': {'lookback_minutes': 10},
         },
         'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
     }
@@ -198,90 +170,13 @@ def test_monitor_via_task_scheduler_wait_timeout_uses_external_action():
     spinner.__enter__.return_value = spinner
     spinner.__exit__.return_value = False
 
-    with patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}), \
+    with patch('modules.monitor._wait_task_process', return_value=None), \
             patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
             patch('modules.monitor.spinner_phase', return_value=spinner), \
             patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
             patch('modules.monitor.notify_fail'):
         with pytest.raises(SystemExit):
-            monitor.monitor_via_task_scheduler(config)
-
-    action_mock.assert_called_once_with(r'task:\Custom\MyTask')
-    notify_mock.assert_any_call(
-        config,
-        'on_external',
-        external_program_name='MyTask',
-        external_program_path=r'\Custom\MyTask',
-        process_name=r'\Custom\MainTask',
-        process_pid=None,
-    )
-
-
-def test_launch_task_uses_fixed_one_minute_lookback():
-    """launch task 查询 PID 时固定使用 1 分钟回溯窗口。"""
-    config = {
-        'monitor': {
-            'mode': 'launch',
-            'common': {'max_wait': '1s', 'check_interval': '1s'},
-            'task_scheduler': {'lookback_minutes': 99},
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
-        },
-        'external': {},
-    }
-    spinner = MagicMock()
-    spinner.__enter__.return_value = spinner
-    spinner.__exit__.return_value = False
-
-    with patch('modules.monitor.subprocess.run') as run_mock, \
-            patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}) as query_mock, \
-            patch('modules.monitor.spinner_phase', return_value=spinner), \
-            patch('modules.monitor.notify_fail'):
-        run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0)
-        with pytest.raises(SystemExit):
-            monitor._launch_task(config['monitor']['launch'], config)
-
-    query_mock.assert_called_with(r'\Custom\MainTask', lookback_minutes=1)
-
-
-def test_launch_task_wait_timeout_uses_external_action_metadata():
-    """launch task 等待进程启动超时时应调用统一入口并发送 on_external。"""
-    config = {
-        'monitor': {
-            'mode': 'launch',
-            'common': {
-                'timeout_interval': '1s', 'loop_interval': '1s',
-                'timeout_threshold': 1, 'max_wait': '0s',
-                'check_interval': '1s',
-            },
-            'psutil': {'process_name': 'missing.exe'},
-            'task_scheduler': {
-                'task_name': r'\Custom\MainTask',
-                'lookback_minutes': 5,
-            },
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MainTask',
-            },
-        },
-        'external': {'on_wait_timeout': r'task:\Custom\MyTask'},
-    }
-    launch_section = config['monitor']['launch']
-    spinner = MagicMock()
-    spinner.__enter__.return_value = spinner
-    spinner.__exit__.return_value = False
-
-    with patch('modules.monitor.subprocess.run') as run_mock, \
-            patch('modules.monitor.query_task_pid', return_value={'state': 'not_found'}), \
-            patch('modules.monitor.send_notification', return_value=[]) as notify_mock, \
-            patch('modules.monitor.spinner_phase', return_value=spinner), \
-            patch('modules.monitor.run_external_action', return_value=_external_result()) as action_mock, \
-            patch('modules.monitor.notify_fail'):
-        run_mock.return_value = subprocess.CompletedProcess(args=[], returncode=0)
-        with pytest.raises(SystemExit):
-            monitor._launch_task(launch_section, config)
+            monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
     action_mock.assert_called_once_with(r'task:\Custom\MyTask')
     notify_mock.assert_any_call(
@@ -391,55 +286,40 @@ def _cancelled_check_process_timeout(handle):
             r'task:\Custom\MyTask', 1, spinner=handle)
 
 
-def _cancelled_launch_task(handle):
-    """经 _launch_task 的 on_wait_timeout/on_external 入口触发取消。"""
+def _cancelled_watch_task(handle):
+    """经 watch 任务的 on_wait_timeout/on_external 入口触发取消。"""
     config = _config_with_external('on_wait_timeout', r'task:\Custom\MyTask')
-    with patch('modules.monitor.subprocess.run',
-               return_value=subprocess.CompletedProcess(args=[], returncode=0)), \
-            patch('modules.monitor.query_task_pid',
-                  return_value={'state': 'not_found'}), \
+    config['monitor']['target'] = r'\Custom\MainTask'
+    with patch('modules.monitor._wait_task_process', return_value=None), \
             patch('modules.monitor.run_external_action',
                   return_value=_external_result()), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor.notify_fail'), \
+            patch('modules.monitor.time.time', return_value=1.0), \
             patch('modules.monitor.time.sleep'):
-        monitor._launch_task(config['monitor']['launch'], config)
+        monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
 def _cancelled_monitor_processes(handle):
     """经 monitor_processes 的 on_wait_timeout/on_external 入口触发取消。"""
     config = _config_with_external('on_wait_timeout', r'task:\Custom\MyTask')
-    with patch('modules.monitor._collect_matching_processes', return_value={}), \
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               return_value={}), \
             patch('modules.monitor.run_external_action',
                   return_value=_external_result()), \
             patch('modules.monitor.spinner_phase',
                   side_effect=lambda *a, **k: _PhaseStub(handle)), \
             patch('modules.monitor.notify_fail'), \
             patch('modules.monitor.time.sleep'):
-        monitor.monitor_processes(config)
-
-
-def _cancelled_task_scheduler(handle):
-    """经 monitor_via_task_scheduler 的 on_external 入口触发取消。"""
-    config = _config_with_external('on_wait_timeout', r'task:\Custom\MyTask')
-    with patch('modules.monitor.query_task_pid',
-               return_value={'state': 'not_found'}), \
-            patch('modules.monitor.run_external_action',
-                  return_value=_external_result()), \
-            patch('modules.monitor.spinner_phase',
-                  side_effect=lambda *a, **k: _PhaseStub(handle)), \
-            patch('modules.monitor.notify_fail'), \
-            patch('modules.monitor.time.sleep'):
-        monitor.monitor_via_task_scheduler(config)
+        monitor.monitor_processes(config, config_dir=r'C:\cfg')
 
 
 _CANCELLED_SITES = [
     ('handle_process_end', _cancelled_handle_process_end),
     ('check_process_timeout', _cancelled_check_process_timeout),
-    ('launch_task', _cancelled_launch_task),
+    ('watch_task', _cancelled_watch_task),
     ('monitor_processes', _cancelled_monitor_processes),
-    ('task_scheduler', _cancelled_task_scheduler),
 ]
 
 

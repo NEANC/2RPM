@@ -153,7 +153,10 @@ def main():
     try:
         # 运行主监视器
         LOGGER.info("初始化结束，正在运行主程序")
-        monitor_processes(CONFIG)
+        monitor_processes(
+            CONFIG,
+            config_dir=os.path.dirname(os.path.abspath(config_file)),
+        )
         LOGGER.info("主程序已结束运行")
     except KeyboardInterrupt:
         notify_fail("捕捉到 Ctrl+C，程序被手动终止")

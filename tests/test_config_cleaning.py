@@ -28,10 +28,11 @@ def test_config_cleaning():
     default_config = get_default_config()
     LOGGER.info("默认配置加载成功")
     
-    # 创建一个包含错误配置的测试配置（V4 节名）
+    # 创建一个包含错误配置的测试配置（统一监视目标布局）
     test_config = {
         'monitor': {
-            'mode': 'psutil',
+            'mode': 'watch',
+            'target': 'MaaPiCli.exe',
             'common': {
                 'timeout_interval': '45m',
                 'loop_interval': '1s',
@@ -41,22 +42,14 @@ def test_config_cleaning():
                 # 这些是错误的配置项，应该被清理
                 'unknown_common': 'invalid'
             },
-            'psutil': {
-                'process_name': 'MaaPiCli.exe',
-                'unknown_psutil': 'invalid'
-            },
-            'task_scheduler': {
-                'task_name': '\\Custom\\MyTask',
-                'lookback_minutes': 10,
-                'unknown_task_scheduler': 'invalid'
-            },
             'launch': {
-                'type': 'program',
-                'path': 'C:\\path\\to\\target.exe',
-                'task_name': '\\Custom\\MyTask',
                 'args': None,
                 'cwd': None,
                 'unknown_launch': 'invalid'
+            },
+            'watch': {
+                'lookback_minutes': 10,
+                'unknown_watch': 'invalid'
             },
             # 这些是错误的配置项，应该被清理
             'unknown_monitor': 'invalid'
@@ -89,9 +82,8 @@ def test_config_cleaning():
     monitor_section = test_config['monitor']
     assert 'unknown_monitor' not in monitor_section
     assert 'unknown_common' not in monitor_section['common']
-    assert 'unknown_psutil' not in monitor_section['psutil']
-    assert 'unknown_task_scheduler' not in monitor_section['task_scheduler']
     assert 'unknown_launch' not in monitor_section['launch']
+    assert 'unknown_watch' not in monitor_section['watch']
     LOGGER.info("配置清理成功!")
 
 if __name__ == '__main__':
