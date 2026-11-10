@@ -326,10 +326,10 @@ def get_task_event_boundary(record_id=None):
             handles = win32evtlog.EvtNext(query_handle, 1)
         except Exception as e:
             if _is_no_more_items(e):
-                return 0
+                return TaskEventBoundary(0, '') if record_id is None else None
             raise
         if not handles:
-            return 0
+            return TaskEventBoundary(0, '') if record_id is None else None
 
         handle = handles[0]
         try:

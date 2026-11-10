@@ -1,3 +1,4 @@
+import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -24,7 +25,7 @@ def log_env(monkeypatch):
     def query(channel, flags, xpath, context):
         if env.failure == 'query':
             raise RuntimeError('query failed')
-        if xpath == '*':
+        if xpath == '*' or 'EventRecordID=' not in xpath:
             ids = sorted(env.log, reverse=True)[:1]
         else:
             ids = [rid for rid in env.log if f'EventRecordID={rid}' in xpath]
@@ -95,6 +96,87 @@ def test_continuous_log_binds_after_anchor_check(log_env):
     assert result['pid'] == 4321
     assert len(env.handles) == 4
     env.run.assert_called_once()
+
+
+def test_empty_log_binds_only_event_after_trigger(log_env):
+    env = log_env
+    env.log.clear()
+    old = SimpleNamespace(record_id=1, pid=1111,
+                          event_time='1970-01-01T00:00:01+00:00')
+    new = SimpleNamespace(
+        record_id=2, pid=4321,
+        event_time=datetime.datetime.fromtimestamp(
+            1005, datetime.timezone.utc).isoformat())
+    env.query.return_value = [old, new]
+    env.bind.return_value = dict(IDENTITY)
+
+    result = monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    assert result['pid'] == 4321
+    assert [call.args[0] for call in env.bind.call_args_list] == [new]
+    env.run.assert_called_once()
+
+
+def test_empty_log_skips_invalid_event_time(log_env):
+    env = log_env
+    env.log.clear()
+    invalid = SimpleNamespace(record_id=1, pid=1111, event_time='broken')
+    env.query.return_value = [invalid]
+    env.bind.return_value = dict(IDENTITY)
+
+    with pytest.raises(SystemExit):
+        monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    env.run.assert_called_once()
+    env.bind.assert_not_called()
+    assert env.send.call_args_list[0].args[1] == 'on_wait_timeout'
+
+
+def test_empty_log_without_candidate_uses_normal_timeout(log_env):
+    env = log_env
+    env.log.clear()
+    config = dict(BASE_CONFIG, external={'on_wait_timeout': 'timeout.exe'})
+
+    with pytest.raises(SystemExit) as exc:
+        monitor._launch_task_target(config, TASK_TARGET)
+
+    assert exc.value.code == 1
+    env.run.assert_called_once()
+    env.bind.assert_not_called()
+    assert env.send.call_args_list[0].args[1] == 'on_wait_timeout'
+    env.action.assert_called_once_with('timeout.exe')
+
+
+@pytest.mark.parametrize('phase', ['before', 'after'])
+@pytest.mark.parametrize('failure', ['query', 'next', 'render'])
+def test_empty_log_errors_never_bind_or_run_actions(
+        log_env, monkeypatch, phase, failure):
+    env = log_env
+    env.log.clear()
+    if failure == 'render':
+        if phase == 'before':
+            env.log[1] = _event_xml('\\Other', pid=1, record_id=1)
+    monkeypatch.setattr(monitor, 'query_task_events',
+                        task_monitor.query_task_events)
+    if phase == 'before':
+        env.failure = failure
+    else:
+        def trigger(*args, **kwargs):
+            env.failure = failure
+            if failure == 'render':
+                env.log[2] = _event_xml('\\Other', pid=2, record_id=2)
+            return SimpleNamespace(returncode=0)
+
+        env.run.side_effect = trigger
+
+    with pytest.raises(SystemExit) as exc:
+        monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    assert exc.value.code == 1
+    assert env.run.call_count == (phase == 'after')
+    env.bind.assert_not_called()
+    env.send.assert_not_called()
+    env.action.assert_not_called()
 
 
 def test_rotation_of_older_events_preserves_anchor(log_env):

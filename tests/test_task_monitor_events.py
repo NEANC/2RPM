@@ -246,17 +246,19 @@ class TestQueryTaskEvents(unittest.TestCase):
 
         self.assertEqual([handle.close_calls for handle in handles], [1, 1])
 
-    def test_boundary_returns_zero_when_empty(self):
-        """没有事件时边界返回 0。"""
+    def test_boundary_returns_empty_identity_when_empty(self):
+        """可读空日志提供空边界且关闭查询句柄。"""
+        query_handle = _FakeHandle()
         with patch.object(task_monitor.win32evtlog, 'EvtQuery',
-                          return_value=_FakeHandle()), \
+                          return_value=query_handle), \
                 patch.object(task_monitor.win32evtlog, 'EvtNext',
                              return_value=[]), \
                 patch.object(task_monitor.win32evtlog, 'EvtRender',
                              side_effect=_fake_render):
             boundary = task_monitor.get_task_event_boundary()
 
-        self.assertEqual(boundary, 0)
+        self.assertEqual(boundary, task_monitor.TaskEventBoundary(0, ''))
+        self.assertEqual(query_handle.close_calls, 1)
 
     def test_boundary_returns_latest_record_id(self):
         """边界取最新一条事件的 EventRecordID，并关闭自身句柄。"""

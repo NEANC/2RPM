@@ -24,6 +24,7 @@ from modules.monitor_launch import launch_file
 from modules.monitor_target import MonitorTarget, resolve_monitor_target
 from modules.task_monitor import (
     TaskQueryError,
+    _parse_event_time,
     bind_task_event,
     get_task_event_boundary,
     query_task_events
@@ -1021,6 +1022,7 @@ def _wait_task_process(
                 waited_time = time.time() - wait_start_time
                 if waited_time > max_wait:
                     if (boundary_record_id is not None
+                            and boundary_record_id.record_id > 0
                             and get_task_event_boundary(boundary_record_id.record_id)
                             != boundary_record_id):
                         raise TaskQueryError('事件日志边界失效')
@@ -1036,13 +1038,21 @@ def _wait_task_process(
                 if boundary_record_id is None:
                     candidates = list(events)
                 else:
-                    if (get_task_event_boundary(boundary_record_id.record_id)
+                    if (boundary_record_id.record_id > 0
+                            and get_task_event_boundary(boundary_record_id.record_id)
                             != boundary_record_id):
                         raise TaskQueryError('事件日志边界失效')
-                    candidates = [
-                        event for event in events
-                        if event.record_id > boundary_record_id.record_id
-                    ]
+                    candidates = []
+                    for event in events:
+                        if event.record_id <= boundary_record_id.record_id:
+                            continue
+                        if boundary_record_id.record_id == 0:
+                            try:
+                                if _parse_event_time(event.event_time) < launch_trigger_time:
+                                    continue
+                            except (TypeError, ValueError):
+                                continue
+                        candidates.append(event)
 
                 # 事件已按从新到旧排列，第一个绑定成功即采用，失败则看更早的候选
                 for event in candidates:
@@ -1227,7 +1237,6 @@ def _launch_task_target(config, target):
         sys.exit(1)
 
     if not boundary_record_id:
-        # 边界不可用时无法区分新旧实例，拒绝触发以免接管触发前的旧进程
         LOGGER.error("无法建立计划任务事件边界，已取消触发")
         notify_fail(
             f"无法建立计划任务事件边界，已取消触发: {target.value}")
