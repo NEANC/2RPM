@@ -182,14 +182,14 @@ def _which_factory(mapping):
         _file_target(r'C:\prog\a.ps1'),
         r'--path "D:\x y.txt"',
         PWSH,
-        r'"C:\PS\pwsh.exe" -NoProfile -Command "& ""C:\prog\a.ps1"" '
-        r'--path ""D:\x y.txt"""',
+        r'C:\PS\pwsh.exe -NoProfile -Command "& \"C:\prog\a.ps1\" '
+        r'--path \"D:\x y.txt\""',
     ),
     (
         _file_target(r'C:\prog\a.PS1'),
         None,
         PWSH,
-        r'"C:\PS\pwsh.exe" -NoProfile -Command "& ""C:\prog\a.PS1"""',
+        r'C:\PS\pwsh.exe -NoProfile -Command "& \"C:\prog\a.PS1\""',
     ),
     (
         _file_target(r'C:\prog\s.py'),
@@ -243,8 +243,8 @@ def test_ps1_falls_back_to_windows_powershell():
 
     assert command.executable == POWERSHELL
     assert command.command_line == (
-        r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"'
-        r' -NoProfile -Command "& ""C:\prog\a.ps1"" --x"'
+        r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+        r' -NoProfile -Command "& \"C:\prog\a.ps1\" --x"'
     )
 
 

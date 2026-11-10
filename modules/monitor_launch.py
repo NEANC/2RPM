@@ -176,14 +176,11 @@ def _compose_command(path, extension, args):
 
     if extension in POWERSHELL_EXTENSIONS:
         interpreter = _resolve_powershell()
+        command_body = f'& "{path}"'
         if args is not None:
-            inner_args = args.replace('"', '""')
-            command_line = (
-                f'"{interpreter}" -NoProfile -Command '
-                f'"& ""{path}"" {inner_args}"')
-        else:
-            command_line = (
-                f'"{interpreter}" -NoProfile -Command "& ""{path}"""')
+            command_body = f'{command_body} {args}'
+        command_line = subprocess.list2cmdline(
+            [interpreter, '-NoProfile', '-Command', command_body])
         return interpreter, command_line
 
     if extension in PYTHON_EXTENSIONS:
