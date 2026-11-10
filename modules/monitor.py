@@ -22,7 +22,13 @@ from modules.utils import (
 from modules.notification import feedback_scope, send_notification
 from modules.config import DEFAULT_VALUES
 from modules.monitor_target import MonitorTarget
-from modules.task_monitor import query_task_pid
+from modules.task_monitor import (
+    TaskQueryError,
+    bind_task_event,
+    get_task_event_boundary,
+    query_task_pid,
+    query_task_events
+)
 from modules.spinner import current_spinner, notify_fail, spinner_phase
 
 LOGGER = logging.getLogger(__name__)
@@ -1390,3 +1396,260 @@ def monitor_via_task_scheduler(config):
     except KeyboardInterrupt:
         notify_fail("任务被取消，正在结束监视循环")
         raise
+
+
+def _wait_task_process(
+    config,
+    target,
+    *,
+    boundary_record_id=None,
+    start_from_create_time=False,
+):
+    """轮询事件日志直到绑定成功，返回 pid_info 或 None（等待超时）。
+
+    Args:
+        config (dict): 配置信息
+        target (MonitorTarget): 计划任务目标，使用其 value 作为任务路径
+        boundary_record_id (int | None): 触发前的记录号边界，
+            非 None 时只接受记录号更大的事件
+        start_from_create_time (bool): 为 True 时 start_time 取进程创建时间，
+            否则取绑定成功的时刻
+
+    Returns:
+        dict | None: pid_info 字典；等待超时返回 None
+
+    Raises:
+        TaskQueryError: 事件日志查询失败，向上抛出由调用方处理
+        KeyboardInterrupt: 等待被取消，提示后原样抛出
+    """
+    common_section = config.get('monitor', {}).get('common', {})
+    max_wait = _parse_time_or_default(
+        common_section.get(
+            'max_wait', DEFAULT_VALUES['monitor']['common']['max_wait']),
+        DEFAULT_VALUES['monitor']['common']['max_wait'])
+    check_interval = _parse_time_or_default(
+        common_section.get(
+            'check_interval',
+            DEFAULT_VALUES['monitor']['common']['check_interval']),
+        DEFAULT_VALUES['monitor']['common']['check_interval'])
+    watch_section = config.get('monitor', {}).get('watch', {})
+    lookback_minutes = watch_section.get('lookback_minutes', 10)
+
+    wait_start_time = time.time()
+    # 等待提示仅打印一次，避免无任务触发时刷屏
+    waiting_logged = False
+
+    try:
+        with spinner_phase("等待计划任务触发...") as sp:
+            while True:
+                waited_time = time.time() - wait_start_time
+                if waited_time > max_wait:
+                    LOGGER.info("等待计划任务触发已超时")
+                    sp.fail("等待超时，计划任务未触发")
+                    return None
+
+                events = query_task_events(target.value, lookback_minutes)
+                if boundary_record_id is None:
+                    candidates = list(events)
+                else:
+                    candidates = [
+                        event for event in events
+                        if event.record_id > boundary_record_id
+                    ]
+
+                # 事件已按从新到旧排列，第一个绑定成功即采用，失败则看更早的候选
+                for event in candidates:
+                    identity = bind_task_event(event)
+                    if identity is None:
+                        continue
+
+                    if start_from_create_time:
+                        start_time = identity['create_time']
+                    else:
+                        start_time = time.time()
+
+                    pid_info = {
+                        'pid': identity['pid'],
+                        'name': identity['name'],
+                        'create_time': identity['create_time'],
+                        'start_time': start_time,
+                        'last_warning_time': time.time(),
+                        'timeout_count': 0,
+                    }
+                    LOGGER.info(
+                        f"检测到计划任务进程: {pid_info['name']} "
+                        f"(PID: {pid_info['pid']})"
+                    )
+                    sp.done("任务已触发")
+                    return pid_info
+
+                if not waiting_logged:
+                    LOGGER.info(
+                        f"等待计划任务 '{target.value}' 触发中..."
+                    )
+                    waiting_logged = True
+                sp.text("等待计划任务触发...")
+                time.sleep(check_interval)
+    except KeyboardInterrupt:
+        notify_fail("任务被取消，退出等待循环")
+        raise
+
+
+def _trigger_task(target):
+    """执行 schtasks /run；非 0 返回码抛 RuntimeError（含解码后的错误文本）。
+
+    返回码 0 只表示触发请求已提交，不代表任务进程已经启动。
+
+    Args:
+        target (MonitorTarget): 计划任务目标，使用其 value 作为任务路径
+
+    Returns:
+        None: 触发请求已提交
+
+    Raises:
+        RuntimeError: 返回码非 0，消息包含解码后的错误文本
+    """
+    LOGGER.info(f"正在触发计划任务: {target.value}")
+    completed = subprocess.run(
+        ['schtasks', '/run', '/tn', target.value],
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = (
+            decode_process_output(completed.stderr)
+            or decode_process_output(completed.stdout)
+            or '未知错误'
+        )
+        raise RuntimeError(f"触发计划任务失败: {target.value}，{message}")
+
+    LOGGER.info(
+        f"已提交触发请求: {target.value}，返回码 0 不代表任务已启动"
+    )
+
+
+def _watch_task_target(config, target):
+    """watch：等待绑定；超时走 on_wait_timeout 与外部动作后 sys.exit(1)。
+
+    Args:
+        config (dict): 配置信息
+        target (MonitorTarget): 计划任务目标
+
+    Returns:
+        dict: 已绑定的 pid_info
+
+    Raises:
+        SystemExit: 等待超时或事件日志查询失败
+    """
+    wait_start_time = time.time()
+    try:
+        pid_info = _wait_task_process(
+            config, target, start_from_create_time=True)
+    except TaskQueryError as e:
+        LOGGER.error(f"查询计划任务事件日志失败: {e}")
+        notify_fail("查询计划任务事件日志失败，无法确认监视实例")
+        sys.exit(1)
+
+    if pid_info is not None:
+        return pid_info
+
+    waited_time = time.time() - wait_start_time
+    formatted_waited_time = str(datetime.timedelta(seconds=int(waited_time)))
+    external_section = config.get('external', {})
+    external_on_wait_timeout_path = external_section.get(
+        'on_wait_timeout', '')
+
+    with spinner_phase("正在执行通知推送...") as sp:
+        LOGGER.error(f"等待超时，计划任务未触发: {target.value}")
+        wait_results = _send_notification_with_feedback(
+            config,
+            'on_wait_timeout',
+            spinner=sp,
+            process_name=target.value,
+            process_wait_time=formatted_waited_time
+        )
+        wait_all_failed = _all_push_failed(wait_results)
+
+        if external_on_wait_timeout_path:
+            sp.text("正在执行外部动作...")
+            LOGGER.info("等待计划任务触发超时，正在执行外部动作...")
+            try:
+                result = run_external_action(external_on_wait_timeout_path)
+                sp.write_done("外部动作执行成功")
+                LOGGER.info(
+                    f"外部动作 {external_on_wait_timeout_path} 执行成功")
+                _send_notification_with_feedback(
+                    config,
+                    'on_external',
+                    spinner=sp,
+                    external_program_name=result['display_name'],
+                    external_program_path=result['display_path'],
+                    process_name=target.value,
+                    process_pid=None,
+                )
+            except CancelledError:
+                # 通知被取消优先重抛，不记为外部动作失败后继续
+                raise
+            except Exception as e:
+                sp.write_fail("外部动作执行失败")
+                LOGGER.error(
+                    f"执行外部动作 {external_on_wait_timeout_path} "
+                    f"时发生错误: {e}",
+                    exc_info=True
+                )
+
+        if wait_all_failed:
+            sp.fail("通知推送失败")
+        else:
+            sp.done("通知推送完成")
+
+    notify_fail("未能获取有效的 PID 信息")
+    sys.exit(1)
+
+
+def _launch_task_target(config, target):
+    """launch：日志可用性预检 → 记录边界 → 触发一次 → 等待新事件绑定。
+
+    Args:
+        config (dict): 配置信息
+        target (MonitorTarget): 计划任务目标
+
+    Returns:
+        dict: 已绑定的 pid_info，start_time 为绑定时刻
+
+    Raises:
+        SystemExit: 预检失败、触发失败、等待超时或查询失败
+    """
+    try:
+        query_task_events(target.value, 1)
+    except TaskQueryError as e:
+        LOGGER.error(f"读取计划任务事件日志失败: {e}")
+        notify_fail("无法读取计划任务事件日志，未触发任务")
+        sys.exit(1)
+
+    boundary_record_id = get_task_event_boundary()
+
+    try:
+        _trigger_task(target)
+    except RuntimeError as e:
+        LOGGER.error(str(e))
+        notify_fail(str(e))
+        sys.exit(1)
+
+    try:
+        pid_info = _wait_task_process(
+            config,
+            target,
+            boundary_record_id=boundary_record_id,
+            start_from_create_time=False,
+        )
+    except TaskQueryError as e:
+        LOGGER.error(f"已触发任务，但查询事件日志失败: {e}")
+        notify_fail("已触发任务，但无法确认监视实例")
+        sys.exit(1)
+
+    if pid_info is None:
+        notify_fail("未检测到新的任务进程")
+        sys.exit(1)
+
+    return pid_info
