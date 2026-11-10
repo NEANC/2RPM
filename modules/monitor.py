@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+import ntpath
 import os
 import shlex
 import subprocess
@@ -20,6 +21,7 @@ from modules.utils import (
 )
 from modules.notification import feedback_scope, send_notification
 from modules.config import DEFAULT_VALUES
+from modules.monitor_target import MonitorTarget
 from modules.task_monitor import query_task_pid
 from modules.spinner import current_spinner, notify_fail, spinner_phase
 
@@ -427,6 +429,117 @@ def _collect_matching_processes(process_name):
         except (KeyError, TypeError):
             continue
     return current_processes
+
+
+def _normalize_windows_path(path: str) -> str:
+    """按 Windows 语义规范化路径用于比较（不访问文件系统）。
+
+    Args:
+        path (str): 待规范化的路径
+
+    Returns:
+        str: 统一分隔符并转为小写的路径；输入不是非空字符串时返回空字符串
+    """
+    if not isinstance(path, str) or not path:
+        return ''
+    return ntpath.normcase(ntpath.normpath(path.replace('/', '\\')))
+
+
+def _collect_matching_processes_for_target(target: MonitorTarget) -> dict:
+    """按监视目标收集匹配进程，返回 {pid: {'name': str, 'create_time': float}}。
+
+    process 目标按进程名大小写敏感精确比较，不读取 exe 路径；file 目标按
+    规范化后的可执行文件路径比较，读取被拒绝时仅在进程名与目标文件名
+    一致的前提下降级入选；task 目标不支持进程匹配。
+
+    Args:
+        target (MonitorTarget): 监视目标
+
+    Returns:
+        dict: {pid: {'name': 进程真实名称, 'create_time': 进程创建时间}}
+
+    Raises:
+        ValueError: 目标类型为计划任务或不受支持
+    """
+    if target.kind == 'task':
+        raise ValueError(f"计划任务目标不支持按进程匹配: {target.value}")
+    if target.kind not in ('process', 'file'):
+        raise ValueError(f"不支持的监视目标类型: {target.kind!r}")
+
+    target_path = ''
+    target_file_name = ''
+    if target.kind == 'file':
+        target_path = _normalize_windows_path(target.value)
+        target_file_name = _normalize_windows_path(
+            ntpath.basename(target.value))
+
+    current_processes = {}
+    for p in psutil.process_iter(['pid', 'name', 'create_time']):
+        try:
+            info = p.info
+        except psutil.AccessDenied:
+            LOGGER.warning(f"读取进程信息被拒绝 (PID={p.pid})，已跳过")
+            continue
+        except psutil.NoSuchProcess:
+            continue
+
+        if target.kind == 'process':
+            try:
+                name = info['name']
+                create_time = info['create_time']
+            except (KeyError, TypeError):
+                continue
+            if name != target.value:
+                continue
+        else:
+            try:
+                create_time = info['create_time']
+            except (KeyError, TypeError):
+                continue
+            name = info.get('name')
+            if not _matches_file_target(
+                    p, name, target_path, target_file_name):
+                continue
+
+        current_processes[p.pid] = {
+            'name': name,
+            'create_time': create_time,
+        }
+    return current_processes
+
+
+def _matches_file_target(p, name, target_path, target_file_name):
+    """判断单个进程是否匹配文件目标。
+
+    Args:
+        p: psutil 进程对象
+        name (str | None): 已读取的进程名
+        target_path (str): 规范化后的目标文件路径
+        target_file_name (str): 规范化后的目标文件名
+
+    Returns:
+        bool: 是否匹配
+    """
+    try:
+        exe_path = p.exe()
+    except psutil.AccessDenied:
+        if not target_file_name:
+            return False
+        if _normalize_windows_path(name) != target_file_name:
+            return False
+        LOGGER.warning(
+            f"读取进程 PID {p.pid} 的可执行文件路径被拒绝，"
+            f"已按进程名 {name} 降级匹配"
+        )
+        return True
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:
+        return False
+
+    if not exe_path:
+        return False
+    return _normalize_windows_path(exe_path) == target_path
 
 
 def _detect_ended_pids(monitored_pids, current_processes, processes):
