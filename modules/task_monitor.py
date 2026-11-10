@@ -629,7 +629,11 @@ def bind_task_event(event):
         LOGGER.debug(f"PID {pid} 已退出，跳过绑定")
         return None
 
-    if not exe or '%' in exe:
+    if not exe:
+        LOGGER.warning(f"PID {pid} 无法获取可执行路径")
+        return None
+
+    if '%' in exe:
         LOGGER.warning(f"PID {pid} 的可执行路径含未展开变量: {exe!r}")
         return None
 
@@ -663,5 +667,8 @@ def bind_task_event(event):
         name = proc.name()
     except psutil.AccessDenied:
         name = ntpath.basename(event_path)
+    except psutil.NoSuchProcess:
+        LOGGER.debug(f"PID {pid} 读取进程名时已退出，跳过绑定")
+        return None
 
     return {'pid': pid, 'name': name, 'create_time': float(create_time)}

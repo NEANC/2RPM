@@ -128,6 +128,28 @@ class TestBindTaskEvent(unittest.TestCase):
 
         self.assertIsNone(bound)
 
+    def test_bind_returns_none_when_name_read_races_exit(self):
+        """读取进程名时进程已退出，返回 None 且不抛异常。"""
+        process = _FakeProcess(
+            EVENT_EXE, EVENT_TIMESTAMP + 0.005,
+            name=psutil.NoSuchProcess(80612))
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            bound = task_monitor.bind_task_event(_make_event())
+
+        self.assertIsNone(bound)
+
+    def test_bind_logs_empty_exe_as_missing(self):
+        """空可执行路径记为无法获取，而不是未展开变量。"""
+        process = _FakeProcess('', EVENT_TIMESTAMP + 0.005)
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            with self.assertLogs(task_monitor.LOGGER, level='WARNING') as logs:
+                bound = task_monitor.bind_task_event(_make_event())
+
+        self.assertIsNone(bound)
+        logged = '\n'.join(logs.output)
+        self.assertIn('无法获取可执行路径', logged)
+        self.assertNotIn('未展开变量', logged)
+
     def test_bind_without_event_link_is_documented(self):
         """任务名相同不放行，只有 exe 与时间都匹配才返回身份。"""
         mismatched = _FakeProcess('E:\\Tools\\other.exe', EVENT_TIMESTAMP + 0.005)
