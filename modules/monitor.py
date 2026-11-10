@@ -35,6 +35,9 @@ LOGGER = logging.getLogger(__name__)
 _ICON_DONE = "\u2714\ufe0f"  # ✔️
 _ICON_FAIL = "\u274c"        # ❌
 
+# launch 任务只覆盖“触发到发现”的短窗口，旧事件由记录号边界排除
+_LAUNCH_TASK_LOOKBACK_MINUTES = 1
+
 
 class ProcessTimeoutExitRequested(Exception):
     """超时阈值到达并成功执行外部程序后，要求停止当前进程监视"""
@@ -563,8 +566,7 @@ def _add_new_process(processes, pid, name, create_time):
 def _monitor_single_pid(pid_info, config, sp):
     """监视单个 PID 的存活状态，处理超时和结束
 
-    从 monitor_via_task_scheduler 阶段2 提取，供 launch 和
-    task_scheduler 两种模式复用
+    供统一监视入口在文件启动或计划任务绑定后复用
 
     Args:
         pid_info (dict): 包含 pid/name/create_time/start_time/
@@ -974,6 +976,7 @@ def _wait_task_process(
     *,
     boundary_record_id=None,
     start_from_create_time=False,
+    lookback_minutes=None,
 ):
     """轮询事件日志直到绑定成功，返回 pid_info 或 None（等待超时）。
 
@@ -984,6 +987,8 @@ def _wait_task_process(
             非 None 时只接受记录号更大的事件
         start_from_create_time (bool): 为 True 时 start_time 取进程创建时间，
             否则取绑定成功的时刻
+        lookback_minutes (int | None): 事件查询回溯分钟数；
+            为 None 时读取 monitor.watch.lookback_minutes（仅被动监视生效）
 
     Returns:
         dict | None: pid_info 字典；等待超时返回 None
@@ -1002,8 +1007,9 @@ def _wait_task_process(
             'check_interval',
             DEFAULT_VALUES['monitor']['common']['check_interval']),
         DEFAULT_VALUES['monitor']['common']['check_interval'])
-    watch_section = config.get('monitor', {}).get('watch', {})
-    lookback_minutes = watch_section.get('lookback_minutes', 10)
+    if lookback_minutes is None:
+        watch_section = config.get('monitor', {}).get('watch', {})
+        lookback_minutes = watch_section.get('lookback_minutes', 10)
 
     wait_start_time = time.time()
     # 等待提示仅打印一次，避免无任务触发时刷屏
@@ -1230,6 +1236,9 @@ def _launch_task_target(config, target):
             target,
             boundary_record_id=boundary_record_id,
             start_from_create_time=False,
+            # 固定 1 分钟窗口：launch 只关心触发后的新事件，
+            # watch.lookback_minutes 仅对被动监视生效
+            lookback_minutes=_LAUNCH_TASK_LOOKBACK_MINUTES,
         )
     except TaskQueryError as e:
         LOGGER.error(f"已触发任务，但查询事件日志失败: {e}")

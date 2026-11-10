@@ -852,8 +852,8 @@ def _normalize_watch_lookback_minutes(watch_section):
             watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
             return True
         normalized_for_store = str(normalized)
-    elif isinstance(raw_value, int):
-        normalized_for_store = abs(raw_value)
+    elif isinstance(raw_value, (int, float)):
+        normalized_for_store = int(abs(raw_value))
     else:
         LOGGER.warning(
             f"monitor.watch.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
@@ -861,7 +861,9 @@ def _normalize_watch_lookback_minutes(watch_section):
         watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
         return True
 
-    if watch_section.get('lookback_minutes') == normalized_for_store:
+    current_value = watch_section.get('lookback_minutes')
+    if (current_value == normalized_for_store
+            and type(current_value) is type(normalized_for_store)):
         return False
 
     watch_section['lookback_minutes'] = normalized_for_store

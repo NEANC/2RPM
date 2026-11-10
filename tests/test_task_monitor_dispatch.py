@@ -234,6 +234,24 @@ def test_watch_returns_none_after_max_wait(env):
     assert env.sleep.call_count >= 1
 
 
+def test_watch_uses_configured_lookback(env):
+    """watch 模式按 monitor.watch.lookback_minutes 查询事件。"""
+    config = {
+        'monitor': {
+            'common': {'max_wait': '3s', 'check_interval': '1s'},
+            'watch': {'lookback_minutes': 7},
+        },
+    }
+    env.query.return_value = [_event(1, 4321)]
+    env.bind.return_value = dict(IDENTITY)
+
+    pid_info = monitor._wait_task_process(
+        config, TASK_TARGET, start_from_create_time=True)
+
+    assert pid_info['pid'] == 4321
+    env.query.assert_any_call(TASK_VALUE, 7)
+
+
 def test_watch_start_time_from_create_time(env):
     """watch 模式的 start_time 取事件绑定的进程创建时间。"""
     env.query.return_value = [_event(1, 4321)]
@@ -272,7 +290,7 @@ def test_launch_precheck_failure_does_not_trigger(env):
 
 
 def test_launch_boundary_filters_old_events(env):
-    """只采用边界之后的事件，边界先于触发读取，回溯参数取自配置。"""
+    """只采用边界之后的事件，边界先于触发读取，回溯窗口固定 1 分钟。"""
     config = {
         'monitor': {
             'common': {'max_wait': '3s', 'check_interval': '1s'},
@@ -294,7 +312,25 @@ def test_launch_boundary_filters_old_events(env):
         called_names.index('get_task_event_boundary')
         < called_names.index('subprocess_run')
     )
-    env.query.assert_any_call(TASK_VALUE, 7)
+    env.query.assert_any_call(TASK_VALUE, 1)
+
+
+def test_launch_ignores_zero_watch_lookback(env):
+    """watch.lookback_minutes 为 0 时 launch 仍以 1 分钟窗口完成绑定。"""
+    config = {
+        'monitor': {
+            'common': {'max_wait': '3s', 'check_interval': '1s'},
+            'watch': {'lookback_minutes': 0},
+        },
+    }
+    env.query.return_value = [_event(101, 2222)]
+    env.boundary.return_value = 100
+    env.bind.return_value = {'pid': 2222, 'name': 'new.exe', 'create_time': 555.0}
+
+    pid_info = monitor._launch_task_target(config, TASK_TARGET)
+
+    assert pid_info['pid'] == 2222
+    env.query.assert_any_call(TASK_VALUE, 1)
 
 
 def test_launch_zero_boundary_does_not_trigger(env):

@@ -82,8 +82,10 @@ class TestTaskLookbackConfig(unittest.TestCase):
                 os.unlink(config_file)
 
     def test_lookback_string_and_zero_values_are_persisted(self):
-        """字符串保留类型、负字符串去符号，零值不回退默认值。"""
-        for raw, expected in (("'10'", '10'), ("'-5'", '5'), ('0', 0)):
+        """字符串保留类型、浮点按绝对值截断，零值不回退默认值。"""
+        for raw, expected in (
+                ("'10'", '10'), ("'-5'", '5'), ('0', 0),
+                ('10.0', 10), ('-3.7', 3)):
             with self.subTest(value=raw):
                 config_file = self._write_config(
                     "monitor:\n"
