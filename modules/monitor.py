@@ -6,6 +6,7 @@ import subprocess
 import time
 import datetime
 import logging
+import math
 import sys
 import threading
 from concurrent.futures import CancelledError
@@ -34,9 +35,6 @@ LOGGER = logging.getLogger(__name__)
 # 非 TTY 反馈普通行使用的定格图标，与 spinner 的日志级反馈保持一致
 _ICON_DONE = "\u2714\ufe0f"  # ✔️
 _ICON_FAIL = "\u274c"        # ❌
-
-# launch 任务只覆盖“触发到发现”的短窗口，旧事件由记录号边界排除
-_LAUNCH_TASK_LOOKBACK_MINUTES = 1
 
 
 class ProcessTimeoutExitRequested(Exception):
@@ -977,6 +975,7 @@ def _wait_task_process(
     boundary_record_id=None,
     start_from_create_time=False,
     lookback_minutes=None,
+    launch_trigger_time=None,
 ):
     """轮询事件日志直到绑定成功，返回 pid_info 或 None（等待超时）。
 
@@ -989,6 +988,7 @@ def _wait_task_process(
             否则取绑定成功的时刻
         lookback_minutes (int | None): 事件查询回溯分钟数；
             为 None 时读取 monitor.watch.lookback_minutes（仅被动监视生效）
+        launch_trigger_time (float | None): launch 触发前时刻，用于覆盖完整等待窗口
 
     Returns:
         dict | None: pid_info 字典；等待超时返回 None
@@ -1007,7 +1007,7 @@ def _wait_task_process(
             'check_interval',
             DEFAULT_VALUES['monitor']['common']['check_interval']),
         DEFAULT_VALUES['monitor']['common']['check_interval'])
-    if lookback_minutes is None:
+    if lookback_minutes is None and launch_trigger_time is None:
         watch_section = config.get('monitor', {}).get('watch', {})
         lookback_minutes = watch_section.get('lookback_minutes', 10)
 
@@ -1028,7 +1028,11 @@ def _wait_task_process(
                     sp.fail("等待超时，计划任务未触发")
                     return None
 
-                events = query_task_events(target.value, lookback_minutes)
+                query_minutes = lookback_minutes
+                if launch_trigger_time is not None:
+                    query_minutes = max(
+                        1, math.ceil((time.time() - launch_trigger_time) / 60) + 1)
+                events = query_task_events(target.value, query_minutes)
                 if boundary_record_id is None:
                     candidates = list(events)
                 else:
@@ -1229,6 +1233,7 @@ def _launch_task_target(config, target):
             f"无法建立计划任务事件边界，已取消触发: {target.value}")
         sys.exit(1)
 
+    launch_trigger_time = time.time()
     try:
         _trigger_task(target)
     except RuntimeError as e:
@@ -1243,9 +1248,7 @@ def _launch_task_target(config, target):
             target,
             boundary_record_id=boundary_record_id,
             start_from_create_time=False,
-            # 固定 1 分钟窗口：launch 只关心触发后的新事件，
-            # watch.lookback_minutes 仅对被动监视生效
-            lookback_minutes=_LAUNCH_TASK_LOOKBACK_MINUTES,
+            launch_trigger_time=launch_trigger_time,
         )
     except TaskQueryError as e:
         LOGGER.error(f"已触发任务，但查询事件日志失败: {e}")
