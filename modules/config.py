@@ -775,6 +775,163 @@ def _normalize_task_lookback_minutes(task_section):
     return True
 
 
+_LEGACY_TOP_LEVEL_KEYS = ('task', 'launch', 'wait')
+_LEGACY_MONITOR_KEYS = (
+    'monitor_mode',
+    'process_name',
+    'timeout_interval',
+    'loop_interval',
+    'psutil',
+    'task_scheduler',
+)
+_LEGACY_LAUNCH_KEYS = ('type', 'path', 'task_name')
+_VALID_MONITOR_MODES = ('watch', 'launch')
+_DEFAULT_WATCH_LOOKBACK_MINUTES = 10
+
+
+def _reject_legacy_monitor_config(user_config):
+    """旧监视布局存在时记录错误并 sys.exit(1)，不修改 user_config。
+
+    Args:
+        user_config (dict): 用户配置映射
+
+    Raises:
+        SystemExit: 命中旧布局字段或前缀结构非法时以退出码 1 终止
+    """
+    if not isinstance(user_config, dict):
+        return
+
+    for key in _LEGACY_TOP_LEVEL_KEYS:
+        if key in user_config:
+            _fail_config_layout(key, '旧监视布局字段已不再支持')
+
+    if 'monitor' in user_config:
+        monitor = user_config['monitor']
+        if not isinstance(monitor, dict):
+            _fail_config_layout('monitor', '必须是映射结构')
+        for key in _LEGACY_MONITOR_KEYS:
+            if key in monitor:
+                _fail_config_layout(f'monitor.{key}', '旧监视布局字段已不再支持')
+        if 'launch' in monitor:
+            launch = monitor['launch']
+            if not isinstance(launch, dict):
+                _fail_config_layout('monitor.launch', '必须是映射结构')
+            for key in _LEGACY_LAUNCH_KEYS:
+                if key in launch:
+                    _fail_config_layout(
+                        f'monitor.launch.{key}', '旧监视布局字段已不再支持'
+                    )
+
+    if 'external' in user_config:
+        external = user_config['external']
+        if not isinstance(external, dict):
+            _fail_config_layout('external', '必须是映射结构')
+        if 'timeout_threshold' in external:
+            _fail_config_layout('external.timeout_threshold', '旧监视布局字段已不再支持')
+
+
+def _validate_monitor_target_config(user_config):
+    """校验新监视结构，失败时 sys.exit(1)，不修改 user_config。
+
+    只检查配置形状与必填项，不判定 target 的语法分类。
+
+    Args:
+        user_config (dict): 用户配置映射
+
+    Raises:
+        SystemExit: 结构或必填项不合法时以退出码 1 终止
+    """
+    if not isinstance(user_config, dict):
+        _fail_config_layout('配置根节点', '必须是映射结构')
+
+    if 'monitor' not in user_config:
+        _fail_config_layout('monitor', '缺少监视配置节')
+    monitor = user_config['monitor']
+    if not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+
+    target = monitor.get('target')
+    if not isinstance(target, str) or not target.strip():
+        _fail_config_layout('monitor.target', '必须是非空字符串')
+
+    if 'mode' in monitor and monitor['mode'] not in _VALID_MONITOR_MODES:
+        _fail_config_layout('monitor.mode', '必须是 watch 或 launch')
+
+    for key in ('common', 'launch', 'watch'):
+        if key in monitor and not isinstance(monitor[key], dict):
+            _fail_config_layout(f'monitor.{key}', '必须是映射结构')
+
+    launch_section = monitor.get('launch', {})
+    for key in ('args', 'cwd'):
+        if key in launch_section and launch_section[key] is not None \
+                and not isinstance(launch_section[key], str):
+            _fail_config_layout(f'monitor.launch.{key}', '必须是字符串或空值')
+
+
+def _normalize_watch_lookback_minutes(watch_section):
+    """归一化 monitor.watch.lookback_minutes，返回是否发生变更。
+
+    Args:
+        watch_section (dict): monitor.watch 配置映射
+
+    Returns:
+        bool: 是否写入了新的 lookback_minutes
+    """
+    if not isinstance(watch_section, dict):
+        return False
+
+    raw_value = watch_section.get('lookback_minutes')
+    if raw_value is None:
+        LOGGER.warning('monitor.watch.lookback_minutes 缺失，已回退默认值')
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+        return True
+
+    # 布尔值不是合法的分钟数
+    if isinstance(raw_value, bool):
+        LOGGER.warning('monitor.watch.lookback_minutes 不接受布尔值，已回退默认值')
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+        return True
+
+    if isinstance(raw_value, str):
+        raw_str = raw_value.strip()
+        if not raw_str:
+            LOGGER.warning('monitor.watch.lookback_minutes 不能为空，已回退默认值')
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
+        if raw_str.startswith('-'):
+            raw_str = raw_str.lstrip('-').strip()
+            LOGGER.warning(
+                f"检测到 monitor.watch.lookback_minutes 负值，已去除负号: {raw_value!r}"
+            )
+        if not raw_str:
+            LOGGER.warning('monitor.watch.lookback_minutes 去符号后为空，已回退默认值')
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
+        try:
+            normalized = abs(int(raw_str))
+        except ValueError:
+            LOGGER.warning(
+                f"monitor.watch.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
+            )
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
+        normalized_for_store = str(normalized)
+    elif isinstance(raw_value, int):
+        normalized_for_store = abs(raw_value)
+    else:
+        LOGGER.warning(
+            f"monitor.watch.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+        )
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+        return True
+
+    if watch_section.get('lookback_minutes') == normalized_for_store:
+        return False
+
+    watch_section['lookback_minutes'] = normalized_for_store
+    return True
+
+
 def _normalize_time_like_config(section, field_key, default_value, field_label):
     """归一化时间类配置值。
 
