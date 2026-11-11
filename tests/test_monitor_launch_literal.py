@@ -88,9 +88,9 @@ def test_launch_file_preserves_paired_bang_in_target(tmp_path, monkeypatch, exte
     real_popen = subprocess.Popen
 
     def delayed_popen(command_line, **kwargs):
-        """用真实子进程模拟系统默认启用延迟扩展。"""
-        return real_popen(command_line.replace('cmd.exe /c', 'cmd.exe /v:on /c', 1),
-                          **kwargs)
+        """确认生产命令显式关闭延迟扩展并运行真实子进程。"""
+        assert command_line.startswith('cmd.exe /v:off /c ')
+        return real_popen(command_line, **kwargs)
 
     monkeypatch.setattr('modules.monitor_launch.subprocess.Popen', delayed_popen)
     literal_dir = tmp_path / '!NAME!'
