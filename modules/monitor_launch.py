@@ -55,6 +55,7 @@ class LaunchCommand:
     executable: str
     command_line: str
     cwd: str
+    env: dict | None = None
 
 
 def build_launch_command(target, args=None):
@@ -87,6 +88,8 @@ def build_launch_command(target, args=None):
         executable=executable,
         command_line=command_line,
         cwd=cwd,
+        env={**os.environ, '2RPM_LITERAL_TARGET': target.value}
+        if extension in BATCH_EXTENSIONS and '%' in target.value else None,
     )
 
 
@@ -111,8 +114,10 @@ def launch_file(target, args=None):
         f"cwd: {command.cwd}")
 
     try:
-        proc = subprocess.Popen(
-            command.command_line, cwd=command.cwd, shell=False)
+        options = {'cwd': command.cwd, 'shell': False}
+        if command.env is not None:
+            options['env'] = command.env
+        proc = subprocess.Popen(command.command_line, **options)
     except OSError as error:
         raise RuntimeError(
             f"启动文件失败: {target.value}: {error}") from error
@@ -168,15 +173,17 @@ def _compose_command(path, extension, args):
         return path, command_line
 
     if extension in BATCH_EXTENSIONS:
+        batch_path = '%2RPM_LITERAL_TARGET%' if '%' in path else path
         if args is not None:
-            command_line = f'cmd.exe /c ""{path}" {args}"'
+            command_line = f'cmd.exe /c ""{batch_path}" {args}"'
         else:
-            command_line = f'cmd.exe /c ""{path}""'
+            command_line = f'cmd.exe /c ""{batch_path}""'
         return 'cmd.exe', command_line
 
     if extension in POWERSHELL_EXTENSIONS:
         interpreter = _resolve_powershell()
-        command_body = f'& "{path}"'
+        quoted_path = path.replace("'", "''")
+        command_body = f"& '{quoted_path}'"
         if args is not None:
             command_body = f'{command_body} {args}'
         command_line = subprocess.list2cmdline(
