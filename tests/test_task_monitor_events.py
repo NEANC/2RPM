@@ -278,6 +278,93 @@ class TestQueryTaskEvents(unittest.TestCase):
 
         self.assertEqual(handle.close_calls, 1)
 
+    def test_query_closes_entire_batch_on_error(self):
+        """首项渲染或中项解析失败都释放整批句柄。"""
+        for failure_index, failure_kind in ((0, 'render'), (1, 'parse')):
+            with self.subTest(index=failure_index, kind=failure_kind):
+                handles = [_FakeHandle(_event_xml(
+                    '\\Folder\\Task', pid=index + 1)) for index in range(3)]
+                if failure_kind == 'parse':
+                    handles[failure_index].xml_text = '<Event>'
+                query_patch, next_patch, _, query_handle = self._patch_query(
+                    [handles])
+
+                def render(handle, event_type):
+                    """在指定句柄上模拟渲染失败。"""
+                    if failure_kind == 'render' and handle is handles[failure_index]:
+                        raise RuntimeError('render failed')
+                    return handle.xml_text
+
+                with query_patch, next_patch, \
+                        patch.object(task_monitor.win32evtlog, 'EvtRender',
+                                     side_effect=render):
+                    with self.assertRaises(task_monitor.TaskQueryError) as caught:
+                        task_monitor.query_task_events('\\Folder\\Task', 10)
+                self.assertIn('渲染' if failure_kind == 'render' else '解析',
+                              str(caught.exception))
+                self.assertEqual([handle.close_calls for handle in handles],
+                                 [1, 1, 1])
+                self.assertEqual(query_handle.close_calls, 1)
+
+    def test_query_control_signal_closes_batch_even_if_close_fails(self):
+        """控制信号保留原对象，关闭异常不妨碍其余句柄清理。"""
+        for signal_type in (KeyboardInterrupt, SystemExit):
+            for failure_index in (0, 1):
+                with self.subTest(signal=signal_type.__name__,
+                                  index=failure_index):
+                    signal = signal_type(2)
+                    handles = [_FakeHandle(_event_xml(
+                        '\\Folder\\Task', pid=index + 1)) for index in range(3)]
+                    query_patch, next_patch, _, query_handle = self._patch_query(
+                        [handles])
+                    close = handles[0].Close
+
+                    def failing_close():
+                        """先记录关闭，再模拟普通关闭错误。"""
+                        close()
+                        raise RuntimeError('close failed')
+
+                    def render(handle, event_type):
+                        """在首项或中项抛出原控制信号。"""
+                        if handle is handles[failure_index]:
+                            raise signal
+                        return handle.xml_text
+
+                    handles[0].Close = failing_close
+                    with query_patch, next_patch, \
+                            patch.object(task_monitor.win32evtlog, 'EvtRender',
+                                         side_effect=render):
+                        with self.assertRaises(signal_type) as caught:
+                            task_monitor.query_task_events('\\Folder\\Task', 10)
+                    self.assertIs(caught.exception, signal)
+                    self.assertEqual([handle.close_calls for handle in handles],
+                                     [1, 1, 1])
+                    self.assertEqual(query_handle.close_calls, 1)
+
+    def test_query_multiple_batches_and_next_failure_close_once(self):
+        """正常跨批次不重复释放，枚举异常只释放已取得的资源。"""
+        batches = [[_FakeHandle(_event_xml(
+            '\\Folder\\Task', pid=pid)) for pid in pair]
+                   for pair in ((1, 2), (3, 4))]
+        query_patch, next_patch, render_patch, query_handle = self._patch_query(
+            batches)
+        with query_patch, next_patch, render_patch:
+            events = task_monitor.query_task_events('\\Folder\\Task', 10)
+        self.assertEqual([event.pid for event in events], [1, 2, 3, 4])
+        self.assertEqual([handle.close_calls for batch in batches
+                          for handle in batch], [1, 1, 1, 1])
+        self.assertEqual(query_handle.close_calls, 1)
+
+        handles = [_FakeHandle(_event_xml('\\Folder\\Task', pid=5))]
+        query_patch, _, render_patch, query_handle = self._patch_query([])
+        with query_patch, render_patch, \
+                patch.object(task_monitor.win32evtlog, 'EvtNext',
+                             side_effect=[handles, RuntimeError('next failed')]):
+            with self.assertRaises(task_monitor.TaskQueryError):
+                task_monitor.query_task_events('\\Folder\\Task', 10)
+        self.assertEqual(handles[0].close_calls, 1)
+        self.assertEqual(query_handle.close_calls, 1)
+
     def test_query_handle_closed_once(self):
         """查询句柄在正常与异常路径都恰好关闭一次。"""
         normal_handle = _FakeHandle()

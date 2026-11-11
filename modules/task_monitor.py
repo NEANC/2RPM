@@ -307,17 +307,17 @@ def query_task_events(task_path, lookback_minutes):
             if not handles:
                 break
 
-            for handle in handles:
-                try:
+            try:
+                for handle in handles:
                     xml_text = _render_event_xml(handle)
                     event = _extract_task_event(
                         _parse_event_root(xml_text), task_path
                     )
-                finally:
+                    if event is not None:
+                        events.append(event)
+            finally:
+                for handle in handles:
                     _close_handle(handle)
-
-                if event is not None:
-                    events.append(event)
     finally:
         _close_handle(query_handle)
 
