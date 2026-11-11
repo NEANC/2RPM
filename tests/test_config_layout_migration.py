@@ -5,6 +5,8 @@
 
 import os
 import sys
+from unittest.mock import patch
+
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -153,6 +155,114 @@ def test_invalid_explicit_target_is_rejected(tmp_path, target):
         load_config(str(path))
     assert error.value.code == 1
     assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('monitor', [
+    {'mode': 'launch', 'target': 'notepad.exe'},
+    {'mode': 'launch', 'target': 'C:app.exe'},
+    {'mode': 'launch', 'target': '.\\app.exe',
+     'launch': {'cwd': 'relative-dir'}},
+], ids=['bare_launch', 'drive_relative', 'relative_cwd'])
+def test_invalid_target_never_rewrites_config(tmp_path, monitor):
+    """目标语法错误先于写回拒绝，不创建临时文件。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {'monitor': monitor})
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+def test_invalid_target_error_redacts_value(tmp_path, caplog):
+    """解析器错误不回显目标或底层异常中的秘密。"""
+    from modules.config import load_config
+
+    secret = 'privateexample'
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': secret},
+    })
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert 'monitor.target' in caplog.text
+    assert secret not in caplog.text
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+def test_invalid_cwd_error_redacts_value(tmp_path, caplog):
+    """工作目录语法错误不回显其原值且不写回。"""
+    from modules.config import load_config
+
+    secret = 'privatefolder'
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': '.\\missing.exe',
+                    'launch': {'cwd': secret}},
+    })
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert 'monitor.launch.cwd' in caplog.text
+    assert secret not in caplog.text
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+@pytest.mark.parametrize('target', ['.\\missing.exe',
+                                     '\\\\missing-host\\share\\missing.exe'])
+def test_valid_file_target_preserves_literal_without_probing(tmp_path, target):
+    """相对及 UNC 目标仅做语法检查，持久配置保留字面量。"""
+    from modules.config import load_config
+    from modules.monitor_target import resolve_monitor_target
+
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': target,
+                    'launch': {'cwd': '.\\missing-dir'}},
+    })
+    expected = resolve_monitor_target(
+        'launch', target, str(tmp_path), '.\\missing-dir')
+    with patch('modules.config.resolve_monitor_target',
+               wraps=resolve_monitor_target) as resolver:
+        config = load_config(str(path))
+    resolver.assert_called_once_with(
+        'launch', target, str(tmp_path), '.\\missing-dir')
+    assert expected.value.endswith('missing.exe')
+    assert expected.cwd.endswith('missing-dir')
+    assert config['monitor']['target'] == target
+    assert config['monitor']['launch']['cwd'] == '.\\missing-dir'
+    assert target in path.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('mode,target', [
+    (None, 'notepad.exe'),
+    ('watch', 'notepad.exe'),
+    ('launch', '\\Folder\\MissingTask'),
+])
+def test_inactive_relative_cwd_is_preserved(tmp_path, mode, target):
+    """缺省 watch 与任务目标不校验非活动 cwd 语法但保留字段。"""
+    from modules.config import load_config
+
+    monitor = {'target': target, 'launch': {'cwd': 'relative-dir'}}
+    if mode is not None:
+        monitor['mode'] = mode
+    path = _write_config(tmp_path, {'monitor': monitor})
+    config = load_config(str(path))
+    assert config['monitor']['mode'] == (mode if mode else 'watch')
+    assert config['monitor']['launch']['cwd'] == 'relative-dir'
 
 
 @pytest.mark.parametrize('value', [

@@ -18,6 +18,7 @@ from ruamel.yaml.reader import ReaderError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 from ruamel.yaml.scanner import ScannerError
 
+from modules.monitor_target import resolve_monitor_target
 from modules.spinner import spinner_phase
 from modules.utils import (
     build_push_channel_node,
@@ -1246,6 +1247,16 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     _validate_config_shapes(user_config)
     _reject_legacy_monitor_config(user_config)
     _validate_monitor_target_config(user_config)
+    monitor = user_config['monitor']
+    try:
+        resolve_monitor_target(
+            monitor.get('mode', 'watch'), monitor['target'],
+            os.path.dirname(os.path.abspath(config_file)),
+            monitor.get('launch', {}).get('cwd'),
+        )
+    except ValueError:
+        _fail_config_layout('monitor.target / monitor.launch.cwd',
+                            '目标或工作目录语法无效')
     updated = _migrate_config_layout(user_config)
     default_config = get_default_config()
 
