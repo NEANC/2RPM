@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -77,3 +78,36 @@ def test_launch_file_passes_literal_batch_environment(monkeypatch):
                         lambda pid, exe: (123.0, 'cmd.exe'))
     launch_file(target)
     assert target.value in seen['env'].values()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='需要 Windows 解释器')
+@pytest.mark.parametrize('extension', ['bat', 'cmd'])
+def test_launch_file_preserves_paired_bang_in_target(tmp_path, monkeypatch, extension):
+    """经真实启动入口执行成对感叹号目录中的批处理文件。"""
+    monkeypatch.setenv('NAME', 'EXPANDED')
+    real_popen = subprocess.Popen
+
+    def delayed_popen(command_line, **kwargs):
+        """用真实子进程模拟系统默认启用延迟扩展。"""
+        return real_popen(command_line.replace('cmd.exe /c', 'cmd.exe /v:on /c', 1),
+                          **kwargs)
+
+    monkeypatch.setattr('modules.monitor_launch.subprocess.Popen', delayed_popen)
+    literal_dir = tmp_path / '!NAME!'
+    expanded_dir = tmp_path / 'EXPANDED'
+    literal_dir.mkdir()
+    expanded_dir.mkdir()
+    marker = tmp_path / 'result.txt'
+    (literal_dir / f'run.{extension}').write_bytes(
+        b'@echo off\r\necho LITERAL> "' + os.fsencode(marker) + b'"\r\n'
+        b'ping -n 3 127.0.0.1 >nul\r\n')
+    (expanded_dir / f'run.{extension}').write_bytes(
+        b'@echo off\r\necho EXPANDED> "' + os.fsencode(marker) + b'"\r\n'
+        b'ping -n 3 127.0.0.1 >nul\r\n')
+    target = MonitorTarget(kind='file', value=str(literal_dir / f'run.{extension}'),
+                           cwd=str(tmp_path))
+    launch_file(target)
+    deadline = time.monotonic() + 10
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert marker.read_text().strip() == 'LITERAL'

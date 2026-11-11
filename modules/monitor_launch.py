@@ -175,9 +175,9 @@ def _compose_command(path, extension, args):
     if extension in BATCH_EXTENSIONS:
         batch_path = '%2RPM_LITERAL_TARGET%' if '%' in path else path
         if args is not None:
-            command_line = f'cmd.exe /c ""{batch_path}" {args}"'
+            command_line = f'cmd.exe /v:off /c ""{batch_path}" {args}"'
         else:
-            command_line = f'cmd.exe /c ""{batch_path}""'
+            command_line = f'cmd.exe /v:off /c ""{batch_path}""'
         return 'cmd.exe', command_line
 
     if extension in POWERSHELL_EXTENSIONS:
