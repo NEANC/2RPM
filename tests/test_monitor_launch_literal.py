@@ -25,7 +25,7 @@ from modules.monitor_target import MonitorTarget
 def test_batch_target_is_literal(tmp_path, monkeypatch, extension, args):
     """实际 cmd 执行字面文件，参数可按 cmd 自身规则解释。"""
     monkeypatch.setenv('MONITOR_LITERAL_NAME', 'EXPANDED')
-    directory = tmp_path / 'space & (group) !' / '%MONITOR_LITERAL_NAME%'
+    directory = tmp_path / "space & (group) ! it's" / '%MONITOR_LITERAL_NAME%'
     directory.mkdir(parents=True)
     literal = directory / f'run.{extension}'
     literal.write_bytes(b'@echo off\r\necho LITERAL %*\r\n')
@@ -34,12 +34,14 @@ def test_batch_target_is_literal(tmp_path, monkeypatch, extension, args):
     expanded.write_bytes(b'@echo off\r\necho EXPANDED %*\r\n')
     command = build_launch_command(
         MonitorTarget(kind='file', value=str(literal), cwd=str(tmp_path)), args)
-    assert command.command_line.startswith('cmd.exe /v:off /c ')
+    assert command.command_line.startswith(
+        f'"{command.executable}" /d /v:off /c ')
     env = os.environ.copy()
     env.update(command.env or {})
     result = subprocess.run(
         command.command_line,
-        cwd=command.cwd, env=env, shell=False, capture_output=True, timeout=30)
+        cwd=command.cwd, env=env, shell=False, executable=command.executable,
+        capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == b'LITERAL' + (b' hello world' if args else b'')
 
@@ -89,7 +91,7 @@ def test_launch_file_preserves_paired_bang_in_target(tmp_path, monkeypatch, exte
 
     def delayed_popen(command_line, **kwargs):
         """确认生产命令显式关闭延迟扩展并运行真实子进程。"""
-        assert command_line.startswith('cmd.exe /v:off /c ')
+        assert command_line.startswith(f'"{kwargs["executable"]}" /d /v:off /c ')
         return real_popen(command_line, **kwargs)
 
     monkeypatch.setattr('modules.monitor_launch.subprocess.Popen', delayed_popen)

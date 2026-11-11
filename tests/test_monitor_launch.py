@@ -24,6 +24,7 @@ PWSH = r'C:\PS\pwsh.exe'
 POWERSHELL = r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 PYTHON = r'C:\Py\python.exe'
 PY_LAUNCHER = r'C:\Py\py.exe'
+SYSTEM_CMD = r'C:\Windows Dir\System32\cmd.exe'
 
 
 class _FakePopen:
@@ -211,10 +212,86 @@ def test_command_line_per_extension(
 
     which = _which_factory({'pwsh.exe': PWSH, 'python.exe': PYTHON})
     with patch('modules.monitor_launch.shutil.which', side_effect=which):
-        command = build_launch_command(target, args)
+        if target.value.lower().endswith(('.bat', '.cmd')):
+            with patch('modules.monitor_launch._resolve_cmd', return_value=SYSTEM_CMD):
+                command = build_launch_command(target, args)
+            expected_executable = SYSTEM_CMD
+            expected_command_line = expected_command_line.replace(
+                'cmd.exe /v:off /c ', f'"{SYSTEM_CMD}" /d /v:off /c ')
+        else:
+            command = build_launch_command(target, args)
 
     assert command.executable == expected_executable
     assert command.command_line == expected_command_line
+
+
+def test_batch_uses_system_cmd(monkeypatch):
+    """系统目录查询决定解释器，环境和 PATH 不能替换它。"""
+    from modules.monitor_launch import build_launch_command
+    from modules.monitor_launch import launch_file
+
+    def get_system_directory(buffer, size):
+        """向 Win32 宽字符缓冲区写入含空格的系统目录。"""
+        buffer.value = r'C:\Windows Dir\System32'
+        return len(buffer.value)
+
+    from unittest.mock import Mock
+
+    api = Mock(side_effect=get_system_directory)
+    kernel = Mock(GetSystemDirectoryW=api)
+    monkeypatch.setenv('PATH', r'C:\Other')
+    monkeypatch.setenv('COMSPEC', r'C:\Other\cmd.exe')
+    monkeypatch.setenv('SystemRoot', r'C:\Other')
+    with patch('modules.monitor_launch.ctypes.WinDLL', return_value=kernel):
+        with patch('modules.monitor_launch.shutil.which', side_effect=AssertionError('PATH')):
+            target = _file_target(r'C:\work\run.cmd')
+            command = build_launch_command(target, '--x')
+            with patch('modules.monitor_launch.subprocess.Popen',
+                       return_value=_FakePopen()) as popen:
+                with patch('modules.monitor_launch._resolve_identity',
+                           return_value=(123.0, 'cmd.exe')):
+                    launch_file(target, '--x')
+
+    assert command.executable == SYSTEM_CMD
+    assert command.command_line == (
+        f'"{SYSTEM_CMD}" /d /v:off /c ""C:\\work\\run.cmd" --x"')
+    assert popen.call_args.args == (command.command_line,)
+    assert popen.call_args.kwargs['executable'] == SYSTEM_CMD
+    assert api.call_count == 2
+
+
+@pytest.mark.parametrize('result', [0, 50000])
+def test_batch_system_directory_failure_never_launches(result):
+    """系统目录查询失败或无效时不得搜索裸 cmd 或启动。"""
+    from modules.monitor_launch import launch_file
+    from unittest.mock import Mock
+
+    kernel = Mock(GetSystemDirectoryW=Mock(return_value=result))
+    with patch('modules.monitor_launch.ctypes.WinDLL', return_value=kernel):
+        with patch('modules.monitor_launch.subprocess.Popen') as popen:
+            with pytest.raises(RuntimeError, match='系统目录'):
+                launch_file(_file_target(r'C:\work\run.bat'))
+
+    popen.assert_not_called()
+
+
+@pytest.mark.parametrize('extension,interpreter', [
+    ('exe', r'C:\work\app.exe'), ('ps1', PWSH), ('py', PYTHON),
+])
+def test_launch_file_sets_executable_for_other_files(extension, interpreter):
+    """所有类型均让 Popen 显式运行构造出的解释器。"""
+    from modules.monitor_launch import launch_file
+
+    target = _file_target(rf'C:\work\app.{extension}')
+    which = _which_factory({'pwsh.exe': PWSH, 'python.exe': PYTHON})
+    with patch('modules.monitor_launch.shutil.which', side_effect=which):
+        with patch('modules.monitor_launch.subprocess.Popen',
+                   return_value=_FakePopen()) as popen:
+            with patch('modules.monitor_launch._resolve_identity',
+                       return_value=(123.0, 'app')):
+                launch_file(target)
+
+    assert popen.call_args.kwargs['executable'] == interpreter
 
 
 @pytest.mark.parametrize('args', [None, '', '   '])

@@ -152,13 +152,14 @@ push:
 
 ### 脚本启动
 
-- BAT / CMD 通过 `cmd.exe` 执行。
-- BAT / CMD 目标路径中的 `%NAME%` 按字面文件名传入子进程，不展开为同名环境变量；目标路径通过该子进程专用环境变量传递。`launch.args` 仍由 `cmd.exe` 按自身规则解释（包括百分号和延迟展开），不保证参数字面保真。
+- BAT / CMD 通过 Windows 系统目录中的 `cmd.exe /d /v:off /c` 执行，不从 PATH、COMSPEC 或 SystemRoot 选取解释器；`/d` 仅禁止本次子进程执行 cmd AutoRun，不修改注册表。
+- BAT / CMD 目标路径中的 `%NAME%` 按字面文件名传入子进程，不展开为同名环境变量；目标路径通过该子进程专用环境变量传递。`!NAME!` 在关闭延迟展开后按字面保留。`launch.args` 仍由 `cmd.exe` 按自身规则解释（包括百分号），不保证参数字面保真。
 - PS1 优先使用 PATH 中的 `pwsh.exe`，缺失时回退系统 Windows PowerShell。
 - PS1 目标路径作为 PowerShell 单引号表达式传递，文件名中的 `$`、反引号与单引号不再当作表达式解释；`launch.args` 仍按 PowerShell 语法解释。
 - PY 优先使用 PATH 中的 `python.exe`，缺失时回退 `py.exe -3`。
 - 找不到解释器时直接报错，不自动安装、不提权、不自动绕过 PowerShell 执行策略；候选存在但启动失败时不会换解释器重试。
 - 只监视启动所得的进程，不追踪其分离出的子进程；启动成功也不等于业务执行成功。
+- UNC 文件目标可被分类和校验，但 UNC 文件启动尚未完成实际运行验收。
 
 ### `launch.args` 与 `cwd`
 

@@ -7,6 +7,8 @@
 args 不做拆分、转义或补引号；日志只记录目标、解释器与 cwd。
 """
 
+import ctypes
+import ctypes.wintypes
 import logging
 import ntpath
 import os
@@ -20,6 +22,7 @@ import psutil
 from modules.monitor_target import MonitorTarget
 
 LOGGER = logging.getLogger(__name__)
+SYSTEM_DIRECTORY_BUFFER_SIZE = 32768
 
 # 系统盘缺失时的兜底根目录
 SYSTEM_ROOT_FALLBACK = r'C:\Windows'
@@ -114,7 +117,8 @@ def launch_file(target, args=None):
         f"cwd: {command.cwd}")
 
     try:
-        options = {'cwd': command.cwd, 'shell': False}
+        options = {'cwd': command.cwd, 'shell': False,
+                   'executable': command.executable}
         if command.env is not None:
             options['env'] = command.env
         proc = subprocess.Popen(command.command_line, **options)
@@ -173,12 +177,13 @@ def _compose_command(path, extension, args):
         return path, command_line
 
     if extension in BATCH_EXTENSIONS:
+        interpreter = _resolve_cmd()
         batch_path = '%2RPM_LITERAL_TARGET%' if '%' in path else path
         if args is not None:
-            command_line = f'cmd.exe /v:off /c ""{batch_path}" {args}"'
+            command_line = f'"{interpreter}" /d /v:off /c ""{batch_path}" {args}"'
         else:
-            command_line = f'cmd.exe /v:off /c ""{batch_path}""'
-        return 'cmd.exe', command_line
+            command_line = f'"{interpreter}" /d /v:off /c ""{batch_path}""'
+        return interpreter, command_line
 
     if extension in POWERSHELL_EXTENSIONS:
         interpreter = _resolve_powershell()
@@ -199,6 +204,21 @@ def _compose_command(path, extension, args):
         return interpreter, command_line
 
     raise ValueError(f"不支持的文件类型: {path!r}")
+
+
+def _resolve_cmd() -> str:
+    """通过 Win32 系统目录 API 定位本机 cmd，查询失败时拒绝启动。"""
+    try:
+        function = ctypes.WinDLL('kernel32', use_last_error=True).GetSystemDirectoryW
+        function.argtypes = [ctypes.c_wchar_p, ctypes.wintypes.UINT]
+        function.restype = ctypes.wintypes.UINT
+        buffer = ctypes.create_unicode_buffer(SYSTEM_DIRECTORY_BUFFER_SIZE)
+        length = function(buffer, len(buffer))
+    except OSError as error:
+        raise RuntimeError('无法获取系统目录') from error
+    if not 0 < length < len(buffer):
+        raise RuntimeError('无法获取系统目录')
+    return ntpath.join(buffer.value, 'cmd.exe')
 
 
 def _resolve_powershell():
