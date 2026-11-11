@@ -196,7 +196,14 @@ def test_rotation_of_older_events_preserves_anchor(log_env):
 
 def test_reset_between_polls_is_not_a_normal_timeout(log_env):
     env = log_env
-    env.sleep.side_effect = lambda seconds: env.log.clear()
+    env.clock.step = 0.001
+
+    def reset_log(seconds):
+        """模拟等待后日志重置和时钟推进。"""
+        env.log.clear()
+        env.clock.current += seconds
+
+    env.sleep.side_effect = reset_log
     with pytest.raises(SystemExit):
         monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
     assert env.notify_fail.call_args.args[0] == '已触发任务，但无法确认监视实例'

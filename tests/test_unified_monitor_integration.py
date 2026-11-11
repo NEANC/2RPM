@@ -8,6 +8,7 @@
 
 import os
 import sys
+from itertools import count
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,17 +219,89 @@ def _spinner():
 def test_watch_bare_process_dispatches_to_target_collector(tmp_path):
     """watch + 裸进程名进入目标收集流程。"""
     config = _base_config('watch', PROCESS_TARGET)
+    ticks = (1000.0 + value * 0.001 for value in count())
     with patch('modules.monitor._collect_matching_processes_for_target',
                return_value={}) as collect_mock, \
             patch('modules.monitor.spinner_phase', return_value=_spinner()), \
-            patch('modules.monitor.notify_fail'):
+            patch('modules.monitor.notify_fail'), \
+            patch('modules.monitor.time.time', side_effect=lambda: next(ticks)), \
+            patch('modules.monitor.time.sleep') as sleep_mock, \
+            patch('modules.monitor._send_notification_with_feedback',
+                  return_value=[]) as send_mock:
         with pytest.raises(SystemExit):
             monitor.monitor_processes(config, config_dir=str(tmp_path))
 
+    collect_mock.assert_called_once()
+    sleep_mock.assert_not_called()
+    send_mock.assert_called_once()
     target = collect_mock.call_args.args[0]
     assert isinstance(target, MonitorTarget)
     assert target.kind == 'process'
     assert target.value == PROCESS_TARGET
+
+
+@pytest.mark.parametrize('found', [True, False], ids=['found', 'missing'])
+def test_watch_process_zero_wait_queries_once(tmp_path, found):
+    """零等待仍查询一次，命中后进入监视，未命中直接超时。"""
+    config = _base_config('watch', PROCESS_TARGET)
+    config['external']['on_wait_timeout'] = r'C:\Tools\alert.exe'
+    ticks = (1000.0 + value * 0.001 for value in count())
+    matches = {4321: {'name': 'demo.exe', 'create_time': 100.0}} if found else {}
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               side_effect=[matches, {}] if found else [matches]) as collect_mock, \
+            patch('modules.monitor.spinner_phase', return_value=_spinner()), \
+            patch('modules.monitor.time.time', side_effect=lambda: next(ticks)), \
+            patch('modules.monitor.time.sleep') as sleep_mock, \
+            patch('modules.monitor._handle_process_end', return_value=False), \
+            patch('modules.monitor._send_notification_with_feedback',
+                  return_value=[]) as send_mock, \
+            patch('modules.monitor.run_external_action') as action_mock, \
+            patch('modules.monitor.notify_fail'):
+        if found:
+            monitor._monitor_watched_targets(
+                config, MonitorTarget(kind='process', value=PROCESS_TARGET, cwd=None))
+        else:
+            with pytest.raises(SystemExit):
+                monitor._monitor_watched_targets(
+                    config, MonitorTarget(kind='process', value=PROCESS_TARGET, cwd=None))
+
+    sleep_mock.assert_not_called()
+    if found:
+        assert collect_mock.call_count == 2
+        send_mock.assert_not_called()
+        action_mock.assert_not_called()
+    else:
+        collect_mock.assert_called_once()
+        assert sum(call.args[1] == 'on_wait_timeout'
+                   for call in send_mock.call_args_list) == 1
+        action_mock.assert_called_once_with(r'C:\Tools\alert.exe')
+
+
+def test_watch_process_wait_does_not_sleep_past_deadline():
+    """目标未出现且检查间隔较长时，等待不超过剩余期限。"""
+    config = _base_config('watch', PROCESS_TARGET)
+    config['monitor']['common']['max_wait'] = '1s'
+    config['monitor']['common']['check_interval'] = '3s'
+    clock = [1000.0]
+
+    def advance(seconds):
+        """推进受控时钟而不进行真实休眠。"""
+        clock[0] += seconds
+
+    with patch('modules.monitor._collect_matching_processes_for_target',
+               return_value={}) as collect_mock, \
+            patch('modules.monitor.spinner_phase', return_value=_spinner()), \
+            patch('modules.monitor.time.time', side_effect=lambda: clock[0]), \
+            patch('modules.monitor.time.sleep', side_effect=advance) as sleep_mock, \
+            patch('modules.monitor._send_notification_with_feedback',
+                  return_value=[]), \
+            patch('modules.monitor.notify_fail'):
+        with pytest.raises(SystemExit):
+            monitor._monitor_watched_targets(
+                config, MonitorTarget(kind='process', value=PROCESS_TARGET, cwd=None))
+
+    collect_mock.assert_called_once()
+    sleep_mock.assert_called_once_with(1)
 
 
 def test_watch_exe_path_dispatches_to_target_collector(tmp_path):

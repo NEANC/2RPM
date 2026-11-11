@@ -153,7 +153,7 @@ class TestTaskMonitorLookbackQuery(unittest.TestCase):
         with patch('modules.monitor.query_task_events',
                    fake_query_task_events), \
                 patch('modules.monitor.time.time',
-                      side_effect=[0.0, 0.5, 2.0]), \
+                      side_effect=[0.0, 0.5, 0.5, 2.0]), \
                 patch('modules.monitor.time.sleep'), \
                 patch('modules.monitor.spinner_phase', return_value=spinner):
             result = monitor._wait_task_process(cfg, TASK_TARGET)

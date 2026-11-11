@@ -234,6 +234,71 @@ def test_watch_returns_none_after_max_wait(env):
     assert env.sleep.call_count >= 1
 
 
+@pytest.mark.parametrize('found', [True, False], ids=['found', 'missing'])
+def test_task_zero_wait_queries_once_after_clock_advances(env, found):
+    """零等待首轮时钟前进 1 ms 后仍核验边界并查询一次。"""
+    config = {'monitor': {'common': {'max_wait': '0s', 'check_interval': '1s'}}}
+    anchor = SimpleNamespace(record_id=100, xml='anchor')
+    event = _event(101, 4321)
+    env.boundary.return_value = anchor
+    env.query.return_value = [event] if found else []
+    env.bind.return_value = dict(IDENTITY)
+    env.clock.step = 0.001
+
+    result = monitor._wait_task_process(
+        config, TASK_TARGET, boundary_record_id=anchor,
+        launch_trigger_time=1000.0)
+
+    assert (result is not None) is found
+    env.query.assert_called_once_with(TASK_VALUE, 2)
+    assert env.boundary.call_count == (1 if found else 2)
+    assert all(call.args == (100,) for call in env.boundary.call_args_list)
+    assert env.bind.call_count == int(found)
+    env.sleep.assert_not_called()
+
+
+def test_task_zero_wait_boundary_loss_is_not_timeout(env):
+    """零等待查询后边界身份变化须报错，不可当作普通超时。"""
+    config = {'monitor': {'common': {'max_wait': '0s', 'check_interval': '1s'}}}
+    env.clock.step = 0.001
+    anchor = SimpleNamespace(record_id=100, xml='anchor')
+    env.boundary.return_value = SimpleNamespace(record_id=100, xml='changed')
+
+    with pytest.raises(TaskQueryError, match='边界失效'):
+        monitor._wait_task_process(
+            config, TASK_TARGET, boundary_record_id=anchor,
+            launch_trigger_time=1000.0)
+
+    env.query.assert_called_once_with(TASK_VALUE, 2)
+    env.sleep.assert_not_called()
+
+
+def test_task_zero_wait_query_error_is_not_timeout(env):
+    """零等待查询故障保持异常语义，不触发普通超时。"""
+    config = {'monitor': {'common': {'max_wait': '0s', 'check_interval': '1s'}}}
+    env.clock.step = 0.001
+    env.query.side_effect = TaskQueryError('通道不可用')
+
+    with pytest.raises(TaskQueryError, match='通道不可用'):
+        monitor._wait_task_process(config, TASK_TARGET)
+
+    env.query.assert_called_once()
+    env.sleep.assert_not_called()
+
+
+def test_task_wait_does_not_sleep_past_deadline(env):
+    """正等待剩余时间短于检查间隔时只休眠到期限。"""
+    config = {'monitor': {'common': {'max_wait': '1s', 'check_interval': '3s'}}}
+    env.clock.step = 0.001
+    env.sleep.side_effect = lambda seconds: setattr(
+        env.clock, 'current', env.clock.current + seconds)
+
+    assert monitor._wait_task_process(config, TASK_TARGET) is None
+    env.query.assert_called_once()
+    env.sleep.assert_called_once()
+    assert 0 < env.sleep.call_args.args[0] <= 1
+
+
 def test_watch_uses_configured_lookback(env):
     """watch 模式按 monitor.watch.lookback_minutes 查询事件。"""
     config = {

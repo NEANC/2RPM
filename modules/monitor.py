@@ -796,6 +796,7 @@ def _monitor_watched_targets(config, target):
     start_time = time.time()
     # 等待提示仅打印一次，避免进程未启动时刷屏
     waiting_logged = False
+    first_query = True
 
     try:
         with spinner_phase("等待目标进程启动...") as sp:
@@ -803,13 +804,14 @@ def _monitor_watched_targets(config, target):
             while True:
                 LOGGER.info("执行等待进程启动循环")
                 waited_time = time.time() - start_time
-                if waited_time > max_wait:
+                if not first_query and waited_time >= max_wait:
                     LOGGER.info("已等待超时，正在尝试发送通知")
                     sp.fail("等待超时，被监视进程未运行")
                     break
 
                 current_processes = _collect_matching_processes_for_target(
                     target)
+                first_query = False
 
                 for pid, info in current_processes.items():
                     _add_new_process(
@@ -826,7 +828,9 @@ def _monitor_watched_targets(config, target):
                         LOGGER.info("正在等待目标进程运行")
                         waiting_logged = True
                     sp.text("等待目标进程启动...")
-                    time.sleep(check_interval)
+                    remaining = max_wait - (time.time() - start_time)
+                    if remaining > 0:
+                        time.sleep(min(check_interval, remaining))
     except KeyboardInterrupt:
         notify_fail("任务被取消，退出等待进程启动循环")
         raise
@@ -1015,12 +1019,13 @@ def _wait_task_process(
     wait_start_time = time.time()
     # 等待提示仅打印一次，避免无任务触发时刷屏
     waiting_logged = False
+    first_query = True
 
     try:
         with spinner_phase("等待计划任务触发...") as sp:
             while True:
                 waited_time = time.time() - wait_start_time
-                if waited_time > max_wait:
+                if not first_query and waited_time >= max_wait:
                     if (boundary_record_id is not None
                             and boundary_record_id.record_id > 0
                             and get_task_event_boundary(boundary_record_id.record_id)
@@ -1035,6 +1040,7 @@ def _wait_task_process(
                     query_minutes = max(
                         1, math.ceil((time.time() - launch_trigger_time) / 60) + 1)
                 events = query_task_events(target.value, query_minutes)
+                first_query = False
                 if boundary_record_id is None:
                     candidates = list(events)
                 else:
@@ -1086,7 +1092,9 @@ def _wait_task_process(
                     )
                     waiting_logged = True
                 sp.text("等待计划任务触发...")
-                time.sleep(check_interval)
+                remaining = max_wait - (time.time() - wait_start_time)
+                if remaining > 0:
+                    time.sleep(min(check_interval, remaining))
     except KeyboardInterrupt:
         notify_fail("任务被取消，退出等待循环")
         raise
