@@ -93,6 +93,26 @@ def _close_handle(handle):
         LOGGER.debug(f"关闭事件日志句柄失败: {e}")
 
 
+def ensure_task_channel_enabled() -> None:
+    """确认任务 Operational 通道启用，失败时拒绝触发任务。
+
+    Raises:
+        TaskQueryError: 通道禁用或无法读取启用配置
+    """
+    config_handle = None
+    try:
+        config_handle = win32evtlog.EvtOpenChannelConfig(TASK_LOG_CHANNEL)
+        enabled, _ = win32evtlog.EvtGetChannelConfigProperty(
+            config_handle, win32evtlog.EvtChannelConfigEnabled)
+    except Exception as e:
+        raise TaskQueryError(f"读取任务事件通道配置失败: {e}") from e
+    finally:
+        _close_handle(config_handle)
+
+    if enabled is not True:
+        raise TaskQueryError("计划任务事件通道未启用")
+
+
 def _normalize_lookback(lookback_minutes):
     """把回溯时长规范为非负整数分钟
 

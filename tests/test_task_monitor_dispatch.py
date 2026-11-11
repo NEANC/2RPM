@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules import monitor
+from modules import task_monitor
 from modules.monitor_target import MonitorTarget
 from modules.task_monitor import TaskQueryError
 
@@ -148,6 +149,7 @@ class _Harness:
         self.clock = _FakeClock()
         # 同一父替身下的子替身，便于用 mock_calls 断言跨函数调用顺序
         self.order = Mock()
+        self.channel = self.order.ensure_task_channel_enabled
         self.query = self.order.query_task_events
         self.query.return_value = []
         self.bind = self.order.bind_task_event
@@ -171,6 +173,8 @@ class _Harness:
         Args:
             monkeypatch: pytest 的 monkeypatch 夹具
         """
+        monkeypatch.setattr(monitor, 'ensure_task_channel_enabled',
+                            self.channel, raising=False)
         monkeypatch.setattr(monitor, 'query_task_events', self.query)
         monkeypatch.setattr(monitor, 'bind_task_event', self.bind)
         monkeypatch.setattr(monitor, 'get_task_event_boundary', self.boundary)
@@ -352,6 +356,89 @@ def test_launch_precheck_failure_does_not_trigger(env):
     assert exc.value.code == 1
     assert env.run.call_count == 0
     assert '无法读取计划任务事件日志，未触发任务' in env.notify_fail.call_args.args[0]
+
+
+@pytest.mark.parametrize('property_value,events', [
+    ((False, 13), [_event(101, 4321)]),
+    ((False, 13), []),
+    (RuntimeError('get failed'), [_event(101, 4321)]),
+    ('open_error', [_event(101, 4321)]),
+], ids=['disabled_with_history', 'disabled_empty', 'property_error',
+        'open_error'])
+def test_launch_channel_precheck_never_triggers(
+        env, monkeypatch, property_value, events):
+    """真实通道检查拒绝禁用与读取失败，禁止业务推送及外部动作。"""
+    handle = Mock()
+    env.query.return_value = events
+    monkeypatch.setattr(monitor, 'ensure_task_channel_enabled',
+                        lambda: task_monitor.ensure_task_channel_enabled(),
+                        raising=False)
+    open_config = Mock(return_value=handle)
+    if property_value == 'open_error':
+        open_config.side_effect = RuntimeError('open failed')
+    monkeypatch.setattr(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                        open_config)
+    get_property = Mock()
+    if isinstance(property_value, Exception):
+        get_property.side_effect = property_value
+    else:
+        get_property.return_value = property_value
+    monkeypatch.setattr(task_monitor.win32evtlog,
+                        'EvtGetChannelConfigProperty', get_property)
+
+    with pytest.raises(SystemExit) as exc:
+        monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    assert exc.value.code == 1
+    env.query.assert_not_called()
+    env.boundary.assert_not_called()
+    env.run.assert_not_called()
+    env.send.assert_not_called()
+    env.action.assert_not_called()
+    env.notify_fail.assert_called_once()
+    assert '未触发任务' in env.notify_fail.call_args.args[0]
+    if property_value == 'open_error':
+        handle.Close.assert_not_called()
+        get_property.assert_not_called()
+    else:
+        handle.Close.assert_called_once_with()
+
+
+@pytest.mark.parametrize('signal', [KeyboardInterrupt(), SystemExit(2)],
+                         ids=['keyboard_interrupt', 'system_exit'])
+def test_launch_channel_control_signal_propagates(env, monkeypatch, signal):
+    """配置读取控制信号原样传播，不触发且释放已打开句柄。"""
+    handle = Mock()
+    monkeypatch.setattr(monitor, 'ensure_task_channel_enabled',
+                        lambda: task_monitor.ensure_task_channel_enabled())
+    monkeypatch.setattr(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                        Mock(return_value=handle))
+    monkeypatch.setattr(task_monitor.win32evtlog,
+                        'EvtGetChannelConfigProperty', Mock(side_effect=signal))
+
+    with pytest.raises(type(signal)) as caught:
+        monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    assert caught.value is signal
+    handle.Close.assert_called_once_with()
+    env.query.assert_not_called()
+    env.run.assert_not_called()
+    env.send.assert_not_called()
+    env.action.assert_not_called()
+    env.notify_fail.assert_not_called()
+
+
+def test_launch_enabled_check_precedes_event_query_and_trigger(env):
+    """启用检查先于历史查询、边界建立和触发。"""
+    env.query.return_value = [_event(101, 4321)]
+    env.bind.return_value = dict(IDENTITY)
+
+    monitor._launch_task_target(BASE_CONFIG, TASK_TARGET)
+
+    names = [call[0] for call in env.order.mock_calls]
+    assert names.index('ensure_task_channel_enabled') < names.index(
+        'query_task_events') < names.index('get_task_event_boundary') < names.index(
+            'subprocess_run')
 
 
 def test_launch_boundary_filters_old_events(env):

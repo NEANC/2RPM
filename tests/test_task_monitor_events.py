@@ -55,6 +55,81 @@ class _FakeHandle:
         self.close_calls += 1
 
 
+class TestTaskChannelEnabled(unittest.TestCase):
+    """验证配置属性检查与句柄生命周期。"""
+
+    def test_enabled_property_allows_launch(self):
+        """只接受 pywin32 返回元组中的 Enabled=True。"""
+        handle = _FakeHandle()
+        with patch.object(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                          return_value=handle) as open_config, \
+                patch.object(task_monitor.win32evtlog,
+                             'EvtGetChannelConfigProperty',
+                             return_value=(True, 13)) as get_property:
+            task_monitor.ensure_task_channel_enabled()
+
+        open_config.assert_called_once_with(task_monitor.TASK_LOG_CHANNEL)
+        get_property.assert_called_once_with(
+            handle, task_monitor.win32evtlog.EvtChannelConfigEnabled)
+        self.assertEqual(handle.close_calls, 1)
+
+    def test_disabled_property_rejected(self):
+        """历史可读但配置禁用的通道不得视为可触发。"""
+        handle = _FakeHandle()
+        with patch.object(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                          return_value=handle), \
+                patch.object(task_monitor.win32evtlog,
+                             'EvtGetChannelConfigProperty',
+                             return_value=(False, 13)):
+            with self.assertRaises(task_monitor.TaskQueryError):
+                task_monitor.ensure_task_channel_enabled()
+        self.assertEqual(handle.close_calls, 1)
+
+    def test_open_failure_rejected(self):
+        """无法打开通道配置时不尝试属性读取。"""
+        with patch.object(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                          side_effect=RuntimeError('open failed')), \
+                patch.object(task_monitor.win32evtlog,
+                             'EvtGetChannelConfigProperty') as get_property:
+            with self.assertRaises(task_monitor.TaskQueryError):
+                task_monitor.ensure_task_channel_enabled()
+        get_property.assert_not_called()
+
+    def test_property_failure_rejected_and_closed(self):
+        """属性查询失败仍关闭已打开配置句柄。"""
+        handle = _FakeHandle()
+        with patch.object(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                          return_value=handle), \
+                patch.object(task_monitor.win32evtlog,
+                             'EvtGetChannelConfigProperty',
+                             side_effect=RuntimeError('get failed')):
+            with self.assertRaises(task_monitor.TaskQueryError):
+                task_monitor.ensure_task_channel_enabled()
+        self.assertEqual(handle.close_calls, 1)
+
+    def test_missing_binding_rejected(self):
+        """绑定不可用时不把可读历史日志当作启用证明。"""
+        with patch.object(task_monitor.win32evtlog, 'EvtOpenChannelConfig',
+                          None):
+            with self.assertRaises(task_monitor.TaskQueryError):
+                task_monitor.ensure_task_channel_enabled()
+
+    def test_control_signal_propagates_and_closes(self):
+        """读取配置时控制信号保持原对象，句柄只关闭一次。"""
+        for signal in (KeyboardInterrupt(), SystemExit(2)):
+            with self.subTest(signal=type(signal).__name__):
+                handle = _FakeHandle()
+                with patch.object(task_monitor.win32evtlog,
+                                  'EvtOpenChannelConfig', return_value=handle), \
+                        patch.object(task_monitor.win32evtlog,
+                                     'EvtGetChannelConfigProperty',
+                                     side_effect=signal):
+                    with self.assertRaises(type(signal)) as caught:
+                        task_monitor.ensure_task_channel_enabled()
+                self.assertIs(caught.exception, signal)
+                self.assertEqual(handle.close_calls, 1)
+
+
 def _event_xml(task_name, pid=None, path=DEFAULT_EXE, record_id=100,
                event_time=DEFAULT_EVENT_TIME, extra_data=()):
     """按 G3 实测结构构造 Event 129 的 XML 文本。"""

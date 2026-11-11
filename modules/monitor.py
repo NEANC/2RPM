@@ -26,6 +26,7 @@ from modules.task_monitor import (
     TaskQueryError,
     _parse_event_time,
     bind_task_event,
+    ensure_task_channel_enabled,
     get_task_event_boundary,
     query_task_events
 )
@@ -1224,7 +1225,7 @@ def _watch_task_target(config, target):
 
 
 def _launch_task_target(config, target):
-    """launch：日志可用性预检 → 记录边界 → 触发一次 → 等待新事件绑定。
+    """launch：通道启用检查 → 日志预检 → 边界 → 触发 → 等待绑定。
 
     Args:
         config (dict): 配置信息
@@ -1237,6 +1238,7 @@ def _launch_task_target(config, target):
         SystemExit: 预检失败、触发失败、等待超时或查询失败
     """
     try:
+        ensure_task_channel_enabled()
         query_task_events(target.value, 1)
         boundary_record_id = get_task_event_boundary()
     except TaskQueryError as e:
