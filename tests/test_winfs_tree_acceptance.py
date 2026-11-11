@@ -32,6 +32,14 @@ def test_retention_reparse_mixed_tree_preserves_every_entry(tmp_path):
     junction = nested / 'junction'
     make_junction(junction, outside)
     try:
+        assert junction.lstat().st_reparse_tag == 0xA0000003
+        if not junction.is_dir() and 'sandbox-storage' in os.readlink(junction).casefold():
+            assert sentinel.read_bytes() == b'outside'
+            pytest.skip('沙盒重映射导致 junction 创建后的目标不可访问')
+        assert junction.is_dir(), f'清理前 junction 目标不可访问：{os.readlink(junction)}'
+        assert os.path.samefile(junction, outside)
+        assert (junction / 'sentinel.bin').read_bytes() == b'outside'
+        assert sentinel.read_bytes() == b'outside'
         safe = tree.parent / '2020_01_02'
         safe.mkdir()
         (safe / 'normal.bin').write_bytes(b'normal')
