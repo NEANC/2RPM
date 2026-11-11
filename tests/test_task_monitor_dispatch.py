@@ -343,7 +343,10 @@ def test_watch_first_warning_waits_full_binding_interval(env):
         'pid': 4321, 'name': 'python.exe', 'create_time': 0.0,
     }
     config = {
-        'monitor': {'common': {'max_wait': '3s', 'check_interval': '1s'}},
+        'monitor': {'common': {
+            'max_wait': '3s', 'check_interval': '1s',
+            'timeout_interval': '15m',
+        }},
     }
 
     pid_info = monitor._watch_task_target(config, TASK_TARGET)
@@ -364,6 +367,50 @@ def test_watch_first_warning_waits_full_binding_interval(env):
     assert kwargs['process_pid'] == 4321
     assert kwargs['process_run_time'] == '0:31:40'
     assert pid_info['last_warning_time'] == 1900.0
+    env.action.assert_not_called()
+
+
+@pytest.mark.parametrize('elapsed,expected_count', [(899, 0), (900, 1)])
+def test_watch_single_pid_first_warning_boundary(env, monkeypatch,
+                                                 elapsed, expected_count):
+    """真实单 PID 监视单轮按显式 15m 配置决定首次警告。"""
+    env.clock.current = 1000.0
+    env.clock.step = 0.0
+    env.query.return_value = [_event(1, 4321)]
+    env.bind.return_value = {
+        'pid': 4321, 'name': 'python.exe', 'create_time': 0.0,
+    }
+    config = {
+        'monitor': {'common': {
+            'max_wait': '3s', 'check_interval': '1s',
+            'timeout_interval': '15m', 'timeout_threshold': 3,
+        }},
+    }
+    pid_info = monitor._watch_task_target(config, TASK_TARGET)
+    assert pid_info['start_time'] == 0.0
+    assert pid_info['last_warning_time'] == 1000.0
+
+    class StopAfterOneLoop(Exception):
+        """在第二轮休眠时结束受控监视。"""
+
+    process = Mock()
+    process.create_time.return_value = 0.0
+    monkeypatch.setattr(monitor.psutil, 'Process', Mock(return_value=process))
+    env.sleep.side_effect = [None, StopAfterOneLoop()]
+    env.clock.current = 1000.0 + elapsed
+
+    with pytest.raises(StopAfterOneLoop):
+        monitor._monitor_single_pid(pid_info, config, env.spinner)
+
+    assert env.sleep.call_count == 2
+    process.create_time.assert_called_once_with()
+    assert env.send.call_count == expected_count
+    assert pid_info['timeout_count'] == expected_count
+    assert pid_info['last_warning_time'] == (1900.0 if expected_count else 1000.0)
+    if expected_count:
+        assert env.send.call_args.args == (config, 'on_timeout')
+        assert env.send.call_args.kwargs['process_run_time'] == '0:31:40'
+        assert env.send.call_args.kwargs['process_pid'] == 4321
     env.action.assert_not_called()
 
 
