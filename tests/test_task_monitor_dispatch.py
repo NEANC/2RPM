@@ -334,6 +334,39 @@ def test_watch_start_time_from_create_time(env):
     assert pid_info['last_warning_time'] == env.clock.values[-1]
 
 
+def test_watch_first_warning_waits_full_binding_interval(env):
+    """接管旧实例后首次警告等待完整间隔，运行时长仍从创建时刻计算。"""
+    env.clock.current = 1000.0
+    env.clock.step = 0.0
+    env.query.return_value = [_event(1, 4321)]
+    env.bind.return_value = {
+        'pid': 4321, 'name': 'python.exe', 'create_time': 0.0,
+    }
+    config = {
+        'monitor': {'common': {'max_wait': '3s', 'check_interval': '1s'}},
+    }
+
+    pid_info = monitor._watch_task_target(config, TASK_TARGET)
+    assert pid_info['start_time'] == 0.0
+    assert pid_info['last_warning_time'] == 1000.0
+
+    for elapsed, expected_count in [(1, 0), (899, 0), (900, 1), (901, 1)]:
+        env.clock.current = 1000.0 + elapsed
+        monitor._check_process_timeout(
+            config, pid_info, pid_info['pid'], env.clock(), 900, '', 3,
+        )
+        assert env.send.call_count == expected_count
+        assert pid_info['timeout_count'] == expected_count
+
+    env.send.assert_called_once()
+    args, kwargs = env.send.call_args
+    assert args == (config, 'on_timeout')
+    assert kwargs['process_pid'] == 4321
+    assert kwargs['process_run_time'] == '0:31:40'
+    assert pid_info['last_warning_time'] == 1900.0
+    env.action.assert_not_called()
+
+
 def test_launch_start_time_is_binding_moment(env):
     """launch 模式的 start_time 取绑定成功的时刻。"""
     env.query.return_value = [_event(101, 4321)]
