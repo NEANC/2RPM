@@ -306,6 +306,30 @@ class TestQueryTaskEvents(unittest.TestCase):
                                  [1, 1, 1])
                 self.assertEqual(query_handle.close_calls, 1)
 
+    def test_query_closes_second_batch_on_parse_failure(self):
+        """第二批首项或中项解析失败时，两批句柄均恰好关闭一次。"""
+        for failure_index in (0, 1):
+            with self.subTest(index=failure_index):
+                first_batch = [_FakeHandle(_event_xml(
+                    '\\Folder\\Task', pid=index + 1)) for index in range(2)]
+                second_batch = [_FakeHandle(_event_xml(
+                    '\\Folder\\Task', pid=index + 3)) for index in range(3)]
+                second_batch[failure_index].xml_text = '<Event>'
+                query_patch, next_patch, render_patch, query_handle = (
+                    self._patch_query([first_batch, second_batch]))
+
+                with query_patch, next_patch as next_events, render_patch:
+                    with self.assertRaises(task_monitor.TaskQueryError) as caught:
+                        task_monitor.query_task_events('\\Folder\\Task', 10)
+
+                self.assertIn('解析', str(caught.exception))
+                self.assertEqual(next_events.call_count, 2)
+                self.assertEqual([handle.close_calls for handle in first_batch],
+                                 [1, 1])
+                self.assertEqual([handle.close_calls for handle in second_batch],
+                                 [1, 1, 1])
+                self.assertEqual(query_handle.close_calls, 1)
+
     def test_query_control_signal_closes_batch_even_if_close_fails(self):
         """控制信号保留原对象，关闭异常不妨碍其余句柄清理。"""
         for signal_type in (KeyboardInterrupt, SystemExit):
