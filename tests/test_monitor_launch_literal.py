@@ -21,9 +21,8 @@ from modules.monitor_target import MonitorTarget
 
 @pytest.mark.skipif(os.name != 'nt', reason='需要 Windows 解释器')
 @pytest.mark.parametrize('extension', ['bat', 'cmd'])
-@pytest.mark.parametrize('delayed', ['off', 'on'])
 @pytest.mark.parametrize('args', [None, 'hello world'])
-def test_batch_target_is_literal(tmp_path, monkeypatch, extension, delayed, args):
+def test_batch_target_is_literal(tmp_path, monkeypatch, extension, args):
     """实际 cmd 执行字面文件，参数可按 cmd 自身规则解释。"""
     monkeypatch.setenv('MONITOR_LITERAL_NAME', 'EXPANDED')
     directory = tmp_path / 'space & (group) !' / '%MONITOR_LITERAL_NAME%'
@@ -35,10 +34,11 @@ def test_batch_target_is_literal(tmp_path, monkeypatch, extension, delayed, args
     expanded.write_bytes(b'@echo off\r\necho EXPANDED %*\r\n')
     command = build_launch_command(
         MonitorTarget(kind='file', value=str(literal), cwd=str(tmp_path)), args)
+    assert command.command_line.startswith('cmd.exe /v:off /c ')
     env = os.environ.copy()
     env.update(command.env or {})
     result = subprocess.run(
-        command.command_line.replace('cmd.exe /c', f'cmd.exe /v:{delayed} /c', 1),
+        command.command_line,
         cwd=command.cwd, env=env, shell=False, capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == b'LITERAL' + (b' hello world' if args else b'')
