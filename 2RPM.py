@@ -164,8 +164,7 @@ def main():
     except Exception as e:
         notify_fail(f"程序出现异常: {e}", exc_info=True)
         exit_code = 1
-    finally:
-        sys.exit(exit_code)
+    sys.exit(exit_code)
 
 
 if __name__ == '__main__':
