@@ -429,11 +429,13 @@ def bind_task_event(event):
         LOGGER.warning(f"PID {pid} 无法获取可执行路径")
         return None
 
-    if '%' in exe:
-        LOGGER.warning(f"PID {pid} 的可执行路径含未展开变量: {exe!r}")
+    event_path = getattr(event, 'path', '') or ''
+    if (not ntpath.isabs(exe) or not ntpath.splitdrive(exe)[0]
+            or not ntpath.isabs(event_path)
+            or not ntpath.splitdrive(event_path)[0]):
+        LOGGER.warning(f"PID {pid} 的可执行路径不是绝对路径: {exe!r}, {event_path!r}")
         return None
 
-    event_path = getattr(event, 'path', '') or ''
     if _normalize_exe_path(exe) != _normalize_exe_path(event_path):
         LOGGER.warning(
             f"PID {pid} 的可执行路径与事件不一致: {exe!r} != {event_path!r}"

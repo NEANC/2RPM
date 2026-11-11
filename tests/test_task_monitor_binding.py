@@ -78,6 +78,38 @@ class TestBindTaskEvent(unittest.TestCase):
             'create_time': EVENT_TIMESTAMP + 0.005,
         })
 
+    def test_bind_accepts_literal_percent_in_absolute_path(self):
+        """字面百分号位于绝对路径时仍按路径和时间绑定。"""
+        for path in ('C:\\Apps\\100%\\worker.exe',
+                     'C:\\Apps\\%LITERAL%\\worker.exe'):
+            with self.subTest(path=path):
+                process = _FakeProcess(path, EVENT_TIMESTAMP + 0.005)
+                with patch.object(task_monitor.psutil, 'Process',
+                                  return_value=process):
+                    bound = task_monitor.bind_task_event(_make_event(path=path))
+                self.assertEqual(bound, {
+                    'pid': 80612,
+                    'name': 'python.exe',
+                    'create_time': EVENT_TIMESTAMP + 0.005,
+                })
+
+    def test_bind_rejects_literal_percent_path_mismatch(self):
+        """含百分号路径也不能绕过事件与进程路径比较。"""
+        process = _FakeProcess('C:\\Apps\\100%\\worker.exe',
+                               EVENT_TIMESTAMP + 0.005)
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            bound = task_monitor.bind_task_event(
+                _make_event(path='C:\\Apps\\101%\\worker.exe'))
+        self.assertIsNone(bound)
+
+    def test_bind_rejects_literal_percent_creation_time_mismatch(self):
+        """含百分号路径也不能绕过进程创建时间比较。"""
+        path = 'C:\\Apps\\%LITERAL%\\worker.exe'
+        process = _FakeProcess(path, EVENT_TIMESTAMP - 30.0)
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            bound = task_monitor.bind_task_event(_make_event(path=path))
+        self.assertIsNone(bound)
+
     def test_bind_rejects_pid_reuse_by_time(self):
         """创建时间相差 30 秒视为 PID 复用，拒绝绑定。"""
         process = _FakeProcess(EVENT_EXE, EVENT_TIMESTAMP - 30.0)
@@ -111,11 +143,29 @@ class TestBindTaskEvent(unittest.TestCase):
         self.assertIsNone(bound)
 
     def test_bind_rejects_unexpanded_env_path(self):
-        """事件路径含未展开环境变量时拒绝绑定。"""
-        unexpanded = '%windir%\\System32\\x.exe'
+        """非绝对的环境引用路径即使相同也拒绝绑定。"""
+        unexpanded = '%windir%\\worker.exe'
         process = _FakeProcess(unexpanded, EVENT_TIMESTAMP + 0.005)
         with patch.object(task_monitor.psutil, 'Process', return_value=process):
             bound = task_monitor.bind_task_event(_make_event(path=unexpanded))
+
+        self.assertIsNone(bound)
+
+    def test_bind_rejects_matching_relative_exe_path(self):
+        """进程和事件路径都为普通相对路径时仍拒绝绑定。"""
+        relative = 'Apps\\worker.exe'
+        process = _FakeProcess(relative, EVENT_TIMESTAMP + 0.005)
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            bound = task_monitor.bind_task_event(_make_event(path=relative))
+
+        self.assertIsNone(bound)
+
+    def test_bind_rejects_root_relative_path(self):
+        """仅有根分隔符的路径依赖当前驱动器，不能绑定。"""
+        path = '\\Apps\\worker.exe'
+        process = _FakeProcess(path, EVENT_TIMESTAMP + 0.005)
+        with patch.object(task_monitor.psutil, 'Process', return_value=process):
+            bound = task_monitor.bind_task_event(_make_event(path=path))
 
         self.assertIsNone(bound)
 
