@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""配置布局迁移前的目标 schema 测试。"""
+"""统一监视目标布局的配置加载与写回测试。"""
 
 import os
 import sys
+from unittest.mock import patch
+
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from modules.config import COMMENTS, DEFAULT_VALUES, get_default_config
+
+# 合法新配置的最小监视节
+VALID_MONITOR = {'monitor': {'target': 'ok.exe'}}
 
 
 def test_default_notification_templates_survive_production_yaml_round_trip(
@@ -17,9 +22,7 @@ def test_default_notification_templates_survive_production_yaml_round_trip(
     """验证默认通知模板内容经生产写回后保持不变。"""
     from modules.config import load_config
 
-    path = _write_config(tmp_path, {
-        'monitor': {'mode': 'psutil', 'psutil': {'process_name': 'ok.exe'}},
-    })
+    path = _write_config(tmp_path, VALID_MONITOR)
     first = load_config(str(path))
     second = load_config(str(path))
 
@@ -47,12 +50,14 @@ def test_default_config_has_independent_nested_mutable_nodes():
 def test_monitor_schema_is_nested_and_external_threshold_is_removed():
     """验证 monitor 使用独立可变节点且超时阈值归入 common。"""
     assert set(DEFAULT_VALUES['monitor']) == {
-        'mode', 'common', 'psutil', 'task_scheduler', 'launch'
+        'mode', 'target', 'common', 'launch', 'watch'
     }
     assert set(DEFAULT_VALUES['monitor']['common']) == {
         'timeout_interval', 'loop_interval', 'timeout_threshold',
         'max_wait', 'check_interval'
     }
+    assert set(DEFAULT_VALUES['monitor']['launch']) == {'args', 'cwd'}
+    assert set(DEFAULT_VALUES['monitor']['watch']) == {'lookback_minutes'}
     assert 'timeout_threshold' not in DEFAULT_VALUES['external']
     assert 'wait' not in DEFAULT_VALUES
     assert 'task' not in DEFAULT_VALUES
@@ -63,12 +68,15 @@ def test_comments_match_monitor_schema():
     """验证默认配置注释与新的 monitor 布局一致。"""
     monitor_comments = COMMENTS['monitor']
     assert set(monitor_comments) == {
-        '_comment', 'mode', 'common', 'psutil', 'task_scheduler', 'launch'
+        '_comment', 'mode', 'target', 'common', 'launch', 'watch'
     }
     assert set(monitor_comments['common']) == {
         '_comment', 'timeout_interval', 'loop_interval',
         'timeout_threshold', 'max_wait', 'check_interval'
     }
+    assert set(monitor_comments['launch']) == {'_comment', 'args', 'cwd'}
+    assert set(monitor_comments['watch']) == {
+        '_comment', 'lookback_minutes'}
     assert 'timeout_threshold' not in COMMENTS['external']
     assert 'wait' not in COMMENTS
     assert 'task' not in COMMENTS
@@ -84,38 +92,188 @@ def _write_config(tmp_path, value):
     return path
 
 
-def test_old_layout_migrates_and_preserves_external_actions(tmp_path):
-    """旧布局完整迁移且保留 external 动作。"""
+@pytest.mark.parametrize('value', [
+    {'monitor': {'monitor_mode': 'task_scheduler'}},
+    {'monitor': {'process_name': 'old.exe'}},
+    {'monitor': {'timeout_interval': '2m'}},
+    {'monitor': {'loop_interval': '0s'}},
+    {'monitor': {'psutil': {'process_name': 'old.exe'}}},
+    {'monitor': {'task_scheduler': {'task_name': 'old-task'}}},
+    {'monitor': {'launch': {'type': 'task'}}},
+    {'monitor': {'launch': {'path': 'C:\\old.exe'}}},
+    {'monitor': {'launch': {'task_name': 'launch-task'}}},
+    {'task': {'task_name': 'old-task'}},
+    {'launch': {'type': 'program'}},
+    {'wait': {'max_wait': '0s'}},
+    {'external': {'timeout_threshold': 9}},
+], ids=[
+    'monitor_mode', 'process_name', 'timeout_interval', 'loop_interval',
+    'psutil', 'task_scheduler', 'launch_type', 'launch_path',
+    'launch_task_name', 'top_task', 'top_launch', 'top_wait',
+    'external_threshold',
+])
+def test_legacy_layout_is_rejected_and_bytes_preserved(tmp_path, value):
+    """旧监视布局任一字段存在时拒绝加载且原文件字节不变。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, value)
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+
+
+def test_new_and_legacy_fields_mixed_are_rejected(tmp_path):
+    """新旧字段混用时拒绝加载且不写回。"""
     from modules.config import load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'task_scheduler', 'timeout_interval': '2m',
-                    'loop_interval': '0s', 'process_name': 'old.exe'},
-        'task': {'task_name': 'old-task', 'lookback_minutes': 0},
-        'launch': {'type': 'task', 'task_name': 'launch-task'},
-        'wait': {'max_wait': '0s', 'check_interval': '2s'},
-        'external': {'timeout_threshold': 0, 'on_end': 'end',
-                     'on_timeout': 'timeout', 'on_wait_timeout': 'wait'},
+        'monitor': {
+            'mode': 'watch',
+            'target': 'ok.exe',
+            'watch': {'lookback_minutes': 5},
+            'psutil': {'process_name': 'ok.exe'},
+        },
     })
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('target', [None, '', '   ', 0, False], ids=[
+    'none', 'empty_str', 'blank_str', 'zero', 'false'])
+def test_invalid_explicit_target_is_rejected(tmp_path, target):
+    """显式 target 非法时拒绝加载且不写回。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {'monitor': {'target': target}})
+    original = path.read_bytes()
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize('monitor', [
+    {'mode': 'launch', 'target': 'notepad.exe'},
+    {'mode': 'launch', 'target': 'C:app.exe'},
+    {'mode': 'launch', 'target': '.\\app.exe',
+     'launch': {'cwd': 'relative-dir'}},
+], ids=['bare_launch', 'drive_relative', 'relative_cwd'])
+def test_invalid_target_never_rewrites_config(tmp_path, monitor):
+    """目标语法错误先于写回拒绝，不创建临时文件。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {'monitor': monitor})
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+def test_invalid_target_error_redacts_value(tmp_path, caplog):
+    """解析器错误不回显目标或底层异常中的秘密。"""
+    from modules.config import load_config
+
+    secret = 'privateexample'
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': secret},
+    })
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert 'monitor.target' in caplog.text
+    assert secret not in caplog.text
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+def test_invalid_cwd_error_redacts_value(tmp_path, caplog):
+    """工作目录语法错误不回显其原值且不写回。"""
+    from modules.config import load_config
+
+    secret = 'privatefolder'
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': '.\\missing.exe',
+                    'launch': {'cwd': secret}},
+    })
+    original = path.read_bytes()
+    with patch('modules.config._make_write_yaml') as writer, \
+            patch('modules.config.tempfile.mkstemp') as mkstemp:
+        with pytest.raises(SystemExit) as error:
+            load_config(str(path))
+    assert error.value.code == 1
+    assert 'monitor.launch.cwd' in caplog.text
+    assert secret not in caplog.text
+    assert path.read_bytes() == original
+    writer.assert_not_called()
+    mkstemp.assert_not_called()
+
+
+@pytest.mark.parametrize('target', ['.\\missing.exe',
+                                     '\\\\missing-host\\share\\missing.exe'])
+def test_valid_file_target_preserves_literal_without_probing(tmp_path, target):
+    """相对及 UNC 目标仅做语法检查，持久配置保留字面量。"""
+    from modules.config import load_config
+    from modules.monitor_target import resolve_monitor_target
+
+    path = _write_config(tmp_path, {
+        'monitor': {'mode': 'launch', 'target': target,
+                    'launch': {'cwd': '.\\missing-dir'}},
+    })
+    expected = resolve_monitor_target(
+        'launch', target, str(tmp_path), '.\\missing-dir')
+    with patch('modules.config.resolve_monitor_target',
+               wraps=resolve_monitor_target) as resolver:
+        config = load_config(str(path))
+    resolver.assert_called_once_with(
+        'launch', target, str(tmp_path), '.\\missing-dir')
+    assert expected.value.endswith('missing.exe')
+    assert expected.cwd.endswith('missing-dir')
+    assert config['monitor']['target'] == target
+    assert config['monitor']['launch']['cwd'] == '.\\missing-dir'
+    assert target in path.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('mode,target', [
+    (None, 'notepad.exe'),
+    ('watch', 'notepad.exe'),
+    ('launch', '\\Folder\\MissingTask'),
+])
+def test_inactive_relative_cwd_is_preserved(tmp_path, mode, target):
+    """缺省 watch 与任务目标不校验非活动 cwd 语法但保留字段。"""
+    from modules.config import load_config
+
+    monitor = {'target': target, 'launch': {'cwd': 'relative-dir'}}
+    if mode is not None:
+        monitor['mode'] = mode
+    path = _write_config(tmp_path, {'monitor': monitor})
     config = load_config(str(path))
-    assert config['monitor']['mode'] == 'task_scheduler'
-    assert config['monitor']['common']['timeout_interval'] == '2m'
-    assert config['monitor']['common']['timeout_threshold'] == 0
-    assert config['monitor']['task_scheduler']['lookback_minutes'] == 0
-    assert config['monitor']['launch']['task_name'] == 'launch-task'
-    assert config['external']['on_end'] == 'end'
-    assert 'task' not in config and 'wait' not in config
+    assert config['monitor']['mode'] == (mode if mode else 'watch')
+    assert config['monitor']['launch']['cwd'] == 'relative-dir'
 
 
-def test_new_values_win_by_key_presence(tmp_path):
-    """新字段即使为空也优先于旧字段。"""
+@pytest.mark.parametrize('value', [
+    {'monitor': {'common': 'invalid'}},
+    {'monitor': {}, 'external': 'invalid'},
+], ids=['common_not_mapping', 'external_not_mapping'])
+def test_invalid_structure_does_not_write(tmp_path, value):
+    """新节点或 external 结构错误不写回。"""
     from modules.config import load_config
 
-    path = _write_config(tmp_path, {
-        'monitor': {'mode': 'psutil', 'common': {'timeout_threshold': 0},
-                    'psutil': {'process_name': None}},
-        'external': {'timeout_threshold': 9},
-    })
+    path = _write_config(tmp_path, value)
     original = path.read_text(encoding='utf-8')
     with pytest.raises(SystemExit) as error:
         load_config(str(path))
@@ -123,174 +281,20 @@ def test_new_values_win_by_key_presence(tmp_path):
     assert path.read_text(encoding='utf-8') == original
 
 
-@pytest.mark.parametrize('value', [None, '', 0, False, {'invalid': 'value'}])
-def test_migration_preserves_present_new_values_and_removes_old_keys(value):
-    """迁移按键存在优先保留新值，并删除冲突的旧字段。"""
-    from modules.config import _migrate_config_layout
-
-    config = {
-        'monitor': {
-            'mode': value, 'monitor_mode': 'psutil',
-            'process_name': 'old.exe',
-            'psutil': {'process_name': value},
-            'timeout_interval': '2m', 'loop_interval': '3s',
-            'common': {key: value for key in (
-                'timeout_interval', 'loop_interval', 'timeout_threshold',
-                'max_wait', 'check_interval')},
-            'task_scheduler': {'task_name': value, 'lookback_minutes': value},
-            'launch': {key: value for key in (
-                'type', 'path', 'args', 'cwd', 'task_name')},
-        },
-        'external': {'timeout_threshold': 9},
-        'wait': {'max_wait': '4m', 'check_interval': '5s'},
-        'task': {'task_name': 'old-task', 'lookback_minutes': 7},
-        'launch': {'type': 'program', 'path': 'old.exe', 'args': '--old',
-                   'cwd': 'old-dir', 'task_name': 'old-launch-task'},
-    }
-
-    assert _migrate_config_layout(config)
-    monitor = config['monitor']
-    assert set(monitor) == {
-        'mode', 'common', 'psutil', 'task_scheduler', 'launch'
-    }
-    assert monitor['mode'] is value
-    for section in ('common', 'psutil', 'task_scheduler', 'launch'):
-        assert all(item is value for item in monitor[section].values())
-    assert not {'task', 'launch', 'wait'} & config.keys()
-    assert 'timeout_threshold' not in config['external']
-
-
-@pytest.mark.parametrize('value', [
-    {'monitor': {'common': {'loop_interval': '2s'}}},
-    {'monitor': {'task_scheduler': {'task_name': 'task-a'}}},
-    {'task': {'task_name': 'old-task'}},
-    {'wait': {'max_wait': '2m'}},
-    {},
-])
-def test_missing_mode_uses_runnable_defaults(tmp_path, value):
-    """未指定模式的旧布局和部分新布局允许补全可运行默认配置。"""
-    from modules.config import load_config
-
-    config = load_config(str(_write_config(tmp_path, value)))
-    assert config['monitor']['mode'] == 'psutil'
-    assert config['monitor']['psutil']['process_name'] == (
-        DEFAULT_VALUES['monitor']['psutil']['process_name']
-    )
-
-
-@pytest.mark.parametrize('value', [None, '', 0, False, {'invalid': 'value'}])
-def test_missing_mode_still_validates_final_active_target(tmp_path, value):
-    """缺省模式不跳过补全后当前模式目标有效性校验。"""
-    from modules.config import load_config
-
-    path = _write_config(tmp_path, {
-        'monitor': {'psutil': {'process_name': value}},
-    })
-    original = path.read_bytes()
-    with pytest.raises(SystemExit) as error:
-        load_config(str(path))
-    assert error.value.code == 1
-    assert path.read_bytes() == original
-
-
-@pytest.mark.parametrize('mode, section', [
-    ('psutil', {}),
-    ('task_scheduler', {}),
-    ('launch', {}),
-    ('launch', {'type': 'program'}),
-    ('launch', {'type': 'task'}),
-])
-def test_explicit_mode_requires_explicit_target(tmp_path, mode, section):
-    """显式模式不能用默认值补齐当前模式的必填目标。"""
-    from modules.config import load_config
-
-    path = _write_config(tmp_path, {'monitor': {'mode': mode, mode: section}})
-    original = path.read_bytes()
-    with pytest.raises(SystemExit) as error:
-        load_config(str(path))
-    assert error.value.code == 1
-    assert path.read_bytes() == original
-
-
-def test_invalid_structure_and_external_do_not_write(tmp_path):
-    """新节点或 external 结构错误不写回。"""
-    from modules.config import load_config
-
-    for value in ({'monitor': {'common': 'invalid'}},
-                  {'monitor': {}, 'external': 'invalid'}):
-        path = _write_config(tmp_path, value)
-        original = path.read_text(encoding='utf-8')
-        with pytest.raises(SystemExit) as error:
-            load_config(str(path))
-        assert error.value.code == 1
-        assert path.read_text(encoding='utf-8') == original
-        path.unlink()
-
-
-def test_non_current_mode_invalid_values_are_retained(tmp_path):
-    """非当前模式的非法目标保留。"""
-    from modules.config import load_config
-
-    path = _write_config(tmp_path, {
-        'monitor': {'mode': 'psutil', 'psutil': {'process_name': 'ok.exe'},
-                    'task_scheduler': {'task_name': None},
-                    'launch': {'type': None, 'path': None, 'task_name': None}},
-    })
-    config = load_config(str(path))
-    assert config['monitor']['task_scheduler']['task_name'] is None
-    assert config['monitor']['launch']['type'] is None
-
-
-def test_invalid_mode_and_active_required_field_do_not_write(tmp_path):
-    """mode 或当前模式必填字段错误时不写回。"""
-    from modules.config import load_config
-
-    cases = [
-        {'monitor': {'mode': 'invalid'}},
-        {'monitor': {'mode': 'psutil', 'psutil': {'process_name': ''}}},
-        {'monitor': {'mode': 'task_scheduler',
-                     'task_scheduler': {'task_name': ''}}},
-        {'monitor': {'mode': 'launch', 'launch': {'type': 'program', 'path': ''}}},
-        {'monitor': {'mode': 'launch', 'launch': {'type': 'task', 'task_name': ''}}},
-    ]
-    for value in cases:
-        path = _write_config(tmp_path, value)
-        original = path.read_text(encoding='utf-8')
-        with pytest.raises(SystemExit) as error:
-            load_config(str(path))
-        assert error.value.code == 1
-        assert path.read_text(encoding='utf-8') == original
-        path.unlink()
-
-
-def test_migration_is_idempotent_and_logs_conflict_without_values(tmp_path, caplog):
-    """迁移可幂等，冲突日志只包含路径。"""
-    from modules.config import load_config
-
-    path = _write_config(tmp_path, {
-        'monitor': {'mode': 'psutil', 'process_name': 'old.exe',
-                    'common': {'timeout_threshold': 0}},
-        'external': {'timeout_threshold': 9},
-    })
-    first = load_config(str(path))
-    persisted = path.read_text(encoding='utf-8')
-    second = load_config(str(path))
-    assert first == second
-    assert path.read_text(encoding='utf-8') == persisted
-    assert 'monitor.common.timeout_threshold' in caplog.text
-    assert 'external.timeout_threshold' in caplog.text
-    assert 'external.timeout_threshold: 9' not in caplog.text
-
-
-def test_successful_migration_is_idempotent_and_second_load_does_not_write(tmp_path):
-    """成功迁移后第二次加载不触发写回。"""
+def test_minimal_new_layout_is_completed_with_defaults(tmp_path):
+    """最小新布局加载后补齐默认值，且第二次加载不写回。"""
     from modules.config import load_config
     from unittest.mock import patch
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
-    load_config(str(path))
+    config = load_config(str(path))
+    assert config['monitor']['mode'] == 'watch'
+    assert config['monitor']['target'] == 'custom.exe'
+    assert config['monitor']['common']['timeout_interval'] == '15m'
+    assert config['monitor']['watch']['lookback_minutes'] == 10
+
     persisted = path.read_text(encoding='utf-8')
     with patch('modules.config._make_write_yaml') as write_yaml:
         load_config(str(path))
@@ -298,12 +302,69 @@ def test_successful_migration_is_idempotent_and_second_load_does_not_write(tmp_p
     write_yaml.assert_not_called()
 
 
-def test_migration_preserves_push_log_and_custom_user_values(tmp_path):
-    """迁移不重置用户推送、日志和自定义值。"""
+def test_inactive_launch_fields_are_retained(tmp_path):
+    """非当前模式的合法 launch 字段与 watch 值保持原样。"""
     from modules.config import load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {
+            'mode': 'watch',
+            'target': 'ok.exe',
+            'launch': {'args': '--flag', 'cwd': None},
+            'watch': {'lookback_minutes': 4},
+        },
+    })
+    config = load_config(str(path))
+    assert config['monitor']['launch']['args'] == '--flag'
+    assert config['monitor']['launch']['cwd'] is None
+    assert config['monitor']['watch']['lookback_minutes'] == 4
+
+
+@pytest.mark.parametrize('value', [
+    {'monitor': {'mode': 'invalid'}},
+    {'monitor': {'target': 'ok.exe', 'launch': {'args': 123}}},
+    {'monitor': {'target': 'ok.exe', 'watch': '10'}},
+    {'monitor': {'target': 'ok.exe', 'common': []}},
+], ids=['invalid_mode', 'args_int', 'watch_str', 'common_list'])
+def test_invalid_mode_or_section_does_not_write(tmp_path, value):
+    """mode 或子节类型错误时不写回。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, value)
+    original = path.read_text(encoding='utf-8')
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+    assert error.value.code == 1
+    assert path.read_text(encoding='utf-8') == original
+
+
+def test_legacy_rejection_logs_path_without_values(tmp_path, caplog):
+    """旧布局拒绝日志只包含路径，不泄漏字段值。"""
+    from modules.config import load_config
+
+    secret = 'LEGACY_SECRET_VALUE'
+    path = _write_config(tmp_path, {
+        'monitor': {
+            'target': 'ok.exe',
+            'psutil': {'process_name': secret},
+        },
+    })
+    original = path.read_text(encoding='utf-8')
+    with pytest.raises(SystemExit) as error:
+        load_config(str(path))
+
+    assert error.value.code == 1
+    assert path.read_text(encoding='utf-8') == original
+    assert 'monitor.psutil' in caplog.text
+    assert secret not in caplog.text
+
+
+def test_migration_preserves_push_log_and_custom_user_values(tmp_path):
+    """新布局加载不重置用户推送、日志和自定义值。"""
+    from modules.config import load_config
+
+    path = _write_config(tmp_path, {
+        'monitor': {'target': 'custom.exe'},
         'push': {'templates': {'on_end': {'title': '用户标题'}},
                  'push_channel_settings': {'channels': [
                      {'provider': 'custom', 'token': 'user-token'}]}},
@@ -321,14 +382,15 @@ def test_write_open_failure_returns_memory_config_without_success_log(tmp_path, 
     from modules.config import load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
     def fail_write_temp(*args, **kwargs):
         raise OSError('write-open-failed')
 
     monkeypatch.setattr('modules.config.tempfile.mkstemp', fail_write_temp)
     config = load_config(str(path))
-    assert config['monitor']['mode'] == 'psutil'
+    assert config['monitor']['mode'] == 'watch'
+    assert config['monitor']['target'] == 'custom.exe'
     assert '正在写回配置信息' not in caplog.text
     assert '无法写回配置文件' in caplog.text
 
@@ -342,7 +404,7 @@ def test_atomic_write_failure_cleans_temp_and_preserves_original_error(
     from modules.config import load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
     original = path.read_bytes()
     original_close = os.close
@@ -389,8 +451,8 @@ def test_atomic_write_failure_cleans_temp_and_preserves_original_error(
 
     try:
         config = load_config(str(path))
-        assert config['monitor']['mode'] == 'psutil'
-        assert config['monitor']['psutil']['process_name'] == 'custom.exe'
+        assert config['monitor']['mode'] == 'watch'
+        assert config['monitor']['target'] == 'custom.exe'
         assert 'monitor_mode' not in config['monitor']
         assert path.read_bytes() == original
         assert closed_fds == opened_fds
@@ -423,7 +485,7 @@ def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_pat
     from modules.config import _make_write_yaml, load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
     original = path.read_bytes()
     yaml = _make_write_yaml()
@@ -434,7 +496,7 @@ def test_write_dump_failure_returns_memory_config_without_completion_log(tmp_pat
     monkeypatch.setattr(yaml, 'dump', fail_dump)
     monkeypatch.setattr('modules.config._make_write_yaml', lambda: yaml)
     config = load_config(str(path))
-    assert config['monitor']['mode'] == 'psutil'
+    assert config['monitor']['mode'] == 'watch'
     assert path.read_bytes() == original
     assert '正在写回配置信息' not in caplog.text
     assert '配置参数版本差异检查完成' not in caplog.text
@@ -446,7 +508,7 @@ def test_partial_dump_failure_preserves_original_bytes(tmp_path, caplog, monkeyp
     from modules.config import _make_write_yaml, load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
     original = path.read_bytes()
     yaml = _make_write_yaml()
@@ -459,7 +521,7 @@ def test_partial_dump_failure_preserves_original_bytes(tmp_path, caplog, monkeyp
     monkeypatch.setattr('modules.config._make_write_yaml', lambda: yaml)
     config = load_config(str(path))
 
-    assert config['monitor']['mode'] == 'psutil'
+    assert config['monitor']['mode'] == 'watch'
     assert path.read_bytes() == original
     assert '无法写回配置文件' in caplog.text
 
@@ -469,7 +531,7 @@ def test_write_close_failure_preserves_original_bytes(tmp_path, caplog, monkeypa
     from modules.config import load_config
 
     path = _write_config(tmp_path, {
-        'monitor': {'monitor_mode': 'psutil', 'process_name': 'custom.exe'},
+        'monitor': {'target': 'custom.exe'},
     })
     original = path.read_bytes()
     original_fdopen = os.fdopen
@@ -512,7 +574,7 @@ def test_write_close_failure_preserves_original_bytes(tmp_path, caplog, monkeypa
     monkeypatch.setattr('modules.config.os.fdopen', fdopen)
     config = load_config(str(path))
 
-    assert config['monitor']['mode'] == 'psutil'
+    assert config['monitor']['mode'] == 'watch'
     assert path.read_bytes() == original
     assert '无法写回配置文件' in caplog.text
     assert 'stage=close type=OSError' in caplog.text

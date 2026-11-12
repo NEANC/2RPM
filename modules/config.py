@@ -4,6 +4,7 @@
 import copy
 import errno
 import logging
+import math
 import os
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from ruamel.yaml.reader import ReaderError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 from ruamel.yaml.scanner import ScannerError
 
+from modules.monitor_target import resolve_monitor_target
 from modules.spinner import spinner_phase
 from modules.utils import (
     build_push_channel_node,
@@ -52,7 +54,8 @@ _CONFIG_EXCEPTION_TYPES = (
 # 默认配置值集中管理
 DEFAULT_VALUES = {
     'monitor': {
-        'mode': 'psutil',
+        'mode': 'watch',
+        'target': 'notepad.exe',
         'common': {
             'timeout_interval': '15m',
             'loop_interval': '1s',
@@ -60,19 +63,12 @@ DEFAULT_VALUES = {
             'max_wait': '30s',
             'check_interval': '1s',
         },
-        'psutil': {
-            'process_name': 'notepad.exe',
-        },
-        'task_scheduler': {
-            'task_name': '\\Custom\\MyTask',
-            'lookback_minutes': 10,
-        },
         'launch': {
-            'type': 'program',
-            'path': 'C:\\path\\to\\target.exe',
-            'task_name': '\\Custom\\MyTask',
             'args': None,
             'cwd': None,
+        },
+        'watch': {
+            'lookback_minutes': 10,
         },
     },
     'push': {
@@ -165,10 +161,14 @@ COMMENTS = {
             "- 监视程序相关配置\n"
         ),
         'mode': (
-            "\n监视模式，可选值: psutil / task_scheduler / launch\n"
-            "- psutil: 通过进程名轮询检测程序是否运行（默认）\n"
-            "- task_scheduler: 通过事件日志获取计划任务 PID 后监视\n"
-            "- launch: 主动拉起目标程序或计划任务并获取 PID 进行监视\n"
+            "\n监视模式，可选值: watch / launch\n"
+            "- watch: 等待目标出现后监视（默认）\n"
+            "- launch: 主动启动文件或触发计划任务后监视\n"
+        ),
+        'target': (
+            "\n监视目标（必填）\n"
+            "- watch 支持裸进程名、EXE 绝对路径与计划任务完整路径\n"
+            "- launch 支持可执行文件路径与计划任务完整路径\n"
         ),
         'common': {
             '_comment': "\n监视通用参数设置\n",
@@ -178,27 +178,16 @@ COMMENTS = {
             'max_wait': "\n最长等待时间，默认值 30 秒，支持 H/M/S 格式\n",
             'check_interval': "\n等待进程检查间隔，默认值 1 秒，支持 H/M/S 格式\n",
         },
-        'psutil': {
-            '_comment': "\npsutil 监视设置（仅在 mode 为 psutil 时生效）\n",
-            'process_name': "\n要监视的进程名称",
-        },
-        'task_scheduler': {
-            '_comment': (
-                "\n计划任务监视设置（仅在 mode 为 task_scheduler 时生效）\n"
-                "- 通过 Windows 事件日志获取计划任务创建的进程 PID 进行监视\n"
-            ),
-            'task_name': "\n要监视的计划任务名称\n- 完整路径格式: \\\\Folder\\\\TaskName\n",
-            'lookback_minutes': "\n事件回溯时间（分钟），默认值: 10\n",
-        },
         'launch': {
             '_comment': (
-                "\n主动拉起目标设置（仅在 mode 为 launch 时生效）\n"
+                "\n主动启动设置（仅在 mode 为 launch 时生效）\n"
             ),
-            'type': "\n拉起类型: program / task\n",
-            'path': "\n要拉起的可执行文件路径（仅 type=program 时使用）\n",
-            'args': "\n命令行参数（选填，仅 type=program 时使用）\n",
-            'cwd': "\n工作目录（选填，仅 type=program 时使用）\n",
-            'task_name': "\n要触发的计划任务名称（仅 type=task 时使用）\n",
+            'args': "\n命令行参数（选填）\n",
+            'cwd': "\n工作目录（选填，留空时使用目标文件所在目录）\n",
+        },
+        'watch': {
+            '_comment': "\n被动监视设置（仅在 mode 为 watch 时生效）\n",
+            'lookback_minutes': "\n事件回溯时间（分钟），默认值: 10\n",
         },
     },
     'push': {
@@ -722,56 +711,171 @@ def correct_screenshot_config(user_config):
     return changed
 
 
-def _normalize_task_lookback_minutes(task_section):
-    """归一化 monitor.task_scheduler.lookback_minutes 配置。"""
-    if not isinstance(task_section, dict):
+_LEGACY_TOP_LEVEL_KEYS = ('task', 'launch', 'wait')
+_LEGACY_MONITOR_KEYS = (
+    'monitor_mode',
+    'process_name',
+    'timeout_interval',
+    'loop_interval',
+    'psutil',
+    'task_scheduler',
+)
+_LEGACY_LAUNCH_KEYS = ('type', 'path', 'task_name')
+_VALID_MONITOR_MODES = ('watch', 'launch')
+_DEFAULT_WATCH_LOOKBACK_MINUTES = (
+    DEFAULT_VALUES['monitor']['watch']['lookback_minutes']
+)
+
+
+def _reject_legacy_monitor_config(user_config):
+    """旧监视布局存在时记录错误并 sys.exit(1)，不修改 user_config。
+
+    Args:
+        user_config (dict): 用户配置映射
+
+    Raises:
+        SystemExit: 命中旧布局字段或前缀结构非法时以退出码 1 终止
+    """
+    if not isinstance(user_config, dict):
+        return
+
+    for key in _LEGACY_TOP_LEVEL_KEYS:
+        if key in user_config:
+            _fail_config_layout(key, '旧监视布局字段已不再支持')
+
+    if 'monitor' in user_config:
+        monitor = user_config['monitor']
+        if not isinstance(monitor, dict):
+            _fail_config_layout('monitor', '必须是映射结构')
+        for key in _LEGACY_MONITOR_KEYS:
+            if key in monitor:
+                _fail_config_layout(f'monitor.{key}', '旧监视布局字段已不再支持')
+        if 'launch' in monitor:
+            launch = monitor['launch']
+            if not isinstance(launch, dict):
+                _fail_config_layout('monitor.launch', '必须是映射结构')
+            for key in _LEGACY_LAUNCH_KEYS:
+                if key in launch:
+                    _fail_config_layout(
+                        f'monitor.launch.{key}', '旧监视布局字段已不再支持'
+                    )
+
+    if 'external' in user_config:
+        external = user_config['external']
+        if not isinstance(external, dict):
+            _fail_config_layout('external', '必须是映射结构')
+        if 'timeout_threshold' in external:
+            _fail_config_layout('external.timeout_threshold', '旧监视布局字段已不再支持')
+
+
+def _validate_monitor_target_config(user_config):
+    """校验新监视结构，失败时 sys.exit(1)，不修改 user_config。
+
+    只检查配置形状与必填项，不判定 target 的语法分类。
+
+    Args:
+        user_config (dict): 用户配置映射
+
+    Raises:
+        SystemExit: 结构或必填项不合法时以退出码 1 终止
+    """
+    if not isinstance(user_config, dict):
+        _fail_config_layout('配置根节点', '必须是映射结构')
+
+    if 'monitor' not in user_config:
+        _fail_config_layout('monitor', '缺少监视配置节')
+    monitor = user_config['monitor']
+    if not isinstance(monitor, dict):
+        _fail_config_layout('monitor', '必须是映射结构')
+
+    target = monitor.get('target')
+    if not isinstance(target, str) or not target.strip():
+        _fail_config_layout('monitor.target', '必须是非空字符串')
+
+    if 'mode' in monitor and monitor['mode'] not in _VALID_MONITOR_MODES:
+        _fail_config_layout('monitor.mode', '必须是 watch 或 launch')
+
+    for key in ('common', 'launch', 'watch'):
+        if key in monitor and not isinstance(monitor[key], dict):
+            _fail_config_layout(f'monitor.{key}', '必须是映射结构')
+
+    launch_section = monitor.get('launch', {})
+    for key in ('args', 'cwd'):
+        if key in launch_section and launch_section[key] is not None \
+                and not isinstance(launch_section[key], str):
+            _fail_config_layout(f'monitor.launch.{key}', '必须是字符串或空值')
+
+
+def _normalize_watch_lookback_minutes(watch_section):
+    """归一化 monitor.watch.lookback_minutes，返回是否发生变更。
+
+    Args:
+        watch_section (dict): monitor.watch 配置映射
+
+    Returns:
+        bool: 是否写入了新的 lookback_minutes
+    """
+    if not isinstance(watch_section, dict):
         return False
 
-    raw_value = task_section.get('lookback_minutes')
+    raw_value = watch_section.get('lookback_minutes')
     if raw_value is None:
-        return False
-
-    # 空字符串回退默认值
-    if isinstance(raw_value, str) and not raw_value.strip():
-        LOGGER.warning('monitor.task_scheduler.lookback_minutes 不能为空，已回退默认值')
-        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
+        LOGGER.warning('monitor.watch.lookback_minutes 缺失，已回退默认值')
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
         return True
 
-    normalized_for_store = None
+    # 布尔值不是合法的分钟数
+    if isinstance(raw_value, bool):
+        LOGGER.warning('monitor.watch.lookback_minutes 不接受布尔值，已回退默认值')
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+        return True
+
     if isinstance(raw_value, str):
         raw_str = raw_value.strip()
+        if not raw_str:
+            LOGGER.warning('monitor.watch.lookback_minutes 不能为空，已回退默认值')
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
         if raw_str.startswith('-'):
             raw_str = raw_str.lstrip('-').strip()
             LOGGER.warning(
-                f"检测到 monitor.task_scheduler.lookback_minutes 负值，已去除负号: {raw_value!r}"
+                f"检测到 monitor.watch.lookback_minutes 负值，已去除负号: {raw_value!r}"
             )
         if not raw_str:
-            LOGGER.warning('monitor.task_scheduler.lookback_minutes 去符号后为空，已回退默认值')
-            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
+            LOGGER.warning('monitor.watch.lookback_minutes 去符号后为空，已回退默认值')
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
             return True
         try:
             normalized = abs(int(raw_str))
         except ValueError:
             LOGGER.warning(
-                f"monitor.task_scheduler.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
+                f"monitor.watch.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
             )
-            task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
             return True
         normalized_for_store = str(normalized)
     elif isinstance(raw_value, (int, float)):
-        normalized = abs(raw_value)
-        normalized_for_store = int(normalized)
+        # NaN 与无穷大无法截断为整数，按非法值回退，避免加载抛出 traceback
+        if not math.isfinite(raw_value):
+            LOGGER.warning(
+                f"monitor.watch.lookback_minutes 不是有限数值: {raw_value!r}，已回退默认值"
+            )
+            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
+            return True
+        normalized_for_store = int(abs(raw_value))
     else:
         LOGGER.warning(
-            f"monitor.task_scheduler.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
+            f"monitor.watch.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
         )
-        task_section['lookback_minutes'] = DEFAULT_VALUES['monitor']['task_scheduler']['lookback_minutes']
+        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
         return True
 
-    if task_section.get('lookback_minutes') == normalized_for_store:
+    current_value = watch_section.get('lookback_minutes')
+    if (current_value == normalized_for_store
+            and type(current_value) is type(normalized_for_store)):
         return False
 
-    task_section['lookback_minutes'] = normalized_for_store
+    watch_section['lookback_minutes'] = normalized_for_store
     return True
 
 
@@ -930,7 +1034,7 @@ def _normalize_config_writable_values(user_config):
 
     monitor_section = user_config.get('monitor', {})
     common_section = monitor_section.get('common', {}) if isinstance(monitor_section, dict) else {}
-    task_scheduler_section = monitor_section.get('task_scheduler', {}) if isinstance(monitor_section, dict) else {}
+    watch_section = monitor_section.get('watch', {}) if isinstance(monitor_section, dict) else {}
     push_section = user_config.get('push', {})
     retry_section = push_section.get('retry', {}) if isinstance(push_section, dict) else {}
     external_section = user_config.get('external', {})
@@ -967,7 +1071,7 @@ def _normalize_config_writable_values(user_config):
         DEFAULT_VALUES['monitor']['common']['timeout_threshold'],
         'monitor.common.timeout_threshold'
     ) or updated
-    updated = _normalize_task_lookback_minutes(task_scheduler_section) or updated
+    updated = _normalize_watch_lookback_minutes(watch_section) or updated
 
     # push.retry.interval：重试间隔也按时间字符串处理
     updated = _normalize_time_like_config(
@@ -1049,7 +1153,7 @@ def _validate_config_shapes(user_config):
     if monitor is not None and not isinstance(monitor, dict):
         _fail_config_layout('monitor', '必须是映射结构')
     if isinstance(monitor, dict):
-        for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+        for key in ('common', 'launch', 'watch'):
             if key in monitor and not isinstance(monitor[key], dict):
                 _fail_config_layout(f'monitor.{key}', '必须是映射结构')
     external = user_config.get('external')
@@ -1057,137 +1161,24 @@ def _validate_config_shapes(user_config):
         _fail_config_layout('external', '必须是映射结构')
 
 
-def _set_migrated_leaf(target, target_path, old_path, old_value):
-    """按目标键存在性迁移单个旧配置叶。"""
-    target_section, target_key = target
-    if target_key in target_section:
-        if target_section[target_key] != old_value:
-            LOGGER.warning(
-                f"配置冲突: {target_path} 与 {old_path}，新字段优先"
-            )
-        return False
-    target_section[target_key] = old_value
-    return True
-
-
 def _migrate_config_layout(user_config):
-    """在默认补全前迁移旧配置布局。"""
+    """在默认补全前补齐缺失的空节，不搬运任何旧字段。"""
     changed = False
-    # 初始化监视配置节，确保旧版布局可以迁移到新结构
     if 'monitor' not in user_config:
         user_config['monitor'] = CommentedMap()
         changed = True
     monitor = user_config['monitor']
     if not isinstance(monitor, dict):
         _fail_config_layout('monitor', '必须是映射结构')
-    for key in ('common', 'psutil', 'task_scheduler', 'launch'):
+    for key in ('common', 'launch', 'watch'):
         if key not in monitor:
             monitor[key] = CommentedMap()
             changed = True
-    common = monitor['common']
-    psutil = monitor['psutil']
-    task_scheduler = monitor['task_scheduler']
-    launch = monitor['launch']
     if 'external' not in user_config:
         user_config['external'] = CommentedMap()
         changed = True
-    external = user_config['external']
-
-    mappings = [
-        (monitor, 'mode', 'monitor.mode', monitor, 'monitor_mode', 'monitor.monitor_mode'),
-        (common, 'timeout_interval', 'monitor.common.timeout_interval',
-         monitor, 'timeout_interval', 'monitor.timeout_interval'),
-        (common, 'loop_interval', 'monitor.common.loop_interval',
-         monitor, 'loop_interval', 'monitor.loop_interval'),
-        (psutil, 'process_name', 'monitor.psutil.process_name',
-         monitor, 'process_name', 'monitor.process_name'),
-        (common, 'timeout_threshold', 'monitor.common.timeout_threshold',
-         external, 'timeout_threshold', 'external.timeout_threshold'),
-    ]
-    wait = user_config.get('wait')
-    task = user_config.get('task')
-    old_launch = user_config.get('launch')
-    if isinstance(wait, dict):
-        mappings.extend([
-            (common, 'max_wait', 'monitor.common.max_wait', wait, 'max_wait', 'wait.max_wait'),
-            (common, 'check_interval', 'monitor.common.check_interval', wait, 'check_interval', 'wait.check_interval'),
-        ])
-    if isinstance(task, dict):
-        mappings.extend([
-            (task_scheduler, 'task_name', 'monitor.task_scheduler.task_name', task, 'task_name', 'task.task_name'),
-            (task_scheduler, 'lookback_minutes', 'monitor.task_scheduler.lookback_minutes', task, 'lookback_minutes', 'task.lookback_minutes'),
-        ])
-    if isinstance(old_launch, dict):
-        for key in ('type', 'path', 'args', 'cwd', 'task_name'):
-            mappings.append((launch, key, f'monitor.launch.{key}', old_launch, key, f'launch.{key}'))
-
-    for target_section, target_key, target_path, source_section, source_key, source_path in mappings:
-        if source_key in source_section:
-            _set_migrated_leaf(
-                (target_section, target_key), target_path, source_path,
-                source_section[source_key]
-            )
-            if source_section is not target_section:
-                del source_section[source_key]
-                changed = True
-
-    for key in ('task', 'launch', 'wait'):
-        if key in user_config:
-            del user_config[key]
-            changed = True
-    for key in ('monitor_mode', 'timeout_interval', 'loop_interval', 'process_name'):
-        if key in monitor:
-            monitor.pop(key)
-            changed = True
-    if isinstance(external, dict) and 'timeout_threshold' in external:
-        external.pop('timeout_threshold')
-        changed = True
     return changed
 
-
-def _validate_active_monitor_config(user_config, require_explicit=False):
-    """校验当前监视模式及其目标字段。"""
-    monitor = user_config.get('monitor', {})
-    mode = monitor.get('mode', 'psutil')
-    if mode not in ('psutil', 'task_scheduler', 'launch'):
-        _fail_config_layout('monitor.mode', '值无效')
-    section = monitor.get(mode, {})
-    required = {
-        'psutil': ('process_name',),
-        'task_scheduler': ('task_name',),
-    }
-    if require_explicit:
-        fields = required.get(mode, ())
-        for field in fields:
-            if field not in section:
-                _fail_config_layout(f'monitor.{mode}.{field}', '当前模式要求显式配置')
-        if mode == 'launch':
-            for field in ('type',):
-                if field not in section:
-                    _fail_config_layout(f'monitor.launch.{field}', '当前模式要求显式配置')
-    if mode in required:
-        value = section.get(required[mode][0])
-        if not isinstance(value, str) or not value.strip():
-            _fail_config_layout(f'monitor.{mode}.{required[mode][0]}', '当前模式值无效')
-        return
-    launch_type = section.get('type')
-    if launch_type not in ('program', 'task'):
-        _fail_config_layout('monitor.launch.type', '当前模式值无效')
-    target_key = 'path' if launch_type == 'program' else 'task_name'
-    target_value = section.get(target_key)
-    if not isinstance(target_value, str) or not target_value.strip():
-        _fail_config_layout(f'monitor.launch.{target_key}', '当前模式值无效')
-    if launch_type == 'program':
-        for key in ('args', 'cwd'):
-            if section.get(key) is not None and not isinstance(section.get(key), str):
-                _fail_config_layout(f'monitor.launch.{key}', '必须是字符串或空值')
-
-
-def _validate_active_presence(user_config):
-    """在默认补全前仅校验显式模式的目标字段。"""
-    if 'mode' not in user_config.get('monitor', {}):
-        return
-    _validate_active_monitor_config(user_config, require_explicit=True)
 
 def load_config(config_file, spinner=None, is_user_specified=False):
     """加载配置文件
@@ -1234,17 +1225,17 @@ def load_config(config_file, spinner=None, is_user_specified=False):
                 raise
             stage = 'close'
         if user_config is None:
-            LOGGER.warning(
-                f"配置文件内容为空或仅含注释：{os.path.abspath(config_file)}，"
-                f"已按默认配置加载"
+            _fail_config_layout(
+                'root',
+                f"配置文件内容为空或仅含注释，不再按默认配置加载: "
+                f"{os.path.abspath(config_file)}",
             )
-            user_config = {}
         elif not isinstance(user_config, dict):
-            LOGGER.error(
-                f"配置文件内容类型不合法 ({type(user_config).__name__})，"
-                f"应为字典结构，已按默认配置加载：{os.path.abspath(config_file)}"
+            _fail_config_layout(
+                'root',
+                f"配置根节点必须是映射结构，实际为 "
+                f"{type(user_config).__name__}: {os.path.abspath(config_file)}",
             )
-            user_config = {}
         LOGGER.info(f"成功加载配置文件: {os.path.abspath(config_file)}")
     except Exception as e:
         LOGGER.critical(
@@ -1254,8 +1245,19 @@ def load_config(config_file, spinner=None, is_user_specified=False):
 
     # 加载默认配置
     _validate_config_shapes(user_config)
+    _reject_legacy_monitor_config(user_config)
+    _validate_monitor_target_config(user_config)
+    monitor = user_config['monitor']
+    try:
+        resolve_monitor_target(
+            monitor.get('mode', 'watch'), monitor['target'],
+            os.path.dirname(os.path.abspath(config_file)),
+            monitor.get('launch', {}).get('cwd'),
+        )
+    except ValueError:
+        _fail_config_layout('monitor.target / monitor.launch.cwd',
+                            '目标或工作目录语法无效')
     updated = _migrate_config_layout(user_config)
-    _validate_active_presence(user_config)
     default_config = get_default_config()
 
     # 确保所有必要的配置节都存在
@@ -1287,7 +1289,7 @@ def load_config(config_file, spinner=None, is_user_specified=False):
     corrected = correct_push_channel_config(merged_config)
     corrected = correct_screenshot_config(merged_config) or corrected
 
-    _validate_active_monitor_config(merged_config)
+    _validate_monitor_target_config(merged_config)
 
     if updated or cleaned or corrected:
         LOGGER.info("配置文件已更新，正在执行无缝迁移")

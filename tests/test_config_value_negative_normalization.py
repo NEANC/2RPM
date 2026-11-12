@@ -28,13 +28,14 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
         """时间字符串参数：负值应去负号并写回正值。"""
         config_file = self._make_tmp_config(
             "monitor:\n"
+            "  target: test.exe\n"
             "  common:\n"
             "    timeout_interval: -5m\n"
             "    loop_interval: -10s\n"
             "    max_wait: -30s\n"
             "    check_interval: -1s\n"
             "    timeout_threshold: -3\n"
-            "  task_scheduler:\n"
+            "  watch:\n"
             "    lookback_minutes: -10\n"
             "push:\n"
             "  retry:\n"
@@ -49,7 +50,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(config['monitor']['common']['max_wait'], '30s')
             self.assertEqual(config['monitor']['common']['check_interval'], '1s')
             self.assertEqual(config['monitor']['common']['timeout_threshold'], 3)
-            self.assertEqual(config['monitor']['task_scheduler']['lookback_minutes'], 10)
+            self.assertEqual(config['monitor']['watch']['lookback_minutes'], 10)
             self.assertEqual(config['push']['retry']['interval'], '3s')
 
             with open(config_file, 'r', encoding='utf-8') as f:
@@ -66,7 +67,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(
                 persisted['monitor']['common']['timeout_threshold'], 3)
             self.assertEqual(
-                persisted['monitor']['task_scheduler']['lookback_minutes'], 10)
+                persisted['monitor']['watch']['lookback_minutes'], 10)
             self.assertEqual(persisted['push']['retry']['interval'], '3s')
         finally:
             if os.path.exists(config_file):
@@ -79,9 +80,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
         )
         config_file = self._make_tmp_config(
             "monitor:\n"
-            "  mode: psutil\n"
-            "  psutil:\n"
-            "    process_name: test.exe\n"
+            "  target: test.exe\n"
             "  common:\n"
             + ''.join(f"    {field}: 0s\n" for field in time_fields)
             + "    timeout_threshold: 0\n"
@@ -110,9 +109,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             with self.subTest(value=invalid):
                 config_file = self._make_tmp_config(
                     "monitor:\n"
-                    "  mode: psutil\n"
-                    "  psutil:\n"
-                    "    process_name: test.exe\n"
+                    "  target: test.exe\n"
                     "  common:\n"
                     + ''.join(f"    {field}: {invalid}\n" for field in fields)
                 )
@@ -133,9 +130,10 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
         """整数型参数：负值应去符号为正并写回。"""
         config_file = self._make_tmp_config(
             "monitor:\n"
+            "  target: test.exe\n"
             "  common:\n"
             "    timeout_threshold: -3\n"
-            "  task_scheduler:\n"
+            "  watch:\n"
             "    lookback_minutes: -10\n"
             "log:\n"
             "  log_directory: logs\n"
@@ -153,7 +151,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(config['log']['max_log_files'], 15)
             self.assertEqual(config['log']['retention_days'], 3)
             self.assertEqual(config['push']['retry']['max_count'], 3)
-            self.assertEqual(config['monitor']['task_scheduler']['lookback_minutes'], 10)
+            self.assertEqual(config['monitor']['watch']['lookback_minutes'], 10)
 
             with open(config_file, 'r', encoding='utf-8') as f:
                 persisted = YAML().load(f)
@@ -161,7 +159,7 @@ class TestConfigWritableValueNormalization(unittest.TestCase):
             self.assertEqual(
                 persisted['monitor']['common']['timeout_threshold'], 3)
             self.assertEqual(
-                persisted['monitor']['task_scheduler']['lookback_minutes'], 10)
+                persisted['monitor']['watch']['lookback_minutes'], 10)
             self.assertEqual(persisted['log']['max_log_files'], 15)
             self.assertEqual(persisted['log']['retention_days'], 3)
             self.assertEqual(persisted['push']['retry']['max_count'], 3)

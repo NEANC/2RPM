@@ -35,7 +35,7 @@ from modules.config import (
     correct_push_channel_config
 )
 from modules.notification import send_notification
-from modules.monitor import monitor_processes, monitor_via_launch
+from modules.monitor import monitor_processes
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 
@@ -83,34 +83,6 @@ class TestUtils(unittest.TestCase):
         # 测试 EXE 文件
         run_external_program('test.exe')
         mock_popen.assert_called()
-
-    def test_split_args(self):
-        """测试命令行参数拆分"""
-        from modules.monitor import _split_args
-        self.assertEqual(_split_args(''), [])
-        self.assertEqual(_split_args('   '), [])
-        self.assertEqual(_split_args(None), [])
-        self.assertEqual(_split_args('--flag'), ['--flag'])
-        self.assertEqual(_split_args('--flag foo --verbose'), ['--flag', 'foo', '--verbose'])
-        # 引号参数测试
-        self.assertEqual(
-            _split_args('--path "C:\\Program Files\\tool.exe"'),
-            ['--path', 'C:\\Program Files\\tool.exe']
-        )
-
-    def test_resolve_cwd(self):
-        """测试工作目录解析与降级"""
-        from modules.monitor import _resolve_cwd
-        # 用户显式指定
-        self.assertEqual(_resolve_cwd('C:\\custom', 'C:\\app\\test.exe'), 'C:\\custom')
-        # 用户指定带首尾空格 → 应 strip 后生效
-        self.assertEqual(_resolve_cwd(' C:\\custom ', 'C:\\app\\test.exe'), 'C:\\custom')
-        # 用户指定但为空/空白 → 从 path 推导
-        self.assertEqual(_resolve_cwd('', 'C:\\app\\test.exe'), 'C:\\app')
-        self.assertEqual(_resolve_cwd('   ', 'C:\\foo\\bar.exe'), 'C:\\foo')
-        self.assertEqual(_resolve_cwd(None, 'C:\\app\\test.exe'), 'C:\\app')
-        # path 无目录分量 → 回退 os.getcwd()
-        self.assertEqual(_resolve_cwd(None, 'test.exe'), os.getcwd())
 
 
 class TestExternalActionParsing(unittest.TestCase):
@@ -258,17 +230,17 @@ class TestConfig(unittest.TestCase):
                 self.assertFalse({'task', 'wait', 'launch'} & config.keys())
 
     def test_merge_configs(self):
-        """测试配置合并（V4 键名）"""
+        """测试配置合并（统一监视目标键名）"""
         user_config = {
             'monitor': {
-                'psutil': {'process_name': 'custom.exe'}
+                'target': 'custom.exe'
             }
         }
 
         default_config = get_default_config()
 
         merged_config = merge_configs(user_config, default_config)
-        self.assertEqual(merged_config['monitor']['psutil']['process_name'], 'custom.exe')
+        self.assertEqual(merged_config['monitor']['target'], 'custom.exe')
 
 
 class TestParsePushChannels(unittest.TestCase):
@@ -612,17 +584,20 @@ class TestSendNotification(unittest.TestCase):
 
 
 class TestMonitorLoopSmoke(unittest.TestCase):
-    """同步主循环冒烟测试：mock psutil 验证结束/超时分支触发通知"""
+    """同步主循环冒烟测试：mock 目标收集验证结束/超时分支触发通知"""
+
+    CONFIG_DIR = r'C:\cfg'
 
     def _build_config(self):
-        """构造 psutil 模式的最小监视配置（V4 键名）。
+        """构造 watch 模式的最小监视配置。
 
         Returns:
-            dict: 含 monitor 新布局与 external 动作的配置。
+            dict: 含统一监视目标与 external 动作的配置。
         """
         return {
             'monitor': {
-                'mode': 'psutil',
+                'mode': 'watch',
+                'target': 'target.exe',
                 'common': {
                     'timeout_interval': '15m',
                     'loop_interval': '1s',
@@ -630,16 +605,8 @@ class TestMonitorLoopSmoke(unittest.TestCase):
                     'max_wait': '15m',
                     'check_interval': '1s',
                 },
-                'psutil': {'process_name': 'target.exe'},
-                'task_scheduler': {
-                    'task_name': r'\Custom\MyTask',
-                    'lookback_minutes': 10,
-                },
-                'launch': {
-                    'type': 'program', 'path': r'C:\app\target.exe',
-                    'args': None, 'cwd': None,
-                    'task_name': r'\Custom\MyTask',
-                },
+                'launch': {'args': None, 'cwd': None},
+                'watch': {'lookback_minutes': 10},
             },
             'external': {
                 'on_end': '',
@@ -650,7 +617,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
 
     @patch('modules.monitor.send_notification')
     @patch('modules.monitor.time.sleep', return_value=None)
-    @patch('modules.monitor._collect_matching_processes')
+    @patch('modules.monitor._collect_matching_processes_for_target')
     def test_process_end_triggers_notification(
             self, mock_collect, mock_sleep, mock_notify):
         """进程先启动后结束，应触发 on_end 通知并退出循环"""
@@ -659,7 +626,8 @@ class TestMonitorLoopSmoke(unittest.TestCase):
             {1234: {'name': 'target.exe', 'create_time': 100.0}},
             {},
         ]
-        monitor_processes(self._build_config())
+        monitor_processes(
+            self._build_config(), config_dir=self.CONFIG_DIR)
 
         # 应调用 on_end 通知
         end_calls = [
@@ -671,7 +639,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
 
     @patch('modules.monitor.send_notification')
     @patch('modules.monitor.time.sleep', return_value=None)
-    @patch('modules.monitor._collect_matching_processes')
+    @patch('modules.monitor._collect_matching_processes_for_target')
     def test_process_timeout_triggers_notification(
             self, mock_collect, mock_sleep, mock_notify):
         """进程持续运行超过超时间隔，应触发 on_timeout 通知"""
@@ -684,7 +652,7 @@ class TestMonitorLoopSmoke(unittest.TestCase):
         config = self._build_config()
         # timeout_interval 设为 0s，任意流逝时间均触发超时，无需 mock time.time
         config['monitor']['common']['timeout_interval'] = '0s'
-        monitor_processes(config)
+        monitor_processes(config, config_dir=self.CONFIG_DIR)
 
         timeout_calls = [
             call for call in mock_notify.call_args_list
@@ -697,15 +665,18 @@ class TestMonitorLoopSmoke(unittest.TestCase):
 class TestLaunchSmoke(unittest.TestCase):
     """launch 模式冒烟测试"""
 
-    def _build_config(self, launch_type='program'):
+    CONFIG_DIR = r'C:\cfg'
+
+    def _build_config(self):
         """构造 launch 模式的最小配置。
 
         Returns:
-            dict: 含 monitor 新布局与 external 动作的配置。
+            dict: 含统一监视目标与 external 动作的配置。
         """
         return {
             'monitor': {
                 'mode': 'launch',
+                'target': 'C:\\app\\target.exe',
                 'common': {
                     'timeout_interval': '15m',
                     'loop_interval': '1s',
@@ -713,18 +684,8 @@ class TestLaunchSmoke(unittest.TestCase):
                     'max_wait': '30s',
                     'check_interval': '1s',
                 },
-                'psutil': {'process_name': 'target.exe'},
-                'task_scheduler': {
-                    'task_name': r'\Custom\MyTask',
-                    'lookback_minutes': 10,
-                },
-                'launch': {
-                    'type': launch_type,
-                    'path': 'C:\\app\\target.exe',
-                    'args': None,
-                    'cwd': None,
-                    'task_name': '\\Custom\\MyTask',
-                },
+                'launch': {'args': None, 'cwd': None},
+                'watch': {'lookback_minutes': 10},
             },
             'external': {
                 'on_end': '',
@@ -733,25 +694,35 @@ class TestLaunchSmoke(unittest.TestCase):
             },
         }
 
-    @patch('modules.monitor.subprocess.Popen')
+    def _pid_info(self):
+        """构造 launch_file 返回的进程身份信息。"""
+        return {
+            'pid': 1234,
+            'name': 'target.exe',
+            'create_time': 100.0,
+            'start_time': 100.0,
+            'last_warning_time': 100.0,
+            'timeout_count': 0,
+        }
+
+    @patch('modules.monitor.launch_file')
     @patch('modules.monitor.send_notification')
     @patch('modules.monitor.time.sleep', return_value=None)
     @patch('modules.monitor.psutil.Process')
-    @patch('modules.monitor.os.path.isfile', return_value=True)
-    def test_launch_program_end_triggers_notification(
-            self, mock_isfile, mock_process, mock_sleep, mock_notify, mock_popen):
-        """launch type=program: 进程结束后应触发 on_end 通知"""
+    def test_launch_file_end_triggers_notification(
+            self, mock_process, mock_sleep, mock_notify, mock_launch):
+        """launch 文件目标：进程结束后应触发 on_end 通知"""
+        mock_launch.return_value = self._pid_info()
         mock_proc = MagicMock()
         mock_proc.pid = 1234
-        mock_proc.create_time.side_effect = [100.0, 100.0, 100.0]
-        mock_popen.return_value = mock_proc
+        mock_proc.create_time.return_value = 100.0
         # 第一次 alive，第二次进程消失
-        mock_process.return_value = mock_proc
         mock_process.side_effect = [
-            mock_proc, mock_proc, psutil.NoSuchProcess(1234)
+            mock_proc, psutil.NoSuchProcess(1234)
         ]
 
-        monitor_via_launch(self._build_config())
+        monitor_processes(
+            self._build_config(), config_dir=self.CONFIG_DIR)
 
         end_calls = [
             call for call in mock_notify.call_args_list
@@ -760,27 +731,25 @@ class TestLaunchSmoke(unittest.TestCase):
         self.assertEqual(len(end_calls), 1)
         self.assertEqual(end_calls[0].kwargs['process_pid'], 1234)
 
-    @patch('modules.monitor.subprocess.Popen')
+    @patch('modules.monitor.launch_file')
     @patch('modules.monitor.send_notification')
     @patch('modules.monitor.time.sleep', return_value=None)
     @patch('modules.monitor.psutil.Process')
-    @patch('modules.monitor.os.path.isfile', return_value=True)
-    def test_launch_program_timeout_triggers_notification(
-            self, mock_isfile, mock_process, mock_sleep, mock_notify, mock_popen):
-        """launch type=program: 持续运行超时应触发 on_timeout 通知"""
+    def test_launch_file_timeout_triggers_notification(
+            self, mock_process, mock_sleep, mock_notify, mock_launch):
+        """launch 文件目标：持续运行超时应触发 on_timeout 通知"""
+        mock_launch.return_value = self._pid_info()
         mock_proc = MagicMock()
         mock_proc.pid = 1234
-        mock_proc.create_time.side_effect = [100.0, 100.0, 100.0, 100.0]
-        mock_popen.return_value = mock_proc
+        mock_proc.create_time.return_value = 100.0
         # 前三轮 alive（触发一次超时），第四轮进程消失以结束
-        mock_process.return_value = mock_proc
         mock_process.side_effect = [
             mock_proc, mock_proc, mock_proc, psutil.NoSuchProcess(1234)
         ]
 
         config = self._build_config()
         config['monitor']['common']['timeout_interval'] = '0s'
-        monitor_via_launch(config)
+        monitor_processes(config, config_dir=self.CONFIG_DIR)
 
         timeout_calls = [
             call for call in mock_notify.call_args_list

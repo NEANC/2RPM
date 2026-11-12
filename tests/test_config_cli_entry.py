@@ -180,3 +180,58 @@ def test_bare_screenshot_argument_is_still_a_monitor_config(monkeypatch):
     loader = run_main(monkeypatch, ['screenshot'])
 
     assert_loaded_once(loader, os.path.join(PROGRAM_DIR, 'screenshot.yaml'), True)
+
+
+@pytest.mark.parametrize(('monitor_result', 'expected_code', 'failure_count'), [
+    (SystemExit(1), 1, 0),
+    (SystemExit(2), 2, 0),
+    (None, 0, 0),
+    (RuntimeError('monitor failed'), 1, 1),
+    (KeyboardInterrupt(), 1, 1),
+])
+def test_main_preserves_monitor_exit_code(
+        monkeypatch, monitor_result, expected_code, failure_count):
+    """监视器的退出码原样传播，普通失败只报告一次。"""
+    entry = entry_module()
+    monitor = MagicMock()
+    if isinstance(monitor_result, BaseException):
+        monitor.side_effect = monitor_result
+    failure = MagicMock()
+    monkeypatch.setattr(sys, 'argv', ['2RPM.py'])
+    monkeypatch.setattr(entry, 'print_info', MagicMock())
+    monkeypatch.setattr(entry, 'setup_default_logging', MagicMock())
+    monkeypatch.setattr(entry, 'spinner_phase', MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(entry, 'get_program_directory', lambda: PROGRAM_DIR)
+    monkeypatch.setattr(entry, 'load_config', MagicMock(return_value={}))
+    monkeypatch.setattr(entry, 'runtime_context', MagicMock(return_value={}))
+    monkeypatch.setattr(entry, 'setup_logging', MagicMock())
+    monkeypatch.setattr(entry, 'parse_policy', MagicMock(return_value=MagicMock(warnings=())))
+    monkeypatch.setattr(entry, 'cleanup_retention', MagicMock(return_value=()))
+    monkeypatch.setattr(entry, 'monitor_processes', monitor)
+    monkeypatch.setattr(entry, 'notify_fail', failure)
+
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main()
+
+    assert excinfo.value.code == expected_code
+    monitor.assert_called_once()
+    assert failure.call_count == failure_count
+
+
+@pytest.mark.parametrize('code', [0, 2])
+def test_main_preserves_screenshot_exit_code(monkeypatch, code):
+    """截图子命令不进入监视分支，仍使用自身返回码。"""
+    entry = entry_module()
+    monkeypatch.setattr(sys, 'argv', ['2RPM.py', 'screenshot', '--help'])
+    monkeypatch.setattr(entry, 'parse_screenshot_args', MagicMock(return_value=object()))
+    monkeypatch.setattr(entry, 'get_program_directory', lambda: PROGRAM_DIR)
+    monkeypatch.setattr(entry, 'screenshot_logging', MagicMock())
+    monkeypatch.setattr(entry, 'run_screenshot_cli', MagicMock(return_value=code))
+    monitor = MagicMock()
+    monkeypatch.setattr(entry, 'monitor_processes', monitor)
+
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main()
+
+    assert excinfo.value.code == code
+    monitor.assert_not_called()

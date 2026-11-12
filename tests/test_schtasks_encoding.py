@@ -9,13 +9,17 @@ import sys
 import textwrap
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, PROJECT_ROOT)
 
 from modules import monitor, utils
+from modules.monitor_target import MonitorTarget
 from modules.utils import run_task_action, task_action_exists
+
+# 触发计划任务使用的目标
+TASK_TARGET = MonitorTarget(kind='task', value=r'\Custom\MyTask', cwd=None)
 
 
 def _get_oem_codec():
@@ -74,23 +78,18 @@ def _completed(returncode, stdout=b'', stderr=b''):
         stdout=stdout, stderr=stderr)
 
 
-def _launch_config():
-    """构造只覆盖计划任务触发路径的最小配置。
+def _failed_run(returncode=1, stdout=b'', stderr=b''):
+    """构造返回非 0 的完成结果替身。
+
+    Args:
+        returncode (int): 子进程返回码
+        stdout (bytes | None): 标准输出原始字节
+        stderr (bytes | None): 标准错误原始字节
 
     Returns:
-        dict: 含 monitor.launch 的配置字典。
+        subprocess.CompletedProcess: 用于打桩的完成结果
     """
-    return {
-        'monitor': {
-            'mode': 'launch',
-            'common': {'max_wait': '0s', 'check_interval': '1s'},
-            'launch': {
-                'type': 'task', 'path': None, 'args': None,
-                'cwd': None, 'task_name': r'\Custom\MyTask',
-            },
-        },
-        'external': {},
-    }
+    return _completed(returncode, stdout=stdout, stderr=stderr)
 
 
 def test_task_action_exists_queries_without_capturing_output():
@@ -197,122 +196,76 @@ def test_run_task_action_failure_replaces_invalid_bytes():
         assert '\ufffd' in message
 
 
-def test_launch_task_failure_logs_decoded_stderr():
-    """触发计划任务失败时日志使用解码后的可读消息并退出。"""
-    config = _launch_config()
+def test_trigger_task_failure_raises_decoded_stderr():
+    """触发计划任务失败时抛出含解码后可读消息的 RuntimeError。"""
     raw_stderr = READABLE_ERROR.encode(OEM_CODEC)
-    error = subprocess.CalledProcessError(
-        1, ['schtasks'], output=b'', stderr=raw_stderr)
 
-    with patch('modules.monitor.subprocess.run', side_effect=error) as run_mock, \
-            patch('modules.monitor.LOGGER.error') as log_mock, \
-            patch('modules.monitor.notify_fail') as fail_mock:
-        with pytest.raises(SystemExit) as exc_info:
-            monitor._launch_task(config['monitor']['launch'], config)
+    with patch('modules.monitor.subprocess.run',
+               return_value=_failed_run(stderr=raw_stderr)) as run_mock:
+        with pytest.raises(RuntimeError) as exc_info:
+            monitor._trigger_task(TASK_TARGET)
 
-    assert exc_info.value.code == 1
     run_mock.assert_called_once_with(
-        ['schtasks', '/run', '/tn', config['monitor']['launch']['task_name']],
+        ['schtasks', '/run', '/tn', TASK_TARGET.value],
         capture_output=True,
-        check=True,
+        check=False,
     )
-    log_mock.assert_called_once()
-    assert READABLE_ERROR in log_mock.call_args[0][0]
-    fail_mock.assert_called_once_with(
-        f"触发计划任务失败: {config['monitor']['launch']['task_name']}")
+    assert READABLE_ERROR in str(exc_info.value)
 
 
-def test_launch_task_failure_without_output_does_not_crash():
-    """异常未携带任何输出时日志回退到未知错误且不二次报错。"""
-    config = _launch_config()
-    error = subprocess.CalledProcessError(1, ['schtasks'])
+def test_trigger_task_failure_without_output_does_not_crash():
+    """返回码非 0 且无任何输出时使用未知错误且不二次报错。"""
+    with patch('modules.monitor.subprocess.run',
+               return_value=_failed_run()):
+        with pytest.raises(RuntimeError) as exc_info:
+            monitor._trigger_task(TASK_TARGET)
 
-    with patch('modules.monitor.subprocess.run', side_effect=error), \
-            patch('modules.monitor.LOGGER.error') as log_mock, \
-            patch('modules.monitor.notify_fail'):
-        with pytest.raises(SystemExit) as exc_info:
-            monitor._launch_task(config['monitor']['launch'], config)
-
-    assert exc_info.value.code == 1
-    log_mock.assert_called_once()
-    assert '未知错误' in log_mock.call_args[0][0]
+    assert '未知错误' in str(exc_info.value)
 
 
-def test_launch_task_failure_falls_back_to_stdout_when_stderr_blank():
-    """触发失败且错误输出为空白时，日志应改用标准输出中的消息。"""
-    config = _launch_config()
-    error = subprocess.CalledProcessError(
-        1, ['schtasks'],
-        output=READABLE_STDOUT.encode(OEM_CODEC), stderr=b'  \r\n')
+def test_trigger_task_failure_falls_back_to_stdout_when_stderr_blank():
+    """错误输出为空白时应改用标准输出中的消息。"""
+    with patch('modules.monitor.subprocess.run',
+               return_value=_failed_run(
+                   stdout=READABLE_STDOUT.encode(OEM_CODEC),
+                   stderr=b'  \r\n')):
+        with pytest.raises(RuntimeError) as exc_info:
+            monitor._trigger_task(TASK_TARGET)
 
-    with patch('modules.monitor.subprocess.run', side_effect=error), \
-            patch('modules.monitor.LOGGER.error') as log_mock, \
-            patch('modules.monitor.notify_fail'):
-        with pytest.raises(SystemExit) as exc_info:
-            monitor._launch_task(config['monitor']['launch'], config)
-
-    assert exc_info.value.code == 1
-    log_mock.assert_called_once()
-    assert READABLE_STDOUT in log_mock.call_args[0][0]
+    assert READABLE_STDOUT in str(exc_info.value)
 
 
-def test_launch_task_failure_handles_invalid_bytes():
-    """触发失败输出为非法字节时按替换字符解码，不抛解码异常。"""
-    config = _launch_config()
+def test_trigger_task_failure_handles_invalid_bytes():
+    """失败输出为非法字节时按替换字符解码，不抛解码异常。"""
     raw_stderr = b'\xb3\x00\xff'
     expected = raw_stderr.decode(OEM_CODEC, 'replace')
-    error = subprocess.CalledProcessError(
-        1, ['schtasks'], output=b'', stderr=raw_stderr)
 
-    with patch('modules.monitor.subprocess.run', side_effect=error), \
-            patch('modules.monitor.LOGGER.error') as log_mock, \
-            patch('modules.monitor.notify_fail'):
-        with pytest.raises(SystemExit) as exc_info:
-            monitor._launch_task(config['monitor']['launch'], config)
+    with patch('modules.monitor.subprocess.run',
+               return_value=_failed_run(stderr=raw_stderr)):
+        with pytest.raises(RuntimeError) as exc_info:
+            monitor._trigger_task(TASK_TARGET)
 
-    assert exc_info.value.code == 1
-    log_mock.assert_called_once()
-    message = log_mock.call_args[0][0]
+    message = str(exc_info.value)
     assert message.strip()
     assert '触发计划任务失败' in message
     if '\ufffd' in expected:
         assert '\ufffd' in message
 
 
-def test_launch_task_success_does_not_decode_undecodable_output():
-    """触发成功时完全不解码原始输出，直接进入 PID 等待并返回进程信息。"""
-    config = _launch_config()
-    config['monitor']['common']['max_wait'] = '10s'
-    task_name = config['monitor']['launch']['task_name']
-    running_result = {
-        'state': 'running', 'pid': 4242, 'process_name': 'demo'}
-    spinner = MagicMock()
-
+def test_trigger_task_success_does_not_decode_undecodable_output():
+    """触发成功时完全不解码原始输出，只确认请求已提交。"""
     with patch('modules.monitor.subprocess.run',
                return_value=_completed(0, stdout=b'\xb3\x00\xff')) as run_mock, \
-            patch('modules.monitor.decode_process_output') as decode_mock, \
-            patch('modules.monitor.query_task_pid',
-                  return_value=running_result) as query_mock, \
-            patch('modules.monitor.psutil.Process') as process_mock, \
-            patch('modules.monitor.spinner_phase',
-                  return_value=spinner) as spinner_mock, \
-            patch('modules.monitor.LOGGER.error') as log_error_mock, \
-            patch('modules.monitor.notify_fail') as fail_mock:
-        process_mock.return_value.create_time.return_value = 1000.0
-        pid_info = monitor._launch_task(config['monitor']['launch'], config)
+            patch('modules.monitor.decode_process_output') as decode_mock:
+        result = monitor._trigger_task(TASK_TARGET)
 
-    assert pid_info['pid'] == 4242
+    assert result is None
     run_mock.assert_called_once_with(
-        ['schtasks', '/run', '/tn', task_name],
+        ['schtasks', '/run', '/tn', TASK_TARGET.value],
         capture_output=True,
-        check=True,
+        check=False,
     )
-    query_mock.assert_called_once_with(task_name, lookback_minutes=1)
-    spinner.__enter__.return_value.done.assert_called_once_with("任务进程已启动")
     decode_mock.assert_not_called()
-    log_error_mock.assert_not_called()
-    fail_mock.assert_not_called()
-    spinner_mock.assert_called()
 
 
 _DRIVER_TEMPLATE = textwrap.dedent(
@@ -370,29 +323,16 @@ _DRIVER_TEMPLATE = textwrap.dedent(
     print('SUCCESS_OK')
 
     from modules import monitor
+    from modules.monitor_target import MonitorTarget
 
 
-    def _capture_monitor_error(message, *args, **kwargs):
-        """把监控入口的错误日志打印成可断言的单行输出。"""
-        print('MONITOR_MESSAGE:' + str(message))
-
-
-    monitor.LOGGER.error = _capture_monitor_error
     monitor.notify_fail = lambda *args, **kwargs: None
 
-    _launch_section = {'type': 'task', 'task_name': r'\\Custom\\InvalidFailTask'}
-    _monitor_config = {
-        'monitor': {
-            'mode': 'launch',
-            'common': {'max_wait': '0s', 'check_interval': '1s'},
-            'launch': _launch_section,
-        },
-    }
-
     try:
-        monitor._launch_task(_launch_section, _monitor_config)
-    except SystemExit:
-        pass
+        monitor._trigger_task(MonitorTarget(
+            kind='task', value=r'\\Custom\\InvalidFailTask', cwd=None))
+    except RuntimeError as exc:
+        print('MONITOR_MESSAGE:' + str(exc))
     else:
         print('MONITOR_MESSAGE:<missing>')
     '''

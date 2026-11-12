@@ -27,7 +27,7 @@ from modules.yaml_scalar_compat import normalize_inline_upload
 PUSH_HEAD = 'push:\n  screenshot:\n'
 TARGETS_HEAD = PUSH_HEAD + '    targets:\n'
 HOSTS_HEAD = PUSH_HEAD + '    image_host:\n'
-MONITOR_HEAD = 'monitor:\n  mode: psutil\n  psutil:\n    process_name: ok.exe\n'
+MONITOR_HEAD = 'monitor:\n  target: ok.exe\n'
 
 
 def _write_raw(tmp_path, text):
