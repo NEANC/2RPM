@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+
+"""GUI 独立测试动作的离线验证。"""
+
+import copy
+from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
+
+from modules.gui.protocol import TestRequest as GuiRequest
+from modules.gui.protocol import TestResult as GuiResult
+from modules.gui.test_actions import (prepare_notification_snapshot, run_test,
+                                      summarize_notification)
+from modules.screenshot.models import CaptureError, CaptureResult
+
+
+def _config():
+    """提供带截图引用和两种图床的最小配置。"""
+    return {'push': {'templates': {'on_end': {
+        'enable': True, 'capture_screenshot': True,
+        'title': '{host_name}', 'content': '{process_name} {screenshot}'}},
+        'push_channel_settings': {'channels': [
+            {'provider': 'serverchan', 'sckey': 'secret-value'}]},
+        'screenshot': {'targets': [
+            {'provider': 'window', 'target': '演示窗口'}],
+            'image_host': [{'provider': 'first'},
+                           {'provider': 'second', 'token': 'secret-value'}]}}}
+
+
+def _request(tmp_path, action, config=None, **fields):
+    """创建动作所需的绝对路径快照。"""
+    return GuiRequest('req-1', 2, 3, action, config or _config(),
+                       str(tmp_path), str(tmp_path / 'session'),
+                       fields.get('target_index'), fields.get('host_index'),
+                       fields.get('image_path'), fields.get('template_key'))
+
+
+def test_protocol_data_classes_keep_identity(tmp_path):
+    """请求及结果数据结构承载三元标识和预览位置。"""
+    request = _request(tmp_path, 'capture', target_index=0)
+    result = GuiResult(request.request_id, request.document_generation,
+                        request.revision, 'success', '', ('preview.jpg',))
+    assert (result.request_id, result.document_generation, result.revision) == (
+        'req-1', 2, 3)
+    assert result.preview_paths == ('preview.jpg',)
+
+
+@pytest.mark.parametrize('results, expected', [
+    ([], 'failure'), ([('a', True)], 'success'),
+    ([('a', False)], 'failure'),
+    ([('a', True), ('b', False)], 'partial'),
+])
+def test_summarize_notification(results, expected):
+    """空结果与全假不当作已发送成功。"""
+    assert summarize_notification(results) == expected
+
+
+def test_notify_snapshot_disables_capture(monkeypatch, tmp_path):
+    """真实发送链配假通道，截图、清理及其他业务入口不得被触发。"""
+    import modules.notification as notification
+    import modules.screenshot.pipeline as pipeline
+    import modules.gui.test_actions as actions
+
+    def forbidden(*_args, **_kwargs):
+        """拦截与发送测试无关的副作用。"""
+        pytest.fail('通知测试触发了其他业务动作')
+
+    for module, name in ((actions, 'capture'),
+                         (actions, 'upload_with_fallback')):
+        monkeypatch.setattr(module, name, forbidden)
+    prepared = []
+
+    def no_capture(_section, enabled, _names, **_kwargs):
+        """真实通知编排可进入，但截图启用标志必须为假。"""
+        prepared.append(enabled)
+        assert enabled is False
+        return pipeline.ScreenshotBatch({}, (), ())
+
+    monkeypatch.setattr(notification, 'prepare_screenshots', no_capture)
+    monkeypatch.setattr(notification, '_notify_single_channel',
+                        lambda *_args, **_kwargs: True)
+    config = _config()
+    before = copy.deepcopy(config)
+    snapshot = prepare_notification_snapshot(config, 'on_end')
+    assert snapshot['push']['templates']['on_end']['capture_screenshot'] is False
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+    assert result.status == 'success'
+    assert prepared == [False]
+    assert result.preview_paths == ()
+    assert config == before
+
+
+@pytest.mark.parametrize('change', ['disabled', 'no_channel', 'invalid'])
+def test_notify_empty_result_is_failure(monkeypatch, tmp_path, change):
+    """真实发送流程的三条提前返回都显示未发送。"""
+    import modules.notification as notification
+
+    monkeypatch.setattr(notification, '_notify_single_channel',
+                        lambda *_args, **_kwargs: pytest.fail('意外发送'))
+    config = _config()
+    if change == 'disabled':
+        config['push']['templates']['on_end']['enable'] = False
+    elif change == 'no_channel':
+        config['push']['push_channel_settings']['channels'] = []
+    else:
+        config['push']['templates']['on_end']['content'] = '{unknown}'
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+    assert result.status == 'failure'
+    assert result.reason == '未发送：事件禁用、无有效通道或模板无效'
+
+
+def test_notify_uses_snapshot_and_aggregates(monkeypatch, tmp_path):
+    """替身发送者收到禁图快照，混合结果标为部分成功。"""
+    import modules.gui.test_actions as actions
+
+    received = {}
+
+    def sender(config, _key, **_kwargs):
+        """保存通知副本并给出多通道混合结果。"""
+        received.update(config)
+        return [('a', True), ('b', False)]
+
+    monkeypatch.setattr(actions, 'send_notification', sender)
+    result = run_test(_request(tmp_path, 'notify', template_key='on_end'))
+    assert received['push']['templates']['on_end']['capture_screenshot'] is False
+    assert result.status == 'partial'
+
+
+def test_capture_saves_only_selected_preview(monkeypatch, tmp_path):
+    """预览只截指定目标，将字节保存于会话目录。"""
+    import modules.gui.test_actions as actions
+
+    mock_capture = Mock(return_value=CaptureResult(b'jpeg-data', 'window',
+                                                   '演示窗口', 1, 1))
+    monkeypatch.setattr(actions, 'capture', mock_capture)
+    result = run_test(_request(tmp_path, 'capture', target_index=0))
+    assert result.status == 'success'
+    assert Path(result.preview_paths[0]).read_bytes() == b'jpeg-data'
+    assert Path(result.preview_paths[0]).name == 'req-1.jpg'
+    mock_capture.assert_called_once_with('window', '演示窗口',
+                                         image_format='jpeg', purpose='cli')
+
+
+def test_capture_failure_is_safe(monkeypatch, tmp_path):
+    """截图失败只显示可信错误分类而不回传原始异常。"""
+    import modules.gui.test_actions as actions
+
+    def failing(*_args, **_kwargs):
+        """模拟后端携带敏感原文的失败。"""
+        raise CaptureError('window_not_found', 'secret-value')
+
+    monkeypatch.setattr(actions, 'capture', failing)
+    result = run_test(_request(tmp_path, 'capture', target_index=0))
+    assert result.status == 'failure'
+    assert 'secret-value' not in result.reason
+
+
+def test_upload_only_selected_host_without_capture(monkeypatch, tmp_path):
+    """上传只读取指定文件且只传选中图床，不截图或进入回退链。"""
+    import modules.gui.test_actions as actions
+
+    image = tmp_path / '照片.jpg'
+    image.write_bytes(b'image-data')
+    monkeypatch.setattr(actions, 'capture',
+                        lambda *_a, **_k: pytest.fail('意外截图'))
+    uploaded = Mock(return_value=Mock(success=True))
+    monkeypatch.setattr(actions, 'upload_with_fallback', uploaded)
+    config = _config()
+    result = run_test(_request(tmp_path, 'upload', config, host_index=1,
+                               image_path=str(image)))
+    assert result.status == 'success'
+    assert uploaded.call_args.args == (
+        b'image-data', '照片.jpg', [config['push']['screenshot']['image_host'][1]])
+    assert 'secret-value' not in result.reason
+
+
+def test_upload_failed_result_does_not_expose_url(monkeypatch, tmp_path):
+    """上传结果只取布尔终态，不展示外部诊断或带签名链接。"""
+    import modules.gui.test_actions as actions
+
+    image = tmp_path / 'image.jpg'
+    image.write_bytes(b'data')
+    monkeypatch.setattr(actions, 'upload_with_fallback',
+                        Mock(return_value=Mock(success=False, url='secret-value')))
+    result = run_test(_request(tmp_path, 'upload', host_index=0,
+                               image_path=str(image)))
+    assert result.status == 'failure'
+    assert 'secret-value' not in result.reason
