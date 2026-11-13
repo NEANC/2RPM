@@ -6,6 +6,8 @@
 import copy
 import hashlib
 import os
+import stat
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,7 +84,10 @@ def patch_document(document: ConfigDocument,
         if change.operation == 'delete':
             del parent[key]
         elif change.operation == 'set':
-            parent[key] = copy.deepcopy(change.after)
+            if isinstance(parent.get(key), CommentedMap) and isinstance(change.after, dict):
+                parent[key].update(copy.deepcopy(change.after))
+            else:
+                parent[key] = copy.deepcopy(change.after)
     return ConfigDocument(document.path, tree, document.fingerprint)
 
 
@@ -94,11 +99,24 @@ def _fingerprint(path: Path) -> str | None:
         return None
 
 
+def _check_save_path(destination: Path) -> None:
+    """拒绝目标和其现有祖先中的 Windows 重解析点。"""
+    for path in (*reversed(destination.parents), destination):
+        try:
+            if path.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ConfigSaveError('配置保存路径不可经过重解析点')
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise ConfigSaveError('无法检查配置保存路径') from None
+
+
 def save_document(document: ConfigDocument, destination: Path, *,
                   expected_fingerprint: str | None) -> ConfigDocument:
     """校验目标指纹并在同目录关闭临时文件后原子替换。"""
     if not destination.is_absolute() or not str(destination).endswith(('.yaml', '.yml')):
         raise ConfigSaveError('保存目标必须是已规范化的绝对配置路径')
+    _check_save_path(destination)
     try:
         current = _fingerprint(destination)
     except OSError:
@@ -125,8 +143,13 @@ def save_document(document: ConfigDocument, destination: Path, *,
     except Exception:
         raise ConfigSaveError('无法保存配置文档') from None
     finally:
-        if temp_fd is not None:
-            os.close(temp_fd)
-        if temp_path is not None:
-            os.unlink(temp_path)
+        primary = sys.exception()
+        try:
+            if temp_fd is not None:
+                os.close(temp_fd)
+            if temp_path is not None:
+                os.unlink(temp_path)
+        except OSError:
+            if primary is None:
+                raise ConfigSaveError('无法清理配置临时文件') from None
     return ConfigDocument(destination, tree, hashlib.sha256(data).hexdigest())

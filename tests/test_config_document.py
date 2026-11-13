@@ -5,7 +5,9 @@
 
 import hashlib
 import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -245,3 +247,103 @@ def test_read_failure_is_safe(tmp_path):
     with pytest.raises(ConfigReadError) as error:
         read_document(path)
     assert 'private-secret' not in str(error.value)
+
+
+def test_patch_mapping_keeps_unknown_fields_shared_by_yaml_alias(tmp_path):
+    """管理映射替换不得清除别名映射中的未知字段。"""
+    path = tmp_path / 'alias.yaml'
+    path.write_text('shared: &options\n  known: old\n  custom: retained\n'
+                    'monitor:\n  common: *options\n', encoding='utf-8')
+    document = read_document(path)
+    patched = patch_document(document, (
+        Change(('monitor', 'common'), document.tree['monitor']['common'],
+               {'known': 'new'}, 'set'),
+    ))
+    saved = save_document(patched, path, expected_fingerprint=document.fingerprint)
+
+    assert saved.tree['monitor']['common']['custom'] == 'retained'
+    assert saved.tree['shared']['custom'] == 'retained'
+    assert read_document(path).tree['monitor']['common']['custom'] == 'retained'
+
+
+def test_save_rejects_symlink_in_destination_path(tmp_path):
+    """文件链接或父目录链接均不得成为配置保存路径。"""
+    target = tmp_path / 'outside.yaml'
+    target.write_text('outside: true\n', encoding='utf-8')
+    parent = tmp_path / 'actual'
+    parent.mkdir()
+    file_link = tmp_path / 'linked.yaml'
+    directory_link = tmp_path / 'linked_dir'
+    try:
+        file_link.symlink_to(target)
+        directory_link.symlink_to(parent, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f'无法创建符号链接: {error.winerror}')
+    for destination in (file_link, directory_link / 'new.yaml'):
+        with pytest.raises(ConfigSaveError):
+            save_document(new_document(), destination, expected_fingerprint=None)
+    assert target.read_text(encoding='utf-8') == 'outside: true\n'
+    assert list(parent.iterdir()) == []
+
+
+def test_save_rejects_junction_parent(tmp_path):
+    """经过 junction 的保存即使目标不存在也必须拒绝。"""
+    from tests.test_screenshot_winfs import make_junction
+
+    actual = tmp_path / 'actual'
+    actual.mkdir()
+    link = tmp_path / 'junction'
+    try:
+        make_junction(link, actual)
+    except OSError as error:
+        pytest.skip(f'无法创建 junction: {error}')
+    if not link.is_dir():
+        pytest.skip('沙盒 junction 创建后不可访问')
+    assert link.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    with pytest.raises(ConfigSaveError):
+        save_document(new_document(), link / 'new.yaml', expected_fingerprint=None)
+    assert list(actual.iterdir()) == []
+
+
+def test_save_rejects_any_reparse_tag_in_parent(tmp_path, monkeypatch):
+    """不依赖符号链接标签，任意重解析属性均拒绝保存。"""
+    parent = tmp_path / 'redirected'
+    parent.mkdir()
+    destination = parent / 'new.yaml'
+    original_lstat = Path.lstat
+
+    def tagged_lstat(path):
+        """给父目录注入 Windows junction 的重解析属性。"""
+        if path == parent:
+            return SimpleNamespace(st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT,
+                                   st_reparse_tag=stat.IO_REPARSE_TAG_MOUNT_POINT)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, 'lstat', tagged_lstat)
+    with pytest.raises(ConfigSaveError):
+        save_document(new_document(), destination, expected_fingerprint=None)
+    assert not destination.exists()
+
+
+def test_cleanup_failure_does_not_hide_save_error(tmp_path, monkeypatch):
+    """替换失败后的清理异常不能覆盖安全的保存异常。"""
+    import modules.config_document as module
+
+    path = _source_file(tmp_path)
+    original = path.read_bytes()
+    document = read_document(path)
+
+    def fail_replace(*args):
+        """模拟包含敏感信息的替换失败。"""
+        raise OSError('private-replace')
+
+    def fail_unlink(*args):
+        """模拟临时文件清理失败。"""
+        raise OSError('private-cleanup')
+
+    monkeypatch.setattr(module.os, 'replace', fail_replace)
+    monkeypatch.setattr(module.os, 'unlink', fail_unlink)
+    with pytest.raises(ConfigSaveError, match='无法保存配置文档') as error:
+        save_document(document, path, expected_fingerprint=document.fingerprint)
+    assert 'private-' not in str(error.value)
+    assert path.read_bytes() == original
