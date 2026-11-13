@@ -3,6 +3,7 @@
 
 """截图、图床与外部动作表单。"""
 
+from collections.abc import Mapping
 from io import StringIO
 import tkinter as tk
 from tkinter import ttk
@@ -239,7 +240,11 @@ class Page(BasePage):
             self.action_generation = self.model.document_generation
         super().refresh()
         snapshot = self.model.snapshot()
+        templates = snapshot['push']['templates']
         for event, label in self.condition_labels.items():
+            if not isinstance(templates, Mapping) or not isinstance(templates.get(event), Mapping):
+                label.configure(text=f'{event} 截图条件：待校验')
+                continue
             conditions = screenshot_conditions(snapshot, event)
             text = '；'.join(f'{name}：{"已满足" if valid else "未满足"}' for name, valid in (
                 ('事件开关', conditions['enabled']), ('通道', conditions['channels']),

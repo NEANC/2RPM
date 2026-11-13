@@ -849,6 +849,67 @@ def test_review_summary_covers_events_actions_without_values(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('path', [('external',), ('push', 'templates')])
+def test_review_invalid_section_refresh_and_real_issue_navigation(tmp_path, path):
+    """非映射动作或模板全局刷新安全，真实诊断可进入检查页。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'target'), 'demo.exe')
+        app.model.set(path, 'private-structure-secret')
+        app.refresh()
+        assert '待校验' in app.summary_text
+        assert 'private-structure-secret' not in app.summary_text
+        candidate = app.validate()
+        assert any(issue.path == path and issue.code == 'mapping'
+                   for issue in candidate.issues)
+        assert app.notebook.index('current') == 3
+        assert root.focus_get() is app.pages[3].issue_anchor
+    finally:
+        root.destroy()
+
+
+def test_review_empty_target_is_not_configured(tmp_path):
+    """未填目标不显示已配置，填入后仍不泄露目标内容。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'target'), '')
+        app.refresh()
+        assert '目标：未配置' in app.summary_text
+        app.model.set(('monitor', 'target'), '  ')
+        app.refresh()
+        assert '目标：未配置' in app.summary_text
+        app.model.set(('monitor', 'target'), 'private-target.exe')
+        app.refresh()
+        assert '目标：已配置' in app.summary_text
+        assert 'private-target' not in app.summary_text
+    finally:
+        root.destroy()
+
+
+def test_review_screenshot_requires_all_effective_conditions(tmp_path):
+    """只有开关不表示截图执行，引用、通道与目标齐备才显示条件满足。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        event = 'on_end'
+        assert not all(screenshot_conditions(app.model.snapshot(), event).values())
+        assert 'on_end：条件未满足' in app.summary_text
+        app.model.set(('monitor', 'target'), 'demo.exe')
+        app.model.set(('push', 'templates', event, 'content'), '{screenshot}')
+        app.model.set(('push', 'push_channel_settings', 'channels'),
+                      [{'provider': 'serverchan', 'sckey': 'private-key'}])
+        app.pages[2]._add_target('window')
+        app.pages[2]._set_item(app.pages[2].targets_path, 0, 'target', '测试窗口')
+        app.refresh()
+        assert all(screenshot_conditions(app.model.snapshot(), event).values())
+        assert 'on_end：条件满足' in app.summary_text
+        assert 'private-key' not in app.summary_text
+    finally:
+        root.destroy()
+
+
 def test_review_summary_masks_untrusted_time_and_mode(tmp_path):
     """未校验的时间和模式不允许泄露到检查摘要。"""
     root = tk.Tk()

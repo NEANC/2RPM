@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from tkinter import ttk
 
 from modules.config import DEFAULT_VALUES
+from modules.gui.forms import screenshot_conditions
 from modules.gui.pages.base import Page as BasePage
 
 
@@ -44,14 +45,19 @@ class Page(BasePage):
         events = push['templates']
         actions = snapshot['external']
         event_names = ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external')
-        event_status = '、'.join(f'{name}：{"启用" if events[name]["enable"] else "关闭"}'
-                                for name in event_names)
-        capture_status = '、'.join(
-            f'{name}：{"开启" if events[name]["capture_screenshot"] else "关闭"}'
+        event_status = '、'.join(
+            f'{name}：{("启用" if events[name]["enable"] is True else "关闭") if isinstance(events, Mapping) and isinstance(events.get(name), Mapping) else "待校验"}'
             for name in event_names)
-        action_status = '、'.join(f'{name}：{"已配置" if actions[name] else "未配置"}'
-                                 for name in ('on_end', 'on_timeout', 'on_wait_timeout'))
-        text = (f"模式：{mode}\n目标：已配置\n"
+        capture_status = '、'.join(
+            f'{name}：{("条件满足" if all(screenshot_conditions(snapshot, name).values()) else "条件未满足") if isinstance(events, Mapping) and isinstance(events.get(name), Mapping) else "待校验"}'
+            for name in event_names)
+        action_status = '、'.join(
+            f'{name}：{("已配置" if isinstance(actions[name], str) and actions[name].strip() else "未配置") if isinstance(actions, Mapping) and name in actions else "待校验"}'
+            for name in ('on_end', 'on_timeout', 'on_wait_timeout'))
+        target = monitor['target']
+        target_status = ('已配置' if isinstance(target, str) and target.strip()
+                         else '未配置' if isinstance(target, str) else '待校验')
+        text = (f"模式：{mode}\n目标：{target_status}\n"
                 f"等待：{wait}\n"
                 f"通知通道：{len(push['push_channel_settings']['channels'])} 个\n"
                 f"通知事件：{event_status}\n"
