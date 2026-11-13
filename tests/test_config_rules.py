@@ -67,6 +67,22 @@ def test_common_value_candidate(tmp_path, raw, field, expected):
         isinstance(raw, float) and source['monitor']['common'][field] is raw)
 
 
+def test_time_change_keeps_original_value_after_source_edit(tmp_path):
+    """时间字段差异中的原值不随源配置后续编辑变化。"""
+    raw = ['invalid']
+    source = {'monitor': {'target': 'ok.exe', 'common': {'max_wait': raw}}}
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    change = next(change for change in candidate.changes
+                  if change.path == ('monitor', 'common', 'max_wait'))
+
+    raw.append('later')
+
+    assert change.before == ['invalid']
+    assert change.after == '30s'
+    assert candidate.tree['monitor']['common']['max_wait'] == '30s'
+
+
 def test_candidate_defaults_cleanup_and_secret(tmp_path):
     """候选补缺、删除未知项且不展开令牌。"""
     source = {'monitor': {'target': 'ok.exe', 'watch': {'lookback_minutes': -10}},

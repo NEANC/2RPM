@@ -284,7 +284,8 @@ def analyze_config(tree: Mapping, *, config_dir: Path,
     issues = layout_issues(tree, config_dir)
     if not isinstance(tree, Mapping) or any(issue.severity == 'error' for issue in issues):
         return Candidate(copy.deepcopy(tree), issues, ())
-    result = copy.deepcopy(tree)
+    original = copy.deepcopy(tree)
+    result = copy.deepcopy(original)
     if not isinstance(result, CommentedMap):
         result = CommentedMap(result)
     _normalize_values(result, defaults)
@@ -300,4 +301,4 @@ def analyze_config(tree: Mapping, *, config_dir: Path,
                 if push_channel_signature(raw) != push_channel_signature(normalized):
                     settings['channels'] = normalized
     _format_screenshot(result)
-    return Candidate(result, issues, tuple(_differences(tree, result)))
+    return Candidate(result, issues, tuple(_differences(original, result)))
