@@ -74,6 +74,31 @@ def test_real_worker_main_returns_one_result(tmp_path):
     assert decode_result(stdout, request=request).status == 'failure'
 
 
+@pytest.mark.parametrize('closed_fds', [(0,), (1,), (2,), (0, 1, 2)])
+def test_worker_main_with_closed_standard_fds(closed_fds, tmp_path):
+    """真实三管道在标准 fd 关闭后仍返回结果并先隔离业务导入。"""
+    request = GuiRequest('closed-fds', 2, 3, 'upload', {}, str(tmp_path),
+                         str(tmp_path), None, 0, str(tmp_path / 'missing.jpg'), None)
+    marker = tmp_path / 'import-state.txt'
+    command = [sys.executable, str(ROOT / 'tests/fixtures/gui_worker_closed_fds.py'),
+               str(marker), *(str(fd) for fd in closed_fds)]
+    process = subprocess.Popen(command, cwd=ROOT, stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        stdout, stderr = process.communicate(encode_request(request), timeout=10)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+    assert process.returncode == 0, (closed_fds, stdout, stderr,
+                                     marker.read_text(encoding='utf-8') if marker.exists() else None)
+    assert stderr == b''
+    assert stdout.count(b'protocol_version') == 1
+    assert decode_result(stdout, request=request).status == 'failure'
+    assert marker.read_text(encoding='utf-8') == 'isolated'
+
+
 def test_invalid_worker_request_exits_without_result():
     """非法快照不能转换为成功结果。"""
     process = subprocess.Popen([sys.executable, '-m', 'modules.gui.worker'],

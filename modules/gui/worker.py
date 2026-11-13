@@ -9,17 +9,14 @@ import os
 import sys
 
 
-def _copy_standard_handle(kind):
+def _copy_standard_handle(original, mode):
     """复制继承的 Windows 标准句柄并独立拥有其寿命。"""
     kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-    kernel.GetStdHandle.argtypes = [ctypes.c_ulong]
-    kernel.GetStdHandle.restype = ctypes.c_void_p
     kernel.GetCurrentProcess.restype = ctypes.c_void_p
     kernel.DuplicateHandle.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
                                        ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel.DuplicateHandle.restype = ctypes.c_int
-    original = kernel.GetStdHandle(kind)
     if not original or original == ctypes.c_void_p(-1).value:
         raise OSError('标准句柄不可用')
     process = kernel.GetCurrentProcess()
@@ -28,30 +25,51 @@ def _copy_standard_handle(kind):
                                   ctypes.byref(copied), 0, 0, 2):
         raise OSError('标准句柄复制失败')
     try:
-        return msvcrt.open_osfhandle(copied.value, os.O_BINARY)
+        fd = msvcrt.open_osfhandle(copied.value, os.O_BINARY | mode)
     except BaseException:
         kernel.CloseHandle(copied)
         raise
+    reserved = [fd]
+    try:
+        while fd < 3:
+            fd = os.dup(fd)
+            reserved.append(fd)
+        os.set_inheritable(fd, False)
+    except BaseException:
+        for temporary in reserved:
+            os.close(temporary)
+        raise
+    return fd, reserved[:-1]
 
 
 def open_protocol_streams():
     """保留专用输入/输出，再将 Python、CRT 和 OS 普通三流转至空设备。"""
-    input_fd = _copy_standard_handle(-10)
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.GetStdHandle.argtypes = [ctypes.c_ulong]
+    kernel.GetStdHandle.restype = ctypes.c_void_p
+    input_handle = kernel.GetStdHandle(-10)
+    output_handle = kernel.GetStdHandle(-11)
+    input_fd, input_temporary = _copy_standard_handle(input_handle, os.O_RDONLY)
     try:
-        output_fd = _copy_standard_handle(-11)
+        output_fd, output_temporary = _copy_standard_handle(output_handle, os.O_WRONLY)
     except BaseException:
         os.close(input_fd)
+        for temporary in input_temporary:
+            os.close(temporary)
         raise
     try:
+        for temporary in input_temporary + output_temporary:
+            os.close(temporary)
         for number, mode in ((0, os.O_RDONLY), (1, os.O_WRONLY),
                              (2, os.O_WRONLY)):
             null_fd = os.open(os.devnull, mode)
             try:
                 os.dup2(null_fd, number)
             finally:
-                os.close(null_fd)
+                if null_fd != number:
+                    os.close(null_fd)
             ctypes.windll.kernel32.SetStdHandle(
-                ctypes.c_ulong(-10 + number),
+                ctypes.c_ulong(-10 - number),
                 ctypes.c_void_p(msvcrt.get_osfhandle(number)))
         sys.stdin = open(os.devnull, 'r', encoding='utf-8')
         sys.stdout = open(os.devnull, 'w', encoding='utf-8')
