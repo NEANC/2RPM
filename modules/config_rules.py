@@ -7,9 +7,11 @@ import copy
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from typing import Literal
 
+from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 
@@ -215,8 +217,18 @@ def _complete_and_clean(tree: CommentedMap, defaults: CommentedMap) -> None:
 
 def _differences(before: object, after: object, path: FieldPath = ()) -> list[Change]:
     """比较候选与源树并记录字段变化。"""
+    if path[-2:] in (('screenshot', 'targets'), ('screenshot', 'image_host')):
+        if isinstance(before, list) and isinstance(after, list):
+            yaml = YAML()
+            original = StringIO()
+            normalized = StringIO()
+            yaml.dump(before, original)
+            yaml.dump(after, normalized)
+            return ([] if original.getvalue() == normalized.getvalue() else
+                    [Change(path, before, after, 'set')])
     if not isinstance(before, Mapping) or not isinstance(after, Mapping):
-        return [] if before == after else [Change(path, before, after, 'set')]
+        return ([] if before == after and type(before) is type(after) else
+                [Change(path, before, after, 'set')])
     changes = []
     for key in before:
         current = path + (key,)
@@ -226,6 +238,8 @@ def _differences(before: object, after: object, path: FieldPath = ()) -> list[Ch
             changes.extend(_differences(before[key], after[key], current))
     for key in after:
         if key not in before:
+            if after[key] is None:
+                continue
             changes.append(Change(path + (key,), None, after[key], 'set'))
     return changes
 

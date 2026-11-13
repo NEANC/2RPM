@@ -840,7 +840,7 @@ def _normalize_time_like_config(section, field_key, default_value, field_label):
 
     normalized = config_rules.normalize_numeric_value(raw_value, default_value,
                                                       'time')
-    if raw_value == normalized:
+    if raw_value == normalized and type(raw_value) is type(normalized):
         return False
     LOGGER.warning('%s 已规范化或回退默认值', field_label)
     section[field_key] = normalized
@@ -859,7 +859,7 @@ def _normalize_positive_int_config(section, field_key, default_value, field_labe
 
     normalized = config_rules.normalize_numeric_value(raw_value, default_value,
                                                       'integer')
-    if raw_value == normalized:
+    if raw_value == normalized and type(raw_value) is type(normalized):
         return False
     LOGGER.warning('%s 已规范化或回退默认值', field_label)
     section[field_key] = normalized

@@ -220,3 +220,80 @@ def test_cli_keeps_non_monitor_layout_handling(tmp_path, monkeypatch):
     loaded = load_config(str(path))
     assert loaded['push'] == []
     assert seen and seen[0]['strict_shared'] is False
+
+
+@pytest.mark.parametrize('path', [
+    ('monitor', 'launch', 'args'),
+    ('monitor', 'launch', 'cwd'),
+    ('push', 'screenshot', 'retention', 'enabled'),
+])
+def test_optional_defaults_do_not_claim_cli_write(tmp_path, path):
+    """缺失的可选空值不会被 CLI 补写，候选也不应提示变更。"""
+    from ruamel.yaml import YAML
+
+    source = get_default_config()
+    section = source
+    for key in path[:-1]:
+        section = section[key]
+    del section[path[-1]]
+    config_path = tmp_path / 'optional.yaml'
+    with config_path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+    before = config_path.read_bytes()
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert candidate.tree == load_config(str(config_path))
+    assert config_path.read_bytes() == before
+    assert not any(change.path == path for change in candidate.changes)
+
+
+def test_screenshot_style_change_is_reported(tmp_path):
+    """截图列表仅格式变化时仍报告 CLI 会写回的字段。"""
+    from ruamel.yaml import YAML
+
+    source = get_default_config()
+    source['push']['screenshot']['image_host'] = [
+        {'provider': 'catbox', 'token': '${TOKEN}'}]
+    path = tmp_path / 'screenshot.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+    before = path.read_bytes()
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    loaded = load_config(str(path))
+    assert candidate.tree == loaded
+    assert path.read_bytes() != before
+    assert any(change.path == ('push', 'screenshot', 'image_host')
+               for change in candidate.changes)
+
+
+@pytest.mark.parametrize('section, field', [
+    ('monitor.common', 'timeout_threshold'),
+    ('push.retry', 'max_count'),
+    ('log', 'max_log_files'),
+])
+def test_integral_float_cli_matches_candidate_type(tmp_path, section, field):
+    """整数配置的浮点写法被 CLI 与候选一致地写成整数。"""
+    from ruamel.yaml import YAML
+
+    source = {'monitor': {'target': 'ok.exe'}}
+    group = source
+    for key in section.split('.'):
+        group = group.setdefault(key, {})
+    group[field] = 2.0
+    path = tmp_path / 'integer.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    loaded = load_config(str(path))
+    result = loaded
+    for key in section.split('.'):
+        result = result[key]
+    assert type(result[field]) is int
+    assert candidate.tree == loaded
+    assert any(change.path == (*section.split('.'), field)
+               for change in candidate.changes)
