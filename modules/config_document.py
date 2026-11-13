@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import ScalarString
 
 from modules.config import _make_write_yaml, get_default_config
 from modules.config_rules import Change
@@ -77,6 +78,9 @@ def patch_document(document: ConfigDocument,
 
     def collect_anchors(value, path):
         """记录每个锚点在 YAML 树中第一次出现的路径。"""
+        if isinstance(value, ScalarString) and value.anchor.value:
+            anchor_names.add(value.anchor.value)
+            return
         if isinstance(value, (CommentedMap, CommentedSeq)):
             if value.anchor.value:
                 if id(value) in anchor_paths:
@@ -91,7 +95,7 @@ def patch_document(document: ConfigDocument,
 
     def rename_nested_anchors(value, visited):
         """为复制分支内部的锚点分配唯一名称并保持内部别名关系。"""
-        if not isinstance(value, (CommentedMap, CommentedSeq)) or id(value) in visited:
+        if not isinstance(value, (CommentedMap, CommentedSeq, ScalarString)) or id(value) in visited:
             return
         visited.add(id(value))
         if value.anchor.value:
@@ -102,7 +106,8 @@ def patch_document(document: ConfigDocument,
             name = f'{name}_{index}'
             value.yaml_set_anchor(name, always_dump=value.anchor.always_dump)
             anchor_names.add(name)
-        children = value.values() if isinstance(value, CommentedMap) else value
+        children = value.values() if isinstance(value, CommentedMap) else (
+            value if isinstance(value, CommentedSeq) else ())
         for child in children:
             rename_nested_anchors(child, visited)
 
@@ -118,6 +123,40 @@ def patch_document(document: ConfigDocument,
             for child in children:
                 rename_nested_anchors(child, visited)
             collect_anchors(parent[key], path)
+
+    def merge_list_items(existing, incoming):
+        """仅在能唯一确认项目对应关系时保留原项目中的未知键。"""
+        if any(isinstance(item, dict) for item in existing) and (
+                not incoming or not all(isinstance(item, dict) for item in incoming)):
+            raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
+        if not all(isinstance(item, dict) for item in (*existing, *incoming)):
+            return copy.deepcopy(incoming)
+        identity = next((field for field in ('name', 'id')
+                         if all(field in item for item in (*existing, *incoming))
+                         and len({item[field] for item in existing}) == len(existing)
+                         and len({item[field] for item in incoming}) == len(incoming)
+                         and {item[field] for item in existing} == {item[field] for item in incoming}), None)
+        if identity is not None:
+            matches = {item[identity]: item for item in existing}
+            result = copy.deepcopy(existing)
+            result.clear()
+            for item in incoming:
+                merged = copy.deepcopy(matches[item[identity]])
+                merged.update(copy.deepcopy(item))
+                result.append(merged)
+            return result
+        if (len(existing) == len(incoming) == 1
+                and not any(field in existing[0] and field in incoming[0]
+                            and existing[0][field] != incoming[0][field]
+                            for field in ('name', 'id'))):
+            merged = copy.deepcopy(existing[0])
+            merged.update(copy.deepcopy(incoming[0]))
+            result = copy.deepcopy(existing)
+            result[0] = merged
+            return result
+        if existing:
+            raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
+        return copy.deepcopy(incoming)
 
     for change in changes:
         if not change.path or change.path[0] == '_runtime':
@@ -136,6 +175,9 @@ def patch_document(document: ConfigDocument,
             if isinstance(parent, CommentedMap) and isinstance(parent.get(key), CommentedMap) and isinstance(change.after, dict):
                 detach_alias(parent, key, change.path)
                 parent[key].update(copy.deepcopy(change.after))
+            elif isinstance(parent[key], CommentedSeq) and isinstance(change.after, list):
+                detach_alias(parent, key, change.path)
+                parent[key] = merge_list_items(parent[key], change.after)
             else:
                 parent[key] = copy.deepcopy(change.after)
     return ConfigDocument(document.path, tree, document.fingerprint)

@@ -358,6 +358,161 @@ def test_patch_list_alias_keeps_definition_on_reload(tmp_path):
     assert original.tree['shared'][0]['name'] == 'old'
 
 
+def test_patch_nested_scalar_anchor_keeps_external_reference_on_reload(tmp_path):
+    """复制分支内标量锚点重命名，外部引用仍指向原定义。"""
+    path = tmp_path / 'scalar_reference.yaml'
+    path.write_text('shared: &base\n  label: &inside old\n  again: *inside\n  edited: old\n'
+                    'monitor:\n  common: *base\nother: *inside\n', encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'common', 'edited'), 'old', 'new', 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    reloaded = read_document(path)
+    text = path.read_text(encoding='utf-8')
+
+    assert text.count('&inside ') == 1
+    assert '&inside_1' in text
+    assert reloaded.tree['monitor']['common']['again'] is reloaded.tree['monitor']['common']['label']
+    assert reloaded.tree['other'] is reloaded.tree['shared']['label']
+    assert reloaded.tree['other'] == 'old'
+    assert reloaded.tree['monitor']['common']['edited'] == 'new'
+
+
+def test_set_whole_list_preserves_unknown_keys_after_reorder(tmp_path):
+    """整段列表更新通过稳定身份匹配项目，保留每项未知字段。"""
+    path = tmp_path / 'list_set.yaml'
+    path.write_text('monitor:\n  targets:\n    - name: alpha\n      enabled: false\n'
+                    '      custom: first\n    - name: beta\n      enabled: false\n'
+                    '      custom: second\n', encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'targets'), None, [
+            {'name': 'beta', 'enabled': True},
+            {'name': 'alpha', 'enabled': True},
+        ], 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    targets = read_document(path).tree['monitor']['targets']
+
+    assert [(item['name'], item['custom'], item['enabled']) for item in targets] == [
+        ('beta', 'second', True), ('alpha', 'first', True),
+    ]
+
+
+def test_set_whole_list_rejects_ambiguous_match_without_touching_file(tmp_path):
+    """多项没有可靠对应关系时拒绝保存，原文件及指纹不变。"""
+    path = tmp_path / 'ambiguous_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - enabled: false\n      custom: first\n'
+                    '    - enabled: false\n      custom: second\n', encoding='utf-8')
+    original_bytes = path.read_bytes()
+    original = read_document(path)
+
+    with pytest.raises(ConfigSaveError) as error:
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None, [
+                {'enabled': True}, {'enabled': True},
+            ], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert 'first' not in str(error.value)
+    assert path.read_bytes() == original_bytes
+    assert original.fingerprint == hashlib.sha256(original_bytes).hexdigest()
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_set_whole_list_rejects_changed_identity_without_touching_file(tmp_path):
+    """原项目身份变化时不能猜测未知字段属于哪个新项目。"""
+    path = tmp_path / 'renamed_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - name: old\n      custom: retained\n', encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError):
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None, [{'name': 'new'}], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert path.read_bytes() == before
+
+
+def test_set_whole_list_alias_preserves_definition_and_unknown_keys(tmp_path):
+    """整段替换列表别名时定义与外部引用仍不变。"""
+    path = tmp_path / 'list_alias_set.yaml'
+    path.write_text('shared: &targets\n  - name: alpha\n    custom: retained\n'
+                    'monitor:\n  targets: *targets\nother: *targets\n', encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'targets'), None, [{'name': 'alpha', 'enabled': True}], 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    reloaded = read_document(path).tree
+
+    assert reloaded['monitor']['targets'][0]['custom'] == 'retained'
+    assert reloaded['monitor']['targets'][0]['enabled'] is True
+    assert reloaded['shared'][0]['name'] == 'alpha'
+    assert 'enabled' not in reloaded['shared'][0]
+    assert reloaded['other'] is reloaded['shared']
+
+
+def test_set_whole_list_rejects_unmatched_unknown_item(tmp_path):
+    """新列表不能凭空丢弃含未知键的旧项目。"""
+    path = tmp_path / 'dropped_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - name: alpha\n      custom: retained\n', encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError):
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None, [], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert path.read_bytes() == before
+
+
+def test_set_whole_list_rejects_unmatched_mixed_items(tmp_path):
+    """列表混有标量时也不能静默丢弃映射项目的未知键。"""
+    path = tmp_path / 'mixed_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - name: alpha\n      custom: retained\n'
+                    '    - legacy\n', encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError):
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None, ['legacy'], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert path.read_bytes() == before
+
+
+def test_set_whole_list_rejects_duplicate_identity_without_touching_file(tmp_path):
+    """重复名称无法确定项目对应关系，即使传入全部键也拒绝保存。"""
+    path = tmp_path / 'duplicate_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - name: same\n      custom: first\n'
+                    '    - name: same\n      custom: second\n', encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError):
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None, [
+                {'name': 'same', 'custom': 'second'},
+                {'name': 'same', 'custom': 'first'},
+            ], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert path.read_bytes() == before
+
+
 def test_save_rejects_symlink_in_destination_path(tmp_path):
     """文件链接或父目录链接均不得成为配置保存路径。"""
     target = tmp_path / 'outside.yaml'
