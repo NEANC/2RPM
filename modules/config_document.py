@@ -72,19 +72,44 @@ def patch_document(document: ConfigDocument,
                    changes: tuple[Change, ...]) -> ConfigDocument:
     """复制原始树，仅按明确的变化路径更新或删除叶节点。"""
     tree = copy.deepcopy(document.tree)
+    anchor_paths = {}
+
+    def collect_anchors(value, path):
+        """记录每个锚点在 YAML 树中第一次出现的路径。"""
+        if isinstance(value, CommentedMap):
+            if value.anchor.value:
+                if id(value) in anchor_paths:
+                    return
+                anchor_paths[id(value)] = path
+            for key, child in value.items():
+                collect_anchors(child, (*path, key))
+
+    collect_anchors(tree, ())
+
+    def detach_alias(parent, key, path):
+        """在修改别名分支前复制映射，避免回写到锚点定义。"""
+        value = parent[key]
+        if isinstance(value, CommentedMap) and value.anchor.value and anchor_paths[id(value)] != path:
+            value.yaml_set_anchor(value.anchor.value, always_dump=True)
+            parent[key] = copy.deepcopy(value)
+            parent[key].yaml_set_anchor(None)
+
     for change in changes:
         if not change.path or change.path[0] == '_runtime':
             continue
         parent = tree
-        for key in change.path[:-1]:
+        for index, key in enumerate(change.path[:-1]):
             if key not in parent:
                 parent[key] = CommentedMap()
+            else:
+                detach_alias(parent, key, change.path[:index + 1])
             parent = parent[key]
         key = change.path[-1]
         if change.operation == 'delete':
             del parent[key]
         elif change.operation == 'set':
             if isinstance(parent.get(key), CommentedMap) and isinstance(change.after, dict):
+                detach_alias(parent, key, change.path)
                 parent[key].update(copy.deepcopy(change.after))
             else:
                 parent[key] = copy.deepcopy(change.after)

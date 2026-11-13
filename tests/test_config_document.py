@@ -266,6 +266,33 @@ def test_patch_mapping_keeps_unknown_fields_shared_by_yaml_alias(tmp_path):
     assert read_document(path).tree['monitor']['common']['custom'] == 'retained'
 
 
+@pytest.mark.parametrize('field_path, replacement', [
+    (('monitor', 'common', 'known'), 'new'),
+    (('monitor', 'common'), {'known': 'new'}),
+])
+def test_patch_alias_path_does_not_modify_anchor(tmp_path, field_path, replacement):
+    """指定路径补丁只修改别名分支，原锚点及注释保持原样。"""
+    path = tmp_path / 'alias.yaml'
+    path.write_text('# 顶部说明\nshared: &base\n  known: old # 锚点说明\n'
+                    '  custom: retained\nmonitor:\n  common: *base\n', encoding='utf-8')
+    document = read_document(path)
+    patched = patch_document(document, (
+        Change(field_path, 'old', replacement, 'set'),
+    ))
+    saved = save_document(patched, path, expected_fingerprint=document.fingerprint)
+    text = path.read_text(encoding='utf-8')
+
+    assert document.tree['shared']['known'] == 'old'
+    assert saved.tree['shared']['known'] == 'old'
+    assert saved.tree['monitor']['common']['known'] == 'new'
+    assert saved.tree['monitor']['common']['custom'] == 'retained'
+    assert read_document(path).tree['shared']['known'] == 'old'
+    assert read_document(path).tree['monitor']['common']['known'] == 'new'
+    assert '# 顶部说明' in text
+    assert '# 锚点说明' in text
+    assert '&base' in text
+
+
 def test_save_rejects_symlink_in_destination_path(tmp_path):
     """文件链接或父目录链接均不得成为配置保存路径。"""
     target = tmp_path / 'outside.yaml'
@@ -347,3 +374,24 @@ def test_cleanup_failure_does_not_hide_save_error(tmp_path, monkeypatch):
         save_document(document, path, expected_fingerprint=document.fingerprint)
     assert 'private-' not in str(error.value)
     assert path.read_bytes() == original
+
+
+def test_cleanup_failure_without_active_exception_raises_safe_save_error(tmp_path, monkeypatch):
+    """清理阶段没有活动异常时仍转换成安全保存异常。"""
+    import modules.config_document as module
+
+    path = _source_file(tmp_path)
+    original = path.read_bytes()
+    document = read_document(path)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(module.os, 'replace', lambda *args: (_ for _ in ()).throw(OSError('private-replace')))
+        patcher.setattr(module.os, 'unlink', lambda *args: (_ for _ in ()).throw(OSError('private-cleanup')))
+        patcher.setattr(module.sys, 'exception', lambda: None)
+        with pytest.raises(ConfigSaveError, match='无法清理配置临时文件') as error:
+            save_document(document, path, expected_fingerprint=document.fingerprint)
+
+    assert 'private-cleanup' not in str(error.value)
+    assert path.read_bytes() == original
+    for temporary in tmp_path.glob(f'.{path.name}.*.tmp'):
+        temporary.unlink()
