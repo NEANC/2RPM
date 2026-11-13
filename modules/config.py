@@ -8,6 +8,7 @@ import math
 import os
 import sys
 import tempfile
+from pathlib import Path
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.composer import ComposerError
@@ -18,6 +19,7 @@ from ruamel.yaml.reader import ReaderError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 from ruamel.yaml.scanner import ScannerError
 
+from modules.config_rules import layout_issues
 from modules.monitor_target import resolve_monitor_target
 from modules.spinner import spinner_phase
 from modules.utils import (
@@ -1244,19 +1246,14 @@ def load_config(config_file, spinner=None, is_user_specified=False):
         sys.exit(1)
 
     # 加载默认配置
-    _validate_config_shapes(user_config)
-    _reject_legacy_monitor_config(user_config)
-    _validate_monitor_target_config(user_config)
-    monitor = user_config['monitor']
-    try:
-        resolve_monitor_target(
-            monitor.get('mode', 'watch'), monitor['target'],
-            os.path.dirname(os.path.abspath(config_file)),
-            monitor.get('launch', {}).get('cwd'),
-        )
-    except ValueError:
-        _fail_config_layout('monitor.target / monitor.launch.cwd',
-                            '目标或工作目录语法无效')
+    issues = layout_issues(user_config, Path(config_file).resolve().parent,
+                           resolver=resolve_monitor_target, strict_shared=False)
+    if issues:
+        issue = issues[0]
+        path = (('monitor.target / monitor.launch.cwd')
+                if issue.code == 'target' else
+                '.'.join(map(str, issue.path)) or 'root')
+        _fail_config_layout(path, issue.message)
     updated = _migrate_config_layout(user_config)
     default_config = get_default_config()
 

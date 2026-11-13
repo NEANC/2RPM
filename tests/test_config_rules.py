@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""配置纯诊断和候选变换的行为测试。"""
+
+import builtins
+import copy
+import sys
+
+import pytest
+
+from modules.config import get_default_config, load_config
+from modules.config_rules import analyze_config, layout_issues
+
+
+@pytest.mark.parametrize('source, expected_path', [
+    ({'monitor': {'target': 'ok.exe'}}, None),
+    ({}, ('monitor',)),
+    ([], ()),
+    ({'monitor': {'process_name': 'old.exe'}}, ('monitor', 'process_name')),
+    ({'launch': {'type': 'program'}}, ('launch',)),
+    ({'monitor': {'target': 'ok.exe', 'mode': 'wrong'}}, ('monitor', 'mode')),
+    ({'monitor': {'target': ''}}, ('monitor', 'target')),
+    ({'monitor': {'target': 'ok.exe', 'mode': 'launch'}}, ('monitor', 'target')),
+])
+def test_structure_diagnostics_are_pure(tmp_path, monkeypatch, source, expected_path):
+    """结构分析不会输入、退出、写文件或调用网络。"""
+    def forbidden(*args, **kwargs):
+        """拒绝任何交互或 IO。"""
+        raise AssertionError('配置分析发生副作用')
+
+    before = copy.deepcopy(source)
+    monkeypatch.setattr(builtins, 'input', forbidden)
+    monkeypatch.setattr(sys, 'exit', forbidden)
+    monkeypatch.setattr(builtins, 'open', forbidden)
+    monkeypatch.setattr('os.replace', forbidden)
+    monkeypatch.setattr('tempfile.mkstemp', forbidden)
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert source == before
+    if expected_path is None:
+        assert not any(issue.severity == 'error' for issue in candidate.issues)
+    else:
+        assert any(issue.path == expected_path and issue.severity == 'error'
+                   for issue in candidate.issues)
+
+
+@pytest.mark.parametrize('raw, field, expected', [
+    (True, 'max_wait', '1'),
+    (-5, 'max_wait', '5'),
+    (float('nan'), 'max_wait', '30s'),
+    (False, 'timeout_threshold', 3),
+    (-3, 'timeout_threshold', 3),
+])
+def test_common_value_candidate(tmp_path, raw, field, expected):
+    """候选独立规范化异常时间及阈值。"""
+    source = {'monitor': {'target': 'ok.exe', 'common': {field: raw}}}
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert candidate.tree['monitor']['common'][field] == expected
+    assert source['monitor']['common'][field] == raw or (
+        isinstance(raw, float) and source['monitor']['common'][field] is raw)
+
+
+def test_candidate_defaults_cleanup_and_secret(tmp_path):
+    """候选补缺、删除未知项且不展开令牌。"""
+    source = {'monitor': {'target': 'ok.exe', 'watch': {'lookback_minutes': -10}},
+              'unknown': 'value', 'push': {'screenshot': {'image_host': [
+                  {'provider': 'catbox', 'token': '${TOKEN}'}]}}}
+    before = copy.deepcopy(source)
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert source == before
+    assert candidate.tree['monitor']['common']['max_wait'] == '30s'
+    assert candidate.tree['monitor']['common']['timeout_interval'] == '15m'
+    assert candidate.tree['monitor']['watch']['lookback_minutes'] == 10
+    assert any(change.operation == 'delete' for change in candidate.changes)
+    assert candidate.tree['push']['screenshot']['image_host'][0]['token'] == '${TOKEN}'
+    assert '${TOKEN}' not in repr(candidate.issues)
+
+
+def test_candidate_matches_cli_for_valid_config(tmp_path):
+    """候选与既有 CLI 对同一有效输入生成同等配置。"""
+    from ruamel.yaml import YAML
+
+    source = {'monitor': {'target': 'ok.exe', 'common': {'max_wait': '-5s'}}}
+    path = tmp_path / 'valid.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert candidate.tree == load_config(str(path))
+
+
+def test_cli_reuses_pure_layout_issues(tmp_path, monkeypatch):
+    """CLI 的拒绝路径由共享纯规则提供。"""
+    from modules import config
+
+    path = tmp_path / 'invalid.yaml'
+    path.write_text('monitor:\n  target: ok.exe\n', encoding='utf-8')
+    original = layout_issues
+    seen = []
+
+    def inspect(tree, config_dir, **kwargs):
+        """记录 CLI 对共享布局检查的调用。"""
+        seen.append((tree, config_dir))
+        return original(tree, config_dir, **kwargs)
+
+    monkeypatch.setattr(config, 'layout_issues', inspect, raising=False)
+    load_config(str(path))
+    assert seen and seen[0][0]['monitor']['target'] == 'ok.exe'
+
+
+@pytest.mark.parametrize('section, field, raw', [
+    ('common', 'max_wait', '-30s'),
+    ('common', 'max_wait', 0),
+    ('common', 'max_wait', 'invalid'),
+    ('common', 'max_wait', False),
+    ('common', 'timeout_threshold', '003'),
+    ('watch', 'lookback_minutes', '-10'),
+    ('watch', 'lookback_minutes', ' 10 '),
+    ('watch', 'lookback_minutes', 2.5),
+])
+def test_candidate_matches_cli_value_normalization(tmp_path, section, field, raw):
+    """常用输入的规范化候选与 CLI 结果完全一致。"""
+    from ruamel.yaml import YAML
+
+    source = {'monitor': {'target': 'ok.exe', section: {field: raw}}}
+    path = tmp_path / 'values.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert candidate.tree == load_config(str(path))
+
+
+@pytest.mark.parametrize('source, path', [
+    ({'monitor': {'target': 'ok.exe'}, 'push': []}, ('push',)),
+    ({'monitor': {'target': 'ok.exe'}, 'log': []}, ('log',)),
+    ({'monitor': {'target': 'ok.exe'}, 'push': {'retry': []}},
+     ('push', 'retry')),
+    ({'monitor': {'target': 'ok.exe'}, 'push': {'screenshot': []}},
+     ('push', 'screenshot')),
+])
+def test_invalid_shared_sections_are_diagnosed(tmp_path, source, path):
+    """编辑器对非映射的共享节点给出问题而不发生异常。"""
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+    assert any(issue.path == path for issue in candidate.issues)
+
+
+def test_cli_keeps_non_monitor_layout_handling(tmp_path, monkeypatch):
+    """CLI 保留其既有非监视节判定，仅 GUI 添加纯诊断。"""
+    from modules import config
+
+    path = tmp_path / 'legacy.yaml'
+    path.write_text('monitor:\n  target: ok.exe\npush: []\n', encoding='utf-8')
+    seen = []
+    original = layout_issues
+
+    def inspect(tree, config_dir, **kwargs):
+        """记录 CLI 对纯校验的策略。"""
+        seen.append(kwargs)
+        return original(tree, config_dir, **kwargs)
+
+    monkeypatch.setattr(config, 'layout_issues', inspect)
+    loaded = load_config(str(path))
+    assert loaded['push'] == []
+    assert seen and seen[0]['strict_shared'] is False
