@@ -380,6 +380,29 @@ def test_patch_nested_scalar_anchor_keeps_external_reference_on_reload(tmp_path)
     assert reloaded.tree['monitor']['common']['edited'] == 'new'
 
 
+@pytest.mark.parametrize('value', ['42', 'true', '3.5'])
+def test_patch_nested_non_string_scalar_anchor_is_unique(tmp_path, value):
+    """复制别名分支时数值与布尔标量锚点不与原锚点重名。"""
+    path = tmp_path / 'scalar_reference.yaml'
+    path.write_text(f'shared: &base\n  number: &inside {value}\n  again: *inside\n'
+                    '  edited: old\nmonitor:\n  common: *base\nother: *inside\n',
+                    encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'common', 'edited'), 'old', 'new', 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    reloaded = read_document(path).tree
+    text = path.read_text(encoding='utf-8')
+
+    assert text.count('&inside ') == 1
+    assert '&inside_1' in text
+    assert reloaded['other'] is reloaded['shared']['number']
+    assert reloaded['monitor']['common']['again'] is reloaded['monitor']['common']['number']
+    assert reloaded['monitor']['common']['edited'] == 'new'
+
+
 def test_set_whole_list_preserves_unknown_keys_after_reorder(tmp_path):
     """整段列表更新通过稳定身份匹配项目，保留每项未知字段。"""
     path = tmp_path / 'list_set.yaml'
@@ -491,6 +514,49 @@ def test_set_whole_list_rejects_unmatched_mixed_items(tmp_path):
         save_document(patched, path, expected_fingerprint=original.fingerprint)
 
     assert path.read_bytes() == before
+
+
+def test_set_whole_mixed_list_rejects_even_when_scalar_is_retained(tmp_path):
+    """从纯标量列表变成混合列表时也拒绝歧义整段替换。"""
+    path = tmp_path / 'mixed_list.yaml'
+    path.write_text('monitor:\n  targets:\n    - legacy\n    - previous\n',
+                    encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError):
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None,
+                   ['legacy', {'name': 'alpha', 'enabled': True}], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert path.read_bytes() == before
+    assert original.fingerprint == hashlib.sha256(before).hexdigest()
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize('field, value', [('name', '[alpha]'), ('id', '{part: alpha}')])
+def test_set_whole_list_rejects_unhashable_identity_safely(tmp_path, field, value):
+    """非哈希身份返回安全保存错误，绝不泄露底层异常或写盘。"""
+    path = tmp_path / 'unhashable_list.yaml'
+    path.write_text(f'monitor:\n  targets:\n    - {field}: {value}\n'
+                    '      custom: retained\n', encoding='utf-8')
+    original = read_document(path)
+    before = path.read_bytes()
+
+    with pytest.raises(ConfigSaveError) as error:
+        patched = patch_document(original, (
+            Change(('monitor', 'targets'), None,
+                   [{field: original.tree['monitor']['targets'][0][field],
+                     'enabled': True}], 'set'),
+        ))
+        save_document(patched, path, expected_fingerprint=original.fingerprint)
+
+    assert 'alpha' not in str(error.value)
+    assert path.read_bytes() == before
+    assert original.fingerprint == hashlib.sha256(before).hexdigest()
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_set_whole_list_rejects_duplicate_identity_without_touching_file(tmp_path):

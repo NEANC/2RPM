@@ -14,6 +14,9 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarbool import ScalarBoolean
+from ruamel.yaml.scalarfloat import ScalarFloat
+from ruamel.yaml.scalarint import ScalarInt
 from ruamel.yaml.scalarstring import ScalarString
 
 from modules.config import _make_write_yaml, get_default_config
@@ -75,10 +78,11 @@ def patch_document(document: ConfigDocument,
     tree = copy.deepcopy(document.tree)
     anchor_paths = {}
     anchor_names = set()
+    scalar_types = (ScalarString, ScalarInt, ScalarFloat, ScalarBoolean)
 
     def collect_anchors(value, path):
         """记录每个锚点在 YAML 树中第一次出现的路径。"""
-        if isinstance(value, ScalarString) and value.anchor.value:
+        if isinstance(value, scalar_types) and value.anchor.value:
             anchor_names.add(value.anchor.value)
             return
         if isinstance(value, (CommentedMap, CommentedSeq)):
@@ -95,7 +99,7 @@ def patch_document(document: ConfigDocument,
 
     def rename_nested_anchors(value, visited):
         """为复制分支内部的锚点分配唯一名称并保持内部别名关系。"""
-        if not isinstance(value, (CommentedMap, CommentedSeq, ScalarString)) or id(value) in visited:
+        if not isinstance(value, (CommentedMap, CommentedSeq, *scalar_types)) or id(value) in visited:
             return
         visited.add(id(value))
         if value.anchor.value:
@@ -126,11 +130,15 @@ def patch_document(document: ConfigDocument,
 
     def merge_list_items(existing, incoming):
         """仅在能唯一确认项目对应关系时保留原项目中的未知键。"""
-        if any(isinstance(item, dict) for item in existing) and (
-                not incoming or not all(isinstance(item, dict) for item in incoming)):
+        items = (*existing, *incoming)
+        if any(isinstance(item, dict) for item in items) and not all(
+                isinstance(item, dict) for item in items):
             raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
-        if not all(isinstance(item, dict) for item in (*existing, *incoming)):
+        if not all(isinstance(item, dict) for item in items):
             return copy.deepcopy(incoming)
+        if any(field in item and not isinstance(item[field], (str, int, float, bool))
+               for item in items for field in ('name', 'id')):
+            raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
         identity = next((field for field in ('name', 'id')
                          if all(field in item for item in (*existing, *incoming))
                          and len({item[field] for item in existing}) == len(existing)
