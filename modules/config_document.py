@@ -93,6 +93,7 @@ def patch_document(document: ConfigDocument,
             value.yaml_set_anchor(value.anchor.value, always_dump=True)
             parent[key] = copy.deepcopy(value)
             parent[key].yaml_set_anchor(None)
+            collect_anchors(parent[key], path)
 
     for change in changes:
         if not change.path or change.path[0] == '_runtime':

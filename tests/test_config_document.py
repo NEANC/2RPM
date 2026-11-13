@@ -293,6 +293,28 @@ def test_patch_alias_path_does_not_modify_anchor(tmp_path, field_path, replaceme
     assert '&base' in text
 
 
+def test_patch_nested_anchor_under_alias_preserves_other_branches(tmp_path):
+    """外层别名中的内层锚点可修改，定义处及非目标别名不变。"""
+    path = tmp_path / 'nested_alias.yaml'
+    path.write_text('shared: &base\n  inner: &inside\n    known: old\n'
+                    '    custom: retained\nmonitor:\n  common: *base\n'
+                    'other: *base\n', encoding='utf-8')
+    document = read_document(path)
+
+    patched = patch_document(document, (
+        Change(('monitor', 'common', 'inner', 'known'), 'old', 'new', 'set'),
+    ))
+    saved = save_document(patched, path, expected_fingerprint=document.fingerprint)
+    reloaded = read_document(path)
+
+    assert saved.tree['monitor']['common']['inner']['known'] == 'new'
+    assert saved.tree['monitor']['common']['inner']['custom'] == 'retained'
+    assert reloaded.tree['shared']['inner']['known'] == 'old'
+    assert reloaded.tree['other']['inner']['known'] == 'old'
+    assert reloaded.tree['other'] is reloaded.tree['shared']
+    assert document.tree['monitor']['common']['inner']['known'] == 'old'
+
+
 def test_save_rejects_symlink_in_destination_path(tmp_path):
     """文件链接或父目录链接均不得成为配置保存路径。"""
     target = tmp_path / 'outside.yaml'
