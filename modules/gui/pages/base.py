@@ -29,18 +29,33 @@ class Page(ScrollForm):
         row.pack(fill='x', pady=3)
         ttk.Label(row, text=label, width=22).pack(side='left')
         value = self.model.get(path)
-        if kind == 'bool':
+        if kind == 'multiline':
+            variable = None
+            widget = tk.Text(row, height=5, wrap='word', undo=True)
+            widget.insert('1.0', '' if value is None else str(value))
+            widget.edit_modified(False)
+            widget.bind('<<Modified>>', lambda _: self._text_changed(path, widget))
+        elif kind == 'bool':
             variable = tk.BooleanVar(value=bool(value))
             widget = ttk.Checkbutton(row, variable=variable)
         else:
             variable = tk.StringVar(value='' if value is None else str(value))
             widget = ttk.Entry(row, textvariable=variable, show='●' if secret else '')
         widget.pack(side='left', fill='x', expand=True)
-        variable.trace_add('write', lambda *_: self._changed(path, variable, kind))
+        if variable is not None:
+            variable.trace_add('write', lambda *_: self._changed(path, variable, kind))
         self.fields[path] = (variable, widget, kind)
         if parent is not self.body:
             self.sections[path] = self.section_for_issue
         return widget
+
+    def _text_changed(self, path, widget):
+        """把多行输入的实际内容写回草稿。"""
+        if not widget.edit_modified():
+            return
+        widget.edit_modified(False)
+        if not self._refreshing:
+            self.model.set(path, widget.get('1.0', 'end-1c'))
 
     def _changed(self, path, variable, kind):
         """仅把用户输入写回草稿，不在 refresh 时产生编辑。"""
@@ -61,18 +76,31 @@ class Page(ScrollForm):
 
     def set_field(self, path, value):
         """通过控件执行一次用户编辑。"""
-        self.fields[path][0].set(value)
+        variable, widget, kind = self.fields[path]
+        if kind == 'multiline':
+            widget.delete('1.0', 'end')
+            widget.insert('1.0', value)
+            self._text_changed(path, widget)
+        else:
+            variable.set(value)
 
     def refresh(self) -> None:
         """从当前共享模型同步所有输入框。"""
         self._refreshing = True
         try:
-            for path, (variable, _, kind) in self.fields.items():
+            for path, (variable, widget, kind) in self.fields.items():
                 try:
                     value = self.model.get(path)
                 except (KeyError, IndexError):
                     continue
-                variable.set(bool(value) if kind == 'bool' else '' if value is None else str(value))
+                if kind == 'multiline':
+                    text = '' if value is None else str(value)
+                    if widget.get('1.0', 'end-1c') != text:
+                        widget.delete('1.0', 'end')
+                        widget.insert('1.0', text)
+                    widget.edit_modified(False)
+                else:
+                    variable.set(bool(value) if kind == 'bool' else '' if value is None else str(value))
         finally:
             self._refreshing = False
         self._section_state()

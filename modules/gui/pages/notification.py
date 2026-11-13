@@ -46,7 +46,7 @@ class Page(BasePage):
         self.section_for_issue.pack(fill='x')
         for event in EVENTS:
             path = ('push', 'templates', event)
-            self.field(self.section_for_issue.body, event + ' 正文', (*path, 'content'))
+            self.field(self.section_for_issue.body, event + ' 正文', (*path, 'content'), kind='multiline')
             self.field(self.section_for_issue.body, event + ' 截图', (*path, 'capture_screenshot'), kind='bool')
         self.field(self.section_for_issue.body, '重试间隔', ('push', 'retry', 'interval'))
         self.field(self.section_for_issue.body, '重试次数', ('push', 'retry', 'max_count'), kind='int')
