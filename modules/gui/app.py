@@ -166,23 +166,27 @@ class App:
         """显示安全问题数量并定位第一个错误字段。"""
         path = self.model.document.path
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
+
+        def page_index(issue_path):
+            """按字段所在页面统一计算诊断路由。"""
+            if not issue_path:
+                return 3
+            if (issue_path == ('monitor', 'common', 'timeout_threshold')
+                    or issue_path[0] == 'external'
+                    or issue_path[:2] == ('push', 'screenshot')):
+                return 2
+            return {'monitor': 0, 'push': 1}.get(issue_path[0], 3)
+
         counts = [0] * len(self.pages)
         for issue in candidate.issues:
-            index = {'monitor': 0, 'push': 1, 'external': 2, 'log': 3}.get(issue.path[0], 3) if issue.path else 3
-            if issue.path and issue.path[:2] == ('push', 'screenshot'):
-                index = 2
-            counts[index] += 1
+            counts[page_index(issue.path)] += 1
         for index, name in enumerate(self.page_names):
             self.notebook.tab(index, text=f'{name} ({counts[index]})' if counts[index] else name)
         self.status.configure(text=f'校验：{sum(counts)} 个问题')
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            index = (2 if issue.path == ('monitor', 'common', 'timeout_threshold') else
-                     0 if issue.path and issue.path[0] == 'monitor' else
-                     2 if issue.path and (issue.path[0] == 'external' or
-                                           issue.path[:2] == ('push', 'screenshot')) else
-                     1 if issue.path and issue.path[0] == 'push' else 3)
+            index = page_index(issue.path)
             self.notebook.select(index)
             self.root.update()
             self.pages[index].refresh()

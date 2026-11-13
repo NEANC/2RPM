@@ -750,6 +750,33 @@ def test_validation_routes_external_error_to_action_field(tmp_path):
         root.destroy()
 
 
+def test_validation_counts_timeout_threshold_on_its_destination_page(tmp_path):
+    """超时阈值诊断计数与定位均属于实际承载字段的附件页。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = ('monitor', 'common', 'timeout_threshold')
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, severity='error')])
+        app.validate()
+        assert app.notebook.tab(0, 'text') == '监视什么'
+        assert app.notebook.tab(2, 'text') == '附图与后续动作 (1)'
+        assert app.notebook.index('current') == 2
+        assert root.focus_get() is app.pages[2].fields[path][1]
+    finally:
+        root.destroy()
+
+
+def test_normal_close_cancels_pending_poll(tmp_path):
+    """正常关闭窗口后不再执行结果轮询回调。"""
+    root = tk.Tk()
+    app = make_app(root, tmp_path)
+    pending = app._after_id
+    app.close()
+    assert pending not in root.tk.call('after', 'info')
+    app.controller.runner.close.assert_called_once()
+
+
 def test_screenshot_conditions_update_on_tab_switch(tmp_path):
     """通知页切换事件截图开关后进入附件页立即看到新条件。"""
     root = tk.Tk()
