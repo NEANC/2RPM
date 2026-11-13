@@ -441,6 +441,18 @@ def _collect_template_fields(values, configured_names, *templates):
     return fields
 
 
+def validate_template_fields(title: str, content: str, values: dict,
+                             configured_names: set[str]) -> tuple[str, ...]:
+    """使用发送侧递归解析规则返回不包含原始值的模板诊断。"""
+    fields = _collect_template_fields(values, configured_names, title, content)
+    if fields is None:
+        return ('通知模板格式无效',)
+    missing = fields - set(values) - {
+        name for name in fields if _is_placeholder_root(name, configured_names)
+    }
+    return tuple(f'通知模板缺少变量：{name}' for name in sorted(missing))
+
+
 def _resolve_capture_flag(template):
     """解析本次事件的截图开关
 
@@ -647,27 +659,19 @@ def send_notification(config, template_key, **kwargs):
             screenshot_section, reserved_names)
 
         # 截图前校验模板语法、普通变量与占位变量字段，避免明知失败仍截图上传
+        diagnostics = validate_template_fields(
+            raw_title, raw_content, kwargs, configured_names)
+        if diagnostics:
+            LOGGER.error("%s，已跳过该条通知模板键: %s",
+                         ', '.join(diagnostics), template_key)
+            return []
         fields = _collect_template_fields(
             kwargs, configured_names, raw_title, raw_content)
-        if fields is None:
-            LOGGER.error("通知模板格式无效，已跳过该条通知模板键: %s", template_key)
-            return []
 
         placeholders = {
             name for name in fields
             if name not in kwargs and _is_placeholder_root(name, configured_names)
         }
-        missing = [
-            name for name in fields
-            if name not in kwargs and name not in placeholders
-        ]
-        if missing:
-            LOGGER.error(
-                "通知模板缺少变量: %s，已跳过该条通知模板键: %s",
-                ', '.join(sorted(missing)), template_key
-            )
-            return []
-
         # 每目标每事件仅执行一次，单目标失败不影响其他目标与本次通知
         # 模板没有自有截图引用时不截图、不上传，也不产生截图告警
         enabled = _resolve_capture_flag(template) and bool(placeholders)
