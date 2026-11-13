@@ -12,6 +12,17 @@ from pathlib import Path
 
 def main():
     """在引导前移除 Python 流，再向所有普通输出层写噪声。"""
+    if '--unread-stdin' in sys.argv:
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateEventW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                        ctypes.c_int, ctypes.c_wchar_p]
+        kernel.CreateEventW.restype = ctypes.c_void_p
+        ready = kernel.CreateEventW(None, 1, 0, sys.argv[-1])
+        if not ready:
+            return 2
+        kernel.SetEvent(ctypes.c_void_p(ready))
+        kernel.WaitForSingleObject(ctypes.c_void_p(ready), 0xffffffff)
+        return 2
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     if '--missing-streams' in sys.argv:
         sys.stdin = sys.stdout = sys.stderr = None
