@@ -131,7 +131,9 @@ class Controller:
         if any(issue.severity == 'error' for issue in candidate.issues):
             return None
         if candidate.changes:
-            summary = tuple({'path': change.path, 'operation': change.operation}
+            summary = tuple({'path': change.path, 'operation': change.operation,
+                             'before': self._display_change(change.path, change.before),
+                             'after': self._display_change(change.path, change.after)}
                             for change in candidate.changes)
             if self.confirm('normalize', summary) != 'confirm':
                 return None
@@ -154,6 +156,19 @@ class Controller:
         if result.created:
             self.launch_count += 1
         return result
+
+    @staticmethod
+    def _display_change(path, value):
+        """仅允许已知非敏感的标量显示原值，其余一律遮挡。"""
+        safe_paths = {('monitor', 'common', 'max_wait'),
+                      ('monitor', 'common', 'max_run'),
+                      ('monitor', 'common', 'loop_interval'),
+                      ('monitor', 'common', 'timeout_threshold')}
+        if value is None:
+            return '（无）'
+        if path in safe_paths and isinstance(value, (str, int, float, bool)):
+            return str(value)
+        return '（已遮挡）'
 
     def close(self) -> bool:
         """关闭仅清理测试 worker，不控制已创建的 CLI。"""

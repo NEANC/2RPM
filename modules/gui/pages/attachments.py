@@ -83,7 +83,7 @@ class Page(BasePage):
         if index < 0 or index >= len(hosts):
             return
         for name in ('provider', 'token', 'expiration', 'options'):
-            entry = ttk.Entry(self.host_body, show='●' if name == 'token' else '')
+            entry = ttk.Entry(self.host_body, show='●' if name in ('token', 'options') else '')
             value = hosts[index].get(name, '')
             if name == 'options' and isinstance(value, dict):
                 value = ', '.join(f'{key}: {item}' for key, item in value.items())
@@ -91,6 +91,9 @@ class Page(BasePage):
             entry.pack(fill='x')
             entry.bind('<FocusOut>', lambda _, key=name, widget=entry:
                        self._set_item(self.hosts_path, index, key, widget.get()))
+            if name == 'options':
+                ttk.Button(self.host_body, text='显示/隐藏选项', command=lambda widget=entry:
+                           widget.configure(show='' if widget.cget('show') else '●')).pack(anchor='w')
 
     def _set_item(self, path, index, name, value):
         """只写选定列表项，其他项保持原顺序。"""

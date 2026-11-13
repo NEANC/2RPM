@@ -3,6 +3,7 @@
 
 """通知通道与模板表单。"""
 
+import tkinter as tk
 from tkinter import messagebox, ttk
 
 from modules.gui.forms import event_variables, preview_template, provider_fields
@@ -81,19 +82,20 @@ class Page(BasePage):
         row = ttk.Frame(self.channel_body)
         row.pack(fill='x')
         ttk.Label(row, text='通道类型').pack(side='left')
-        provider = ttk.Entry(row)
-        provider.insert(0, channel.get('provider', ''))
+        provider_value = tk.StringVar(value=channel.get('provider', ''))
+        provider = ttk.Entry(row, textvariable=provider_value)
         provider.pack(side='left', fill='x', expand=True)
-        provider.bind('<FocusOut>', lambda _: self._set_channel(index, 'provider', provider.get()))
+        provider_value.trace_add('write', lambda *_: self._set_channel(index, 'provider', provider_value.get()))
+        provider.bind('<FocusOut>', lambda _: self.refresh())
         for field in provider_fields(channel.get('provider', '')):
             row = ttk.Frame(self.channel_body)
             row.pack(fill='x')
             ttk.Label(row, text=field.label + (' *' if field.required else '')).pack(side='left')
-            entry = ttk.Entry(row, show='●' if field.secret else '')
-            entry.insert(0, str(channel.get(field.name, '')))
+            value = tk.StringVar(value=str(channel.get(field.name, '')))
+            entry = ttk.Entry(row, textvariable=value, show='●' if field.secret else '')
             entry.pack(side='left', fill='x', expand=True)
-            entry.bind('<FocusOut>', lambda _, name=field.name, widget=entry:
-                       self._set_channel(index, name, widget.get()))
+            value.trace_add('write', lambda *_, name=field.name, variable=value:
+                            self._set_channel(index, name, variable.get()))
             if field.secret:
                 ttk.Button(row, text='显示', command=lambda widget=entry:
                            widget.configure(show='' if widget.cget('show') else '●')).pack(side='left')
@@ -103,8 +105,6 @@ class Page(BasePage):
         channels = self.model.get(self.channels_path)
         channels[index][name] = value
         self.model.set(self.channels_path, channels)
-        if name == 'provider':
-            self.refresh()
 
     def preview_event(self, event):
         """只渲染模拟通知，不发送网络请求。"""
@@ -144,7 +144,7 @@ class Page(BasePage):
         self.channel_list.configure(values=[f'{i + 1}. {item.get("provider", "未知")}'
                                             for i, item in enumerate(channels)])
         if channels:
-            self.channel_list.current(0)
+            self.channel_list.current(min(max(self.channel_list.current(), 0), len(channels) - 1))
         else:
             self.channel_list.set('无通道：不会发送通知')
         self._channel_fields()

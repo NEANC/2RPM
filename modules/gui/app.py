@@ -226,13 +226,17 @@ class App:
 
     def upload(self):
         """单图床测试须先明确选择图片。"""
+        index = self.pages[2].host_list.current()
+        if index < 0 or index >= len(self.model.get(self.pages[2].hosts_path)):
+            self.status.configure(text='请选择图床')
+            return
         image = filedialog.askopenfilename(parent=self.root, filetypes=[('图片', '*.png *.jpg *.jpeg')])
         if image:
-            self._request('upload', host_index=max(0, self.pages[2].host_list.current()), image_path=image)
+            self._request('upload', host_index=index, image_path=image)
 
     def notify(self):
         """以模拟事件值发送一次独立测试通知。"""
-        self._request('notify', template_key='on_end')
+        self._request('notify', template_key=self.pages[1].selected_event.get())
 
     def cancel_test(self):
         """取消仅针对测试 worker，不影响 CLI。"""

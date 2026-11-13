@@ -186,6 +186,22 @@ def test_normalization_requires_confirmation_on_saved_file(tmp_path, monkeypatch
     launch.assert_not_called()
 
 
+def test_normalization_confirmation_shows_masked_before_and_after(tmp_path, monkeypatch):
+    """确认逐项显示变化前后值，但任何嵌套凭证不出现在对话框参数中。"""
+    controller, confirm, _ = make_controller(tmp_path, answers=['cancel'])
+    controller.model.set(('monitor', 'common', 'max_wait'), '-30s')
+    channels = controller.model.get(('push', 'push_channel_settings', 'channels'))
+    channels[0]['unknown'] = {'token': 'demo'}
+    controller.model.set(('push', 'push_channel_settings', 'channels'), channels)
+    assert controller.save()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', Mock())
+    assert controller.start_cli() is None
+    text = str(confirm.call_args.args[1])
+    assert confirm.call_args.args[0] == 'normalize'
+    assert '-30s' in text and '30s' in text
+    assert 'demo' not in text
+
+
 def test_dirty_start_save_launches_saved_path(tmp_path, monkeypatch):
     """用户确认保存并启动后只把已保存绝对路径传给启动器。"""
     controller, _, _ = make_controller(tmp_path, answers=['save'])

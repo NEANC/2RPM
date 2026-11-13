@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int:
         if kind == 'unsaved':
             response = messagebox.askyesnocancel('未保存修改', '保存当前配置？否将放弃修改。', parent=root)
             return 'save' if response is True else 'discard' if response is False else 'cancel'
-        text = {'normalize': '启动前须应用配置规范化差异，继续？',
+        text = {'normalize': '启动前须应用配置规范化差异：\n' + '\n'.join(
+                    f'{".".join(map(str, change["path"]))} ({change["operation"]}): '
+                    f'{change["before"]} → {change["after"]}' for change in detail) + '\n继续？',
                 'relocate': f'路径基准将改变：{detail}，继续？',
                 'overwrite': f'确认覆盖：{detail}？',
                 'repeat_launch': '再次启动会创建另一独立 CLI 控制台，继续？'}[kind]

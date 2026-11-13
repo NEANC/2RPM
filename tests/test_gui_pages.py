@@ -264,6 +264,75 @@ def test_channel_required_secret_is_visible_outside_advanced_section(tmp_path):
         root.destroy()
 
 
+def test_channel_edit_survives_selection_and_refresh(tmp_path):
+    """切换通道与刷新不会丢失输入或把第一个通道的值写到第二个。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[1]
+        app.model.set(page.channels_path, [{'provider': 'serverchan', 'sckey': ''},
+                                           {'provider': 'serverchan', 'sckey': ''}])
+        page.refresh()
+        page.channel_list.current(0)
+        page._channel_fields()
+        entries = [child for row in page.channel_body.winfo_children()
+                   for child in row.winfo_children() if isinstance(child, tk.ttk.Entry)]
+        entries[-1].delete(0, 'end')
+        entries[-1].insert(0, 'first-secret')
+        page.channel_list.current(1)
+        page._channel_fields()
+        entries = [child for row in page.channel_body.winfo_children()
+                   for child in row.winfo_children() if isinstance(child, tk.ttk.Entry)]
+        entries[-1].delete(0, 'end')
+        entries[-1].insert(0, 'second-secret')
+        page.refresh()
+        assert page.channel_list.current() == 1
+        channels = app.model.get(page.channels_path)
+        assert channels[0]['sckey'] == 'first-secret'
+        assert channels[1]['sckey'] == 'second-secret'
+    finally:
+        root.destroy()
+
+
+def test_host_options_credentials_are_masked(tmp_path):
+    """图床 options 中的凭证不在输入框默认状态下明文显示。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        hosts = app.model.get(page.hosts_path)
+        hosts[0]['options'] = {'api_key': 'demo'}
+        app.model.set(page.hosts_path, hosts)
+        page.refresh()
+        entries = [child for child in page.host_body.winfo_children()
+                   if isinstance(child, tk.ttk.Entry)]
+        assert entries[-1].cget('show') == '●'
+    finally:
+        root.destroy()
+
+
+def test_request_uses_selected_event_and_host(tmp_path, monkeypatch):
+    """通知与上传请求沿用界面选择，未选图床不偷偷退回零。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *_, **__: True)
+        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', lambda **_: str(tmp_path / 'image.png'))
+        app.pages[1].selected_event.set('on_timeout')
+        app.notify()
+        assert app.controller.runner.start.call_args.args[0].template_key == 'on_timeout'
+        app.pages[2]._add_host()
+        app.pages[2].host_list.current(1)
+        app.upload()
+        assert app.controller.runner.start.call_args.args[0].host_index == 1
+        app.controller.runner.start.reset_mock()
+        app.pages[2].host_list.set('')
+        app.upload()
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_advanced_summary_never_contains_secret(tmp_path):
     """折叠标签只显示安全字段名称，不能显示凭证原文。"""
     root = tk.Tk()
