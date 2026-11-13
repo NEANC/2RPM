@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from onepush import get_notifier
 from onepush.exceptions import NoSuchNotifierError
 
-from modules.notification import (_collect_template_fields,
+from modules.notification import (_CHANNEL_AUTH_FIELDS,
+                                  _collect_template_fields,
                                   _configured_screenshot_names,
                                   _is_placeholder_root,
                                   validate_template_fields)
 from modules.screenshot.targets import allocate_targets
-from modules.utils import parse_push_channels
+from modules.utils import KNOWN_PROVIDERS, parse_push_channels
 
 
 _BASE_VALUES = {'host_name': '模拟主机', 'current_time': '2000/01/01 12:00:00',
@@ -24,11 +25,10 @@ _EVENT_VALUES = {
     'on_timeout': {'process_name': '模拟程序.exe', 'process_pid': 1234,
                    'process_run_time': '1m'},
     'on_wait_timeout': {'process_name': '模拟程序.exe', 'process_wait_time': '30s'},
-    'on_external': {'external_program_name': '模拟程序.exe',
+    'on_external': {'process_name': '模拟程序.exe', 'process_pid': 1234,
+                    'external_program_name': '模拟程序.exe',
                     'external_program_path': 'C:\\模拟\\程序.exe'},
 }
-_SECRETS = frozenset({'password', 'passwd', 'token', 'secret', 'key', 'sckey',
-                      'webhook', 'sign', 'authorization', 'apikey'})
 _LABELS = {'password': '密码', 'host': '服务器', 'user': '用户',
            'token': '令牌', 'sckey': '推送密钥'}
 
@@ -49,7 +49,9 @@ def provider_fields(provider: str) -> tuple[ProviderField, ...]:
         params = get_notifier(provider).params
     except NoSuchNotifierError:
         return ()
-    return tuple(ProviderField(name, required, name.lower() in _SECRETS,
+    return tuple(ProviderField(name, required,
+                               name.lower().replace('_', '').replace('-', '')
+                               in _CHANNEL_AUTH_FIELDS,
                                _LABELS.get(name, name))
                  for required, names in ((True, params['required']),
                                          (False, params['optional']))
@@ -97,11 +99,13 @@ def screenshot_conditions(config: dict, template_key: str) -> dict[str, bool]:
     return {
         'enabled': template.get('enable', True) is True and
                    template.get('capture_screenshot', True) is True,
-        'channels': bool(parse_push_channels(
-            push.get('push_channel_settings', {}).get('channels'))),
+        'channels': any(
+            channel.get('provider') in KNOWN_PROVIDERS
+            for channel in parse_push_channels(
+                push.get('push_channel_settings', {}).get('channels'))),
         'references': fields is not None and not validate_template_fields(
             title, content, values, names) and any(
                 name == 'screenshot' or name in names
                 for name in fields if name not in values),
-        'targets': bool(targets),
+        'targets': any(target['error'] is None for target in targets),
     }

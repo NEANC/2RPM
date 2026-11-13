@@ -34,11 +34,34 @@ def test_provider_fields_use_installed_metadata():
     assert provider_fields('private-channel') == ()
 
 
+@pytest.mark.parametrize('provider, field', [
+    ('bark', 'device_key'),
+    ('pushplus', 'token'),
+    ('smtp', 'password'),
+])
+def test_provider_credentials_use_notification_secret_rules(provider, field):
+    """表单对通知发送侧识别的凭证字段保持遮挡。"""
+    fields = {item.name: item for item in provider_fields(provider)}
+    assert fields[field].secret is True
+
+
 def test_event_variables_are_scoped():
     """等待变量不得进入结束事件。"""
     assert 'process_wait_time' in event_variables('on_wait_timeout')
     assert 'process_wait_time' not in event_variables('on_end')
     assert event_variables('on_external')['external_program_name']
+
+
+def test_external_preview_accepts_process_context():
+    """外部动作通知预览使用真实发送侧可提供的进程变量。"""
+    config = _config()
+    config['push']['templates']['on_external'] = {
+        'title': '{process_name} ({process_pid})',
+        'content': '{external_program_name}',
+    }
+    title, body = preview_template(config, 'on_external')
+    assert title == '[模拟] 模拟程序.exe (1234)'
+    assert body.startswith('[模拟]')
 
 
 def test_preview_has_no_side_effects(monkeypatch):
@@ -85,6 +108,27 @@ def test_screenshot_conditions_reuse_allocated_names():
     assert screenshot_conditions(config, 'on_end')['references'] is False
     config['push']['push_channel_settings']['channels'] = []
     assert screenshot_conditions(config, 'on_end')['channels'] is False
+
+
+@pytest.mark.parametrize('channels', [
+    [{'provider': 'private-channel', 'token': 'secret'}],
+    [{'provider': '', 'token': 'secret'}],
+])
+def test_screenshot_conditions_require_known_channel(channels):
+    """仅被 OnePush 识别的推送通道满足截图通道条件。"""
+    config = _config(channels=channels)
+    assert screenshot_conditions(config, 'on_end')['channels'] is False
+
+
+@pytest.mark.parametrize('targets', [
+    [{'provider': 'window', 'target': ''}],
+    [{'provider': 'unknown', 'target': 'demo'}],
+    [{'provider': 'window', 'target': 'demo@{version}suffix'}],
+])
+def test_screenshot_conditions_require_valid_target(targets):
+    """目标分配保留的错误槽位不能视作有效截图目标。"""
+    config = _config(targets=targets)
+    assert screenshot_conditions(config, 'on_end')['targets'] is False
 
 
 def test_aggregate_screenshot_reference_enables_capture():
