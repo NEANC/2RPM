@@ -176,7 +176,9 @@ ds*.md
 logs/
 log/
 
+.agents/
 docs/superpowers/
 screenshot/
 community-scripts Style GUI/
 tests/test_community_scripts_style_gui.py
+skills-lock.json
