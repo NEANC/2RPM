@@ -128,15 +128,17 @@ class Page(BasePage):
     def refresh(self):
         """刷新独立目标和图床列表。"""
         super().refresh()
+        selected_target = self.target_list.current()
+        selected_host = self.host_list.current()
         targets = self.model.get(self.targets_path)
         self.target_list.configure(values=[f'{i + 1}. {item.get("provider", "")} {item.get("target", "")}'
                                            for i, item in enumerate(targets)])
         if targets:
-            self.target_list.current(0)
+            self.target_list.current(min(max(selected_target, 0), len(targets) - 1))
         self._selected_target()
         hosts = self.model.get(self.hosts_path)
         self.host_list.configure(values=[f'{i + 1}. {item.get("provider", "")}'
                                          for i, item in enumerate(hosts)])
         if hosts:
-            self.host_list.current(0)
+            self.host_list.current(min(max(selected_host, 0), len(hosts) - 1))
         self._selected_host()

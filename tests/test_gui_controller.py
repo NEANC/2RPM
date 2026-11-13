@@ -202,6 +202,40 @@ def test_normalization_confirmation_shows_masked_before_and_after(tmp_path, monk
     assert 'demo' not in text
 
 
+@pytest.mark.parametrize(('path', 'value'), [
+    (('monitor', 'common', 'max_wait'), 'private-time-98765'),
+    (('monitor', 'common', 'max_wait'), 'private-time-98765s'),
+    (('monitor', 'common', 'max_wait'), True),
+    (('monitor', 'common', 'max_wait'), '12.3'),
+    (('monitor', 'common', 'timeout_threshold'), '2s'),
+])
+def test_numeric_whitelist_never_displays_invalid_values(path, value):
+    """数值白名单只展示符合字段语义的值，不回显误填内容。"""
+    from modules.gui.controller import Controller
+
+    assert Controller._display_change(path, value) == '（已遮挡）'
+
+
+def test_invalid_numeric_text_is_masked_in_start_confirmation(tmp_path, monkeypatch):
+    """真实规范化确认参数不得含误填在时间字段中的敏感文本。"""
+    controller, confirm, _ = make_controller(tmp_path, answers=['cancel'])
+    controller.model.set(('monitor', 'common', 'max_wait'), 'private-time-98765')
+    assert controller.save()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', Mock())
+    assert controller.start_cli() is None
+    assert confirm.call_args.args[0] == 'normalize'
+    assert 'private-time-98765' not in repr(confirm.call_args.args[1])
+    assert controller.model.document.path.read_bytes()
+
+
+def test_numeric_confirmation_keeps_valid_values():
+    """有效的数值与时间仍可供用户判断规范化差异。"""
+    from modules.gui.controller import Controller
+
+    assert Controller._display_change(('monitor', 'common', 'max_wait'), '-30s') == '-30s'
+    assert Controller._display_change(('monitor', 'common', 'timeout_threshold'), 3) == '3'
+
+
 def test_dirty_start_save_launches_saved_path(tmp_path, monkeypatch):
     """用户确认保存并启动后只把已保存绝对路径传给启动器。"""
     controller, _, _ = make_controller(tmp_path, answers=['save'])

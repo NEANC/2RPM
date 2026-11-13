@@ -140,11 +140,12 @@ class Page(BasePage):
     def refresh(self):
         """刷新通道摘要和模板字段。"""
         super().refresh()
+        selected = self.channel_list.current()
         channels = self.model.get(self.channels_path)
         self.channel_list.configure(values=[f'{i + 1}. {item.get("provider", "未知")}'
                                             for i, item in enumerate(channels)])
         if channels:
-            self.channel_list.current(min(max(self.channel_list.current(), 0), len(channels) - 1))
+            self.channel_list.current(min(max(selected, 0), len(channels) - 1))
         else:
             self.channel_list.set('无通道：不会发送通知')
         self._channel_fields()

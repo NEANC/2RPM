@@ -294,6 +294,54 @@ def test_channel_edit_survives_selection_and_refresh(tmp_path):
         root.destroy()
 
 
+def test_provider_edit_refresh_keeps_selected_channel(tmp_path):
+    """第二个通道改 provider 后失焦刷新仍显示第二项。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[1]
+        app.model.set(page.channels_path, [{'provider': 'serverchan', 'sckey': 'first'},
+                                           {'provider': 'serverchan', 'sckey': 'second'}])
+        page.refresh()
+        page.channel_list.current(1)
+        page._channel_fields()
+        provider = [child for child in page.channel_body.winfo_children()[0].winfo_children()
+                    if isinstance(child, tk.ttk.Entry)][0]
+        provider.delete(0, 'end')
+        provider.insert(0, 'bark')
+        provider.event_generate('<FocusOut>')
+        root.update()
+        assert page.channel_list.current() == 1
+        assert app.model.get(page.channels_path)[1]['provider'] == 'bark'
+    finally:
+        root.destroy()
+
+
+def test_host_edit_refresh_keeps_selected_upload_host(tmp_path, monkeypatch):
+    """编辑第二个图床后刷新和上传仍使用第二个槽位。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        page._add_host()
+        page.host_list.current(1)
+        page._selected_host()
+        provider = [child for child in page.host_body.winfo_children()
+                    if isinstance(child, tk.ttk.Entry)][0]
+        provider.delete(0, 'end')
+        provider.insert(0, 'superbed')
+        provider.event_generate('<FocusOut>')
+        page.refresh()
+        assert page.host_list.current() == 1
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *_, **__: True)
+        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
+                            lambda **_: str(tmp_path / 'image.png'))
+        app.upload()
+        assert app.controller.runner.start.call_args.args[0].host_index == 1
+    finally:
+        root.destroy()
+
+
 def test_host_options_credentials_are_masked(tmp_path):
     """图床 options 中的凭证不在输入框默认状态下明文显示。"""
     root = tk.Tk()

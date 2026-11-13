@@ -4,6 +4,8 @@
 """GUI 文件操作与启动的无 Tk 事务控制器。"""
 
 import hashlib
+import math
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -166,8 +168,14 @@ class Controller:
                       ('monitor', 'common', 'timeout_threshold')}
         if value is None:
             return '（无）'
-        if path in safe_paths and isinstance(value, (str, int, float, bool)):
-            return str(value)
+        if path in safe_paths and not isinstance(value, bool):
+            if path[-1] == 'timeout_threshold':
+                if isinstance(value, int) or isinstance(value, str) and re.fullmatch(r'-?\d+', value):
+                    return str(value)
+            elif (isinstance(value, (int, float)) and math.isfinite(value)
+                  or isinstance(value, str) and re.fullmatch(r'-?\d+(?:\.\d+)?[hms]', value, re.I)
+                  or isinstance(value, str) and re.fullmatch(r'-?\d+', value)):
+                return str(value)
         return '（已遮挡）'
 
     def close(self) -> bool:
