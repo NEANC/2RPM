@@ -83,6 +83,22 @@ def test_time_change_keeps_original_value_after_source_edit(tmp_path):
     assert candidate.tree['monitor']['common']['max_wait'] == '30s'
 
 
+@pytest.mark.parametrize('raw, expected', [
+    ('private-time-98765', '30s'),
+    ('45s', '45s'),
+])
+def test_analyze_config_time_validation_does_not_log_values(tmp_path, caplog,
+                                                            raw, expected):
+    """配置候选的时间校验不将输入原值写入日志。"""
+    source = {'monitor': {'target': 'ok.exe', 'common': {'max_wait': raw}}}
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+
+    assert candidate.tree['monitor']['common']['max_wait'] == expected
+    assert raw not in caplog.text
+
+
 def test_candidate_defaults_cleanup_and_secret(tmp_path):
     """候选补缺、删除未知项且不展开令牌。"""
     source = {'monitor': {'target': 'ok.exe', 'watch': {'lookback_minutes': -10}},

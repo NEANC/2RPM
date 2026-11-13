@@ -17,7 +17,7 @@ from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 
 from modules.monitor_target import resolve_monitor_target
 from modules.utils import (build_push_channel_node, parse_push_channels,
-                           parse_time_string, push_channel_signature)
+                           push_channel_signature)
 
 
 FieldPath = tuple[str | int, ...]
@@ -145,7 +145,10 @@ def normalize_numeric_value(raw: object, default: object,
             if not text:
                 return default
             if kind == 'time':
-                parse_time_string(text)
+                if text[-1].lower() in ('h', 'm', 's'):
+                    float(text[:-1])
+                else:
+                    int(text)
                 return text
             value = int(text)
             return str(abs(value)) if kind == 'lookback' else value
@@ -153,7 +156,6 @@ def normalize_numeric_value(raw: object, default: object,
             return default
         if kind == 'time':
             value = str(abs(int(raw)))
-            parse_time_string(value)
             return value
         return int(abs(raw))
     except (ValueError, TypeError, AttributeError, OverflowError):
