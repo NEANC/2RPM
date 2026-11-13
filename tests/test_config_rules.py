@@ -5,7 +5,9 @@
 
 import builtins
 import copy
+import socket
 import sys
+import urllib.request
 
 import pytest
 
@@ -35,6 +37,9 @@ def test_structure_diagnostics_are_pure(tmp_path, monkeypatch, source, expected_
     monkeypatch.setattr(builtins, 'open', forbidden)
     monkeypatch.setattr('os.replace', forbidden)
     monkeypatch.setattr('tempfile.mkstemp', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    monkeypatch.setattr(urllib.request, 'urlopen', forbidden)
     candidate = analyze_config(source, config_dir=tmp_path,
                                defaults=get_default_config())
     assert source == before
@@ -132,6 +137,54 @@ def test_candidate_matches_cli_value_normalization(tmp_path, section, field, raw
     candidate = analyze_config(source, config_dir=tmp_path,
                                defaults=get_default_config())
     assert candidate.tree == load_config(str(path))
+
+
+@pytest.mark.parametrize('section, field, raw', [
+    ('monitor.common', 'timeout_interval', '-5m'),
+    ('monitor.common', 'loop_interval', False),
+    ('monitor.common', 'max_wait', float('nan')),
+    ('monitor.common', 'check_interval', -2.5),
+    ('monitor.common', 'timeout_threshold', True),
+    ('monitor.watch', 'lookback_minutes', '-10'),
+    ('push.retry', 'interval', '-3s'),
+    ('push.retry', 'max_count', float('inf')),
+    ('log', 'max_log_files', -15),
+    ('log', 'retention_days', ''),
+])
+def test_all_numeric_fields_share_cli_candidate_rules(tmp_path, monkeypatch,
+                                                       section, field, raw):
+    """全部可写数值字段均通过同一纯函数处理且与 CLI 结果一致。"""
+    from ruamel.yaml import YAML
+
+    from modules import config
+    from modules import config_rules
+
+    parts = section.split('.')
+    source = {'monitor': {'target': 'ok.exe'}}
+    group = source
+    for part in parts:
+        group = group.setdefault(part, {})
+    group[field] = raw
+    path = tmp_path / 'shared.yaml'
+    with path.open('w', encoding='utf-8') as stream:
+        YAML().dump(source, stream)
+
+    original = config_rules.normalize_numeric_value
+    calls = []
+
+    def inspect(value, default, kind):
+        """记录候选和 CLI 使用同一入口的调用。"""
+        calls.append((value, kind))
+        return original(value, default, kind)
+
+    monkeypatch.setattr(config_rules, 'normalize_numeric_value', inspect)
+    candidate = config_rules.analyze_config(source, config_dir=tmp_path,
+                                            defaults=config.get_default_config())
+    candidate_calls = len(calls)
+    loaded = config.load_config(str(path))
+    assert candidate_calls > 0
+    assert len(calls) > candidate_calls
+    assert candidate.tree == loaded
 
 
 @pytest.mark.parametrize('source, path', [

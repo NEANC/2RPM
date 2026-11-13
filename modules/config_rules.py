@@ -128,6 +128,36 @@ def layout_issues(tree: object, config_dir: Path, *,
     return tuple(issues)
 
 
+def normalize_numeric_value(raw: object, default: object,
+                            kind: Literal['time', 'integer', 'lookback']) -> object:
+    """按 CLI 既有时间、整数与回溯规则计算无副作用的规范化值。"""
+    if raw is None and kind != 'lookback':
+        return None
+    if raw is None or (isinstance(raw, bool) and kind != 'time'):
+        return default
+    try:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text.startswith('-'):
+                text = text.lstrip('-').strip()
+            if not text:
+                return default
+            if kind == 'time':
+                parse_time_string(text)
+                return text
+            value = int(text)
+            return str(abs(value)) if kind == 'lookback' else value
+        if not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            return default
+        if kind == 'time':
+            value = str(abs(int(raw)))
+            parse_time_string(value)
+            return value
+        return int(abs(raw))
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return default
+
+
 def _normalize_values(tree: CommentedMap, defaults: CommentedMap) -> None:
     """在候选中执行现有可写字段的值规范化。"""
     fields = (('monitor', 'common', 'timeout_interval'),
@@ -151,37 +181,12 @@ def _normalize_values(tree: CommentedMap, defaults: CommentedMap) -> None:
         default_group = (defaults[section_name] if len(path) == 2
                          else defaults[section_name][path[1]])
         default = default_group[key]
-        if raw is None and key != 'lookback_minutes':
-            continue
-        integer = key in ('timeout_threshold', 'lookback_minutes',
-                          'max_count', 'max_log_files', 'retention_days')
-        try:
-            if raw is None or (isinstance(raw, bool) and integer):
-                raise ValueError
-            if isinstance(raw, str):
-                text = raw.strip()
-                if text.startswith('-'):
-                    text = text.lstrip('-').strip()
-                if not text:
-                    raise ValueError
-                if integer:
-                    value = abs(int(text))
-                    if key == 'lookback_minutes':
-                        value = str(value)
-                else:
-                    parse_time_string(text)
-                    value = text
-            elif isinstance(raw, (int, float)):
-                if not math.isfinite(raw):
-                    raise ValueError
-                value = int(abs(raw)) if integer else str(abs(int(raw)))
-                if not integer:
-                    parse_time_string(value)
-            else:
-                raise ValueError
-        except (ValueError, TypeError, AttributeError, OverflowError):
-            value = default
-        group[key] = value
+        kind = ('lookback' if key == 'lookback_minutes' else
+                'integer' if key in ('timeout_threshold', 'max_count',
+                                     'max_log_files', 'retention_days') else 'time')
+        value = normalize_numeric_value(raw, default, kind)
+        if raw is not None or kind == 'lookback':
+            group[key] = value
 
 
 def _complete_and_clean(tree: CommentedMap, defaults: CommentedMap) -> None:

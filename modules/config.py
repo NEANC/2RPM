@@ -4,7 +4,6 @@
 import copy
 import errno
 import logging
-import math
 import os
 import sys
 import tempfile
@@ -19,13 +18,13 @@ from ruamel.yaml.reader import ReaderError
 from ruamel.yaml.scalarstring import ScalarString, SingleQuotedScalarString
 from ruamel.yaml.scanner import ScannerError
 
+from modules import config_rules
 from modules.config_rules import layout_issues
 from modules.monitor_target import resolve_monitor_target
 from modules.spinner import spinner_phase
 from modules.utils import (
     build_push_channel_node,
     parse_push_channels,
-    parse_time_string,
     push_channel_signature,
 )
 from modules.yaml_scalar_compat import normalize_config_scalars
@@ -821,75 +820,17 @@ def _normalize_watch_lookback_minutes(watch_section):
         return False
 
     raw_value = watch_section.get('lookback_minutes')
-    if raw_value is None:
-        LOGGER.warning('monitor.watch.lookback_minutes 缺失，已回退默认值')
-        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-        return True
-
-    # 布尔值不是合法的分钟数
-    if isinstance(raw_value, bool):
-        LOGGER.warning('monitor.watch.lookback_minutes 不接受布尔值，已回退默认值')
-        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-        return True
-
-    if isinstance(raw_value, str):
-        raw_str = raw_value.strip()
-        if not raw_str:
-            LOGGER.warning('monitor.watch.lookback_minutes 不能为空，已回退默认值')
-            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-            return True
-        if raw_str.startswith('-'):
-            raw_str = raw_str.lstrip('-').strip()
-            LOGGER.warning(
-                f"检测到 monitor.watch.lookback_minutes 负值，已去除负号: {raw_value!r}"
-            )
-        if not raw_str:
-            LOGGER.warning('monitor.watch.lookback_minutes 去符号后为空，已回退默认值')
-            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-            return True
-        try:
-            normalized = abs(int(raw_str))
-        except ValueError:
-            LOGGER.warning(
-                f"monitor.watch.lookback_minutes 无法解析为整数: {raw_value!r}，已回退默认值"
-            )
-            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-            return True
-        normalized_for_store = str(normalized)
-    elif isinstance(raw_value, (int, float)):
-        # NaN 与无穷大无法截断为整数，按非法值回退，避免加载抛出 traceback
-        if not math.isfinite(raw_value):
-            LOGGER.warning(
-                f"monitor.watch.lookback_minutes 不是有限数值: {raw_value!r}，已回退默认值"
-            )
-            watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-            return True
-        normalized_for_store = int(abs(raw_value))
-    else:
-        LOGGER.warning(
-            f"monitor.watch.lookback_minutes 类型不合法 ({type(raw_value).__name__})，已回退默认值"
-        )
-        watch_section['lookback_minutes'] = _DEFAULT_WATCH_LOOKBACK_MINUTES
-        return True
-
-    current_value = watch_section.get('lookback_minutes')
-    if (current_value == normalized_for_store
-            and type(current_value) is type(normalized_for_store)):
+    normalized = config_rules.normalize_numeric_value(
+        raw_value, _DEFAULT_WATCH_LOOKBACK_MINUTES, 'lookback')
+    if raw_value == normalized and type(raw_value) is type(normalized):
         return False
-
-    watch_section['lookback_minutes'] = normalized_for_store
+    LOGGER.warning('monitor.watch.lookback_minutes 已规范化或回退默认值')
+    watch_section['lookback_minutes'] = normalized
     return True
 
 
 def _normalize_time_like_config(section, field_key, default_value, field_label):
-    """归一化时间类配置值。
-
-    规则：
-    - 字符串与数字均可接受
-    - 负值去除前导 '-' 并回写为正值字符串
-    - 无效值回退默认值
-    - 回写时仅当实际发生变更才落盘
-    """
+    """使用纯规则归一化时间值并保留 CLI 的变更标记与告警。"""
     if not isinstance(section, dict):
         return False
 
@@ -897,79 +838,18 @@ def _normalize_time_like_config(section, field_key, default_value, field_label):
     if raw_value is None:
         return False
 
-    # 空字符串直接回退默认值
-    if isinstance(raw_value, str):
-        raw_str = raw_value.strip()
-        if not raw_str:
-            LOGGER.warning(f"{field_label} 不能为空，已回退默认值")
-            section[field_key] = default_value
-            return True
-
-        # 允许时间格式字符串并做统一清理（去空白、去负号）
-        normalized = raw_str
-        if raw_str.startswith('-'):
-            normalized = raw_str.lstrip('-').strip()
-            LOGGER.warning(f"检测到 {field_label} 负值，已去除负号: {raw_value!r}")
-
-        if not normalized:
-            LOGGER.warning(f"{field_label} 去符号后为空，已回退默认值")
-            section[field_key] = default_value
-            return True
-
-        # parse_time_string 负责校验 h/m/s 等合法时间串
-        try:
-            parse_time_string(normalized)
-        except (ValueError, TypeError, AttributeError):
-            LOGGER.warning(
-                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
-            )
-            section[field_key] = default_value
-            return True
-    elif isinstance(raw_value, (int, float)):
-        # 数值会在边界处理时转成字符串，保证时间格式仍是可读文本
-        try:
-            normalized = str(abs(int(raw_value)))
-        except (ValueError, TypeError):
-            LOGGER.warning(
-                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
-            )
-            section[field_key] = default_value
-            return True
-        if raw_value < 0:
-            LOGGER.warning(f"检测到 {field_label} 负值，已去除负号: {raw_value!r}")
-        try:
-            parse_time_string(normalized)
-        except (ValueError, TypeError, AttributeError):
-            LOGGER.warning(
-                f"{field_label} 配置无效，已回退默认值: {raw_value!r}"
-            )
-            section[field_key] = default_value
-            return True
-    else:
-        # 其它类型不在支持范围内，直接回退默认值
-        LOGGER.warning(
-            f"{field_label} 类型不合法 ({type(raw_value).__name__})，已回退默认值"
-        )
-        section[field_key] = default_value
-        return True
-
-    # 仅当解析后的值与原值不一致时才更新，避免无意义的脏写
-    if section.get(field_key) == normalized:
+    normalized = config_rules.normalize_numeric_value(raw_value, default_value,
+                                                      'time')
+    if raw_value == normalized:
         return False
-
+    LOGGER.warning('%s 已规范化或回退默认值', field_label)
     section[field_key] = normalized
     return True
 
 
 
 def _normalize_positive_int_config(section, field_key, default_value, field_label):
-    """归一化整数类配置值。
-
-    规则：
-    - 字符串、整数、浮点数可接受
-    - 负值去绝对值后回写
-    - 非法值回退默认值
-    """
+    """使用纯规则归一化整数值并保留 CLI 的变更标记与告警。"""
     if not isinstance(section, dict):
         return False
 
@@ -977,52 +857,11 @@ def _normalize_positive_int_config(section, field_key, default_value, field_labe
     if raw_value is None:
         return False
 
-    # 字符串输入：先清理空白，再处理前缀负号，最后尝试转 int
-    if isinstance(raw_value, str):
-        raw_stripped = raw_value.strip()
-        if not raw_stripped:
-            LOGGER.warning(f"{field_label} 不能为空，已回退默认值")
-            section[field_key] = default_value
-            return True
-
-        if raw_stripped.startswith('-'):
-            raw_stripped = raw_stripped.lstrip('-').strip()
-            LOGGER.warning(
-                f"检测到 {field_label} 负值，已去除负号: {raw_value!r}"
-            )
-
-        if not raw_stripped:
-            LOGGER.warning(f"{field_label} 去符号后为空，已回退默认值")
-            section[field_key] = default_value
-            return True
-
-        try:
-            normalized = int(raw_stripped)
-        except ValueError:
-            LOGGER.warning(
-                f"{field_label} 无法解析为整数，已回退默认值: {raw_value!r}"
-            )
-            section[field_key] = default_value
-            return True
-    # 数值输入：仅允许 int/float，统一转为正整数，兼容 3.0 这类浮点数
-    elif isinstance(raw_value, (int, float)):
-        normalized = int(abs(raw_value))
-        if raw_value != normalized:
-            LOGGER.warning(
-                f"检测到 {field_label} 负值，已去除负号: {raw_value!r}"
-            )
-    # 其它类型直接回退默认值
-    else:
-        LOGGER.warning(
-            f"{field_label} 类型不合法 ({type(raw_value).__name__})，已回退默认值"
-        )
-        section[field_key] = default_value
-        return True
-
-    # 仅当值确实发生变化时才回写，避免无效改动触发脏写
-    if section.get(field_key) == normalized:
+    normalized = config_rules.normalize_numeric_value(raw_value, default_value,
+                                                      'integer')
+    if raw_value == normalized:
         return False
-
+    LOGGER.warning('%s 已规范化或回退默认值', field_label)
     section[field_key] = normalized
     return True
 
