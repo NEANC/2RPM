@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from modules.config import _make_write_yaml, get_default_config
 from modules.config_rules import Change
@@ -73,26 +73,50 @@ def patch_document(document: ConfigDocument,
     """复制原始树，仅按明确的变化路径更新或删除叶节点。"""
     tree = copy.deepcopy(document.tree)
     anchor_paths = {}
+    anchor_names = set()
 
     def collect_anchors(value, path):
         """记录每个锚点在 YAML 树中第一次出现的路径。"""
-        if isinstance(value, CommentedMap):
+        if isinstance(value, (CommentedMap, CommentedSeq)):
             if value.anchor.value:
                 if id(value) in anchor_paths:
                     return
                 anchor_paths[id(value)] = path
-            for key, child in value.items():
+                anchor_names.add(value.anchor.value)
+            children = value.items() if isinstance(value, CommentedMap) else enumerate(value)
+            for key, child in children:
                 collect_anchors(child, (*path, key))
 
     collect_anchors(tree, ())
 
+    def rename_nested_anchors(value, visited):
+        """为复制分支内部的锚点分配唯一名称并保持内部别名关系。"""
+        if not isinstance(value, (CommentedMap, CommentedSeq)) or id(value) in visited:
+            return
+        visited.add(id(value))
+        if value.anchor.value:
+            name = value.anchor.value
+            index = 1
+            while f'{name}_{index}' in anchor_names:
+                index += 1
+            name = f'{name}_{index}'
+            value.yaml_set_anchor(name, always_dump=value.anchor.always_dump)
+            anchor_names.add(name)
+        children = value.values() if isinstance(value, CommentedMap) else value
+        for child in children:
+            rename_nested_anchors(child, visited)
+
     def detach_alias(parent, key, path):
-        """在修改别名分支前复制映射，避免回写到锚点定义。"""
+        """在修改别名分支前复制容器，避免回写到锚点定义。"""
         value = parent[key]
-        if isinstance(value, CommentedMap) and value.anchor.value and anchor_paths[id(value)] != path:
+        if isinstance(value, (CommentedMap, CommentedSeq)) and value.anchor.value and anchor_paths[id(value)] != path:
             value.yaml_set_anchor(value.anchor.value, always_dump=True)
             parent[key] = copy.deepcopy(value)
             parent[key].yaml_set_anchor(None)
+            children = parent[key].values() if isinstance(parent[key], CommentedMap) else parent[key]
+            visited = set()
+            for child in children:
+                rename_nested_anchors(child, visited)
             collect_anchors(parent[key], path)
 
     for change in changes:
@@ -100,7 +124,7 @@ def patch_document(document: ConfigDocument,
             continue
         parent = tree
         for index, key in enumerate(change.path[:-1]):
-            if key not in parent:
+            if isinstance(parent, CommentedMap) and key not in parent:
                 parent[key] = CommentedMap()
             else:
                 detach_alias(parent, key, change.path[:index + 1])
@@ -109,7 +133,7 @@ def patch_document(document: ConfigDocument,
         if change.operation == 'delete':
             del parent[key]
         elif change.operation == 'set':
-            if isinstance(parent.get(key), CommentedMap) and isinstance(change.after, dict):
+            if isinstance(parent, CommentedMap) and isinstance(parent.get(key), CommentedMap) and isinstance(change.after, dict):
                 detach_alias(parent, key, change.path)
                 parent[key].update(copy.deepcopy(change.after))
             else:

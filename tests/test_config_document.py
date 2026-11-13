@@ -315,6 +315,49 @@ def test_patch_nested_anchor_under_alias_preserves_other_branches(tmp_path):
     assert document.tree['monitor']['common']['inner']['known'] == 'old'
 
 
+def test_patch_nested_alias_keeps_external_inside_reference_on_reload(tmp_path):
+    """复制外层别名时不把外部的内层引用重绑定到新分支。"""
+    path = tmp_path / 'nested_reference.yaml'
+    path.write_text('shared: &base\n  inner: &inside\n    known: old\n  again: *inside\n  edited: old\n'
+                    'monitor:\n  common: *base\nother: *inside\n', encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'common', 'edited'), 'old', 'new', 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    reloaded = read_document(path)
+
+    text = path.read_text(encoding='utf-8')
+    assert text.count('&inside\n') == 1
+    assert '&inside_1' in text
+    assert reloaded.tree['monitor']['common']['edited'] == 'new'
+    assert reloaded.tree['monitor']['common']['again'] is reloaded.tree['monitor']['common']['inner']
+    assert reloaded.tree['shared']['inner']['known'] == 'old'
+    assert reloaded.tree['other']['known'] == 'old'
+    assert reloaded.tree['other'] is reloaded.tree['shared']['inner']
+
+
+def test_patch_list_alias_keeps_definition_on_reload(tmp_path):
+    """列表别名分支修改后定义处与其他引用保持原值。"""
+    path = tmp_path / 'list_reference.yaml'
+    path.write_text('shared: &targets\n  - name: old\n    custom: retained\n'
+                    'monitor:\n  targets: *targets\nother: *targets\n', encoding='utf-8')
+    original = read_document(path)
+    patched = patch_document(original, (
+        Change(('monitor', 'targets', 0, 'name'), 'old', 'new', 'set'),
+    ))
+
+    save_document(patched, path, expected_fingerprint=original.fingerprint)
+    reloaded = read_document(path)
+
+    assert reloaded.tree['monitor']['targets'][0]['name'] == 'new'
+    assert reloaded.tree['monitor']['targets'][0]['custom'] == 'retained'
+    assert reloaded.tree['shared'][0]['name'] == 'old'
+    assert reloaded.tree['other'] is reloaded.tree['shared']
+    assert original.tree['shared'][0]['name'] == 'old'
+
+
 def test_save_rejects_symlink_in_destination_path(tmp_path):
     """文件链接或父目录链接均不得成为配置保存路径。"""
     target = tmp_path / 'outside.yaml'
