@@ -137,7 +137,7 @@ def get_provider_param_order(provider):
     return [name for name in ordered if name not in PROGRAM_FILLED_PARAMS]
 
 
-def _assemble_channel(provider, named, positional):
+def _assemble_channel(provider, named, positional, warn=None):
     """将拆解出的 provider、命名参数与位置参数组装为标准通道字典
 
     位置参数按渠道声明的参数顺序映射到参数名，并跳过已被命名参数占用的槽位；
@@ -165,7 +165,7 @@ def _assemble_channel(provider, named, positional):
             while slot < len(order) and order[slot] in params:
                 slot += 1
             if slot >= len(order):
-                LOGGER.warning(
+                (warn or LOGGER.warning)(
                     f"推送通道位置参数超出第 {slot + 1} 个槽位，已忽略"
                 )
                 break
@@ -278,7 +278,7 @@ def _locate_provider_fallback(items):
     return provider, named, positional
 
 
-def _dict_fragment_to_channel(fragment):
+def _dict_fragment_to_channel(fragment, warn=None):
     """将字典形式的通道片段解析为标准通道字典
 
     兼容标准写法（含 provider 键，允许键乱序）与各类无参数头写法：
@@ -311,14 +311,14 @@ def _dict_fragment_to_channel(fragment):
                 positional.append(key)
             else:
                 named[key] = value
-        return _assemble_channel(provider, named, positional)
+        return _assemble_channel(provider, named, positional, warn)
 
     # 无参数头：通过已知渠道名单定位 provider，兼容乱序、颠倒、通道名居中等写法
     provider, named, positional = _locate_provider(items)
-    return _assemble_channel(provider, named, positional)
+    return _assemble_channel(provider, named, positional, warn)
 
 
-def _list_fragment_to_channel(fragment):
+def _list_fragment_to_channel(fragment, warn=None):
     """将列表形式的通道片段解析为标准通道字典
 
     先将各元素归一为 (key, value) 项（裸标量 -> (值, None)，单键字典 ->
@@ -357,13 +357,13 @@ def _list_fragment_to_channel(fragment):
                 positional.append(key)
             else:
                 named[key] = value
-        return _assemble_channel(provider, named, positional)
+        return _assemble_channel(provider, named, positional, warn)
 
     provider, named, positional = _locate_provider(items)
-    return _assemble_channel(provider, named, positional)
+    return _assemble_channel(provider, named, positional, warn)
 
 
-def _fragment_to_channel(parsed):
+def _fragment_to_channel(parsed, warn=None):
     """将单个已解析的通道片段（结构化对象）转换为标准通道字典
 
     Args:
@@ -373,9 +373,9 @@ def _fragment_to_channel(parsed):
         dict: 标准通道字典；无法解析时返回空字典
     """
     if isinstance(parsed, dict):
-        return _dict_fragment_to_channel(parsed)
+        return _dict_fragment_to_channel(parsed, warn)
     if isinstance(parsed, (list, tuple)):
-        return _list_fragment_to_channel(parsed)
+        return _list_fragment_to_channel(parsed, warn)
     if isinstance(parsed, str):
         provider = strip_wrapping_quotes(parsed).strip().lower()
         return {'provider': provider} if provider else {}
@@ -410,7 +410,7 @@ def _split_channel_fragments(text):
     return [fragment.strip() for fragment in text.split(';') if fragment.strip()]
 
 
-def parse_push_channels(raw_value):
+def parse_push_channels(raw_value, *, warn=None):
     """将用户填写的 push_channel 配置解析为标准通道字典列表
 
     兼容以下输入形式：
@@ -433,7 +433,7 @@ def parse_push_channels(raw_value):
     if isinstance(raw_value, str):
         channels = []
         for fragment in _split_channel_fragments(raw_value):
-            channel = _fragment_to_channel(_load_fragment(fragment))
+            channel = _fragment_to_channel(_load_fragment(fragment), warn)
             if channel:
                 channels.append(channel)
         return channels
@@ -442,13 +442,13 @@ def parse_push_channels(raw_value):
     if isinstance(raw_value, (list, tuple)) and _is_multi_channel_list(raw_value):
         channels = []
         for element in raw_value:
-            channel = _fragment_to_channel(element)
+            channel = _fragment_to_channel(element, warn)
             if channel:
                 channels.append(channel)
         return channels
 
     # 其余结构化对象：视为单通道（含 [serverchan, SCTxxxx] 等无参数头列表写法）
-    channel = _fragment_to_channel(raw_value)
+    channel = _fragment_to_channel(raw_value, warn)
     return [channel] if channel else []
 
 

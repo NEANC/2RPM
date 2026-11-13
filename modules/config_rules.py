@@ -99,7 +99,7 @@ def layout_issues(tree: object, config_dir: Path, *,
     if strict_shared:
         for section_name in ('push', 'log'):
             section = tree.get(section_name)
-            if section is not None and not isinstance(section, Mapping):
+            if section_name in tree and not isinstance(section, Mapping):
                 error((section_name,), 'mapping', '必须是映射结构')
         push = tree.get('push')
         if isinstance(push, Mapping):
@@ -297,7 +297,13 @@ def analyze_config(tree: Mapping, *, config_dir: Path,
     if isinstance(settings, Mapping):
         raw = settings.get('channels')
         if raw is not None and not (isinstance(raw, (dict, str)) and not raw):
-            channels = parse_push_channels(raw)
+            def diagnose_overflow(_message):
+                """将位置参数溢出转换为安全的候选诊断。"""
+                nonlocal issues
+                issues += (Issue(('push', 'push_channel_settings', 'channels'),
+                                 'channel_slots', 'warning', '推送通道位置参数超出可用槽位'),)
+
+            channels = parse_push_channels(raw, warn=diagnose_overflow)
             if channels:
                 normalized = build_push_channel_node(channels)
                 if push_channel_signature(raw) != push_channel_signature(normalized):

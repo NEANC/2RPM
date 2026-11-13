@@ -99,6 +99,45 @@ def test_analyze_config_time_validation_does_not_log_values(tmp_path, caplog,
     assert raw not in caplog.text
 
 
+def test_channel_slot_overflow_is_diagnosed_without_logging(tmp_path, caplog):
+    """候选对超额位置参数仅生成安全诊断，不记录解析告警。"""
+    source = {'monitor': {'target': 'ok.exe'}, 'push': {
+        'push_channel_settings': {'channels': ['serverchan', 'secret-key',
+                                               'extra-slot']}}}
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+
+    assert any(issue.path == ('push', 'push_channel_settings', 'channels')
+               and issue.severity == 'warning' for issue in candidate.issues)
+    channels = candidate.tree['push']['push_channel_settings']['channels']
+    assert channels[0]['sckey'] == 'secret-key'
+    assert not caplog.records
+
+
+def test_cli_channel_parser_still_warns_on_slot_overflow(caplog):
+    """CLI 仍沿用解析器既有的位置参数溢出告警。"""
+    from modules.utils import parse_push_channels
+
+    channels = parse_push_channels(['serverchan', 'secret-key', 'extra-slot'])
+
+    assert channels == [{'provider': 'serverchan', 'sckey': 'secret-key'}]
+    assert any('位置参数超出' in record.message for record in caplog.records)
+
+
+def test_null_push_returns_structural_issue(tmp_path):
+    """显式空推送节返回候选结构问题，而非触发属性异常。"""
+    source = {'monitor': {'target': 'ok.exe'}, 'push': None}
+
+    candidate = analyze_config(source, config_dir=tmp_path,
+                               defaults=get_default_config())
+
+    assert candidate.tree == source
+    assert candidate.changes == ()
+    assert any(issue.path == ('push',) and issue.code == 'mapping'
+               and issue.severity == 'error' for issue in candidate.issues)
+
+
 def test_candidate_defaults_cleanup_and_secret(tmp_path):
     """候选补缺、删除未知项且不展开令牌。"""
     source = {'monitor': {'target': 'ok.exe', 'watch': {'lookback_minutes': -10}},
