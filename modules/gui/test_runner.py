@@ -16,6 +16,7 @@ from modules.gui.protocol import TestRequest
 from modules.gui.protocol import TestResult
 from modules.gui.protocol import decode_result
 from modules.gui.protocol import encode_request
+from modules.screenshot.retention import FORMAT_SUFFIX
 
 
 CANCEL_REASON = '测试已取消；已发出的请求仍可能完成'
@@ -110,6 +111,15 @@ class TestRunner:
         for session in sessions:
             shutil.rmtree(session, ignore_errors=True)
 
+    @staticmethod
+    def _clean_request(request):
+        """只删除本请求可能写出的截图产物。"""
+        for suffix in FORMAT_SUFFIX.values():
+            try:
+                (Path(request.session_dir) / (request.request_id + suffix)).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _io(self, process, request, done, slot):
         """独占三管道并执行唯一一次无超时通信。"""
         try:
@@ -136,6 +146,7 @@ class TestRunner:
         """独立轮询终止进程，等待管道及线程完成后只提交一个终态。"""
         process = None
         io_thread = None
+        io_started = False
         done = threading.Event()
         slot = {}
         killed = False
@@ -149,6 +160,7 @@ class TestRunner:
                                              args=(process, request, done, slot),
                                              name='gui-test-io')
                 io_thread.start()
+                io_started = True
                 deadline = None
                 while True:
                     exit_code = process.poll()
@@ -188,9 +200,13 @@ class TestRunner:
             if process is not None:
                 if process.poll() is None:
                     process.kill()
-                if io_thread is not None:
+                if io_started:
                     io_thread.join()
                 process.wait()
+                if not io_started:
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        if stream is not None:
+                            stream.close()
         cleaned_failure = False
         cleaned_close = False
         while True:
@@ -198,10 +214,10 @@ class TestRunner:
                 is_cancelled = cancelled.is_set()
                 is_closed = self._closed
                 if is_cancelled and not cleaned_failure:
-                    clean = (request.session_dir,)
+                    clean = 'request'
                     cleaned_failure = True
                 elif result.status == 'failure' and not cleaned_failure:
-                    clean = (request.session_dir,)
+                    clean = 'request'
                     cleaned_failure = True
                 elif is_closed and not cleaned_close:
                     clean = tuple(self._sessions)
@@ -215,7 +231,10 @@ class TestRunner:
                     self._active = False
                     self._cancel = None
                     break
-            self._clean_sessions(clean)
+            if clean == 'request':
+                self._clean_request(request)
+            else:
+                self._clean_sessions(clean)
 
     @staticmethod
     def _failure(request, reason=FAILURE_REASON):

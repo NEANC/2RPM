@@ -466,16 +466,74 @@ def test_io_failure_reaps_before_terminal(tmp_path):
 
 
 def test_spawn_failure_cleans_session(tmp_path):
-    """启动失败不遗留会话临时目录或忙态。"""
+    """启动失败仅清理本请求产物，不删除会话目录。"""
     session = tmp_path / 'session'
     session.mkdir()
-    (session / 'part.jpg').write_bytes(b'image')
+    artifact = session / 'first.jpg'
+    artifact.write_bytes(b'image')
     results = queue.Queue()
     runner = runner_for(results, command=(str(tmp_path / 'missing.exe'),))
     runner.start(request(tmp_path))
     assert results.get(timeout=5).status == 'failure'
-    assert not session.exists()
+    assert not artifact.exists()
+    assert session.exists()
     assert not runner.active
+
+
+def test_io_thread_start_failure_reaps_before_single_terminal(tmp_path):
+    """I/O 线程无法启动时仍先回收真实 worker 和管道再提交一次失败。"""
+    results = queue.Queue()
+    runner = runner_for(results, command=(sys.executable, '-c',
+                             'import time;time.sleep(0.5)'))
+    original = subprocess.Popen
+    processes = []
+    failed = threading.Event()
+    start = threading.Thread.start
+
+    def spawn(*args, **kwargs):
+        """保留真实子进程的三个管道供终态检查。"""
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def reject_io(thread):
+        """只在 I/O 线程启动边界注入异常。"""
+        if thread.name == 'gui-test-io':
+            failed.set()
+            raise RuntimeError('cannot start I/O thread')
+        return start(thread)
+
+    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn), \
+            patch.object(threading.Thread, 'start', reject_io):
+        runner.start(request(tmp_path))
+        assert failed.wait(5)
+        result = results.get(timeout=5)
+    assert (result.request_id, result.document_generation, result.revision,
+            result.status) == ('first', 4, 7, 'failure')
+    assert processes[0].poll() is not None
+    assert all(stream.closed for stream in
+               (processes[0].stdin, processes[0].stdout, processes[0].stderr))
+    assert not runner.active
+    assert results.empty()
+
+
+def test_failed_request_preserves_previous_preview_in_real_session(tmp_path):
+    """同一真实目录中后续请求失败不得删掉前次预览。"""
+    session = tmp_path / 'session'
+    session.mkdir()
+    previous = session / 'first.jpg'
+    current = session / 'second.jpg'
+    previous.write_bytes(b'previous')
+    current.write_bytes(b'partial')
+    results = queue.Queue()
+    runner = runner_for(results, command=(str(tmp_path / 'missing.exe'),))
+    runner.start(request(tmp_path, request_id='second'))
+    result = results.get(timeout=5)
+    assert result.status == 'failure'
+    assert previous.read_bytes() == b'previous'
+    assert not current.exists()
+    assert not runner.active
+    assert results.empty()
 
 
 def test_close_never_joins_on_tk(tmp_path):
@@ -665,19 +723,19 @@ def test_close_during_success_cleanup_removes_preview(tmp_path):
     runner = runner_for(results)
     session = tmp_path / 'session'
     session.mkdir()
-    (session / 'preview.jpg').write_bytes(b'image')
+    (session / 'first.jpg').write_bytes(b'image')
     cleaning = threading.Event()
     release = threading.Event()
-    original = runner._clean_sessions
+    original = runner._clean_request
 
-    def blocked(sessions):
-        """将完成清理冻结在终态提交之前。"""
+    def blocked(current):
+        """将当前请求清理冻结在终态提交之前。"""
         cleaning.set()
         assert release.wait(5)
-        original(sessions)
+        original(current)
 
     try:
-        with patch.object(runner, '_clean_sessions', side_effect=blocked):
+        with patch.object(runner, '_clean_request', side_effect=blocked):
             runner.start(request(tmp_path))
             assert cleaning.wait(10)
             runner.close()
