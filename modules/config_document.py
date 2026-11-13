@@ -136,22 +136,31 @@ def patch_document(document: ConfigDocument,
             raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
         if not all(isinstance(item, dict) for item in items):
             return copy.deepcopy(incoming)
+        fields = ('name', 'id', 'provider') if change.path[-1] == 'image_host' else ('name', 'id')
         if any(field in item and not isinstance(item[field], (str, int, float, bool))
-               for item in items for field in ('name', 'id')):
+               for item in items for field in fields):
             raise ConfigSaveError('无法可靠匹配列表项目，配置未保存')
-        identity = next((field for field in ('name', 'id')
+        identity = next((field for field in fields
                          if all(field in item for item in (*existing, *incoming))
                          and len({item[field] for item in existing}) == len(existing)
                          and len({item[field] for item in incoming}) == len(incoming)
                          and {item[field] for item in existing} == {item[field] for item in incoming}), None)
         if identity is not None:
             matches = {item[identity]: item for item in existing}
-            result = copy.deepcopy(existing)
+            result = copy.deepcopy(incoming)
             result.clear()
             for item in incoming:
                 merged = copy.deepcopy(matches[item[identity]])
                 merged.update(copy.deepcopy(item))
+                if isinstance(item, CommentedMap) and item.fa.flow_style():
+                    merged.fa.set_flow_style()
                 result.append(merged)
+            return result
+        if (change.path[-1] == 'image_host' and len(existing) == len(incoming)
+                and all(dict(old) == dict(new) for old, new in zip(existing, incoming))):
+            result = copy.deepcopy(incoming)
+            for index, item in enumerate(incoming):
+                result[index] = copy.deepcopy(item)
             return result
         if (len(existing) == len(incoming) == 1
                 and not any(field in existing[0] and field in incoming[0]

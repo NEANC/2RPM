@@ -66,6 +66,8 @@ class Controller:
 
     def save(self, destination: Path | None = None) -> bool:
         """对最终规范化目标确认、检查指纹并原子保存。"""
+        if self.model.input_errors:
+            return False
         selected = destination or self.model.document.path or self.choose_path()
         if selected is None:
             return False

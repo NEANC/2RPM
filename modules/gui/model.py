@@ -68,6 +68,7 @@ class EditorModel:
         channels = self._tree.get('push', {}).get(
             'push_channel_settings', {}).get('channels')
         issues = list(candidate.issues)
+        issues.extend(self.input_errors.values())
         for index, channel in enumerate(parse_push_channels(channels)):
             if not provider_fields(channel.get('provider', '')):
                 issues.append(Issue(('push', 'push_channel_settings', 'channels', index),
@@ -98,6 +99,7 @@ class EditorModel:
     def _adopt(self, document: ConfigDocument) -> None:
         """从文档重建编辑树和两个模式的原始目标。"""
         self.document = document
+        self.input_errors = {}
         self._tree = copy.deepcopy(document.tree)
         self._original_target = self._tree['monitor']['target']
         self._targets = {self._tree['monitor']['mode']: self._original_target}

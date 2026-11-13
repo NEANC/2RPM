@@ -175,6 +175,105 @@ def test_host_options_edit_stays_mapping(tmp_path):
         root.destroy()
 
 
+def test_host_options_display_roundtrips_and_invalid_input_blocks_save(tmp_path):
+    """真实输入框显示可解析映射，非法值显示错误且不能被保存吞掉。"""
+    from modules.config_document import read_document
+
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        hosts = app.model.get(page.hosts_path)
+        hosts[0]['options'] = {'album_id': 12, 'enabled': False}
+        app.model.set(page.hosts_path, hosts)
+        page.refresh()
+        entry = page.host_entries['options']
+        assert entry.get() == '{album_id: 12, enabled: false}'
+        entry.delete(0, 'end')
+        entry.insert(0, '{album_id: 13}')
+        assert app.model.get(page.hosts_path)[0]['options'] == {'album_id': 13}
+        entry.delete(0, 'end')
+        entry.insert(0, '{album_id: [}')
+        assert app.model.get(page.hosts_path)[0]['options'] == {}
+        assert 'options' in page.host_error.cget('text')
+        assert any(issue.path == (*page.hosts_path, 0, 'options')
+                   for issue in app.model.validate(tmp_path).issues)
+        assert not app.controller.save(tmp_path / 'invalid.yaml')
+        assert not (tmp_path / 'invalid.yaml').exists()
+        page.refresh()
+        assert page.host_entries['options'].get() == '{album_id: [}'
+        page.host_entries['options'].delete(0, 'end')
+        page.host_entries['options'].insert(0, '{album_id: 14}')
+        assert not page.host_error.cget('text')
+        assert app.controller.save(tmp_path / 'valid.yaml')
+        assert read_document(tmp_path / 'valid.yaml').tree['push']['screenshot']['image_host'][0]['options'] == {'album_id': 14}
+    finally:
+        root.destroy()
+
+
+def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
+    """真实页面交换图床，保存后确认规范化并创建 CLI 进程。"""
+    from modules.config_document import read_document
+    from modules.gui.launcher import LaunchResult
+
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        app.pages[0].set_field(('monitor', 'target'), 'demo.exe')
+        hosts = app.model.get(page.hosts_path)
+        hosts[0]['custom'] = 'first'
+        hosts.append({'provider': 'boltp', 'token': 'secret', 'custom': 'second'})
+        app.model.set(page.hosts_path, hosts)
+        page.refresh()
+        assert app.controller.save(tmp_path / 'reordered.yaml')
+        page.host_list.current(0)
+        page.move_host(1)
+        assert app.model.get(page.hosts_path)[1]['custom'] == 'first'
+        assert app.controller.save()
+        confirmations = []
+
+        def confirm(kind, detail):
+            """记录真实控制器的规范化确认并接受。"""
+            confirmations.append(kind)
+            return 'confirm'
+
+        launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+        app.controller.confirm = confirm
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        app.start_cli()
+        assert 'normalize' in confirmations
+        assert launch.call_count == 1, (app.status.cget('text'),
+                                        [(change.path, change.operation) for change in app.model.validate(tmp_path).changes],
+                                        app.model.document.tree == read_document(tmp_path / 'reordered.yaml').tree)
+        assert launch.call_args.args[1] == (tmp_path / 'reordered.yaml').resolve()
+        disk = read_document(tmp_path / 'reordered.yaml').tree['push']['screenshot']['image_host']
+        assert [item['custom'] for item in disk] == ['second', 'first']
+        assert app.model.validate(tmp_path).changes == ()
+    finally:
+        root.destroy()
+
+
+def test_invalid_options_follow_host_when_reordered(tmp_path):
+    """图床移动后非法草稿仍属于原条目，不能保存。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        page._add_host()
+        page.host_list.current(0)
+        page._selected_host()
+        entry = page.host_entries['options']
+        entry.insert(0, '{broken: [}')
+        page.move_host(1)
+        assert page.host_entries['options'].get() == '{broken: [}'
+        assert any(issue.path == (*page.hosts_path, 1, 'options')
+                   for issue in app.model.validate(tmp_path).issues)
+        assert not app.controller.save(tmp_path / 'invalid.yaml')
+    finally:
+        root.destroy()
+
+
 def test_request_with_non_json_yaml_value_is_rejected_before_worker(tmp_path):
     """不兼容 JSON 的 YAML 值不进入 worker，且主线程保留草稿。"""
     root = tk.Tk()

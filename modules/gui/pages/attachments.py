@@ -3,11 +3,13 @@
 
 """截图、图床与外部动作表单。"""
 
+from io import StringIO
 import tkinter as tk
 from tkinter import ttk
 
 from ruamel.yaml import YAML
 
+from modules.config_rules import Issue
 from modules.gui.forms import screenshot_conditions
 from modules.gui.pages.base import Page as BasePage
 
@@ -56,6 +58,10 @@ class Page(BasePage):
         self.host_body = ttk.Frame(self.section_for_issue.body)
         self.host_body.pack(fill='x')
         self.host_entries = {}
+        self.host_error = ttk.Label(self.host_body, foreground='red')
+        self.host_error.pack(anchor='w')
+        self.invalid_options = {}
+        self.options_generation = model.document_generation
         ttk.Button(self.section_for_issue.body, text='添加图床', command=self._add_host).pack(anchor='w')
         ttk.Button(self.section_for_issue.body, text='删除图床', command=self._remove_host).pack(anchor='w')
         ttk.Button(self.section_for_issue.body, text='图床上移', command=lambda:
@@ -86,6 +92,17 @@ class Page(BasePage):
         if index < 0 or not 0 <= other < len(hosts):
             return
         hosts[index], hosts[other] = hosts[other], hosts[index]
+        for mapping in (self.invalid_options, self.model.input_errors):
+            first = index if mapping is self.invalid_options else (*self.hosts_path, index, 'options')
+            second = other if mapping is self.invalid_options else (*self.hosts_path, other, 'options')
+            left = mapping.pop(first, None)
+            right = mapping.pop(second, None)
+            if left is not None:
+                mapping[second] = left if mapping is self.invalid_options else Issue(
+                    second, left.code, left.severity, left.message)
+            if right is not None:
+                mapping[first] = right if mapping is self.invalid_options else Issue(
+                    first, right.code, right.severity, right.message)
         self.model.set(self.hosts_path, hosts)
         self.host_list.current(other)
         self.refresh()
@@ -129,6 +146,7 @@ class Page(BasePage):
         for child in self.host_body.winfo_children():
             child.destroy()
         self.host_entries = {}
+        self.host_error = ttk.Label(self.host_body, foreground='red')
         index = self.host_list.current()
         hosts = self.model.get(self.hosts_path)
         if index < 0 or index >= len(hosts):
@@ -141,7 +159,16 @@ class Page(BasePage):
             self.host_entries[name] = entry
             value = hosts[index].get(name, '')
             if name == 'options' and isinstance(value, dict):
-                value = ', '.join(f'{key}: {item}' for key, item in value.items())
+                stream = StringIO()
+                yaml = YAML()
+                yaml.default_flow_style = True
+                try:
+                    yaml.dump(value, stream)
+                    value = stream.getvalue().strip()
+                except Exception:
+                    value = '（无法显示的选项）'
+            if name == 'options':
+                value = self.invalid_options.get(index, value)
             entry.insert(0, str(value))
             entry.pack(fill='x')
             variable.trace_add('write', lambda *_, key=name, field=variable:
@@ -149,6 +176,8 @@ class Page(BasePage):
             if name == 'options':
                 ttk.Button(self.host_body, text='显示/隐藏选项', command=lambda widget=entry:
                            widget.configure(show='' if widget.cget('show') else '●')).pack(anchor='w')
+        self.host_error.configure(text='options 必须是有效 YAML 映射' if index in self.invalid_options else '')
+        self.host_error.pack(anchor='w')
 
     def _set_item(self, path, index, name, value):
         """只写选定列表项，其他项保持原顺序。"""
@@ -157,9 +186,17 @@ class Page(BasePage):
             try:
                 parsed = YAML(typ='safe').load(value) if value.strip() else {}
             except Exception:
-                return
+                parsed = None
+            issue_path = (*path, index, name)
             if not isinstance(parsed, dict):
+                self.invalid_options[index] = value
+                self.model.input_errors[issue_path] = Issue(
+                    issue_path, 'invalid_options', 'error', 'options 必须是有效 YAML 映射')
+                self.host_error.configure(text='options 必须是有效 YAML 映射')
                 return
+            self.invalid_options.pop(index, None)
+            self.model.input_errors.pop(issue_path, None)
+            self.host_error.configure(text='')
             value = parsed
         items[index][name] = value
         self.model.set(path, items)
@@ -181,11 +218,22 @@ class Page(BasePage):
         if index >= 0:
             hosts = self.model.get(self.hosts_path)
             hosts.pop(index)
+            self.invalid_options = {key - (key > index): value
+                                    for key, value in self.invalid_options.items() if key != index}
+            self.model.input_errors = {
+                (*self.hosts_path, key[len(self.hosts_path)] - (key[len(self.hosts_path)] > index), 'options'):
+                Issue((*self.hosts_path, key[len(self.hosts_path)] - (key[len(self.hosts_path)] > index), 'options'),
+                      issue.code, issue.severity, issue.message)
+                for key, issue in self.model.input_errors.items()
+                if key != (*self.hosts_path, index, 'options')}
             self.model.set(self.hosts_path, hosts)
             self.refresh()
 
     def refresh(self):
         """刷新独立目标和图床列表。"""
+        if self.options_generation != self.model.document_generation:
+            self.invalid_options.clear()
+            self.options_generation = self.model.document_generation
         if self.action_generation != self.model.document_generation:
             self.action_drafts.clear()
             self.action_generation = self.model.document_generation

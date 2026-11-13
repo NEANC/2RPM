@@ -425,6 +425,24 @@ def test_set_whole_list_preserves_unknown_keys_after_reorder(tmp_path):
     ]
 
 
+def test_image_hosts_normalization_accepts_reordered_saved_slots(tmp_path):
+    """已保存的图床交换后仍可应用格式规范化并保留每项未知字段。"""
+    path = tmp_path / 'hosts.yaml'
+    path.write_text('push:\n  screenshot:\n    image_host:\n'
+                    '      - provider: catbox\n        custom: second\n'
+                    '      - provider: boltp\n        token: secret\n        custom: first\n', encoding='utf-8')
+    document = read_document(path)
+    before = document.tree['push']['screenshot']['image_host']
+    after = [dict(item) for item in before]
+    patched = patch_document(document, (
+        Change(('push', 'screenshot', 'image_host'), before, after, 'set'),
+    ))
+    save_document(patched, path, expected_fingerprint=document.fingerprint)
+    hosts = read_document(path).tree['push']['screenshot']['image_host']
+    assert [(item['provider'], item['custom']) for item in hosts] == [
+        ('catbox', 'second'), ('boltp', 'first')]
+
+
 def test_set_whole_list_rejects_ambiguous_match_without_touching_file(tmp_path):
     """多项没有可靠对应关系时拒绝保存，原文件及指纹不变。"""
     path = tmp_path / 'ambiguous_list.yaml'
