@@ -167,8 +167,11 @@ class App:
         path = self.model.document.path
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
 
-        def page_index(issue_path):
+        def page_index(issue):
             """按字段所在页面统一计算诊断路由。"""
+            issue_path = issue.path
+            if getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping') and issue_path != ('monitor', 'common'):
+                return 3
             if not issue_path:
                 return 3
             if (issue_path == ('monitor', 'common', 'timeout_threshold')
@@ -179,18 +182,21 @@ class App:
 
         counts = [0] * len(self.pages)
         for issue in candidate.issues:
-            counts[page_index(issue.path)] += 1
+            counts[page_index(issue)] += 1
         for index, name in enumerate(self.page_names):
             self.notebook.tab(index, text=f'{name} ({counts[index]})' if counts[index] else name)
         self.status.configure(text=f'校验：{sum(counts)} 个问题')
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            index = page_index(issue.path)
+            index = page_index(issue)
             self.notebook.select(index)
             self.root.update()
             self.pages[index].refresh()
-            self.pages[index].focus_issue(issue.path)
+            if index == 3 and getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping'):
+                self.pages[index].show_issue(issue.code)
+            else:
+                self.pages[index].focus_issue(issue.path)
         return candidate
 
     def start_cli(self):

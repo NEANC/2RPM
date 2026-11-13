@@ -822,6 +822,104 @@ def test_review_summary_handles_invalid_common_during_global_refresh(tmp_path):
         root.destroy()
 
 
+def test_review_summary_covers_events_actions_without_values(tmp_path):
+    """检查摘要包含事件与动作状态，但不回显用户输入或凭证。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'mode'), 'launch')
+        app.model.set(('monitor', 'target'), 'private-target-98765.exe')
+        app.model.set(('push', 'templates', 'on_end', 'enable'), False)
+        app.model.set(('push', 'templates', 'on_external', 'enable'), True)
+        app.model.set(('push', 'templates', 'on_external', 'capture_screenshot'), False)
+        app.model.set(('external', 'on_end'), 'C:\\private-action-98765.bat')
+        app.model.set(('external', 'on_timeout'), '')
+        app.refresh()
+        summary = app.summary_text
+        assert 'launch' in summary
+        assert 'on_end：关闭' in summary
+        assert 'on_external：启用' in summary
+        assert '截图' in summary
+        assert '外部动作' in summary
+        assert 'on_end：已配置' in summary
+        assert 'on_timeout：未配置' in summary
+        assert 'private-' not in summary
+        assert 'SCTxxxx' not in summary
+    finally:
+        root.destroy()
+
+
+def test_review_summary_masks_untrusted_time_and_mode(tmp_path):
+    """未校验的时间和模式不允许泄露到检查摘要。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'mode'), 'private-mode-98765')
+        app.model.set(('monitor', 'common', 'max_wait'), 'private-time-98765')
+        app.refresh()
+        assert 'private-' not in app.summary_text
+        assert '模式：待校验' in app.summary_text
+        assert '等待：已配置' in app.summary_text
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('path,code', [
+    ((), 'root_type'),
+    (('task',), 'legacy'),
+    (('monitor', 'launch', 'type'), 'legacy'),
+    (('push', 'retry'), 'mapping'),
+    (('external',), 'mapping'),
+])
+def test_non_field_issue_has_safe_focusable_destination(tmp_path, path, code):
+    """没有叶字段的结构与旧布局问题仍有安全、可聚焦的诊断落点。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, code=code, severity='error', message='布局错误')])
+        app.validate()
+        root.update_idletasks()
+        assert app.notebook.index('current') == 3
+        page = app.pages[3]
+        assert root.focus_get() is page.widget_for_issue
+        assert page.widget_for_issue.winfo_ismapped()
+        assert code in page.issue_hint.cget('text')
+        assert 'private-' not in page.issue_hint.cget('text')
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('scaling', [1.0, 1.5, 2.0])
+def test_real_tk_scaling_keeps_long_form_scrollable_and_keyboard_reachable(
+        tmp_path, scaling):
+    """实际 Tk 缩放及小窗口下长表单仍能滚动并经 Tab 遍历。"""
+    root = tk.Tk()
+    previous = float(root.tk.call('tk', 'scaling'))
+    try:
+        root.tk.call('tk', 'scaling', scaling)
+        app = make_app(root, tmp_path / '中文目录')
+        root.geometry('600x420')
+        app.notebook.select(1)
+        root.update()
+        page = app.pages[1]
+        path = ('push', 'templates', 'on_end', 'content')
+        page.focus_issue(path)
+        root.update_idletasks()
+        widget = page.fields[path][1]
+        assert page.section_for_issue.expanded
+        assert widget.winfo_ismapped()
+        assert page.canvas.yview()[1] < 1 or page.canvas.yview()[0] > 0
+        assert widget.tk_focusNext() is not widget
+        assert str(widget.cget('takefocus')) != '0'
+        assert root.focus_get() is widget
+    finally:
+        root.tk.call('tk', 'scaling', previous)
+        if 'app' in locals():
+            root.after_cancel(app._after_id)
+        root.destroy()
+
+
 def test_review_tab_switch_with_invalid_common_keeps_issue_location(tmp_path):
     """切换检查页仍可返回监视页定位结构错误，不泄露错误节点原文。"""
     root = tk.Tk()

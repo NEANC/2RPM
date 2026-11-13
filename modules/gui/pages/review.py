@@ -6,6 +6,7 @@
 from collections.abc import Mapping
 from tkinter import ttk
 
+from modules.config import DEFAULT_VALUES
 from modules.gui.pages.base import Page as BasePage
 
 
@@ -17,6 +18,10 @@ class Page(BasePage):
         super().__init__(parent, model)
         self.summary = ttk.Label(self.body, justify='left', wraplength=650)
         self.summary.pack(fill='x')
+        self.issue_hint = ttk.Label(self.body, text='')
+        self.issue_hint.pack(fill='x')
+        self.issue_anchor = ttk.Button(self.body, text='配置结构与兼容性问题')
+        self.issue_anchor.pack(anchor='w')
         self.section_for_issue.pack(fill='x')
         self.field(self.section_for_issue.body, '日志目录', ('log', 'log_directory'))
         self.field(self.section_for_issue.body, '最大日志数', ('log', 'max_log_files'), kind='int')
@@ -30,9 +35,32 @@ class Page(BasePage):
         monitor = snapshot['monitor']
         push = snapshot['push']
         common = monitor['common']
-        wait = common['max_wait'] if isinstance(common, Mapping) else '待校验'
-        text = (f"模式：{monitor['mode']}\n目标：已配置\n"
+        mode = monitor['mode'] if monitor['mode'] in ('watch', 'launch') else '待校验'
+        wait = common['max_wait'] if isinstance(common, Mapping) else None
+        if wait not in (DEFAULT_VALUES['monitor']['common']['max_wait'], '待校验'):
+            wait = '已配置' if isinstance(wait, str) and wait.strip() else '待校验'
+        if wait is None:
+            wait = '待校验'
+        events = push['templates']
+        actions = snapshot['external']
+        event_names = ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external')
+        event_status = '、'.join(f'{name}：{"启用" if events[name]["enable"] else "关闭"}'
+                                for name in event_names)
+        capture_status = '、'.join(
+            f'{name}：{"开启" if events[name]["capture_screenshot"] else "关闭"}'
+            for name in event_names)
+        action_status = '、'.join(f'{name}：{"已配置" if actions[name] else "未配置"}'
+                                 for name in ('on_end', 'on_timeout', 'on_wait_timeout'))
+        text = (f"模式：{mode}\n目标：已配置\n"
                 f"等待：{wait}\n"
                 f"通知通道：{len(push['push_channel_settings']['channels'])} 个\n"
-                f"截图目标：{len(push['screenshot']['targets'])} 个")
+                f"通知事件：{event_status}\n"
+                f"截图目标：{len(push['screenshot']['targets'])} 个\n"
+                f"事件截图：{capture_status}\n外部动作：{action_status}")
         self.summary.configure(text=text)
+
+    def show_issue(self, code):
+        """仅显示已知诊断类别，不展示配置值及未知诊断文本。"""
+        category = code if code in ('root_type', 'legacy', 'mapping', 'required') else 'structure'
+        self.issue_hint.configure(text=f'{category}：请检查配置结构或旧布局')
+        self.focus_widget(self.issue_anchor)
