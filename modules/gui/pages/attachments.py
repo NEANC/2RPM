@@ -3,10 +3,12 @@
 
 """截图、图床与外部动作表单。"""
 
+import tkinter as tk
 from tkinter import ttk
 
 from ruamel.yaml import YAML
 
+from modules.gui.forms import screenshot_conditions
 from modules.gui.pages.base import Page as BasePage
 
 
@@ -18,9 +20,22 @@ class Page(BasePage):
         super().__init__(parent, model)
         self.targets_path = ('push', 'screenshot', 'targets')
         self.hosts_path = ('push', 'screenshot', 'image_host')
+        self.action_drafts = {}
+        self.action_generation = model.document_generation
         self.field(self.body, '超时触发阈值', ('monitor', 'common', 'timeout_threshold'), kind='int')
         for event in ('on_end', 'on_timeout', 'on_wait_timeout'):
             self.field(self.body, event + ' 外部程序', ('external', event))
+            row = ttk.Frame(self.body)
+            row.pack(fill='x')
+            ttk.Button(row, text=event + ' 停用', command=lambda key=event:
+                       self.disable_action(key)).pack(side='left')
+            ttk.Button(row, text=event + ' 撤销停用', command=lambda key=event:
+                       self.restore_action(key)).pack(side='left')
+        self.condition_labels = {}
+        for event in ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external'):
+            label = ttk.Label(self.body, wraplength=650)
+            label.pack(fill='x')
+            self.condition_labels[event] = label
         self.target_list = ttk.Combobox(self.body, state='readonly')
         self.target_list.pack(fill='x')
         self.target_list.bind('<<ComboboxSelected>>', lambda _: self._selected_target())
@@ -31,6 +46,7 @@ class Page(BasePage):
         ttk.Button(target_row, text='删除目标', command=self._remove_target).pack(side='left')
         self.target_body = ttk.Frame(self.body)
         self.target_body.pack(fill='x')
+        self.target_entries = {}
         self.section_for_issue.pack(fill='x')
         self.field(self.section_for_issue.body, '截图保留天数', ('push', 'screenshot', 'retention', 'max_days'), kind='int')
         self.field(self.section_for_issue.body, '自动清理', ('push', 'screenshot', 'retention', 'enabled'), kind='bool')
@@ -39,8 +55,39 @@ class Page(BasePage):
         self.host_list.bind('<<ComboboxSelected>>', lambda _: self._selected_host())
         self.host_body = ttk.Frame(self.section_for_issue.body)
         self.host_body.pack(fill='x')
+        self.host_entries = {}
         ttk.Button(self.section_for_issue.body, text='添加图床', command=self._add_host).pack(anchor='w')
         ttk.Button(self.section_for_issue.body, text='删除图床', command=self._remove_host).pack(anchor='w')
+        ttk.Button(self.section_for_issue.body, text='图床上移', command=lambda:
+                   self.move_host(-1)).pack(anchor='w')
+        ttk.Button(self.section_for_issue.body, text='图床下移', command=lambda:
+                   self.move_host(1)).pack(anchor='w')
+        self.refresh()
+
+    def disable_action(self, event):
+        """停用动作时仅在内存保留可撤销的路径。"""
+        path = ('external', event)
+        value = self.model.get(path)
+        if value:
+            self.action_drafts[event] = value
+            self.set_field(path, '')
+
+    def restore_action(self, event):
+        """只恢复当前文档曾停用的动作。"""
+        value = self.action_drafts.pop(event, None)
+        if value is not None:
+            self.set_field(('external', event), value)
+
+    def move_host(self, offset):
+        """交换图床槽位，并保持正在编辑的条目被选中。"""
+        index = self.host_list.current()
+        hosts = self.model.get(self.hosts_path)
+        other = index + offset
+        if index < 0 or not 0 <= other < len(hosts):
+            return
+        hosts[index], hosts[other] = hosts[other], hosts[index]
+        self.model.set(self.hosts_path, hosts)
+        self.host_list.current(other)
         self.refresh()
 
     def _add_target(self, provider):
@@ -63,12 +110,15 @@ class Page(BasePage):
         """展示目标名称及输出名编辑框。"""
         for child in self.target_body.winfo_children():
             child.destroy()
+        self.target_entries = {}
         index = self.target_list.current()
         targets = self.model.get(self.targets_path)
         if index < 0 or index >= len(targets):
             return
         for name in ('provider', 'target', 'out'):
+            ttk.Label(self.target_body, text=name).pack(anchor='w')
             entry = ttk.Entry(self.target_body)
+            self.target_entries[name] = entry
             entry.insert(0, str(targets[index].get(name, '')))
             entry.pack(fill='x')
             entry.bind('<FocusOut>', lambda _, key=name, widget=entry:
@@ -78,19 +128,24 @@ class Page(BasePage):
         """展示单个图床的凭证、期限及参数。"""
         for child in self.host_body.winfo_children():
             child.destroy()
+        self.host_entries = {}
         index = self.host_list.current()
         hosts = self.model.get(self.hosts_path)
         if index < 0 or index >= len(hosts):
             return
         for name in ('provider', 'token', 'expiration', 'options'):
-            entry = ttk.Entry(self.host_body, show='●' if name in ('token', 'options') else '')
+            ttk.Label(self.host_body, text=name).pack(anchor='w')
+            variable = tk.StringVar()
+            entry = ttk.Entry(self.host_body, textvariable=variable,
+                              show='●' if name in ('token', 'options') else '')
+            self.host_entries[name] = entry
             value = hosts[index].get(name, '')
             if name == 'options' and isinstance(value, dict):
                 value = ', '.join(f'{key}: {item}' for key, item in value.items())
             entry.insert(0, str(value))
             entry.pack(fill='x')
-            entry.bind('<FocusOut>', lambda _, key=name, widget=entry:
-                       self._set_item(self.hosts_path, index, key, widget.get()))
+            variable.trace_add('write', lambda *_, key=name, field=variable:
+                               self._set_item(self.hosts_path, index, key, field.get()))
             if name == 'options':
                 ttk.Button(self.host_body, text='显示/隐藏选项', command=lambda widget=entry:
                            widget.configure(show='' if widget.cget('show') else '●')).pack(anchor='w')
@@ -108,6 +163,10 @@ class Page(BasePage):
             value = parsed
         items[index][name] = value
         self.model.set(path, items)
+        if path == self.hosts_path and name == 'provider':
+            self.host_list.configure(values=[f'{i + 1}. {item.get("provider", "")}'
+                                             for i, item in enumerate(items)])
+            self.host_list.current(index)
 
     def _add_host(self):
         """在图床回退列表末尾追加条目。"""
@@ -127,7 +186,17 @@ class Page(BasePage):
 
     def refresh(self):
         """刷新独立目标和图床列表。"""
+        if self.action_generation != self.model.document_generation:
+            self.action_drafts.clear()
+            self.action_generation = self.model.document_generation
         super().refresh()
+        snapshot = self.model.snapshot()
+        for event, label in self.condition_labels.items():
+            conditions = screenshot_conditions(snapshot, event)
+            text = '；'.join(f'{name}：{"已满足" if valid else "未满足"}' for name, valid in (
+                ('事件开关', conditions['enabled']), ('通道', conditions['channels']),
+                ('引用', conditions['references']), ('目标', conditions['targets'])))
+            label.configure(text=f'{event} 截图条件：{text}')
         selected_target = self.target_list.current()
         selected_host = self.host_list.current()
         targets = self.model.get(self.targets_path)
@@ -142,3 +211,26 @@ class Page(BasePage):
         if hosts:
             self.host_list.current(min(max(selected_host, 0), len(hosts) - 1))
         self._selected_host()
+
+    def focus_issue(self, path):
+        """列表字段先切换槽位，再聚焦当前条目的对应输入。"""
+        if path[:len(self.hosts_path)] == self.hosts_path:
+            selector, select = self.host_list, self._selected_host
+            prefix = len(self.hosts_path)
+            section = self.section_for_issue
+        elif path[:len(self.targets_path)] == self.targets_path:
+            selector, select = self.target_list, self._selected_target
+            prefix = len(self.targets_path)
+            section = None
+        else:
+            super().focus_issue(path)
+            return
+        items = self.model.get(path[:prefix])
+        if len(path) > prefix and isinstance(path[prefix], int) and 0 <= path[prefix] < len(items):
+            selector.current(path[prefix])
+            select()
+        if section is not None:
+            section.set_expanded(True)
+        entries = self.host_entries if section is not None else self.target_entries
+        widget = entries.get(path[prefix + 1] if len(path) > prefix + 1 else 'provider', selector)
+        self.focus_widget(widget)

@@ -108,6 +108,11 @@ class Page(ScrollForm):
             section.set_expanded(True)
             self.section_for_issue = section
         widget = self.fields[key][1]
+        self.focus_widget(widget)
+
+    def focus_widget(self, widget):
+        """切换页面后在主线程展开并滚动到目标控件。"""
+        self.winfo_toplevel().update_idletasks()
         self.widget_for_issue = widget
         widget.focus_force()
         self.update_idletasks()

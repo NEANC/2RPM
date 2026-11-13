@@ -5,10 +5,12 @@
 
 import queue
 import tkinter as tk
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
+from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestResult as GuiTestResult
 
 
@@ -463,5 +465,148 @@ def test_validate_shows_issue_count_and_navigates_to_field(tmp_path):
         assert any(issue.severity == 'error' for issue in candidate.issues)
         assert '(' in app.notebook.tab(0, 'text')
         assert app.notebook.index('current') == 0
+    finally:
+        root.destroy()
+
+
+def test_six_image_hosts_edit_and_reorder(tmp_path):
+    """六个已支持图床的字段输入及上下移动保持完整槽位。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        for provider in ('wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed'):
+            page._add_host()
+            page.host_list.current(len(app.model.get(page.hosts_path)) - 1)
+            page._selected_host()
+            page.host_entries['provider'].delete(0, 'end')
+            page.host_entries['provider'].insert(0, provider)
+            page.refresh()
+        assert [item['provider'] for item in app.model.get(page.hosts_path)] == [
+            'catbox', 'wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed']
+        page.host_list.current(3)
+        page._selected_host()
+        page.host_entries['token'].insert(0, 'private-token')
+        page.host_entries['expiration'].insert(0, '7d')
+        page.host_entries['options'].delete(0, 'end')
+        page.host_entries['options'].insert(0, '{storage_id: 12}')
+        page.move_host(-1)
+        assert page.host_list.current() == 2
+        assert app.model.get(page.hosts_path)[2] == {
+            'provider': 'beeimg_cn', 'token': 'private-token',
+            'expiration': '7d', 'options': {'storage_id': 12}}
+        page.move_host(1)
+        assert page.host_list.current() == 3
+        page.host_list.current(0)
+        page.move_host(-1)
+        assert page.host_list.current() == 0
+    finally:
+        root.destroy()
+
+
+def test_external_action_disable_restore_is_memory_only(tmp_path):
+    """清空动作路径停用，撤销仅恢复本模型草稿。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        path = ('external', 'on_end')
+        page.set_field(path, 'C:\\task.bat')
+        page.disable_action('on_end')
+        assert app.model.get(path) == ''
+        assert page.fields[path][0].get() == ''
+        page.restore_action('on_end')
+        assert app.model.get(path) == 'C:\\task.bat'
+        page.disable_action('on_end')
+        app.model.replace_document(new_document())
+        page.refresh()
+        page.restore_action('on_end')
+        assert app.model.get(path) != 'C:\\task.bat'
+    finally:
+        root.destroy()
+
+
+def test_each_event_displays_screenshot_conditions_and_explicit_reference(tmp_path):
+    """四事件独立显示截图生效条件，插入引用只响应显式操作。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        for event in ('on_end', 'on_timeout', 'on_wait_timeout', 'on_external'):
+            assert event in page.condition_labels
+            assert '引用' in page.condition_labels[event].cget('text')
+            before = app.model.get(('push', 'templates', event, 'content'))
+            page.refresh()
+            assert app.model.get(('push', 'templates', event, 'content')) == before
+        app.pages[1].insert_variable('on_end', 'screenshot')
+        page.refresh()
+        assert screenshot_conditions(app.model.snapshot(), 'on_end')['references']
+        assert '已满足' in page.condition_labels['on_end'].cget('text')
+    finally:
+        root.destroy()
+
+
+def test_dynamic_and_static_issue_paths_focus_exact_field(tmp_path):
+    """列表索引、模板和四页普通字段均能定位具体控件。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        cases = [
+            (0, ('monitor', 'launch', 'cwd')),
+            (1, ('push', 'templates', 'on_external', 'content')),
+            (1, ('push', 'push_channel_settings', 'channels', 1, 'sckey')),
+            (2, ('push', 'screenshot', 'image_host', 1, 'token')),
+            (2, ('push', 'screenshot', 'targets', 1, 'target')),
+            (2, ('external', 'on_timeout')),
+            (3, ('log', 'retention_days')),
+        ]
+        app.model.set(app.pages[1].channels_path, [
+            {'provider': 'serverchan', 'sckey': ''}] * 2)
+        app.pages[2]._add_host()
+        app.pages[2]._add_target('window')
+        app.pages[2]._add_target('adb')
+        app.refresh()
+        for index, path in cases:
+            page = app.pages[index]
+            app.notebook.select(index)
+            root.update()
+            page.focus_issue(path)
+            root.update()
+            assert root.focus_get() is page.widget_for_issue, path
+            if isinstance(path[-2], int):
+                selector = page.channel_list if index == 1 else (
+                    page.host_list if path[2] == 'image_host' else page.target_list)
+                assert selector.current() == 1
+    finally:
+        root.destroy()
+
+
+def test_validation_routes_external_error_to_action_field(tmp_path):
+    """外部动作诊断从校验入口导航至附件页而非检查页。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = ('external', 'on_timeout')
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, severity='error')])
+        app.validate()
+        root.update()
+        assert app.notebook.index('current') == 2
+        assert root.focus_get() is app.pages[2].fields[path][1]
+    finally:
+        root.destroy()
+
+
+def test_screenshot_conditions_update_on_tab_switch(tmp_path):
+    """通知页切换事件截图开关后进入附件页立即看到新条件。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        event = 'on_timeout'
+        app.notebook.select(1)
+        app.pages[1].set_field(('push', 'templates', event, 'capture_screenshot'), False)
+        app.notebook.select(2)
+        root.update()
+        assert '事件开关：未满足' in app.pages[2].condition_labels[event].cget('text')
     finally:
         root.destroy()

@@ -50,6 +50,8 @@ class App:
                       for page in (monitor, notification, attachments, review)]
         for title, page in zip(self.page_names, self.pages):
             self.notebook.add(page, text=title)
+        self.notebook.bind('<<NotebookTabChanged>>', lambda _: self.pages[
+            self.notebook.index('current')].refresh())
         self.status = ttk.Label(root, text='新建配置或打开现有 YAML')
         self.status.pack(fill='x', padx=12)
         self.preview_label = ttk.Label(root)
@@ -176,8 +178,13 @@ class App:
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            index = 0 if issue.path and issue.path[0] == 'monitor' else 2 if issue.path[:2] == ('push', 'screenshot') else 1 if issue.path and issue.path[0] == 'push' else 3
+            index = (0 if issue.path and issue.path[0] == 'monitor' else
+                     2 if issue.path and (issue.path[0] == 'external' or
+                                           issue.path[:2] == ('push', 'screenshot')) else
+                     1 if issue.path and issue.path[0] == 'push' else 3)
             self.notebook.select(index)
+            self.root.update_idletasks()
+            self.pages[index].refresh()
             self.pages[index].focus_issue(issue.path)
         return candidate
 

@@ -29,6 +29,7 @@ class Page(BasePage):
         ttk.Button(toolbar, text='删除通道', command=self._remove).pack(side='left')
         self.channel_body = ttk.Frame(self.body)
         self.channel_body.pack(fill='x')
+        self.channel_entries = {}
         ttk.Label(self.body, text='通知事件').pack(anchor='w')
         for event in EVENTS:
             self.field(self.body, event + ' 启用', ('push', 'templates', event, 'enable'), kind='bool')
@@ -74,6 +75,7 @@ class Page(BasePage):
         """动态展示所选 provider 的必要字段并遮挡凭证。"""
         for child in self.channel_body.winfo_children():
             child.destroy()
+        self.channel_entries = {}
         index = self.channel_list.current()
         channels = self.model.get(self.channels_path)
         if index < 0 or index >= len(channels):
@@ -84,6 +86,7 @@ class Page(BasePage):
         ttk.Label(row, text='通道类型').pack(side='left')
         provider_value = tk.StringVar(value=channel.get('provider', ''))
         provider = ttk.Entry(row, textvariable=provider_value)
+        self.channel_entries['provider'] = provider
         provider.pack(side='left', fill='x', expand=True)
         provider_value.trace_add('write', lambda *_: self._set_channel(index, 'provider', provider_value.get()))
         provider.bind('<FocusOut>', lambda _: self.refresh())
@@ -93,6 +96,7 @@ class Page(BasePage):
             ttk.Label(row, text=field.label + (' *' if field.required else '')).pack(side='left')
             value = tk.StringVar(value=str(channel.get(field.name, '')))
             entry = ttk.Entry(row, textvariable=value, show='●' if field.secret else '')
+            self.channel_entries[field.name] = entry
             entry.pack(side='left', fill='x', expand=True)
             value.trace_add('write', lambda *_, name=field.name, variable=value:
                             self._set_channel(index, name, variable.get()))
@@ -149,3 +153,16 @@ class Page(BasePage):
         else:
             self.channel_list.set('无通道：不会发送通知')
         self._channel_fields()
+
+    def focus_issue(self, path):
+        """通道错误按列表索引切换并聚焦实际参数。"""
+        if path[:len(self.channels_path)] != self.channels_path:
+            super().focus_issue(path)
+            return
+        index_at = len(self.channels_path)
+        channels = self.model.get(self.channels_path)
+        if len(path) > index_at and isinstance(path[index_at], int) and 0 <= path[index_at] < len(channels):
+            self.channel_list.current(path[index_at])
+            self._channel_fields()
+        name = path[index_at + 1] if len(path) > index_at + 1 else 'provider'
+        self.focus_widget(self.channel_entries.get(name, self.channel_list))
