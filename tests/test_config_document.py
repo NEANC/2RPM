@@ -443,6 +443,44 @@ def test_image_hosts_normalization_accepts_reordered_saved_slots(tmp_path):
         ('catbox', 'second'), ('boltp', 'first')]
 
 
+def test_same_provider_hosts_reorder_matches_complete_values(tmp_path):
+    """相同 provider 的完整条目按值对应，重排不丢未知字段。"""
+    path = tmp_path / 'same_provider.yaml'
+    path.write_text('push:\n  screenshot:\n    image_host:\n'
+                    '      - provider: catbox\n        token: alpha\n        custom: first\n'
+                    '      - provider: catbox\n        token: beta\n        custom: second\n',
+                    encoding='utf-8')
+    document = read_document(path)
+    before = document.tree['push']['screenshot']['image_host']
+    after = [dict(before[1]), dict(before[0])]
+    patched = patch_document(document, (
+        Change(('push', 'screenshot', 'image_host'), before, after, 'set'),
+    ))
+    save_document(patched, path, expected_fingerprint=document.fingerprint)
+
+    hosts = read_document(path).tree['push']['screenshot']['image_host']
+    assert [(item['token'], item['custom']) for item in hosts] == [
+        ('beta', 'second'), ('alpha', 'first')]
+
+
+def test_same_provider_hosts_reject_ambiguous_partial_values(tmp_path):
+    """同 provider 且没有完整对应关系时不猜测未知字段归属。"""
+    path = tmp_path / 'ambiguous_hosts.yaml'
+    path.write_text('push:\n  screenshot:\n    image_host:\n'
+                    '      - provider: catbox\n        token: same\n        custom: first\n'
+                    '      - provider: catbox\n        token: same\n        custom: second\n',
+                    encoding='utf-8')
+    document = read_document(path)
+    original = path.read_bytes()
+    with pytest.raises(ConfigSaveError):
+        patch_document(document, (
+            Change(('push', 'screenshot', 'image_host'), None,
+                   [{'provider': 'catbox', 'token': 'same'},
+                    {'provider': 'catbox', 'token': 'same'}], 'set'),
+        ))
+    assert path.read_bytes() == original
+
+
 def test_set_whole_list_rejects_ambiguous_match_without_touching_file(tmp_path):
     """多项没有可靠对应关系时拒绝保存，原文件及指纹不变。"""
     path = tmp_path / 'ambiguous_list.yaml'

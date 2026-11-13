@@ -8,6 +8,8 @@ import tkinter as tk
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
@@ -270,6 +272,56 @@ def test_invalid_options_follow_host_when_reordered(tmp_path):
         assert any(issue.path == (*page.hosts_path, 1, 'options')
                    for issue in app.model.validate(tmp_path).issues)
         assert not app.controller.save(tmp_path / 'invalid.yaml')
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'close'])
+def test_invalid_options_on_clean_model_requires_discard_confirmation(tmp_path, action):
+    """真实 Tk 非法输入未改变模型时，离开文档仍要求确认。"""
+    from modules.config_document import save_document
+
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        destination = tmp_path / 'another.yaml'
+        if action == 'open':
+            save_document(new_document(), destination, expected_fingerprint=None)
+        page.host_entries['options'].insert(0, '{broken: [}')
+        assert not app.model.dirty
+        assert page.host_entries['options'].get() == '{broken: [}'
+        generation = app.model.document_generation
+        confirm = Mock(return_value='cancel')
+        app.controller.confirm = confirm
+
+        result = app.controller.open(destination) if action == 'open' else getattr(app.controller, action)()
+
+        assert result is False
+        confirm.assert_called_once_with('unsaved', app.model.document.path)
+        assert app.model.document_generation == generation
+        assert page.host_entries['options'].get() == '{broken: [}'
+        if action == 'close':
+            app.controller.runner.close.assert_not_called()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('answer, expected', [('save', False), ('discard', True)])
+def test_invalid_options_on_clean_model_save_or_discard(tmp_path, answer, expected):
+    """非法控件值不能假装保存成功，明确放弃才允许关闭。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[2]
+        page.host_entries['options'].insert(0, '{broken: [}')
+        app.controller.confirm = Mock(return_value=answer)
+        assert app.controller.close() is expected
+        if expected:
+            app.controller.runner.close.assert_called_once()
+        else:
+            app.controller.runner.close.assert_not_called()
+            assert page.host_entries['options'].get() == '{broken: [}'
     finally:
         root.destroy()
 

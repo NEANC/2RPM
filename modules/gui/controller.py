@@ -37,7 +37,7 @@ class Controller:
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
-        if not self.model.dirty:
+        if not self.model.dirty and not self.model.input_errors:
             return True
         choice = self.confirm('unsaved', self.model.document.path)
         if choice == 'save':

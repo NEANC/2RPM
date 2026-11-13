@@ -156,12 +156,20 @@ def patch_document(document: ConfigDocument,
                     merged.fa.set_flow_style()
                 result.append(merged)
             return result
-        if (change.path[-1] == 'image_host' and len(existing) == len(incoming)
-                and all(dict(old) == dict(new) for old, new in zip(existing, incoming))):
-            result = copy.deepcopy(incoming)
-            for index, item in enumerate(incoming):
-                result[index] = copy.deepcopy(item)
-            return result
+        if change.path[-1] == 'image_host' and len(existing) == len(incoming):
+            matched = []
+            for item in incoming:
+                candidates = [index for index, old in enumerate(existing)
+                              if dict(old) == dict(item)]
+                if len(candidates) != 1 or candidates[0] in matched:
+                    break
+                matched.append(candidates[0])
+            else:
+                result = copy.deepcopy(incoming)
+                result.clear()
+                for index in matched:
+                    result.append(copy.deepcopy(existing[index]))
+                return result
         if (len(existing) == len(incoming) == 1
                 and not any(field in existing[0] and field in incoming[0]
                             and existing[0][field] != incoming[0][field]
