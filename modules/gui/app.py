@@ -178,12 +178,13 @@ class App:
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            index = (0 if issue.path and issue.path[0] == 'monitor' else
+            index = (2 if issue.path == ('monitor', 'common', 'timeout_threshold') else
+                     0 if issue.path and issue.path[0] == 'monitor' else
                      2 if issue.path and (issue.path[0] == 'external' or
                                            issue.path[:2] == ('push', 'screenshot')) else
                      1 if issue.path and issue.path[0] == 'push' else 3)
             self.notebook.select(index)
-            self.root.update_idletasks()
+            self.root.update()
             self.pages[index].refresh()
             self.pages[index].focus_issue(issue.path)
         return candidate
