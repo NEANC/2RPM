@@ -3,6 +3,7 @@
 
 """检查、日志位置及启动页。"""
 
+from collections.abc import Mapping
 from tkinter import ttk
 
 from modules.gui.pages.base import Page as BasePage
@@ -28,8 +29,10 @@ class Page(BasePage):
         snapshot = self.model.snapshot()
         monitor = snapshot['monitor']
         push = snapshot['push']
+        common = monitor['common']
+        wait = common['max_wait'] if isinstance(common, Mapping) else '待校验'
         text = (f"模式：{monitor['mode']}\n目标：已配置\n"
-                f"等待：{monitor['common']['max_wait']}\n"
+                f"等待：{wait}\n"
                 f"通知通道：{len(push['push_channel_settings']['channels'])} 个\n"
                 f"截图目标：{len(push['screenshot']['targets'])} 个")
         self.summary.configure(text=text)

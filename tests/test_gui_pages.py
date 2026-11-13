@@ -807,6 +807,40 @@ def test_real_monitor_common_structure_error_has_focusable_page_hint(tmp_path):
         root.destroy()
 
 
+def test_review_summary_handles_invalid_common_during_global_refresh(tmp_path):
+    """全局刷新遇到已诊断的公共节点结构错误时只显示安全占位。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'common'), 'private-structure-secret')
+        app.refresh()
+        assert '等待：待校验' in app.summary_text
+        assert 'private-structure-secret' not in app.summary_text
+        assert any(issue.path == ('monitor', 'common') and issue.code == 'mapping'
+                   for issue in app.model.validate(tmp_path).issues)
+    finally:
+        root.destroy()
+
+
+def test_review_tab_switch_with_invalid_common_keeps_issue_location(tmp_path):
+    """切换检查页仍可返回监视页定位结构错误，不泄露错误节点原文。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'common'), 'private-structure-secret')
+        app.notebook.select(3)
+        root.update()
+        assert '等待：待校验' in app.summary_text
+        assert 'private-structure-secret' not in app.summary_text
+        candidate = app.validate()
+        assert any(issue.path == ('monitor', 'common') and issue.code == 'mapping'
+                   for issue in candidate.issues)
+        assert app.notebook.index('current') == 0
+        assert root.focus_get() is app.pages[0].common_structure_anchor
+    finally:
+        root.destroy()
+
+
 def test_normal_close_cancels_pending_poll(tmp_path):
     """正常关闭窗口后不再执行结果轮询回调。"""
     root = tk.Tk()
