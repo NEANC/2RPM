@@ -5,12 +5,14 @@
 
 from copy import deepcopy
 from pathlib import Path
+import re
 
 from modules.gui.forms import event_variables
 from modules.gui.protocol import TestRequest, TestResult
 from modules.image_host.registry import upload_with_fallback
 from modules.notification import send_notification
 from modules.screenshot.models import CaptureError, capture_failure_message
+from modules.screenshot.retention import FORMAT_SUFFIX
 from modules.screenshot.service import capture
 from modules.screenshot.targets import allocate_targets
 
@@ -36,6 +38,8 @@ def summarize_notification(results: list[tuple[str, bool]]) -> str:
 
 def _capture_preview(request: TestRequest) -> tuple[str, str, tuple[str, ...]]:
     """截取选中的单个目标并写入测试会话目录。"""
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', request.request_id):
+        return 'failure', '测试执行失败', ()
     section = request.config['push']['screenshot']
     targets, _ = allocate_targets(section.get('targets'))
     target = targets[request.target_index]
@@ -44,7 +48,8 @@ def _capture_preview(request: TestRequest) -> tuple[str, str, tuple[str, ...]]:
     try:
         image = capture(target['provider'], target['target'],
                         image_format='jpeg', purpose='cli')
-        path = Path(request.session_dir) / f'{request.request_id}.jpg'
+        path = Path(request.session_dir) / (
+            request.request_id + FORMAT_SUFFIX[image.image_format])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(image.image_bytes)
     except CaptureError as error:

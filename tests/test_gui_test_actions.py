@@ -59,8 +59,11 @@ def test_summarize_notification(results, expected):
 
 def test_notify_snapshot_disables_capture(monkeypatch, tmp_path):
     """真实发送链配假通道，截图、清理及其他业务入口不得被触发。"""
+    import modules.monitor as monitor
     import modules.notification as notification
     import modules.screenshot.pipeline as pipeline
+    import modules.screenshot.retention as retention
+    import modules.utils as utils
     import modules.gui.test_actions as actions
 
     def forbidden(*_args, **_kwargs):
@@ -68,7 +71,11 @@ def test_notify_snapshot_disables_capture(monkeypatch, tmp_path):
         pytest.fail('通知测试触发了其他业务动作')
 
     for module, name in ((actions, 'capture'),
-                         (actions, 'upload_with_fallback')):
+                         (actions, 'upload_with_fallback'),
+                         (retention, 'cleanup_retention'),
+                         (monitor, 'monitor_processes'),
+                         (utils, 'run_external_action'),
+                         (pipeline, 'capture')):
         monkeypatch.setattr(module, name, forbidden)
     prepared = []
 
@@ -141,6 +148,77 @@ def test_capture_saves_only_selected_preview(monkeypatch, tmp_path):
     assert Path(result.preview_paths[0]).name == 'req-1.jpg'
     mock_capture.assert_called_once_with('window', '演示窗口',
                                          image_format='jpeg', purpose='cli')
+
+
+def test_adb_png_fallback_preview_uses_png_suffix(monkeypatch, tmp_path):
+    """ADB 以 PNG 回退时，预览文件扩展名与实际截图格式一致。"""
+    import modules.gui.test_actions as actions
+
+    config = _config()
+    config['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': 'device-1'}]
+    png = b'\x89PNG\r\n\x1a\nsynthetic'
+    captured = Mock(return_value=CaptureResult(
+        png, 'adb', 'device-1', 1, 1, image_format='png'))
+    monkeypatch.setattr(actions, 'capture', captured)
+
+    result = run_test(_request(tmp_path, 'capture', config, target_index=0))
+
+    assert result.status == 'success'
+    assert Path(result.preview_paths[0]).name == 'req-1.png'
+    assert Path(result.preview_paths[0]).read_bytes() == png
+    assert not (tmp_path / 'session' / 'req-1.jpg').exists()
+    captured.assert_called_once_with('adb', 'device-1',
+                                     image_format='jpeg', purpose='cli')
+
+
+@pytest.mark.parametrize('request_id', ['../escape', '..\\escape',
+                                         '/absolute/escape', 'C:\\escape'])
+def test_capture_request_id_cannot_escape_session(monkeypatch, tmp_path,
+                                                   request_id):
+    """带路径语义的请求标识不得写入会话目录外。"""
+    import modules.gui.test_actions as actions
+
+    captured = Mock(return_value=CaptureResult(
+        b'image', 'window', '演示窗口', 1, 1))
+    monkeypatch.setattr(actions, 'capture', captured)
+    request = _request(tmp_path, 'capture', target_index=0)
+    request = GuiRequest(request_id, request.document_generation,
+                         request.revision, request.action, request.config,
+                         request.config_dir, request.session_dir,
+                         request.target_index, request.host_index,
+                         request.image_path, request.template_key)
+
+    result = run_test(request)
+
+    assert result.status == 'failure'
+    assert result.preview_paths == ()
+    assert list(tmp_path.rglob('*.jpg')) == []
+    captured.assert_not_called()
+
+
+def test_capture_does_not_run_other_actions(monkeypatch, tmp_path):
+    """独立预览不执行保留清理、监视或外部动作。"""
+    import modules.gui.test_actions as actions
+    import modules.monitor as monitor
+    import modules.screenshot.pipeline as pipeline
+    import modules.screenshot.retention as retention
+    import modules.utils as utils
+
+    def forbidden(*_args, **_kwargs):
+        """一旦调用其他业务入口即使测试失败。"""
+        pytest.fail('截图测试触发了其他业务动作')
+
+    for module, name in ((actions, 'upload_with_fallback'),
+                         (retention, 'cleanup_retention'),
+                         (monitor, 'monitor_processes'),
+                         (utils, 'run_external_action'),
+                         (pipeline, 'capture')):
+        monkeypatch.setattr(module, name, forbidden)
+    monkeypatch.setattr(actions, 'capture', Mock(return_value=CaptureResult(
+        b'image', 'window', '演示窗口', 1, 1)))
+
+    assert run_test(_request(tmp_path, 'capture', target_index=0)).status == 'success'
 
 
 def test_capture_failure_is_safe(monkeypatch, tmp_path):
