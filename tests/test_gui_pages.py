@@ -767,6 +767,46 @@ def test_validation_counts_timeout_threshold_on_its_destination_page(tmp_path):
         root.destroy()
 
 
+def test_real_model_invalid_threshold_is_change_not_issue(tmp_path):
+    """真实模型的非法阈值产生待确认变更，不虚构字段错误。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = ('monitor', 'common', 'timeout_threshold')
+        app.model.set(('monitor', 'target'), 'demo.exe')
+        app.model.set(path, 'invalid-threshold-secret')
+        candidate = app.validate()
+        assert not candidate.issues
+        assert any(change.path == path for change in candidate.changes)
+        assert app.notebook.tab(2, 'text') == '附图与后续动作'
+        assert app.notebook.index('current') == 0
+        assert '0 个问题' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_real_monitor_common_structure_error_has_focusable_page_hint(tmp_path):
+    """非映射公共节点提供监视页内可聚焦落点和安全文本。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'common'), 'private-structure-secret')
+        candidate = app.validate()
+        issue = next(issue for issue in candidate.issues
+                     if issue.path == ('monitor', 'common'))
+        assert issue.code == 'mapping'
+        assert app.notebook.index('current') == 0
+        page = app.pages[0]
+        assert page.widget_for_issue is page.common_structure_anchor
+        assert page.common_structure_anchor.winfo_ismapped()
+        assert root.focus_get() is page.common_structure_anchor
+        assert 'monitor.common' in page.common_structure_hint.cget('text')
+        assert '映射' in page.common_structure_hint.cget('text')
+        assert 'private-structure-secret' not in page.common_structure_hint.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_normal_close_cancels_pending_poll(tmp_path):
     """正常关闭窗口后不再执行结果轮询回调。"""
     root = tk.Tk()

@@ -91,7 +91,7 @@ class Page(ScrollForm):
             for path, (variable, widget, kind) in self.fields.items():
                 try:
                     value = self.model.get(path)
-                except (KeyError, IndexError):
+                except (KeyError, IndexError, TypeError):
                     continue
                 if kind == 'multiline':
                     text = '' if value is None else str(value)
@@ -117,7 +117,7 @@ class Page(ScrollForm):
             try:
                 if self.model.get(path) != default:
                     configured.append(path[-1])
-            except (KeyError, IndexError):
+            except (KeyError, IndexError, TypeError):
                 continue
         section = self.section_for_issue
         section.title = ('高级设置（已配置：' + '、'.join(configured) + '）'

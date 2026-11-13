@@ -236,6 +236,39 @@ def test_numeric_confirmation_keeps_valid_values():
     assert Controller._display_change(('monitor', 'common', 'timeout_threshold'), 3) == '3'
 
 
+@pytest.mark.parametrize('answer', ['cancel', 'confirm'])
+def test_real_model_invalid_threshold_requires_normalization_confirmation(tmp_path, monkeypatch,
+                                                                          answer):
+    """非法阈值只有候选差异，启动前仍须确认且取消时磁盘不变。"""
+    controller, confirm, _ = make_controller(tmp_path, answers=[answer])
+    path = ('monitor', 'common', 'timeout_threshold')
+    controller.model.set(('monitor', 'target'), 'demo.exe')
+    controller.model.set(path, 'invalid-threshold-secret')
+    assert controller.save()
+    before = controller.model.document.path.read_bytes()
+    candidate = controller.model.validate(tmp_path)
+    assert not candidate.issues
+    assert any(change.path == path and change.after == 3 for change in candidate.changes)
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    result = controller.start_cli()
+
+    assert confirm.call_args.args[0] == 'normalize'
+    detail = repr(confirm.call_args.args[1])
+    assert 'invalid-threshold-secret' not in detail
+    assert 'monitor' in detail and 'timeout_threshold' in detail
+    if answer == 'cancel':
+        assert result is None
+        assert controller.model.document.path.read_bytes() == before
+        launch.assert_not_called()
+    else:
+        assert result.created
+        assert controller.model.get(path) == 3
+        assert read_document(controller.model.document.path).tree['monitor']['common']['timeout_threshold'] == 3
+        launch.assert_called_once()
+
+
 def test_dirty_start_save_launches_saved_path(tmp_path, monkeypatch):
     """用户确认保存并启动后只把已保存绝对路径传给启动器。"""
     controller, _, _ = make_controller(tmp_path, answers=['save'])

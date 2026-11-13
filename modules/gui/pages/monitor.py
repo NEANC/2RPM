@@ -3,6 +3,7 @@
 
 """监视目标、模式及时间表单。"""
 
+from collections.abc import Mapping
 from tkinter import filedialog, ttk
 
 from modules.gui.pages.base import Page as BasePage
@@ -21,6 +22,8 @@ class Page(BasePage):
         self.mode.bind('<<ComboboxSelected>>', self._switch)
         self.field(self.body, '进程名 / 文件 / 计划任务', ('monitor', 'target'))
         ttk.Button(self.body, text='浏览目标文件', command=self._browse).pack(anchor='w')
+        self.common_structure_hint = ttk.Label(self.body, text='monitor.common 必须是映射结构')
+        self.common_structure_anchor = ttk.Button(self.body, text='定位 monitor.common 结构错误')
         self.field(self.body, '等待时限', ('monitor', 'common', 'max_wait'))
         self.field(self.body, '超时告警间隔', ('monitor', 'common', 'timeout_interval'))
         self.section_for_issue.pack(fill='x')
@@ -50,6 +53,12 @@ class Page(BasePage):
     def refresh(self):
         """刷新模式及目标解释预览。"""
         super().refresh()
+        if isinstance(self.model.get(('monitor', 'common')), Mapping):
+            self.common_structure_hint.pack_forget()
+            self.common_structure_anchor.pack_forget()
+        else:
+            self.common_structure_hint.pack(fill='x')
+            self.common_structure_anchor.pack(anchor='w')
         self.mode.set(self.model.get(('monitor', 'mode')))
         try:
             config_dir = self.model.document.path.parent if self.model.document.path else self.winfo_toplevel()._gui_program_dir
@@ -59,3 +68,10 @@ class Page(BasePage):
             self.preview.configure(text=f'解析结果：{target.value}；工作目录：{target.cwd or "按 CLI 规则确定"}')
         except (ValueError, AttributeError, TypeError):
             self.preview.configure(text='目标路径待校验')
+
+    def focus_issue(self, path):
+        """公共节点结构错误定位到页面提示，不虚构可编辑叶字段。"""
+        if path == ('monitor', 'common'):
+            self.focus_widget(self.common_structure_anchor)
+            return
+        super().focus_issue(path)
