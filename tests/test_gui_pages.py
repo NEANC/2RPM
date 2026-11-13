@@ -5,6 +5,8 @@
 
 import queue
 import tkinter as tk
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -759,5 +761,125 @@ def test_screenshot_conditions_update_on_tab_switch(tmp_path):
         app.notebook.select(2)
         root.update()
         assert '事件开关：未满足' in app.pages[2].condition_labels[event].cget('text')
+    finally:
+        root.destroy()
+
+
+def test_after_heartbeat_continues_during_long_worker(tmp_path):
+    """真实 Tk 定时器在后台测试未结束时继续执行。"""
+    root = tk.Tk()
+    release = threading.Event()
+    worker = None
+    heartbeat_id = None
+    try:
+        app = make_app(root, tmp_path)
+        app.pages[2]._add_target('window')
+        ticks = []
+
+        def heartbeat():
+            """以真实 after 记录主线程定时回调。"""
+            nonlocal heartbeat_id
+            ticks.append(threading.get_ident())
+            heartbeat_id = root.after(15, heartbeat)
+
+        def start(_request):
+            """模拟长期阻塞的后台 worker，不占用 Tk 线程。"""
+            nonlocal worker
+            app.controller.runner.active = True
+            worker = threading.Thread(target=release.wait, daemon=True)
+            worker.start()
+
+        app.controller.runner.start.side_effect = start
+        heartbeat_id = root.after(15, heartbeat)
+        app.capture()
+        deadline = time.monotonic() + 0.4
+        while len(ticks) < 4 and time.monotonic() < deadline:
+            root.update()
+            time.sleep(0.005)
+        assert worker is not None and worker.is_alive()
+        assert len(ticks) >= 4
+        assert set(ticks) == {threading.get_ident()}
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(timeout=1)
+        if heartbeat_id is not None:
+            root.after_cancel(heartbeat_id)
+        if 'app' in locals():
+            root.after_cancel(app._after_id)
+        root.destroy()
+
+
+def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
+    """长中文正文可换行编辑，并可通过键盘焦点链抵达。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.pages[1]
+        path = ('push', 'templates', 'on_end', 'content')
+        app.notebook.select(1)
+        root.update()
+        page.focus_issue(path)
+        root.update()
+        widget = page.fields[path][1]
+        assert isinstance(widget, tk.Text)
+        text = ('这是一段用于通知显示的中文长正文。' * 20) + '\n第二段中文内容'
+        widget.delete('1.0', 'end')
+        widget.insert('1.0', text)
+        root.update()
+        assert app.model.get(path) == text
+        assert root.focus_get() is widget
+        assert widget.tk_focusNext() is not widget
+        assert str(widget.cget('takefocus')) != '0'
+        page.refresh()
+        assert widget.get('1.0', 'end-1c') == text
+    finally:
+        root.destroy()
+
+
+def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
+    """全部静态诊断路径均在校验入口导航到实际字段。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        cases = [(index, path) for index, page in enumerate(app.pages)
+                 for path in page.fields]
+        assert cases
+        for index, path in cases:
+            app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
+                SimpleNamespace(path=field, severity='error')])
+            app.validate()
+            root.update()
+            assert app.notebook.index('current') == index, path
+            assert root.focus_get() is app.pages[index].fields[path][1], path
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('path,page_index,selector_name,entry_name', [
+    (('push', 'push_channel_settings', 'channels', 1, 'sckey'), 1, 'channel_list', 'channel_entries'),
+    (('push', 'screenshot', 'image_host', 1, 'options'), 2, 'host_list', 'host_entries'),
+    (('push', 'screenshot', 'targets', 1, 'out'), 2, 'target_list', 'target_entries'),
+])
+def test_validation_routes_dynamic_diagnostic_path(
+        tmp_path, path, page_index, selector_name, entry_name):
+    """列表项诊断从校验入口切到索引并聚焦字段。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(app.pages[1].channels_path, [
+            {'provider': 'serverchan', 'sckey': ''} for _ in range(2)])
+        app.pages[2]._add_host()
+        app.pages[2]._add_target('window')
+        app.pages[2]._add_target('adb')
+        app.refresh()
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, severity='error')])
+        app.validate()
+        root.update()
+        page = app.pages[page_index]
+        assert app.notebook.index('current') == page_index
+        assert getattr(page, selector_name).current() == 1
+        assert root.focus_get() is getattr(page, entry_name)[path[-1]]
     finally:
         root.destroy()
