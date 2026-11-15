@@ -177,6 +177,68 @@ def test_list_entry_reselects_after_clean_draft_external_reload(tmp_path, operat
         root.destroy()
 
 
+def test_document_reload_refresh_keeps_lists_unselected(tmp_path):
+    """文档重载后的刷新不得自动选中任何列表首项。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        channels, attachments = app.pages[1:3]
+        attachments._add_target('window')
+        selectors = (channels.channel_list, attachments.target_list, attachments.host_list)
+        for selector in selectors:
+            selector.current(0)
+        path = app.model.document.path
+        disk = read_document(path)
+        disk.tree['monitor']['target'] = 'external.exe'
+        save_document(disk, path, expected_fingerprint=disk.fingerprint)
+
+        assert not app.controller.check_external()
+        assert app.model.get(('monitor', 'target')) == 'external.exe'
+        app.refresh()
+        assert all(selector.current() == -1 for selector in selectors)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('kind', ['channel', 'target', 'host'])
+def test_reload_clears_list_editors_until_explicit_selection(tmp_path, kind):
+    """重载后的旧编辑框不显示也不允许写入新文档。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        channels, attachments = app.pages[1:3]
+        attachments._add_target('window')
+        page, selector, entries, path, field = {
+            'channel': (channels, channels.channel_list, 'channel_entries', channels.channels_path, 'provider'),
+            'target': (attachments, attachments.target_list, 'target_entries', attachments.targets_path, 'target'),
+            'host': (attachments, attachments.host_list, 'host_entries', attachments.hosts_path, 'token'),
+        }[kind]
+        selector.current(0)
+        select = getattr(page, {'channel': '_channel_fields', 'target': '_selected_target',
+                                'host': '_selected_host'}[kind])
+        select()
+        old_entry = getattr(page, entries)[field]
+        disk = read_document(app.model.document.path)
+        node = disk.tree
+        for key in path:
+            node = node[key]
+        node[0][field] = 'external-value'
+        save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+
+        assert not app.controller.check_external()
+        assert selector.current() == -1
+        assert getattr(page, entries) == {}
+        assert not old_entry.winfo_exists()
+        assert app.model.get(path)[0][field] == 'external-value'
+        select()
+        assert getattr(page, entries) == {}
+        selector.current(0)
+        select()
+        assert getattr(page, entries)[field].get() == 'external-value'
+    finally:
+        root.destroy()
+
+
 def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
     """页面变量绑定所属控件，不依赖 Tk 的默认根窗口。"""
     root = tk.Tk()
@@ -186,6 +248,10 @@ def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
             app = make_app(root, tmp_path)
             app.pages[0].set_field(('monitor', 'target'), 'demo.exe')
             app.pages[0].set_field(('monitor', 'common', 'loop_interval'), '2s')
+            app.pages[1].channel_list.current(0)
+            app.pages[1]._channel_fields()
+            app.pages[2].host_list.current(0)
+            app.pages[2]._selected_host()
             app.pages[1].channel_entries['provider'].insert('end', 'x')
             app.pages[2].host_entries['token'].insert('end', 'x')
             assert app.model.get(('monitor', 'target')) == 'demo.exe'
@@ -347,6 +413,7 @@ def test_test_request_uses_document_directory(tmp_path):
         app = make_app(root, tmp_path)
         app.pages[2]._add_target('window')
         app.pages[2]._set_item(app.pages[2].targets_path, 0, 'target', '测试窗口')
+        app.pages[2].target_list.current(0)
         app.capture()
         request = app.controller.runner.start.call_args.args[0]
         assert request.config_dir == str(tmp_path.resolve())
@@ -378,6 +445,7 @@ def test_host_options_display_roundtrips_and_invalid_input_blocks_save(tmp_path)
         hosts = app.model.get(page.hosts_path)
         hosts[0]['options'] = {'album_id': 12, 'enabled': False}
         app.model.set(page.hosts_path, hosts)
+        page.host_list.current(0)
         page.refresh()
         entry = page.host_entries['options']
         assert entry.get() == '{album_id: 12, enabled: false}'
@@ -480,6 +548,8 @@ def test_invalid_options_on_clean_model_requires_discard_confirmation(tmp_path, 
         destination = tmp_path / 'another.yaml'
         if action == 'open':
             save_document(new_document(), destination, expected_fingerprint=None)
+        page.host_list.current(0)
+        page._selected_host()
         page.host_entries['options'].insert(0, '{broken: [}')
         assert not app.model.dirty
         assert page.host_entries['options'].get() == '{broken: [}'
@@ -506,6 +576,8 @@ def test_invalid_options_on_clean_model_save_or_discard(tmp_path, answer, expect
     try:
         app = make_app(root, tmp_path)
         page = app.pages[2]
+        page.host_list.current(0)
+        page._selected_host()
         page.host_entries['options'].insert(0, '{broken: [}')
         app.controller.confirm = Mock(side_effect=lambda kind, _: 'confirm' if kind == 'exit' else answer)
         assert app.controller.close() is expected
@@ -602,6 +674,8 @@ def test_channel_required_secret_is_visible_outside_advanced_section(tmp_path):
     try:
         app = make_app(root, tmp_path)
         page = app.pages[1]
+        page.channel_list.current(0)
+        page._channel_fields()
         entries = [child for row in page.channel_body.winfo_children()
                    for child in row.winfo_children() if isinstance(child, tk.ttk.Entry)]
         assert any(entry.cget('show') == '●' for entry in entries)
@@ -697,6 +771,7 @@ def test_host_options_credentials_are_masked(tmp_path):
         hosts = app.model.get(page.hosts_path)
         hosts[0]['options'] = {'api_key': 'demo'}
         app.model.set(page.hosts_path, hosts)
+        page.host_list.current(0)
         page.refresh()
         entries = [child for child in page.host_body.winfo_children()
                    if isinstance(child, tk.ttk.Entry)]
@@ -751,6 +826,7 @@ def test_capture_session_is_not_written_next_to_program(tmp_path):
         app = make_app(root, tmp_path)
         app.pages[2]._add_target('window')
         app.pages[2]._set_item(app.pages[2].targets_path, 0, 'target', '测试窗口')
+        app.pages[2].target_list.current(0)
         app.capture()
         session = Path(app.controller.runner.start.call_args.args[0].session_dir)
         assert session.is_relative_to(Path(tempfile.gettempdir()))
@@ -1225,6 +1301,7 @@ def test_after_heartbeat_continues_during_long_worker(tmp_path):
     try:
         app = make_app(root, tmp_path)
         app.pages[2]._add_target('window')
+        app.pages[2].target_list.current(0)
         ticks = []
 
         def heartbeat():

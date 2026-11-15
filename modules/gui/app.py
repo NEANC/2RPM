@@ -157,6 +157,9 @@ class App:
             self.result_text = ''
             self.preview_image = None
             self.preview_label.configure(image='', text='')
+            for selector in (self.pages[1].channel_list, self.pages[2].target_list,
+                             self.pages[2].host_list):
+                selector.set('')
             self.generation = self.model.document_generation
         for page in self.pages:
             page.refresh()

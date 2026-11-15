@@ -154,9 +154,9 @@ class Page(BasePage):
         channels = self.model.get(self.channels_path)
         self.channel_list.configure(values=[f'{i + 1}. {item.get("provider", "未知")}'
                                             for i, item in enumerate(channels)])
-        if channels:
-            self.channel_list.current(min(max(selected, 0), len(channels) - 1))
-        else:
+        if channels and selected >= 0:
+            self.channel_list.current(min(selected, len(channels) - 1))
+        elif not channels:
             self.channel_list.set('无通道：不会发送通知')
         self._channel_fields()
 

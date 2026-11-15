@@ -270,14 +270,14 @@ class Page(BasePage):
         targets = self.model.get(self.targets_path)
         self.target_list.configure(values=[f'{i + 1}. {item.get("provider", "")} {item.get("target", "")}'
                                            for i, item in enumerate(targets)])
-        if targets:
-            self.target_list.current(min(max(selected_target, 0), len(targets) - 1))
+        if targets and selected_target >= 0:
+            self.target_list.current(min(selected_target, len(targets) - 1))
         self._selected_target()
         hosts = self.model.get(self.hosts_path)
         self.host_list.configure(values=[f'{i + 1}. {item.get("provider", "")}'
                                          for i, item in enumerate(hosts)])
-        if hosts:
-            self.host_list.current(min(max(selected_host, 0), len(hosts) - 1))
+        if hosts and selected_host >= 0:
+            self.host_list.current(min(selected_host, len(hosts) - 1))
         self._selected_host()
 
     def focus_issue(self, path):
