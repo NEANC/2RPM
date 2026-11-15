@@ -92,6 +92,8 @@ class Page(BasePage):
         other = index + offset
         if index < 0 or not 0 <= other < len(hosts):
             return
+        if not self.model.before_list_edit():
+            return
         hosts[index], hosts[other] = hosts[other], hosts[index]
         for mapping in (self.invalid_options, self.model.input_errors):
             first = index if mapping is self.invalid_options else (*self.hosts_path, index, 'options')
@@ -111,6 +113,8 @@ class Page(BasePage):
 
     def _add_target(self, provider):
         """追加独立截图目标。"""
+        if not self.model.before_list_edit():
+            return
         targets = self.model.get(self.targets_path)
         targets.append({'provider': provider, 'target': '', 'out': ''})
         self.model.set(self.targets_path, targets)
@@ -121,6 +125,8 @@ class Page(BasePage):
         """删除选中的截图目标。"""
         index = self.target_list.current()
         if index >= 0:
+            if not self.model.before_list_edit():
+                return
             targets = self.model.get(self.targets_path)
             targets.pop(index)
             self.model.set(self.targets_path, targets)
@@ -211,6 +217,8 @@ class Page(BasePage):
 
     def _add_host(self):
         """在图床回退列表末尾追加条目。"""
+        if not self.model.before_list_edit():
+            return
         hosts = self.model.get(self.hosts_path)
         hosts.append({'provider': 'catbox', 'token': ''})
         self.model.set(self.hosts_path, hosts)
@@ -221,6 +229,8 @@ class Page(BasePage):
         """删除选定图床。"""
         index = self.host_list.current()
         if index >= 0:
+            if not self.model.before_list_edit():
+                return
             hosts = self.model.get(self.hosts_path)
             hosts.pop(index)
             self.invalid_options = {key - (key > index): value

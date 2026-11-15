@@ -255,8 +255,13 @@ def save_document(document: ConfigDocument, destination: Path, *,
         finally:
             stream.close()
         data = Path(temp_path).read_bytes()
+        _check_save_path(destination)
+        if _fingerprint(destination) != expected_fingerprint:
+            raise ConfigConflictError('配置目标已变化，请重新加载或另存为')
         os.replace(temp_path, destination)
         temp_path = None
+    except ConfigConflictError:
+        raise
     except Exception:
         raise ConfigSaveError('无法保存配置文档') from None
     finally:

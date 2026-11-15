@@ -22,6 +22,7 @@ class EditorModel:
         self.document_generation = 0
         self.revision = 0
         self.on_edit = lambda: None
+        self.before_list_edit = lambda: True
         self.on_list_edit = lambda: None
         self.replace_document(document)
         self.document_generation = 0

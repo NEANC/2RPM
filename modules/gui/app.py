@@ -32,6 +32,7 @@ class App:
         self.model = controller.model
         self.save_coordinator = SaveCoordinator(controller, root.after, root.after_cancel)
         self.model.on_edit = self.save_coordinator.edited
+        self.model.before_list_edit = self.save_coordinator.flush
         self.model.on_list_edit = self.save_coordinator.flush
         self.latest_request = None
         self.generation = self.model.document_generation

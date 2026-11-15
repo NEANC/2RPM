@@ -398,8 +398,8 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_invalid_options_follow_host_when_reordered(tmp_path):
-    """图床移动后非法草稿仍属于原条目，不能保存。"""
+def test_invalid_options_block_host_reorder(tmp_path):
+    """图床选项有非法草稿时不移动条目，也不改变错误归属。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -409,9 +409,11 @@ def test_invalid_options_follow_host_when_reordered(tmp_path):
         page._selected_host()
         entry = page.host_entries['options']
         entry.insert(0, '{broken: [}')
+        before = app.model.get(page.hosts_path)
         page.move_host(1)
         assert page.host_entries['options'].get() == '{broken: [}'
-        assert any(issue.path == (*page.hosts_path, 1, 'options')
+        assert app.model.get(page.hosts_path) == before
+        assert any(issue.path == (*page.hosts_path, 0, 'options')
                    for issue in app.model.validate(tmp_path).issues)
         assert not app.controller.save(tmp_path / 'invalid.yaml')
     finally:
@@ -479,7 +481,8 @@ def test_request_with_non_json_yaml_value_is_rejected_before_worker(tmp_path):
         app.pages[2]._add_target('window')
         app.capture()
         app.controller.runner.start.assert_not_called()
-        assert '配置' in app.status.cget('text')
+        assert not app.model.get(app.pages[2].targets_path)
+        assert app.model.dirty
     finally:
         root.destroy()
 

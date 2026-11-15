@@ -54,6 +54,8 @@ class Page(BasePage):
 
     def _add(self):
         """追加一个真实 provider 的通道。"""
+        if not self.model.before_list_edit():
+            return
         channels = self.model.get(self.channels_path)
         channels.append({'provider': 'serverchan', 'sckey': ''})
         self.model.set(self.channels_path, channels)
@@ -66,6 +68,8 @@ class Page(BasePage):
         """移除当前选中通道，不触碰其它通道。"""
         index = self.channel_list.current()
         if index < 0:
+            return
+        if not self.model.before_list_edit():
             return
         channels = self.model.get(self.channels_path)
         channels.pop(index)
