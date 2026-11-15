@@ -20,6 +20,8 @@ from modules.gui.appearance import (AppearancePreferences, apply_appearance,
 from modules.gui.pages import attachments, monitor, notification, review
 from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
+from modules.gui.test_dialogs import TestDialogs
+from modules.gui.test_session import TestSession
 
 
 class App:
@@ -34,7 +36,8 @@ class App:
         self.model.on_edit = self.save_coordinator.edited
         self.model.before_list_edit = self._before_list_edit
         self.model.on_list_edit = self.save_coordinator.flush
-        self.latest_request = None
+        self.test_session = TestSession(controller.runner)
+        self.test_dialogs = TestDialogs(root, self.test_session)
         self.generation = self.model.document_generation
         self.result_text = ''
         self.preview_image = None
@@ -153,7 +156,9 @@ class App:
     def refresh(self):
         """保存或替换文档后同步全部页面与标题。"""
         if self.generation != self.model.document_generation:
-            self.latest_request = None
+            self.test_session.clear()
+            self.test_dialogs.clear()
+            self.actions['测试通知'].configure(text='测试通知', state='normal')
             self.result_text = ''
             self.preview_image = None
             self.preview_label.configure(image='', text='')
@@ -208,18 +213,29 @@ class App:
                 result = self.controller.runner.results.get_nowait()
             except queue.Empty:
                 break
-            current = self.latest_request
-            if (current is None or result.request_id != current[0]
-                    or result.document_generation != current[1]
-                    or result.document_generation != self.model.document_generation
-                    or result.revision != current[2]):
+            current = self.test_session.active_request
+            if (current is None or result.document_generation != self.model.document_generation
+                    or not self.test_session.accept(result, current_revision=self.model.revision)):
                 continue
-            suffix = '（对应先前草稿）' if result.revision != self.model.revision else ''
+            suffix = '（对应先前草稿）' if self.test_session.previous_draft else ''
             self.result_text = f'{result.status}: {result.reason}{suffix}'
+            if current.action == 'notify':
+                self.actions['测试通知'].configure(text='测试通知', state='normal')
+                if result.status != 'success':
+                    failures = [f'{item.index + 1} {item.provider}：{item.reason}'
+                                for item in result.channel_results if item.status == 'failure']
+                    messagebox.showerror('通知测试失败', '\n'.join(failures) or result.reason,
+                                         parent=self.root)
+                continue
+            self.test_dialogs.show_result(current.action, result,
+                                          previous=self.test_session.previous_draft,
+                                          retry_callback=(self.open_upload_selection
+                                                          if current.action == 'upload'
+                                                          else self.open_capture_selection))
             self.status.configure(text=self.result_text)
             self.preview_image = None
             self.preview_label.configure(image='', text='')
-            if result.preview_paths:
+            if result.preview_paths and not isinstance(self.root, ctk_kit.App):
                 try:
                     with Image.open(result.preview_paths[0]) as image:
                         preview = image.copy()
@@ -231,11 +247,18 @@ class App:
 
     def new(self):
         """由控制器确认旧草稿后建立新配置。"""
+        if self.controller.runner.active:
+            self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            return
         self.controller.new(lambda: filedialog.asksaveasfilename(
             parent=self.root, defaultextension='.yaml') or None)
 
     def open(self):
         """用原始选择路径读取，不隐式添加后缀。"""
+        if self.controller.runner.active:
+            self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            return
+
         def picker():
             """由控制器暂停保存后再打开系统选择器。"""
             name = filedialog.askopenfilename(parent=self.root, filetypes=[('YAML', '*.yaml *.yml'), ('所有文件', '*.*')])
@@ -251,6 +274,9 @@ class App:
 
     def save_as(self):
         """选择另存为目标，由控制器规范化并检查冲突。"""
+        if self.controller.runner.active:
+            self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            return
         if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
                 parent=self.root, defaultextension='.yaml') or None):
             self.status.configure(text='配置未另存')
@@ -314,16 +340,18 @@ class App:
         self.status.configure(text=result.message if result else '未启动 CLI')
 
     def _request(self, action, *, target_index=None, host_index=None,
-                 image_path=None, template_key=None):
+                 image_path=None, template_key=None, capture_provider=None,
+                 capture_target=None):
         """主线程冻结草稿与绝对路径，后台只接收不可变请求。"""
         if not self._require_saved():
-            return
-        if self.controller.runner.active:
+            return False
+        if self.test_session.active_request is not None or self.controller.runner.active:
             self.status.configure(text='已有测试正在运行')
-            return
+            return False
         if action in ('upload', 'notify') and not messagebox.askyesno(
-                '真实测试', '此操作会向外部服务发送请求，继续吗？', parent=self.root):
-            return
+                '真实测试', ('固定测试消息将发往全部配置通道，继续吗？' if action == 'notify'
+                           else '图片将真实上传到选定图床，继续吗？'), parent=self.root):
+            return False
         path = self.model.document.path
         request = TestRequest(uuid.uuid4().hex, self.model.document_generation,
                               self.model.revision, action, self._plain_value(self.model.snapshot()),
@@ -331,49 +359,116 @@ class App:
                               str(self.session_dir),
                               target_index, host_index,
                               str(Path(image_path).resolve()) if image_path else None,
-                              template_key)
+                              template_key, capture_provider, capture_target)
         try:
             encode_request(request)
         except (TypeError, ValueError):
             self.status.configure(text='配置包含无法用于测试的值')
-            return
-        try:
-            self.controller.runner.start(request)
-        except (RuntimeError, ValueError):
+            return False
+        if not self.test_session.start(request):
             self.status.configure(text='无法启动测试')
-            return
-        self.latest_request = (request.request_id, request.document_generation, request.revision)
+            return False
         self.status.configure(text='测试进行中')
+        if action == 'notify':
+            self.actions['测试通知'].configure(text='发送中…', state='disabled')
+        else:
+            self.test_dialogs.show_result(action)
+        return True
 
     def capture(self):
-        """测试选定截图目标且不启动监视。"""
-        index = self.pages[2].target_list.current()
-        if index < 0 or index >= len(self.model.get(self.pages[2].targets_path)):
-            self.status.configure(text='请选择截图目标')
+        """打开手填来源与目标的选择窗，或恢复运行结果。"""
+        if self.test_session.active_request is not None:
+            if self.test_session.active_request.action == 'capture':
+                self.test_dialogs.show_result('capture')
             return
-        self._request('capture', target_index=index)
+        if self.test_session.last_capture is not None:
+            self.test_dialogs.show_result('capture', self.test_session.last_capture,
+                                          previous=(self.test_session.last_capture_previous
+                                                    or self.test_session.last_capture.revision
+                                                    != self.model.revision),
+                                          retry_callback=self.open_capture_selection)
+            return
+        self.open_capture_selection()
+
+    def open_capture_selection(self):
+        """选择截图来源前补存并绑定文档身份。"""
+        if not self._require_saved():
+            return
+        identity = (self.model.document_generation, self.model.revision)
+
+        def submit(provider, target):
+            """截图目标输入期间的文档变更需重新选择。"""
+            if not self._require_saved():
+                return False
+            if identity != (self.model.document_generation, self.model.revision):
+                self.status.configure(text='配置已更新，请重新选择截图目标')
+                self.open_capture_selection()
+                return False
+            return self._request('capture', capture_provider=provider,
+                                 capture_target=target)
+
+        self.test_dialogs.open_capture(submit)
 
     def upload(self):
-        """单图床测试须先明确选择图片。"""
-        index = self.pages[2].host_list.current()
-        if index < 0 or index >= len(self.model.get(self.pages[2].hosts_path)):
-            self.status.configure(text='请选择图床')
+        """展示图床和本地图片选择，确认后仅发送选定图床。"""
+        if self.test_session.active_request is not None:
+            if self.test_session.active_request.action == 'upload':
+                self.test_dialogs.show_result('upload')
             return
-        image = filedialog.askopenfilename(parent=self.root, filetypes=[('图片', '*.png *.jpg *.jpeg')])
-        if image:
-            self._request('upload', host_index=index, image_path=image)
+        if self.test_session.last_upload is not None:
+            self.test_dialogs.show_result('upload', self.test_session.last_upload,
+                                          previous=(self.test_session.last_upload_previous
+                                                    or self.test_session.last_upload.revision
+                                                    != self.model.revision),
+                                          retry_callback=self.open_upload_selection)
+            return
+        self.open_upload_selection()
+
+    def open_upload_selection(self):
+        """配置变动后重开新图床列表，不复用旧索引。"""
+        if not self._require_saved():
+            return
+        hosts = self.model.get(self.pages[2].hosts_path)
+        names = [item.get('provider', '未知') if isinstance(item, dict) else '未知'
+                 for item in hosts]
+        identity = (self.model.document_generation, self.model.revision, hosts)
+
+        def submit(index, image):
+            """复核重选时的列表内容与修订。"""
+            if not self._require_saved():
+                return False
+            if (identity != (self.model.document_generation, self.model.revision,
+                             self.model.get(self.pages[2].hosts_path))
+                    or index >= len(hosts)):
+                self.status.configure(text='配置已更新，请重新选择图床')
+                self.open_upload_selection()
+                return False
+            return self._request('upload', host_index=index, image_path=image)
+
+        self.test_dialogs.open_upload(names, submit)
 
     def notify(self):
-        """以模拟事件值发送一次独立测试通知。"""
+        """通知测试无通道提前阻止，不保留可重开的结果。"""
+        if self.test_session.active_request is not None or self.controller.runner.active:
+            return
+        if not self._require_saved():
+            return
+        channels = self.model.get(('push', 'push_channel_settings', 'channels'))
+        if not channels:
+            self.status.configure(text='请先添加推送通道')
+            return
         self._request('notify', template_key=self.pages[1].selected_event.get())
 
     def cancel_test(self):
-        """取消仅针对测试 worker，不影响 CLI。"""
-        self.controller.runner.cancel()
+        """取消仅针对截图或上传 worker，不影响 CLI。"""
+        current = self.test_session.active_request
+        if current is not None and current.action != 'notify':
+            self.test_session.cancel()
 
     def close(self):
         """处理未保存草稿并正常关闭测试运行器。"""
         if self.controller.close():
+            self.test_dialogs.clear()
             self.save_coordinator.close()
             self.root.after_cancel(self._after_id)
             threading.Thread(target=shutil.rmtree, args=(self.session_dir,),

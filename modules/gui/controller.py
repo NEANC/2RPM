@@ -92,6 +92,8 @@ class Controller:
             self.conflicted = False
             self.on_change()
             return True
+        if self.runner.active is True:
+            return False
         return self._transaction(operation)
 
     def open(self, path: Path | Callable[[], Path | None]) -> bool:
@@ -111,10 +113,14 @@ class Controller:
             self.conflicted = False
             self.on_change()
             return True
+        if self.runner.active is True:
+            return False
         return self._transaction(operation)
 
     def save_as(self, picker) -> bool:
         """选定路径前不向原文件补存。"""
+        if self.runner.active is True:
+            return False
         return self._transaction(lambda: self.save(destination=picker(), as_new=True))
 
     def check_external(self) -> bool:
@@ -340,6 +346,8 @@ class Controller:
         def operation():
             """最终批准前不清理当前草稿或 worker。"""
             if not self._resolve_unsaved():
+                return False
+            if self.runner.active is True and self.confirm('exit_test', None) != 'confirm':
                 return False
             if self.confirm('exit', None) != 'confirm':
                 return False

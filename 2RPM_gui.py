@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         if kind == 'unsaved':
             response = messagebox.askyesnocancel('未保存修改', '保存当前配置？否将放弃修改。', parent=root)
             return 'save' if response is True else 'discard' if response is False else 'cancel'
+        if kind == 'exit_test':
+            text = '测试仍在进行，退出将结束本地测试；已发出的上传或通知无法撤回。是否退出？'
+            return 'confirm' if messagebox.askyesno('测试进行中', text, parent=root) else 'cancel'
         if kind == 'exit':
             return 'confirm' if messagebox.askyesno('退出配置', '确认退出配置窗口？', parent=root) else 'cancel'
         if kind == 'discard_external':

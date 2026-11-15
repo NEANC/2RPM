@@ -15,6 +15,7 @@ import pytest
 from modules.config_document import new_document, read_document, save_document
 from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
+from modules.gui.protocol import TestRequest as GuiTestRequest
 from modules.gui.protocol import TestResult as GuiTestResult
 
 
@@ -308,7 +309,9 @@ def test_stale_generation_result_is_dropped(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        app.latest_request = ('old', app.controller.model.document_generation, 0)
+        app.test_session.active_request = GuiTestRequest(
+            'old', app.model.document_generation, 0, 'capture', {}, str(tmp_path),
+            str(app.session_dir), 0, None, None, None)
         app.controller.new()
         app.controller.runner.active = True
         app.controller.runner.results.put(GuiTestResult('old', 0, 0, 'success', '旧结果', ()))
@@ -324,7 +327,10 @@ def test_same_generation_stale_revision_is_labelled(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        app.latest_request = ('current', 0, 0)
+        app.test_dialogs.show_result = Mock()
+        app.test_session.active_request = GuiTestRequest('current', 0, 0, 'capture', {},
+                                                        str(tmp_path), str(app.session_dir),
+                                                        0, None, None, None)
         app.controller.model.set(('monitor', 'target'), 'changed.exe')
         app.controller.runner.results.put(GuiTestResult('older', 0, 0, 'success', '较旧', ()))
         app.controller.runner.results.put(GuiTestResult('current', 0, 0, 'success', '完成', ()))
@@ -411,11 +417,16 @@ def test_test_request_uses_document_directory(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        app.test_dialogs.open_capture = Mock()
+        app.test_dialogs.show_result = Mock()
         app.pages[2]._add_target('window')
         app.pages[2]._set_item(app.pages[2].targets_path, 0, 'target', '测试窗口')
         app.pages[2].target_list.current(0)
         app.capture()
+        assert app.test_dialogs.open_capture.call_args.args[0]('window', '测试窗口')
         request = app.controller.runner.start.call_args.args[0]
+        assert request.capture_provider == 'window'
+        assert request.capture_target == '测试窗口'
         assert request.config_dir == str(tmp_path.resolve())
         assert request.document_generation == app.model.document_generation
     finally:
@@ -643,13 +654,14 @@ def test_cli_launch_keeps_forms_editable(tmp_path, monkeypatch):
 
 
 def test_capture_request_requires_selected_target(tmp_path):
-    """无截图目标时不允许构造默认索引零的请求。"""
+    """截图测试必须在选择弹窗填写窗口标题或 ADB 地址。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        app.test_dialogs.open_capture = Mock()
         app.capture()
         app.controller.runner.start.assert_not_called()
-        assert '目标' in app.status.cget('text')
+        app.test_dialogs.open_capture.assert_called_once()
     finally:
         root.destroy()
 
@@ -742,6 +754,8 @@ def test_host_edit_refresh_keeps_selected_upload_host(tmp_path, monkeypatch):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        app.test_dialogs.open_upload = Mock()
+        app.test_dialogs.show_result = Mock()
         page = app.pages[2]
         page._add_host()
         page.host_list.current(1)
@@ -757,6 +771,8 @@ def test_host_edit_refresh_keeps_selected_upload_host(tmp_path, monkeypatch):
         monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
                             lambda **_: str(tmp_path / 'image.png'))
         app.upload()
+        _, submit = app.test_dialogs.open_upload.call_args.args
+        assert submit(1, str(tmp_path / 'image.png'))
         assert app.controller.runner.start.call_args.args[0].host_index == 1
     finally:
         root.destroy()
@@ -781,23 +797,25 @@ def test_host_options_credentials_are_masked(tmp_path):
 
 
 def test_request_uses_selected_event_and_host(tmp_path, monkeypatch):
-    """通知与上传请求沿用界面选择，未选图床不偷偷退回零。"""
+    """通知固定消息与上传独立选择图床，未选择时不发送。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *_, **__: True)
-        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', lambda **_: str(tmp_path / 'image.png'))
         app.pages[1].selected_event.set('on_timeout')
         app.notify()
         assert app.controller.runner.start.call_args.args[0].template_key == 'on_timeout'
-        app.pages[2]._add_host()
-        app.pages[2].host_list.current(1)
-        app.upload()
-        assert app.controller.runner.start.call_args.args[0].host_index == 1
+        app.test_session.active_request = None
         app.controller.runner.start.reset_mock()
-        app.pages[2].host_list.set('')
+        app.pages[2]._add_host()
+        app.test_dialogs.open_upload = Mock()
+        app.test_dialogs.show_result = Mock()
         app.upload()
+        names, submit = app.test_dialogs.open_upload.call_args.args
+        assert len(names) == 2
         app.controller.runner.start.assert_not_called()
+        assert submit(1, str(tmp_path / 'image.png'))
+        assert app.controller.runner.start.call_args.args[0].host_index == 1
     finally:
         root.destroy()
 
@@ -824,10 +842,13 @@ def test_capture_session_is_not_written_next_to_program(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        app.test_dialogs.open_capture = Mock()
+        app.test_dialogs.show_result = Mock()
         app.pages[2]._add_target('window')
         app.pages[2]._set_item(app.pages[2].targets_path, 0, 'target', '测试窗口')
         app.pages[2].target_list.current(0)
         app.capture()
+        assert app.test_dialogs.open_capture.call_args.args[0]('window', '测试窗口')
         session = Path(app.controller.runner.start.call_args.args[0].session_dir)
         assert session.is_relative_to(Path(tempfile.gettempdir()))
         assert not session.is_relative_to(tmp_path)
@@ -1302,6 +1323,8 @@ def test_after_heartbeat_continues_during_long_worker(tmp_path):
         app = make_app(root, tmp_path)
         app.pages[2]._add_target('window')
         app.pages[2].target_list.current(0)
+        app.test_dialogs.open_capture = Mock()
+        app.test_dialogs.show_result = Mock()
         ticks = []
 
         def heartbeat():
@@ -1320,6 +1343,7 @@ def test_after_heartbeat_continues_during_long_worker(tmp_path):
         app.controller.runner.start.side_effect = start
         heartbeat_id = root.after(15, heartbeat)
         app.capture()
+        assert app.test_dialogs.open_capture.call_args.args[0]('window', '窗口')
         deadline = time.monotonic() + 0.4
         while len(ticks) < 4 and time.monotonic() < deadline:
             root.update()
