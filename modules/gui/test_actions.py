@@ -101,7 +101,7 @@ def _notify(request: TestRequest) -> tuple[str, str, tuple[ChannelTestResult, ..
         return 'failure', _NOT_SENT, ()
     records = []
     for index, channel in enumerate(channels):
-        parsed = parse_push_channels(channel) if isinstance(channel, dict) else []
+        parsed = parse_push_channels(channel) if isinstance(channel, (dict, str)) else []
         provider = parsed[0].get('provider') if parsed else None
         safe_provider = (provider if isinstance(provider, str)
                          and re.fullmatch(r'[A-Za-z0-9_-]+', provider)

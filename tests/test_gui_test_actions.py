@@ -100,6 +100,38 @@ def test_notify_snapshot_disables_capture(monkeypatch, tmp_path):
     assert config == before
 
 
+def test_notify_sends_mixed_legacy_string_and_dict_channels(monkeypatch, tmp_path):
+    """字符串旧式通道与字典通道逐项发送固定通知并保留索引。"""
+    import modules.gui.test_actions as actions
+
+    config = _config()
+    config['push']['push_channel_settings']['channels'] = [
+        '[serverchan, synthetic-secret]',
+        {'provider': 'bark', 'key': 'other-secret'}]
+    sent = []
+
+    def sender(snapshot, key, **_kwargs):
+        """记录逐项传入的原始通道与固定测试模板。"""
+        channel = snapshot['push']['push_channel_settings']['channels']
+        template = snapshot['push']['templates'][key]
+        sent.append((copy.deepcopy(channel), template['title'], template['content']))
+        return [('serverchan' if isinstance(channel[0], str) else 'bark', True)]
+
+    monkeypatch.setattr(actions, 'send_notification', sender)
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+
+    assert sent == [
+        (['[serverchan, synthetic-secret]'], '2RPM推送测试',
+         '这是一个测试，当你收到时表明一切正常。'),
+        ([{'provider': 'bark', 'key': 'other-secret'}], '2RPM推送测试',
+         '这是一个测试，当你收到时表明一切正常。')]
+    assert result.status == 'success'
+    assert [(item.index, item.provider, item.status) for item in result.channel_results] == [
+        (0, 'serverchan', 'success'), (1, 'bark', 'success')]
+    assert 'synthetic-secret' not in str(result)
+    assert 'other-secret' not in str(result)
+
+
 def test_notify_empty_result_is_failure(monkeypatch, tmp_path):
     """无通道时不调用发送入口。"""
     import modules.notification as notification
