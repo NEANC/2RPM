@@ -39,6 +39,7 @@ class App:
         self.test_session = TestSession(controller.runner)
         self.test_dialogs = TestDialogs(root, self.test_session)
         self.generation = self.model.document_generation
+        self.document_path = self.model.document.path
         self.result_text = ''
         self.preview_image = None
         self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
@@ -156,16 +157,18 @@ class App:
     def refresh(self):
         """保存或替换文档后同步全部页面与标题。"""
         if self.generation != self.model.document_generation:
-            self.test_session.clear()
-            self.test_dialogs.clear()
-            self.actions['测试通知'].configure(text='测试通知', state='normal')
-            self.result_text = ''
-            self.preview_image = None
-            self.preview_label.configure(image='', text='')
+            if self.document_path != self.model.document.path:
+                self.test_session.clear()
+                self.test_dialogs.clear()
+                self.actions['测试通知'].configure(text='测试通知', state='normal')
+                self.result_text = ''
+                self.preview_image = None
+                self.preview_label.configure(image='', text='')
             for selector in (self.pages[1].channel_list, self.pages[2].target_list,
                              self.pages[2].host_list):
                 selector.set('')
             self.generation = self.model.document_generation
+            self.document_path = self.model.document.path
         for page in self.pages:
             page.refresh()
         self._refresh_save_status()
@@ -214,10 +217,12 @@ class App:
             except queue.Empty:
                 break
             current = self.test_session.active_request
-            if (current is None or result.document_generation != self.model.document_generation
-                    or not self.test_session.accept(result, current_revision=self.model.revision)):
+            if current is None or not self.test_session.accept(
+                    result, current_revision=self.model.revision,
+                    current_generation=self.model.document_generation):
                 continue
-            suffix = '（对应先前草稿）' if self.test_session.previous_draft else ''
+            suffix = ('（对应先前配置）' if self.test_session.previous_generation else
+                      '（对应先前草稿）' if self.test_session.previous_draft else '')
             self.result_text = f'{result.status}: {result.reason}{suffix}'
             if current.action == 'notify':
                 self.actions['测试通知'].configure(text='测试通知', state='normal')
@@ -227,11 +232,13 @@ class App:
                     messagebox.showerror('通知测试失败', '\n'.join(failures) or result.reason,
                                          parent=self.root)
                 continue
-            self.test_dialogs.show_result(current.action, result,
-                                          previous=self.test_session.previous_draft,
-                                          retry_callback=(self.open_upload_selection
-                                                          if current.action == 'upload'
-                                                          else self.open_capture_selection))
+            if not self.test_session.hidden:
+                self.test_dialogs.show_result(current.action, result,
+                                              previous=(self.test_session.previous_generation
+                                                        or self.test_session.previous_draft),
+                                              retry_callback=(self.open_upload_selection
+                                                              if current.action == 'upload'
+                                                              else self.open_capture_selection))
             self.status.configure(text=self.result_text)
             self.preview_image = None
             self.preview_label.configure(image='', text='')
@@ -379,11 +386,14 @@ class App:
         """打开手填来源与目标的选择窗，或恢复运行结果。"""
         if self.test_session.active_request is not None:
             if self.test_session.active_request.action == 'capture':
+                self.test_session.hidden = False
                 self.test_dialogs.show_result('capture')
             return
         if self.test_session.last_capture is not None:
             self.test_dialogs.show_result('capture', self.test_session.last_capture,
                                           previous=(self.test_session.last_capture_previous
+                                                    or self.test_session.last_capture.document_generation
+                                                    != self.model.document_generation
                                                     or self.test_session.last_capture.revision
                                                     != self.model.revision),
                                           retry_callback=self.open_capture_selection)
@@ -413,11 +423,14 @@ class App:
         """展示图床和本地图片选择，确认后仅发送选定图床。"""
         if self.test_session.active_request is not None:
             if self.test_session.active_request.action == 'upload':
+                self.test_session.hidden = False
                 self.test_dialogs.show_result('upload')
             return
         if self.test_session.last_upload is not None:
             self.test_dialogs.show_result('upload', self.test_session.last_upload,
                                           previous=(self.test_session.last_upload_previous
+                                                    or self.test_session.last_upload.document_generation
+                                                    != self.model.document_generation
                                                     or self.test_session.last_upload.revision
                                                     != self.model.revision),
                                           retry_callback=self.open_upload_selection)

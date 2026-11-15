@@ -241,6 +241,117 @@ def test_result_and_conflict_actions_bypass_flush(tmp_path):
         root.destroy()
 
 
+def test_hidden_running_result_stays_hidden_when_finished(tmp_path):
+    """用户主动隐藏运行窗后，终态仅更新结果，不擅自重新弹出。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.show_result = Mock()
+        app.test_session.active_request = GuiRequest(
+            'capture', app.model.document_generation, app.model.revision, 'capture',
+            {}, str(tmp_path), str(app.session_dir), None, None, None, None,
+            'window', '测试窗口')
+        app.test_session.hide()
+        app.controller.runner.results.put(GuiResult(
+            'capture', app.model.document_generation, app.model.revision,
+            'failure', '测试失败', ()))
+        app.drain_results()
+        app.test_dialogs.show_result.assert_not_called()
+        assert app.test_session.last_capture is not None
+        app.capture()
+        app.test_dialogs.show_result.assert_called_once()
+    finally:
+        root.destroy()
+
+
+def test_reopened_running_result_updates_on_completion(tmp_path):
+    """运行中手动重新打开结果窗后，终态须更新当前可见窗口。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.show_result = Mock()
+        app.test_session.active_request = GuiRequest(
+            'capture', app.model.document_generation, app.model.revision, 'capture',
+            {}, str(tmp_path), str(app.session_dir), None, None, None, None,
+            'window', '测试窗口')
+        app.test_session.hide()
+        app.capture()
+        app.controller.runner.results.put(GuiResult(
+            'capture', app.model.document_generation, app.model.revision,
+            'success', '', ()))
+        app.drain_results()
+        assert app.test_dialogs.show_result.call_count == 2
+    finally:
+        root.destroy()
+
+
+def test_external_reload_keeps_running_result_with_old_version(tmp_path):
+    """同路径自动重载后仍接纳原请求，并将结果标注为旧配置。"""
+    from modules.config_document import read_document
+    from modules.config_document import save_document
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.show_result = Mock()
+        previous = app.model.document_generation
+        app.test_session.active_request = GuiRequest(
+            'capture', previous, app.model.revision, 'capture', {},
+            str(tmp_path), str(app.session_dir), None, None, None, None,
+            'window', '测试窗口')
+        disk = read_document(app.model.document.path)
+        disk.tree['monitor']['target'] = '外部版本.exe'
+        save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+        assert app.controller.check_external() is False
+        assert app.model.document_generation != previous
+        app.controller.runner.results.put(GuiResult(
+            'capture', previous, 0, 'success', '', ()))
+        app.drain_results()
+        assert app.test_session.last_capture is not None
+        assert '对应先前' in app.result_text
+        app.capture()
+        assert app.test_dialogs.show_result.call_args.kwargs['previous']
+    finally:
+        root.destroy()
+
+
+def test_external_reload_keeps_finished_result(tmp_path):
+    """同路径重载不清除已结束测试的可重新打开结果。"""
+    from modules.config_document import read_document
+    from modules.config_document import save_document
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        result = GuiResult('old', app.model.document_generation, 0,
+                           'success', '', ())
+        app.test_session.last_capture = result
+        disk = read_document(app.model.document.path)
+        disk.tree['monitor']['target'] = '重载.exe'
+        save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+        app.controller.check_external()
+        assert app.test_session.last_capture is result
+        app.test_dialogs.show_result = Mock()
+        app.capture()
+        assert app.test_dialogs.show_result.call_args.kwargs['previous']
+    finally:
+        root.destroy()
+
+
 def test_notify_late_result_does_not_popup_on_new_document(tmp_path, monkeypatch):
     """新配置不能接收已切换文档的迟到通知错误窗。"""
     from tests.test_gui_pages import make_app

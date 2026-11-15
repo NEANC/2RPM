@@ -18,6 +18,7 @@ class TestSession:
         self.last_upload: TestResult | None = None
         self.last_capture_previous = False
         self.last_upload_previous = False
+        self.previous_generation = False
         self.previous_draft = False
         self.hidden = False
 
@@ -40,20 +41,24 @@ class TestSession:
             self.last_upload_previous = False
         return True
 
-    def accept(self, result: TestResult, *, current_revision: int | None = None) -> bool:
-        """只接纳当前请求及其固定文档身份，注明过期草稿。"""
+    def accept(self, result: TestResult, *, current_revision: int | None = None,
+               current_generation: int | None = None) -> bool:
+        """只接纳当前请求身份，并标明过期配置或草稿。"""
         request = self.active_request
         if (request is None or result.request_id != request.request_id
                 or result.document_generation != request.document_generation
                 or result.revision != request.revision):
             return False
-        self.previous_draft = current_revision is not None and result.revision != current_revision
+        self.previous_generation = (current_generation is not None
+                                    and result.document_generation != current_generation)
+        self.previous_draft = (current_revision is not None
+                               and result.revision != current_revision)
         if request.action == 'capture':
             self.last_capture = result
-            self.last_capture_previous = self.previous_draft
+            self.last_capture_previous = self.previous_generation or self.previous_draft
         elif request.action == 'upload':
             self.last_upload = result
-            self.last_upload_previous = self.previous_draft
+            self.last_upload_previous = self.previous_generation or self.previous_draft
         self.active_request = None
         return True
 
@@ -73,5 +78,6 @@ class TestSession:
         self.last_upload = None
         self.last_capture_previous = False
         self.last_upload_previous = False
+        self.previous_generation = False
         self.previous_draft = False
         self.hidden = False
