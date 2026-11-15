@@ -60,6 +60,7 @@ class Page(BasePage):
         self.refresh()
         self.channel_list.current(len(channels) - 1)
         self._channel_fields()
+        self.model.on_list_edit()
 
     def _remove(self):
         """移除当前选中通道，不触碰其它通道。"""
@@ -70,6 +71,7 @@ class Page(BasePage):
         channels.pop(index)
         self.model.set(self.channels_path, channels)
         self.refresh()
+        self.model.on_list_edit()
 
     def _channel_fields(self):
         """动态展示所选 provider 的必要字段并遮挡凭证。"""

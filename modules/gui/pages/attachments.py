@@ -107,6 +107,7 @@ class Page(BasePage):
         self.model.set(self.hosts_path, hosts)
         self.host_list.current(other)
         self.refresh()
+        self.model.on_list_edit()
 
     def _add_target(self, provider):
         """追加独立截图目标。"""
@@ -114,6 +115,7 @@ class Page(BasePage):
         targets.append({'provider': provider, 'target': '', 'out': ''})
         self.model.set(self.targets_path, targets)
         self.refresh()
+        self.model.on_list_edit()
 
     def _remove_target(self):
         """删除选中的截图目标。"""
@@ -123,6 +125,7 @@ class Page(BasePage):
             targets.pop(index)
             self.model.set(self.targets_path, targets)
             self.refresh()
+            self.model.on_list_edit()
 
     def _selected_target(self):
         """展示目标名称及输出名编辑框。"""
@@ -212,6 +215,7 @@ class Page(BasePage):
         hosts.append({'provider': 'catbox', 'token': ''})
         self.model.set(self.hosts_path, hosts)
         self.refresh()
+        self.model.on_list_edit()
 
     def _remove_host(self):
         """删除选定图床。"""
@@ -229,6 +233,7 @@ class Page(BasePage):
                 if key != (*self.hosts_path, index, 'options')}
             self.model.set(self.hosts_path, hosts)
             self.refresh()
+            self.model.on_list_edit()
 
     def refresh(self):
         """刷新独立目标和图床列表。"""

@@ -35,6 +35,56 @@ def make_app(root, tmp_path):
     return App(root, controller)
 
 
+def test_conflict_can_be_reopened_after_later(tmp_path, monkeypatch):
+    """暂不处理后可再次进入冲突处理并重新加载。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        path.write_bytes(b'\xff')
+        answers = iter((None, True))
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                            lambda *args, **kwargs: next(answers))
+        app.save_coordinator.check_external()
+        assert app.controller.conflicted
+        assert app.actions['处理冲突'].winfo_manager() == 'pack'
+        disk = new_document()
+        disk.tree['monitor']['target'] = 'external.exe'
+        path.unlink()
+        save_document(disk, path, expected_fingerprint=None)
+        app.controller.confirm = lambda *_: 'confirm'
+        root.update_idletasks()
+        app.actions['处理冲突'].invoke()
+        assert not app.controller.conflicted
+        assert app.model.get(('monitor', 'target')) == 'external.exe'
+    finally:
+        root.destroy()
+
+
+def test_list_operations_persist_immediately(tmp_path):
+    """通知通道、截图目标和图床列表操作立即补存。"""
+    from modules.config_document import read_document
+
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        channels = app.pages[1]
+        attachments = app.pages[2]
+        channels._add()
+        assert len(read_document(path).tree['push']['push_channel_settings']['channels']) == len(app.model.get(channels.channels_path))
+        channels.channel_list.current(0)
+        channels._remove()
+        assert len(read_document(path).tree['push']['push_channel_settings']['channels']) == len(app.model.get(channels.channels_path))
+        attachments._add_target('window')
+        assert len(read_document(path).tree['push']['screenshot']['targets']) == len(app.model.get(attachments.targets_path))
+        attachments._add_host()
+        assert len(read_document(path).tree['push']['screenshot']['image_host']) == len(app.model.get(attachments.hosts_path))
+    finally:
+        root.destroy()
+
+
 def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
     """页面变量绑定所属控件，不依赖 Tk 的默认根窗口。"""
     root = tk.Tk()
