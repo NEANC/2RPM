@@ -32,7 +32,7 @@ class App:
         self.model = controller.model
         self.save_coordinator = SaveCoordinator(controller, root.after, root.after_cancel)
         self.model.on_edit = self.save_coordinator.edited
-        self.model.before_list_edit = self.save_coordinator.flush
+        self.model.before_list_edit = self._before_list_edit
         self.model.on_list_edit = self.save_coordinator.flush
         self.latest_request = None
         self.generation = self.model.document_generation
@@ -185,6 +185,18 @@ class App:
             return True
         self.status.configure(text='配置未保存，操作已停止')
         return False
+
+    def _before_list_edit(self):
+        """补存若替换草稿则停止列表操作并要求重新选择。"""
+        identity = (self.model.document_generation, self.model.revision)
+        saved = self.save_coordinator.flush()
+        if identity != (self.model.document_generation, self.model.revision):
+            for selector in (self.pages[1].channel_list, self.pages[2].target_list,
+                             self.pages[2].host_list):
+                selector.set('')
+            self.status.configure(text='配置已更新，请重新选择列表项')
+            return False
+        return saved
 
     def drain_results(self):
         """只接纳最近请求及当前文档代次的终态。"""

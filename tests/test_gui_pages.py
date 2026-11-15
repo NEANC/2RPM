@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import new_document, save_document
+from modules.config_document import new_document, read_document, save_document
 from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestResult as GuiTestResult
@@ -125,6 +125,54 @@ def test_list_entry_presaves_before_mutation(tmp_path, operation):
         assert app.model.get(('monitor', 'target')) == 'draft.exe'
         assert app.controller.conflicted
         assert path.read_bytes() == b'external: true\n'
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('operation', ['channel_remove', 'target_remove',
+                                       'host_remove', 'host_move'])
+def test_list_entry_reselects_after_clean_draft_external_reload(tmp_path, operation):
+    """干净草稿补存自动重载后，不沿用旧列表选择执行删除或重排。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        channels, attachments = app.pages[1:3]
+        if operation == 'target_remove':
+            attachments._add_target('window')
+        if operation == 'host_move':
+            attachments._add_host()
+        list_path, selector, action = {
+            'channel_remove': (channels.channels_path, channels.channel_list, channels._remove),
+            'target_remove': (attachments.targets_path, attachments.target_list, attachments._remove_target),
+            'host_remove': (attachments.hosts_path, attachments.host_list, attachments._remove_host),
+            'host_move': (attachments.hosts_path, attachments.host_list, lambda: attachments.move_host(1)),
+        }[operation]
+        selector.current(0)
+        path = app.model.document.path
+        disk = read_document(path)
+        items = disk.tree
+        for key in list_path:
+            items = items[key]
+        items.insert(0, {'provider': 'external', 'token': 'external'})
+        expected = [dict(item) for item in items]
+        save_document(disk, path, expected_fingerprint=disk.fingerprint)
+        generation = app.model.document_generation
+
+        action()
+
+        assert app.model.document_generation == generation + 1
+        assert app.model.get(list_path) == expected
+        persisted = read_document(path).tree
+        for key in list_path:
+            persisted = persisted[key]
+        assert persisted == expected
+        assert not app.model.dirty
+        assert selector.current() == -1
+        action()
+        assert app.model.get(list_path) == expected
+        selector.current(0)
+        action()
+        assert app.model.get(list_path) != expected
     finally:
         root.destroy()
 
