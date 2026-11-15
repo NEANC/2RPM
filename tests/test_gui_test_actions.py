@@ -99,39 +99,38 @@ def test_notify_snapshot_disables_capture(monkeypatch, tmp_path):
     assert config == before
 
 
-@pytest.mark.parametrize('change', ['disabled', 'no_channel', 'invalid'])
-def test_notify_empty_result_is_failure(monkeypatch, tmp_path, change):
-    """真实发送流程的三条提前返回都显示未发送。"""
+def test_notify_empty_result_is_failure(monkeypatch, tmp_path):
+    """无通道时不调用发送入口。"""
     import modules.notification as notification
 
     monkeypatch.setattr(notification, '_notify_single_channel',
                         lambda *_args, **_kwargs: pytest.fail('意外发送'))
     config = _config()
-    if change == 'disabled':
-        config['push']['templates']['on_end']['enable'] = False
-    elif change == 'no_channel':
-        config['push']['push_channel_settings']['channels'] = []
-    else:
-        config['push']['templates']['on_end']['content'] = '{unknown}'
+    config['push']['push_channel_settings']['channels'] = []
     result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
     assert result.status == 'failure'
-    assert result.reason == '未发送：事件禁用、无有效通道或模板无效'
+    assert result.reason == '请先添加推送通道'
 
 
 def test_notify_uses_snapshot_and_aggregates(monkeypatch, tmp_path):
-    """替身发送者收到禁图快照，混合结果标为部分成功。"""
+    """替身发送者收到单通道禁图快照，混合结果标为部分成功。"""
     import modules.gui.test_actions as actions
 
-    received = {}
+    received = []
 
     def sender(config, _key, **_kwargs):
         """保存通知副本并给出多通道混合结果。"""
-        received.update(config)
-        return [('a', True), ('b', False)]
+        received.append(copy.deepcopy(config))
+        provider = config['push']['push_channel_settings']['channels'][0]['provider']
+        return [(provider, provider == 'serverchan')]
 
     monkeypatch.setattr(actions, 'send_notification', sender)
-    result = run_test(_request(tmp_path, 'notify', template_key='on_end'))
-    assert received['push']['templates']['on_end']['capture_screenshot'] is False
+    config = _config()
+    config['push']['push_channel_settings']['channels'].append({'provider': 'bark', 'key': 'key'})
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+    assert len(received) == 2
+    assert all(item['push']['templates']['on_end']['capture_screenshot'] is False
+               for item in received)
     assert result.status == 'partial'
 
 
@@ -243,7 +242,7 @@ def test_upload_only_selected_host_without_capture(monkeypatch, tmp_path):
     image.write_bytes(b'image-data')
     monkeypatch.setattr(actions, 'capture',
                         lambda *_a, **_k: pytest.fail('意外截图'))
-    uploaded = Mock(return_value=Mock(success=True))
+    uploaded = Mock(return_value=Mock(success=True, url='https://images.example/photo.jpg'))
     monkeypatch.setattr(actions, 'upload_with_fallback', uploaded)
     config = _config()
     result = run_test(_request(tmp_path, 'upload', config, host_index=1,
@@ -266,3 +265,97 @@ def test_upload_failed_result_does_not_expose_url(monkeypatch, tmp_path):
                                image_path=str(image)))
     assert result.status == 'failure'
     assert 'secret-value' not in result.reason
+
+
+@pytest.mark.parametrize('provider,target', [
+    ('window', '新窗口'), ('adb', 'device-serial')])
+def test_capture_accepts_window_and_adb_input(monkeypatch, tmp_path, provider, target):
+    """直传目标优先于旧索引且不改配置快照。"""
+    import modules.gui.test_actions as actions
+    from dataclasses import replace
+
+    captured = Mock(return_value=CaptureResult(b'img', provider, target, 1, 1))
+    monkeypatch.setattr(actions, 'capture', captured)
+    request = replace(_request(tmp_path, 'capture', target_index=0),
+                      capture_provider=provider, capture_target=target)
+    before = copy.deepcopy(request.config)
+    assert run_test(request).status == 'success'
+    captured.assert_called_once_with(provider, target, image_format='jpeg', purpose='cli')
+    assert request.config == before
+
+
+def test_upload_returns_real_url(monkeypatch, tmp_path):
+    """只把选中图床真实回调地址交给结果。"""
+    import modules.gui.test_actions as actions
+
+    image = tmp_path / 'image.png'
+    image.write_bytes(b'img')
+    uploaded = Mock(return_value=Mock(success=True, url='https://images.example/real.png'))
+    monkeypatch.setattr(actions, 'upload_with_fallback', uploaded)
+    result = run_test(_request(tmp_path, 'upload', host_index=1, image_path=str(image)))
+    assert result.upload_url == 'https://images.example/real.png'
+    assert len(uploaded.call_args.args[2]) == 1
+
+
+def test_notify_uses_fixed_text_for_every_channel(monkeypatch, tmp_path):
+    """禁用或无效的事件模板也不影响固定测试消息逐通道发送。"""
+    import modules.gui.test_actions as actions
+
+    config = _config()
+    config['push']['templates']['on_end'].update(
+        enable=False, title='{broken}', content='{unknown}')
+    config['push']['push_channel_settings']['channels'].append(
+        {'provider': 'bark', 'key': 'other-secret'})
+    sent = []
+
+    def sender(snapshot, key, **_kwargs):
+        """记录各通道的测试消息。"""
+        template = snapshot['push']['templates'][key]
+        sent.append((template['title'], template['content'],
+                     snapshot['push']['push_channel_settings']['channels']))
+        return [(sent[-1][2][0]['provider'], True)]
+
+    monkeypatch.setattr(actions, 'send_notification', sender)
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+    assert result.status == 'success'
+    assert len(sent) == 2
+    assert all(title == '2RPM推送测试' and content == '这是一个测试，当你收到时表明一切正常。'
+               and len(channels) == 1 for title, content, channels in sent)
+    assert config['push']['templates']['on_end']['enable'] is False
+
+
+def test_channel_failure_does_not_skip_remaining_channels(monkeypatch, tmp_path):
+    """不合法通道计失败，后续通道仍发送且按原索引报告。"""
+    import modules.gui.test_actions as actions
+
+    config = _config()
+    config['push']['push_channel_settings']['channels'] = [
+        {'provider': 'bad\nsecret-value'}, {'provider': 'bark', 'key': 'ok'}]
+    sent = []
+
+    def sender(snapshot, key, **_kwargs):
+        """模拟有效通道的真实发送入口。"""
+        sent.append(snapshot['push']['push_channel_settings']['channels'][0]['provider'])
+        return [('bark', True)]
+
+    monkeypatch.setattr(actions, 'send_notification', sender)
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+    assert result.status == 'partial'
+    assert sent == ['bark']
+    assert [(item.index, item.status) for item in result.channel_results] == [
+        (0, 'failure'), (1, 'success')]
+    assert 'secret-value' not in str(result)
+
+
+def test_upload_url_with_configured_secret_is_not_returned(monkeypatch, tmp_path):
+    """回调链接中若包含配置凭证不能向 GUI 暴露。"""
+    import modules.gui.test_actions as actions
+
+    image = tmp_path / 'image.png'
+    image.write_bytes(b'img')
+    monkeypatch.setattr(actions, 'upload_with_fallback', Mock(return_value=Mock(
+        success=True, url='https://images.example/file?token=secret-value')))
+    result = run_test(_request(tmp_path, 'upload', host_index=1, image_path=str(image)))
+    assert result.status == 'failure'
+    assert result.upload_url == ''
+    assert 'secret-value' not in str(result)

@@ -5,7 +5,11 @@
 
 from dataclasses import asdict, dataclass
 import json
+import re
 from typing import Literal
+
+from modules.image_host.core import ImageHostError
+from modules.image_host.core import validate_image_url
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,18 @@ class TestRequest:
     host_index: int | None
     image_path: str | None
     template_key: str | None
+    capture_provider: str | None = None
+    capture_target: str | None = None
+
+
+@dataclass(frozen=True)
+class ChannelTestResult:
+    """按配置位置记录单个通道的安全终态。"""
+
+    index: int
+    provider: str
+    status: Literal['success', 'failure']
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -35,6 +51,8 @@ class TestResult:
     status: Literal['success', 'failure', 'partial']
     reason: str
     preview_paths: tuple[str, ...]
+    upload_url: str = ''
+    channel_results: tuple[ChannelTestResult, ...] = ()
 
 
 def _object_pairs(pairs):
@@ -85,10 +103,23 @@ def _validate_request(data):
     for name in ('image_path', 'template_key'):
         if data[name] is not None and (type(data[name]) is not str or not data[name]):
             raise ValueError('无效请求字段')
+    provider = data['capture_provider']
+    target = data['capture_target']
+    if provider is not None and (type(provider) is not str
+                                 or provider not in ('window', 'adb')):
+        raise ValueError('无效截图来源')
+    if target is not None and (type(target) is not str or not target.strip()):
+        raise ValueError('无效截图目标')
+    if (provider is None) != (target is None):
+        raise ValueError('截图来源与目标必须同时提供')
+    if data['action'] != 'capture' and provider is not None:
+        raise ValueError('动作字段不匹配')
     required = {'capture': ('target_index',),
                 'upload': ('host_index', 'image_path'),
                 'notify': ('template_key',)}[data['action']]
     for name in ('target_index', 'host_index', 'image_path', 'template_key'):
+        if name == 'target_index' and provider is not None:
+            continue
         if (name in required) != (data[name] is not None):
             raise ValueError('动作字段不匹配')
 
@@ -101,6 +132,23 @@ def _validate_result(data):
         raise ValueError('无效结果字段')
     if not all(type(path) is str for path in data['preview_paths']):
         raise ValueError('无效预览路径')
+    if type(data['upload_url']) is not str or type(data['channel_results']) not in (list, tuple):
+        raise ValueError('无效扩展结果')
+    if data['upload_url']:
+        try:
+            validate_image_url(data['upload_url'])
+        except ImageHostError as error:
+            raise ValueError('无效上传地址') from error
+    for item in data['channel_results']:
+        if type(item) is not dict or set(item) != set(ChannelTestResult.__dataclass_fields__):
+            raise ValueError('无效通道记录')
+        if (type(item['index']) is not int or item['index'] < 0
+                or type(item['provider']) is not str
+                or re.fullmatch(r'[A-Za-z0-9_-]+', item['provider']) is None
+                or item['status'] not in ('success', 'failure')
+                or type(item['status']) is not str
+                or item['reason'] not in ('', '发送失败', '通道配置无效')):
+            raise ValueError('无效通道结果')
 
 
 def _encode(data, validator):
@@ -110,7 +158,7 @@ def _encode(data, validator):
                       allow_nan=False, separators=(',', ':')).encode('utf-8')
 
 
-def _decode(payload, fields, validator):
+def _decode(payload, fields, validator, defaults=None):
     """只接受完整单份 JSON 对象和一个可选换行。"""
     try:
         text = payload.decode('utf-8')
@@ -121,6 +169,8 @@ def _decode(payload, fields, validator):
             raise ValueError('协议必须为单份 JSON')
         if data.get('protocol_version') != 1 or type(data['protocol_version']) is not int:
             raise ValueError('协议版本不匹配')
+        for name, value in (defaults or {}).items():
+            data.setdefault(name, value)
         if set(data) != fields | {'protocol_version'}:
             raise ValueError('协议字段不匹配')
         data.pop('protocol_version')
@@ -137,7 +187,9 @@ def encode_request(request: TestRequest) -> bytes:
 
 def decode_request(payload: bytes) -> TestRequest:
     """解码并验证一次请求。"""
-    data = _decode(payload, set(TestRequest.__dataclass_fields__), _validate_request)
+    data = _decode(payload, set(TestRequest.__dataclass_fields__),
+                   _validate_request, {'capture_provider': None,
+                                       'capture_target': None})
     return TestRequest(**data)
 
 
@@ -148,9 +200,12 @@ def encode_result(result: TestResult) -> bytes:
 
 def decode_result(payload: bytes, *, request: TestRequest) -> TestResult:
     """解码并匹配原始请求身份。"""
-    data = _decode(payload, set(TestResult.__dataclass_fields__), _validate_result)
+    data = _decode(payload, set(TestResult.__dataclass_fields__),
+                   _validate_result, {'upload_url': '', 'channel_results': []})
     if any(data[name] != getattr(request, name) for name in
            ('request_id', 'document_generation', 'revision')):
         raise ValueError('测试结果身份不匹配')
     data['preview_paths'] = tuple(data['preview_paths'])
+    data['channel_results'] = tuple(ChannelTestResult(**item)
+                                    for item in data['channel_results'])
     return TestResult(**data)
