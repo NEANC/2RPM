@@ -7,6 +7,30 @@ import tkinter as tk
 from tkinter import ttk
 
 
+class ValueBinding:
+    """让会触发回调的控件在程序刷新时不写回模型。"""
+
+    def __init__(self, widget, setter, path):
+        """绑定控件、模型写入函数和字段路径。"""
+        self.widget = widget
+        self.setter = setter
+        self.path = path
+        self.refreshing = False
+
+    def changed(self, value):
+        """仅用户编辑时写回草稿。"""
+        if not self.refreshing:
+            self.setter(self.path, value)
+
+    def refresh(self, value):
+        """同步控件显示，抑制同步触发的回调。"""
+        self.refreshing = True
+        try:
+            self.widget.set_value(value)
+        finally:
+            self.refreshing = False
+
+
 class CollapsibleSection(ttk.Frame):
     """隐藏内容但保持字段及模型值不变。"""
 
