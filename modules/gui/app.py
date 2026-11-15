@@ -90,24 +90,20 @@ class App:
         self._after_id = root.after(50, self._poll)
 
     def choose_theme(self, value):
-        """仅在保存成功后应用手动深浅色选择。"""
+        """手动深浅色选择立即作用于本次会话。"""
         dark = {'跟随系统': None, '深色': True, '浅色': False}[value]
         self._save_appearance(AppearancePreferences(dark, self.appearance.material))
 
     def choose_material(self, value):
-        """仅在保存成功后应用期望材质。"""
+        """期望材质选择立即作用于本次会话。"""
         self._save_appearance(AppearancePreferences(self.appearance.dark, value))
 
     def _save_appearance(self, preferences):
-        """独立保存外观，失败时恢复选择而不改动当前会话。"""
+        """独立保存外观，写盘失败仍保留本次会话选择。"""
         try:
             save_preferences(self.appearance_path, preferences)
         except OSError:
-            self.appearance_theme.set({None: '跟随系统', True: '深色',
-                                       False: '浅色'}[self.appearance.dark])
-            self.appearance_material.set(self.appearance.material)
             messagebox.showerror('外观设置', '无法保存外观偏好', parent=self.root)
-            return
         self.appearance = preferences
         apply_appearance(self.root, preferences)
 

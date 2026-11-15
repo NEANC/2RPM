@@ -65,7 +65,7 @@ def load_preferences(path: Path) -> AppearancePreferences:
 
 
 def save_preferences(path: Path, preferences: AppearancePreferences) -> None:
-    """保存手动选择；失败时由调用界面提示且不改变会话偏好。"""
+    """保存手动选择；失败时由调用界面提示并保留会话偏好。"""
     parser = configparser.ConfigParser()
     parser['appearance'] = {
         'dark': 'system' if preferences.dark is None else str(preferences.dark).lower(),
@@ -95,7 +95,7 @@ def apply_appearance(root, preferences: AppearancePreferences) -> str:
         if material == 'none':
             root.set_backdrop('none')
         else:
-            if material == 'Mica' and sys.platform == 'win32' and sys.getwindowsversion().build < 22000:
+            if sys.platform == 'win32' and sys.getwindowsversion().build < 22000:
                 continue
             try:
                 root.set_theme(material)

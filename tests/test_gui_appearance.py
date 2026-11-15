@@ -49,11 +49,40 @@ def test_mica_falls_back_without_changing_preference(tmp_path, monkeypatch):
     assert load_preferences(path) == preferences
 
 
-def test_win10_skips_unsupported_mica():
-    """Windows 10 不把设置主题返回成功误认为 Mica 真正可用。"""
+def test_win10_does_not_report_unsupported_material():
+    """Windows 10 不把设置主题返回成功误认为原生材质真正可用。"""
     root = Mock()
-    assert apply_appearance(root, AppearancePreferences()) == 'Acrylic'
-    root.set_theme.assert_called_once_with('Acrylic')
+    assert apply_appearance(root, AppearancePreferences()) == 'none'
+    assert apply_appearance(root, AppearancePreferences(material='Acrylic')) == 'none'
+    root.set_theme.assert_not_called()
+    assert root.set_backdrop.call_count == 2
+
+
+def test_failed_preference_write_keeps_session_choice(monkeypatch, tmp_path):
+    """写盘失败只提示，不撤销本次会话的主题及材质选择。"""
+    from modules.gui.app import App
+
+    app = object.__new__(App)
+    app.root = Mock()
+    app.appearance_path = tmp_path / 'gui.ini'
+    app.appearance = AppearancePreferences(dark=None, material='Mica')
+    app.appearance_theme = Mock()
+    app.appearance_material = Mock()
+    applied = Mock()
+    alerted = Mock()
+    monkeypatch.setattr('modules.gui.app.save_preferences',
+                        Mock(side_effect=OSError('write failed')))
+    monkeypatch.setattr('modules.gui.app.apply_appearance', applied)
+    monkeypatch.setattr('modules.gui.app.messagebox.showerror', alerted)
+
+    app.choose_theme('深色')
+    app.choose_material('Acrylic')
+
+    assert app.appearance == AppearancePreferences(dark=True, material='Acrylic')
+    applied.assert_called_with(app.root, app.appearance)
+    app.appearance_theme.set.assert_not_called()
+    app.appearance_material.set.assert_not_called()
+    assert alerted.call_count == 2
 
 
 def test_palette_composites_alpha_and_uses_yahei():
@@ -76,7 +105,7 @@ def test_preferences_path_uses_local_app_data(monkeypatch, tmp_path):
 
 
 def test_ctk_appearance_does_not_override_light_mode():
-    """发布版真实窗口在系统浅色下套用材质仍保持浅色。"""
+    """发布版真实窗口在系统浅色下降级为纯色仍保持浅色。"""
     import ctk_kit
 
     root = ctk_kit.App(title='外观测试', remember_geometry=False,
@@ -84,7 +113,7 @@ def test_ctk_appearance_does_not_override_light_mode():
     root.withdraw()
     try:
         assert apply_appearance(root, AppearancePreferences(dark=False,
-                                                             material='Acrylic')) == 'Acrylic'
+                                                             material='Acrylic')) == 'none'
         assert ctk_kit.get_appearance_mode() == 'Light'
     finally:
         root.destroy()
