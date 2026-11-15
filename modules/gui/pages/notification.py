@@ -84,7 +84,7 @@ class Page(BasePage):
         row = ttk.Frame(self.channel_body)
         row.pack(fill='x')
         ttk.Label(row, text='通道类型').pack(side='left')
-        provider_value = tk.StringVar(value=channel.get('provider', ''))
+        provider_value = tk.StringVar(master=row, value=channel.get('provider', ''))
         provider = ttk.Entry(row, textvariable=provider_value)
         self.channel_entries['provider'] = provider
         provider.pack(side='left', fill='x', expand=True)
@@ -94,7 +94,7 @@ class Page(BasePage):
             row = ttk.Frame(self.channel_body)
             row.pack(fill='x')
             ttk.Label(row, text=field.label + (' *' if field.required else '')).pack(side='left')
-            value = tk.StringVar(value=str(channel.get(field.name, '')))
+            value = tk.StringVar(master=row, value=str(channel.get(field.name, '')))
             entry = ttk.Entry(row, textvariable=value, show='●' if field.secret else '')
             self.channel_entries[field.name] = entry
             entry.pack(side='left', fill='x', expand=True)

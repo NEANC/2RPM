@@ -154,7 +154,7 @@ class Page(BasePage):
             return
         for name in ('provider', 'token', 'expiration', 'options'):
             ttk.Label(self.host_body, text=name).pack(anchor='w')
-            variable = tk.StringVar()
+            variable = tk.StringVar(master=self.host_body)
             entry = ttk.Entry(self.host_body, textvariable=variable,
                               show='●' if name in ('token', 'options') else '')
             self.host_entries[name] = entry

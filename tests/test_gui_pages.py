@@ -33,6 +33,24 @@ def make_app(root, tmp_path):
     return App(root, controller)
 
 
+def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
+    """页面变量绑定所属控件，不依赖 Tk 的默认根窗口。"""
+    root = tk.Tk()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(tk, '_support_default_root', False)
+            app = make_app(root, tmp_path)
+            app.pages[0].set_field(('monitor', 'target'), 'demo.exe')
+            app.pages[0].set_field(('monitor', 'common', 'loop_interval'), '2s')
+            app.pages[1].channel_entries['provider'].insert('end', 'x')
+            app.pages[2].host_entries['token'].insert('end', 'x')
+            assert app.model.get(('monitor', 'target')) == 'demo.exe'
+            assert app.model.get(app.pages[1].channels_path)[0]['provider'].endswith('x')
+            assert app.model.get(app.pages[2].hosts_path)[0]['token'].endswith('x')
+    finally:
+        root.destroy()
+
+
 def test_appearance_controls_apply_and_persist_without_replacing_pages(tmp_path, monkeypatch):
     """外观选择更新 ctk 窗口并持久化，现有 ttk 页面仍可使用。"""
     import ctk_kit

@@ -36,10 +36,10 @@ class Page(ScrollForm):
             widget.edit_modified(False)
             widget.bind('<<Modified>>', lambda _: self._text_changed(path, widget))
         elif kind == 'bool':
-            variable = tk.BooleanVar(value=bool(value))
+            variable = tk.BooleanVar(master=row, value=bool(value))
             widget = ttk.Checkbutton(row, variable=variable)
         else:
-            variable = tk.StringVar(value='' if value is None else str(value))
+            variable = tk.StringVar(master=row, value='' if value is None else str(value))
             widget = ttk.Entry(row, textvariable=variable, show='●' if secret else '')
         widget.pack(side='left', fill='x', expand=True)
         if variable is not None:
