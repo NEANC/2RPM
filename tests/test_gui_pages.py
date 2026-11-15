@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import new_document
+from modules.config_document import new_document, save_document
 from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestResult as GuiTestResult
@@ -26,9 +26,11 @@ def make_app(root, tmp_path):
     runner = Mock()
     runner.results = queue.Queue()
     runner.active = False
-    model = EditorModel(new_document())
-    controller = Controller(model, confirm=lambda *_: 'cancel',
-                            choose_path=lambda: None, cli_command=('python.exe',),
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    model = EditorModel(save_document(new_document(), tmp_path / 'a.yaml',
+                                      expected_fingerprint=None))
+    controller = Controller(model, confirm=lambda kind, _: 'confirm' if kind == 'exit' else 'cancel',
+                            choose_path=lambda: tmp_path / 'a.yaml', cli_command=('python.exe',),
                             runner=runner, program_dir=tmp_path)
     return App(root, controller)
 
@@ -197,7 +199,7 @@ def test_unedited_host_options_keep_mapping_type(tmp_path):
 
 
 def test_test_request_uses_document_directory(tmp_path):
-    """未保存配置从程序目录解析，而测试请求不暴露在命令行。"""
+    """已保存配置从文件目录解析，测试请求不暴露在命令行。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -355,13 +357,13 @@ def test_invalid_options_on_clean_model_requires_discard_confirmation(tmp_path, 
 
 @pytest.mark.parametrize('answer, expected', [('save', False), ('discard', True)])
 def test_invalid_options_on_clean_model_save_or_discard(tmp_path, answer, expected):
-    """非法控件值不能假装保存成功，明确放弃才允许关闭。"""
+    """非法控件值不能假装保存成功，放弃后仍需最终退出确认。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         page = app.pages[2]
         page.host_entries['options'].insert(0, '{broken: [}')
-        app.controller.confirm = Mock(return_value=answer)
+        app.controller.confirm = Mock(side_effect=lambda kind, _: 'confirm' if kind == 'exit' else answer)
         assert app.controller.close() is expected
         if expected:
             app.controller.runner.close.assert_called_once()

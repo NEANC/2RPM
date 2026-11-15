@@ -4,6 +4,7 @@
 """不持有控件的 GUI 配置草稿。"""
 
 import copy
+import re
 from pathlib import Path
 
 from modules.config import get_default_config
@@ -20,6 +21,7 @@ class EditorModel:
         """以已有文档建立独立的内存草稿。"""
         self.document_generation = 0
         self.revision = 0
+        self.on_edit = lambda: None
         self.replace_document(document)
         self.document_generation = 0
 
@@ -32,6 +34,8 @@ class EditorModel:
 
     def set(self, path: tuple[str | int, ...], value: object) -> None:
         """仅在字段发生实际改变时递增修订号。"""
+        self.raw_inputs.pop(path, None)
+        self.input_errors.pop(path, None)
         node = self._tree
         for key in path[:-1]:
             node = node[key]
@@ -42,6 +46,30 @@ class EditorModel:
         self.dirty = True
         if path == ('monitor', 'target'):
             self._targets[self.get(('monitor', 'mode'))] = copy.deepcopy(value)
+        self.on_edit()
+
+    def set_input(self, path: tuple[str | int, ...], raw: str, *, kind: str = 'text') -> None:
+        """保留原始输入，仅将可以表示的字段值写入编辑树。"""
+        if kind == 'int' and not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            if self.raw_inputs.get(path) == raw:
+                return
+            self.raw_inputs[path] = raw
+            self.input_errors[path] = Issue(path, 'incomplete_input', 'error', '输入尚未完成')
+            self.revision += 1
+            self.dirty = True
+            self.on_edit()
+            return
+        value = int(raw.strip()) if kind == 'int' else raw
+        self.set(path, value)
+        if kind == 'int':
+            self.raw_inputs[path] = raw
+
+    def get_input(self, path: tuple[str | int, ...]) -> str:
+        """优先返回尚未转换的用户原文。"""
+        if path in self.raw_inputs:
+            return self.raw_inputs[path]
+        value = self.get(path)
+        return '' if value is None else str(value)
 
     def switch_mode(self, mode: str) -> None:
         """切换模式时只在内存中保存与恢复各分支目标。"""
@@ -55,6 +83,7 @@ class EditorModel:
         self._tree['monitor']['target'] = self._targets.get(mode, self._original_target)
         self.revision += 1
         self.dirty = True
+        self.on_edit()
 
     def materialize(self) -> ConfigDocument:
         """返回不携带 GUI 专属数据的独立文档候选。"""
@@ -100,6 +129,7 @@ class EditorModel:
         """从文档重建编辑树和两个模式的原始目标。"""
         self.document = document
         self.input_errors = {}
+        self.raw_inputs = {}
         self._tree = copy.deepcopy(document.tree)
         self._original_target = self._tree['monitor']['target']
         self._targets = {self._tree['monitor']['mode']: self._original_target}

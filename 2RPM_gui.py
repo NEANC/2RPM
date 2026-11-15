@@ -39,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
         if kind == 'unsaved':
             response = messagebox.askyesnocancel('未保存修改', '保存当前配置？否将放弃修改。', parent=root)
             return 'save' if response is True else 'discard' if response is False else 'cancel'
+        if kind == 'exit':
+            return 'confirm' if messagebox.askyesno('退出配置', '确认退出配置窗口？', parent=root) else 'cancel'
+        if kind == 'discard_external':
+            return 'confirm' if messagebox.askyesno('重新加载', '将放弃当前未保存修改，重新加载磁盘版本？', parent=root) else 'cancel'
         if kind == 'normalize':
             text = '启动前须应用配置规范化差异：\n' + '\n'.join(
                 f'{".".join(map(str, change["path"]))} ({change["operation"]}): '

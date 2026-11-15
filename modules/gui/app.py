@@ -19,6 +19,7 @@ from modules.gui.appearance import (AppearancePreferences, apply_appearance,
                                     save_preferences)
 from modules.gui.pages import attachments, monitor, notification, review
 from modules.gui.protocol import TestRequest, encode_request
+from modules.gui.save_coordinator import SaveCoordinator
 
 
 class App:
@@ -29,6 +30,8 @@ class App:
         self.root = root
         self.controller = controller
         self.model = controller.model
+        self.save_coordinator = SaveCoordinator(controller, root.after, root.after_cancel)
+        self.model.on_edit = self.save_coordinator.edited
         self.latest_request = None
         self.generation = self.model.document_generation
         self.result_text = ''
@@ -71,8 +74,7 @@ class App:
                       for page in (monitor, notification, attachments, review)]
         for title, page in zip(self.page_names, self.pages):
             self.notebook.add(page, text=title)
-        self.notebook.bind('<<NotebookTabChanged>>', lambda _: self.pages[
-            self.notebook.index('current')].refresh())
+        self.notebook.bind('<<NotebookTabChanged>>', self._tab_changed)
         self.status = ttk.Label(root, text='新建配置或打开现有 YAML')
         self.status.pack(fill='x', padx=12)
         self.preview_label = ttk.Label(root)
@@ -85,9 +87,33 @@ class App:
             self.actions[name] = ttk.Button(controls, text=name, command=action)
             self.actions[name].pack(side='left')
         self.controller.on_change = self.refresh
+        self.controller.on_edit = self._refresh_save_status
+        self.controller.on_conflict = self._show_conflict
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
         self._after_id = root.after(50, self._poll)
+
+    def _tab_changed(self, event):
+        """离开配置页时尝试补存，失败仍允许返回检查页。"""
+        index = self.notebook.index('current')
+        if index == 3:
+            self.save_coordinator.flush()
+        self.pages[index].refresh()
+
+    def _show_conflict(self):
+        """向用户提供重载、另存为与暂不处理三个选择。"""
+        self._refresh_save_status()
+        self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
+        choice = messagebox.askyesnocancel('外部变更',
+                                           '磁盘配置已变化。是：重新加载；否：将草稿另存为；取消：暂不处理。',
+                                           parent=self.root)
+        if choice is True:
+            self.controller.resolve_external('reload')
+        elif choice is False:
+            self.controller.save_as(lambda: filedialog.asksaveasfilename(
+                parent=self.root, defaultextension='.yaml') or None)
+        else:
+            self.controller.resolve_external('later')
 
     def choose_theme(self, value):
         """手动深浅色选择立即作用于本次会话。"""
@@ -131,13 +157,26 @@ class App:
             self.generation = self.model.document_generation
         for page in self.pages:
             page.refresh()
+        self._refresh_save_status()
+
+    def _refresh_save_status(self):
+        """编辑时仅刷新保存标记，不重建正在输入的控件。"""
         path = self.model.document.path
-        self.path_label.configure(text=f'{path or "未保存的新配置"}{" *" if self.model.dirty else ""}')
+        pending = self.model.dirty or bool(self.model.input_errors)
+        suffix = '（外部冲突）' if self.controller.conflicted else ' *' if pending else ''
+        self.path_label.configure(text=f'{path or "未保存的新配置"}{suffix}')
 
     def _poll(self):
         """每 50ms 在 Tk 线程消费一次队列。"""
         self.drain_results()
         self._after_id = self.root.after(50, self._poll)
+
+    def _require_saved(self):
+        """在业务操作前补存，不把未保存草稿当作磁盘配置。"""
+        if self.save_coordinator.flush():
+            return True
+        self.status.configure(text='配置未保存，操作已停止')
+        return False
 
     def drain_results(self):
         """只接纳最近请求及当前文档代次的终态。"""
@@ -169,12 +208,17 @@ class App:
 
     def new(self):
         """由控制器确认旧草稿后建立新配置。"""
-        self.controller.new()
+        self.controller.new(lambda: filedialog.asksaveasfilename(
+            parent=self.root, defaultextension='.yaml') or None)
 
     def open(self):
         """用原始选择路径读取，不隐式添加后缀。"""
-        name = filedialog.askopenfilename(parent=self.root, filetypes=[('YAML', '*.yaml *.yml'), ('所有文件', '*.*')])
-        if name and not self.controller.open(Path(name)):
+        def picker():
+            """由控制器暂停保存后再打开系统选择器。"""
+            name = filedialog.askopenfilename(parent=self.root, filetypes=[('YAML', '*.yaml *.yml'), ('所有文件', '*.*')])
+            return Path(name) if name else None
+
+        if not self.controller.open(picker):
             messagebox.showerror('打开配置', '无法打开配置，或操作已取消', parent=self.root)
 
     def save(self):
@@ -184,8 +228,8 @@ class App:
 
     def save_as(self):
         """选择另存为目标，由控制器规范化并检查冲突。"""
-        name = filedialog.asksaveasfilename(parent=self.root, defaultextension='.yaml')
-        if name and not self.controller.save(Path(name)):
+        if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
+                parent=self.root, defaultextension='.yaml') or None):
             self.status.configure(text='配置未另存')
 
     def show_path(self):
@@ -203,6 +247,7 @@ class App:
 
     def validate(self):
         """显示安全问题数量并定位第一个错误字段。"""
+        self.save_coordinator.flush()
         path = self.model.document.path
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
 
@@ -240,12 +285,16 @@ class App:
 
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
+        if not self._require_saved():
+            return
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
 
     def _request(self, action, *, target_index=None, host_index=None,
                  image_path=None, template_key=None):
         """主线程冻结草稿与绝对路径，后台只接收不可变请求。"""
+        if not self._require_saved():
+            return
         if self.controller.runner.active:
             self.status.configure(text='已有测试正在运行')
             return
@@ -302,6 +351,7 @@ class App:
     def close(self):
         """处理未保存草稿并正常关闭测试运行器。"""
         if self.controller.close():
+            self.save_coordinator.close()
             self.root.after_cancel(self._after_id)
             threading.Thread(target=shutil.rmtree, args=(self.session_dir,),
                              kwargs={'ignore_errors': True}, name='gui-preview-cleanup').start()

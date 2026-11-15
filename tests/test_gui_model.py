@@ -121,3 +121,17 @@ def test_validate_is_pure(tmp_path):
     assert model.snapshot() == before
     assert candidate.tree is not model.document.tree
     assert list(tmp_path.iterdir()) == []
+
+
+def test_partial_number_keeps_raw_draft():
+    """数字中间态保留在模型，补全后才转换为文档字段。"""
+    model = EditorModel(new_document())
+    path = ('monitor', 'common', 'timeout_threshold')
+    original = model.get(path)
+    model.set_input(path, '-', kind='int')
+    assert model.get_input(path) == '-'
+    assert model.get(path) == original
+    assert model.dirty and model.input_errors
+    model.set_input(path, '12', kind='int')
+    assert model.get(path) == 12
+    assert not model.input_errors

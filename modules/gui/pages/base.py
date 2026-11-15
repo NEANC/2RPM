@@ -65,9 +65,8 @@ class Page(ScrollForm):
         if kind == 'bool':
             value = bool(value)
         elif kind == 'int':
-            if not value.strip().isdigit():
-                return
-            value = int(value)
+            self.model.set_input(path, value, kind='int')
+            return
         elif kind == 'optional' and not value:
             value = None
         self.model.set(path, value)
@@ -90,7 +89,7 @@ class Page(ScrollForm):
         try:
             for path, (variable, widget, kind) in self.fields.items():
                 try:
-                    value = self.model.get(path)
+                    value = self.model.get_input(path) if kind == 'int' else self.model.get(path)
                 except (KeyError, IndexError, TypeError):
                     continue
                 if kind == 'multiline':

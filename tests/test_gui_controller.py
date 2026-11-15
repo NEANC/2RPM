@@ -26,13 +26,13 @@ def make_controller(tmp_path, document=None, answers=None):
 
 
 def test_dirty_start_saves_or_cancels(tmp_path, monkeypatch):
-    """放弃保存或取消均不得以旧配置启动 CLI。"""
+    """业务无效草稿即使保存成功也不得启动 CLI。"""
     controller, _, _ = make_controller(tmp_path, answers=['cancel'])
-    controller.model.set(('monitor', 'target'), 'changed.exe')
+    controller.model.set(('monitor', 'mode'), 'bad')
     launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
     monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
     assert controller.start_cli() is None
-    assert controller.model.dirty is True
+    assert controller.model.dirty is False
     launch.assert_not_called()
 
 
@@ -55,7 +55,7 @@ def test_normalization_requires_confirmation(tmp_path, monkeypatch):
     controller.model.set(('monitor', 'common', 'max_wait'), '-30s')
     monkeypatch.setattr('modules.gui.controller.launch_cli', Mock())
     assert controller.start_cli() is None
-    assert controller.model.dirty
+    assert not controller.model.dirty
 
 
 def test_normalized_destination_conflict(tmp_path):
@@ -306,14 +306,14 @@ def test_normalization_confirmed_rechecks_disk(tmp_path, monkeypatch):
     assert controller.model.document == before
 
 
-def test_dirty_start_invalid_does_not_save(tmp_path, monkeypatch):
-    """无效草稿不应先保存再报告不能启动。"""
+def test_dirty_start_invalid_is_saved_but_not_launched(tmp_path, monkeypatch):
+    """完整但业务无效的草稿仍保存，启动由业务诊断阻断。"""
     controller, _, _ = make_controller(tmp_path, answers=['save'])
     controller.model.set(('monitor', 'mode'), 'bad')
     monkeypatch.setattr('modules.gui.controller.launch_cli', Mock())
     assert controller.start_cli() is None
-    assert controller.model.dirty
-    assert not (tmp_path / 'a.yaml').exists()
+    assert not controller.model.dirty
+    assert read_document(tmp_path / 'a.yaml').tree['monitor']['mode'] == 'bad'
 
 
 def test_normalize_confirmation_never_exposes_secrets(tmp_path):
