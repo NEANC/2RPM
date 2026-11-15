@@ -5,6 +5,7 @@
 
 import copy
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import Mock
 
 import pytest
@@ -347,6 +348,24 @@ def test_channel_failure_does_not_skip_remaining_channels(monkeypatch, tmp_path)
     assert 'secret-value' not in str(result)
 
 
+def test_notify_accepts_legacy_channel_without_provider(monkeypatch, tmp_path):
+    """旧式无 provider 通道应经现有解析器发送并报告实际渠道。"""
+    import modules.gui.test_actions as actions
+
+    config = _config()
+    config['push']['push_channel_settings']['channels'] = [
+        {'serverchan': 'synthetic-key'}]
+    sent = Mock(return_value=[('serverchan', True)])
+    monkeypatch.setattr(actions, 'send_notification', sent)
+
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+
+    assert result.status == 'success'
+    assert [(item.index, item.provider, item.status) for item in result.channel_results] == [
+        (0, 'serverchan', 'success')]
+    sent.assert_called_once()
+
+
 def test_upload_url_with_configured_secret_is_not_returned(monkeypatch, tmp_path):
     """回调链接中若包含配置凭证不能向 GUI 暴露。"""
     import modules.gui.test_actions as actions
@@ -359,3 +378,24 @@ def test_upload_url_with_configured_secret_is_not_returned(monkeypatch, tmp_path
     assert result.status == 'failure'
     assert result.upload_url == ''
     assert 'secret-value' not in str(result)
+
+
+def test_upload_url_with_double_encoded_secret_is_not_returned(monkeypatch, tmp_path):
+    """回调链接双重编码的配置凭证也不能越过 GUI 边界。"""
+    import modules.gui.test_actions as actions
+
+    image = tmp_path / 'image.png'
+    image.write_bytes(b'img')
+    secret = 'synthetic:credential'
+    config = _config()
+    config['push']['screenshot']['image_host'][1]['token'] = secret
+    url = f'https://images.example/file?token={quote(quote(secret))}'
+    monkeypatch.setattr(actions, 'upload_with_fallback', Mock(return_value=Mock(
+        success=True, url=url)))
+
+    result = run_test(_request(tmp_path, 'upload', config, host_index=1,
+                               image_path=str(image)))
+
+    assert result.status == 'failure'
+    assert result.upload_url == ''
+    assert quote(quote(secret)) not in str(result)

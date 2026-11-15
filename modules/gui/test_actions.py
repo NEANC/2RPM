@@ -16,6 +16,7 @@ from modules.screenshot.models import CaptureError, capture_failure_message
 from modules.screenshot.retention import FORMAT_SUFFIX
 from modules.screenshot.service import capture
 from modules.screenshot.targets import allocate_targets
+from modules.utils import parse_push_channels
 
 
 _NOT_SENT = '请先添加推送通道'
@@ -78,8 +79,14 @@ def _upload_image(request: TestRequest) -> tuple[str, str, tuple[str, ...], str]
                        if key.lower().replace('_', '').replace('-', '') in
                        {'token', 'apikey', 'key', 'secret', 'password', 'accesskey'}
                        and type(value) is str and value]
-            if any(secret in unquote(url) for secret in secrets):
-                return 'failure', '图床回调地址无效', (), ''
+            decoded = url
+            while True:
+                if any(secret in decoded for secret in secrets):
+                    return 'failure', '图床回调地址无效', (), ''
+                next_decoded = unquote(decoded)
+                if next_decoded == decoded:
+                    break
+                decoded = next_decoded
             return 'success', '', (), url
         except ImageHostError:
             return 'failure', '图床回调地址无效', (), ''
@@ -94,7 +101,8 @@ def _notify(request: TestRequest) -> tuple[str, str, tuple[ChannelTestResult, ..
         return 'failure', _NOT_SENT, ()
     records = []
     for index, channel in enumerate(channels):
-        provider = channel.get('provider') if isinstance(channel, dict) else None
+        parsed = parse_push_channels(channel) if isinstance(channel, dict) else []
+        provider = parsed[0].get('provider') if parsed else None
         safe_provider = (provider if isinstance(provider, str)
                          and re.fullmatch(r'[A-Za-z0-9_-]+', provider)
                          else 'unknown')
