@@ -89,6 +89,31 @@ def test_external_edit_conflicts(tmp_path):
     assert document.fingerprint == baseline
 
 
+@pytest.mark.parametrize('external', [b'external: true\n', None])
+def test_external_change_during_serialization_blocks_replace(tmp_path, monkeypatch, external):
+    """生成临时文件期间目标被改写或删除时拒绝覆盖并清理临时文件。"""
+    import modules.config_document as module
+
+    path = _source_file(tmp_path)
+    document = read_document(path)
+    real_dump = module.YAML.dump
+
+    def changing_dump(yaml, tree, stream):
+        """写完临时文件后模拟不协作的外部写入。"""
+        result = real_dump(yaml, tree, stream)
+        if external is None:
+            path.unlink()
+        else:
+            path.write_bytes(external)
+        return result
+
+    monkeypatch.setattr(module.YAML, 'dump', changing_dump)
+    with pytest.raises(ConfigConflictError):
+        save_document(document, path, expected_fingerprint=document.fingerprint)
+    assert (path.read_bytes() if path.exists() else None) == external
+    assert list(tmp_path.iterdir()) == ([path] if external is not None else [])
+
+
 @pytest.mark.parametrize('stage', ['serialize', 'close', 'replace'])
 def test_failed_save_keeps_original(tmp_path, monkeypatch, stage):
     """序列化、关闭和替换失败都不改原文件或留下临时文件。"""

@@ -85,6 +85,50 @@ def test_list_operations_persist_immediately(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('operation', ['channel_add', 'channel_remove', 'target_add',
+                                       'target_remove', 'host_add', 'host_remove', 'host_move'])
+def test_list_entry_presaves_before_mutation(tmp_path, operation):
+    """真实列表入口遇到外部冲突时保留旧列表和待保存草稿。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        channels, attachments = app.pages[1:3]
+        path = app.model.document.path
+        if operation == 'host_move':
+            attachments._add_host()
+        list_path, action = {
+            'channel_add': (channels.channels_path, channels._add),
+            'channel_remove': (channels.channels_path, channels._remove),
+            'target_add': (attachments.targets_path, lambda: attachments._add_target('window')),
+            'target_remove': (attachments.targets_path, attachments._remove_target),
+            'host_add': (attachments.hosts_path, attachments._add_host),
+            'host_remove': (attachments.hosts_path, attachments._remove_host),
+            'host_move': (attachments.hosts_path, lambda: attachments.move_host(1)),
+        }[operation]
+        if operation == 'channel_remove':
+            channels.channel_list.current(0)
+        if operation == 'target_remove':
+            attachments._add_target('window')
+            attachments.target_list.current(0)
+        if operation == 'host_remove':
+            attachments.host_list.current(0)
+        if operation == 'host_move':
+            attachments.host_list.current(0)
+        before = app.model.get(list_path)
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        app.controller.on_conflict = lambda: None
+        path.write_bytes(b'external: true\n')
+
+        action()
+
+        assert app.model.get(list_path) == before
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.controller.conflicted
+        assert path.read_bytes() == b'external: true\n'
+    finally:
+        root.destroy()
+
+
 def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
     """页面变量绑定所属控件，不依赖 Tk 的默认根窗口。"""
     root = tk.Tk()
