@@ -19,11 +19,31 @@ def test_gui_no_args_does_not_create_default(tmp_path, monkeypatch):
     spec.loader.exec_module(module)
     root = Mock()
     root.mainloop = Mock()
-    monkeypatch.setattr('tkinter.Tk', lambda: root)
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('tkinter.Tk', Mock(side_effect=AssertionError('应使用 ctk-kit 窗口')))
     monkeypatch.setattr('modules.gui.app.App', Mock())
     monkeypatch.chdir(tmp_path)
     assert module.main([]) == 0
     assert not list(tmp_path.glob('*.yaml'))
+
+
+def test_gui_entry_uses_ctk_window_without_geometry_persistence(monkeypatch):
+    """入口创建 ctk-kit 窗口，几何与主题交给独立偏好处理。"""
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_ctk', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = Mock()
+    created = Mock(return_value=root)
+    monkeypatch.setattr('ctk_kit.App', created)
+    monkeypatch.setattr('tkinter.Tk', Mock(side_effect=AssertionError('应使用 ctk-kit 窗口')))
+    monkeypatch.setattr('modules.gui.app.App', Mock())
+    assert module.main([]) == 0
+    assert created.call_args.kwargs == {'title': '2RPM 配置',
+                                       'remember_geometry': False,
+                                       'remember_theme': False,
+                                       'notifier': False,
+                                       'backdrop': 'none'}
 
 
 @pytest.mark.parametrize(('kind', 'detail'), [
@@ -40,7 +60,8 @@ def test_non_normalize_confirmation_uses_real_tk(tmp_path, monkeypatch, kind, de
     root = tk.Tk()
     seen = []
     try:
-        monkeypatch.setattr('tkinter.Tk', lambda: root)
+        monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+        monkeypatch.setattr('tkinter.Tk', Mock(side_effect=AssertionError('应使用 ctk-kit 窗口')))
         monkeypatch.setattr('modules.gui.app.App', Mock())
         monkeypatch.setattr('tkinter.messagebox.askyesno',
                             lambda title, text, **kwargs: seen.append((text, kwargs['parent'])) or True)

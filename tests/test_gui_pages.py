@@ -33,6 +33,32 @@ def make_app(root, tmp_path):
     return App(root, controller)
 
 
+def test_appearance_controls_apply_and_persist_without_replacing_pages(tmp_path, monkeypatch):
+    """外观选择更新 ctk 窗口并持久化，现有 ttk 页面仍可使用。"""
+    import ctk_kit
+
+    from modules.gui.appearance import AppearancePreferences, load_preferences
+
+    path = tmp_path / 'gui.ini'
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: path)
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        assert app.appearance_theme.get() == '跟随系统'
+        assert app.appearance_material.get() == 'Mica'
+        assert isinstance(app.notebook, tk.ttk.Notebook)
+        app.appearance_theme.set('深色')
+        app.choose_theme('深色')
+        app.appearance_material.set('none')
+        app.choose_material('none')
+        assert load_preferences(path) == AppearancePreferences(dark=True, material='none')
+        assert ctk_kit.get_appearance_mode() == 'Dark'
+    finally:
+        root.destroy()
+
+
 def test_error_expands_and_focuses(tmp_path):
     """高级字段出错自动展开所在区域并将焦点移至控件。"""
     root = tk.Tk()

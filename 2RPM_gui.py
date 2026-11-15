@@ -15,8 +15,9 @@ def main(argv: list[str] | None = None) -> int:
     if args == ['--internal-gui-worker']:
         from modules.gui.worker import main as worker_main
         return worker_main()
-    import tkinter as tk
     from tkinter import filedialog, messagebox
+
+    import ctk_kit
 
     from modules.config_document import normalize_config_path, new_document
     from modules.gui.app import App
@@ -30,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('-c', '--config', type=Path)
     options = parser.parse_args(args)
     program_dir = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
-    root = tk.Tk()
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
 
     def confirm(kind, detail):
         """把控制器的固定确认类型映射到原生对话框。"""

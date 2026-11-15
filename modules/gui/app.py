@@ -12,7 +12,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
+import ctk_kit
 
+from modules.gui.appearance import (AppearancePreferences, apply_appearance,
+                                    FONT_BODY, load_preferences, preferences_path,
+                                    save_preferences)
 from modules.gui.pages import attachments, monitor, notification, review
 from modules.gui.protocol import TestRequest, encode_request
 
@@ -44,6 +48,23 @@ class App:
                              ('完整路径', self.show_path), ('打开日志目录', self.open_logs)):
             self.actions[name] = ttk.Button(toolbar, text=name, command=action)
             self.actions[name].pack(side='left')
+        if isinstance(root, ctk_kit.App):
+            self.appearance_path = preferences_path()
+            self.appearance = load_preferences(self.appearance_path)
+            apply_appearance(root, self.appearance)
+            self.appearance_theme = ctk_kit.CTkOptionMenu(
+                toolbar, values=['跟随系统', '深色', '浅色'],
+                command=self.choose_theme, width=100, font=FONT_BODY,
+                dropdown_font=FONT_BODY)
+            self.appearance_theme.set({None: '跟随系统', True: '深色',
+                                       False: '浅色'}[self.appearance.dark])
+            self.appearance_theme.pack(side='right', padx=4)
+            self.appearance_material = ctk_kit.CTkOptionMenu(
+                toolbar, values=['Mica', 'Acrylic', 'none'],
+                command=self.choose_material, width=100, font=FONT_BODY,
+                dropdown_font=FONT_BODY)
+            self.appearance_material.set(self.appearance.material)
+            self.appearance_material.pack(side='right', padx=4)
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill='both', expand=True, padx=12, pady=8)
         self.pages = [page.Page(self.notebook, self.model)
@@ -67,6 +88,28 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
         self._after_id = root.after(50, self._poll)
+
+    def choose_theme(self, value):
+        """仅在保存成功后应用手动深浅色选择。"""
+        dark = {'跟随系统': None, '深色': True, '浅色': False}[value]
+        self._save_appearance(AppearancePreferences(dark, self.appearance.material))
+
+    def choose_material(self, value):
+        """仅在保存成功后应用期望材质。"""
+        self._save_appearance(AppearancePreferences(self.appearance.dark, value))
+
+    def _save_appearance(self, preferences):
+        """独立保存外观，失败时恢复选择而不改动当前会话。"""
+        try:
+            save_preferences(self.appearance_path, preferences)
+        except OSError:
+            self.appearance_theme.set({None: '跟随系统', True: '深色',
+                                       False: '浅色'}[self.appearance.dark])
+            self.appearance_material.set(self.appearance.material)
+            messagebox.showerror('外观设置', '无法保存外观偏好', parent=self.root)
+            return
+        self.appearance = preferences
+        apply_appearance(self.root, preferences)
 
     @property
     def summary_text(self):
