@@ -111,23 +111,58 @@ def test_notify_sends_mixed_legacy_string_and_dict_channels(monkeypatch, tmp_pat
     sent = []
 
     def sender(snapshot, key, **_kwargs):
-        """记录逐项传入的原始通道与固定测试模板。"""
+        """记录逐项传入的标准通道与固定测试模板。"""
         channel = snapshot['push']['push_channel_settings']['channels']
         template = snapshot['push']['templates'][key]
         sent.append((copy.deepcopy(channel), template['title'], template['content']))
-        return [('serverchan' if isinstance(channel[0], str) else 'bark', True)]
+        return [(channel[0]['provider'], True)]
 
     monkeypatch.setattr(actions, 'send_notification', sender)
     result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
 
     assert sent == [
-        (['[serverchan, synthetic-secret]'], '2RPM推送测试',
+        ([{'provider': 'serverchan', 'sckey': 'synthetic-secret'}], '2RPM推送测试',
          '这是一个测试，当你收到时表明一切正常。'),
         ([{'provider': 'bark', 'key': 'other-secret'}], '2RPM推送测试',
          '这是一个测试，当你收到时表明一切正常。')]
     assert result.status == 'success'
     assert [(item.index, item.provider, item.status) for item in result.channel_results] == [
         (0, 'serverchan', 'success'), (1, 'bark', 'success')]
+    assert 'synthetic-secret' not in str(result)
+    assert 'other-secret' not in str(result)
+
+
+def test_notify_real_chain_sends_mixed_channels_without_leaking(
+        monkeypatch, tmp_path, caplog):
+    """真实通知编排发送混合通道，日志及结果不泄露凭证。"""
+    import modules.notification as notification
+
+    config = _config()
+    config['push']['push_channel_settings']['channels'] = [
+        '[serverchan, synthetic-secret]',
+        {'provider': 'bark', 'key': 'other-secret'}]
+    config['push']['retry'] = {'max_count': 1}
+    sent = []
+
+    def fake_channel(channel, title, content, *_args, **_kwargs):
+        """代替网络发送并记录实际解析出的单通道与固定消息。"""
+        sent.append((channel, title, content))
+        return True
+
+    monkeypatch.setattr(notification, '_notify_single_channel', fake_channel)
+    with caplog.at_level('INFO', logger=notification.__name__):
+        result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+
+    assert sent == [
+        ({'provider': 'serverchan', 'sckey': 'synthetic-secret'},
+         '2RPM推送测试', '这是一个测试，当你收到时表明一切正常。'),
+        ({'provider': 'bark', 'key': 'other-secret'},
+         '2RPM推送测试', '这是一个测试，当你收到时表明一切正常。')]
+    assert result.status == 'success'
+    assert [(item.index, item.provider, item.status) for item in result.channel_results] == [
+        (0, 'serverchan', 'success'), (1, 'bark', 'success')]
+    assert 'synthetic-secret' not in caplog.text
+    assert 'other-secret' not in caplog.text
     assert 'synthetic-secret' not in str(result)
     assert 'other-secret' not in str(result)
 

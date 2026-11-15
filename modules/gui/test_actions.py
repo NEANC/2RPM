@@ -109,7 +109,7 @@ def _notify(request: TestRequest) -> tuple[str, str, tuple[ChannelTestResult, ..
         if safe_provider == 'unknown':
             records.append(ChannelTestResult(index, safe_provider, 'failure', '通道配置无效'))
             continue
-        snapshot['push']['push_channel_settings']['channels'] = [channel]
+        snapshot['push']['push_channel_settings']['channels'] = [parsed[0]]
         try:
             sent = send_notification(snapshot, request.template_key)
             ok = bool(sent) and all(success for _, success in sent)
