@@ -191,6 +191,12 @@ class Controller:
         target = normalize_config_path(Path(selected), program_dir=self.program_dir)
         previous = self.model.document.path
         same = target == previous
+        if same and previous is not None and not self.conflicted:
+            generation = self.model.document_generation
+            if self.check_external():
+                return False
+            if self.model.document_generation != generation:
+                return not self.model.dirty
         revision = self.model.revision
         document = self.model.materialize()
         if self.conflicted and same:
@@ -210,8 +216,6 @@ class Controller:
                       'resolved_cwd': resolved.cwd}
             if self.confirm('relocate', detail) != 'confirm':
                 return False
-        if same and previous is not None and not self.conflicted and self.check_external():
-            return False
         if same:
             expected = self.model.document.fingerprint
         else:
@@ -224,8 +228,10 @@ class Controller:
             expected = hashlib.sha256(data).hexdigest() if data is not None else None
             if data is not None and self.confirm('overwrite', str(target)) != 'confirm':
                 return False
-        if same and previous is not None and not self.conflicted and self.check_external():
-            return False
+        if same and previous is not None and not self.conflicted:
+            generation = self.model.document_generation
+            if self.check_external() or self.model.document_generation != generation:
+                return False
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:

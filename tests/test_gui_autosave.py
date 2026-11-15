@@ -449,3 +449,27 @@ def test_invalid_external_yaml_recovers_when_valid(tmp_path):
     coordinator.check_external()
     assert not controller.conflicted
     assert controller.model.get(('monitor', 'target')) == 'recovered.exe'
+
+
+def test_save_after_clean_external_reload_preserves_external_bytes(tmp_path):
+    """干净草稿的手动保存不得用旧快照覆盖外部更新。"""
+    controller, _, _ = setup(tmp_path)
+    path = controller.model.document.path
+    external = read_document(path)
+    external.tree['monitor']['target'] = 'external.exe'
+    save_document(external, path, expected_fingerprint=external.fingerprint)
+
+    assert controller.save()
+    assert read_document(path).tree['monitor']['target'] == 'external.exe'
+
+
+def test_save_as_during_clean_external_change_keeps_original(tmp_path):
+    """另存为目标等于原路径时仍不能覆盖新磁盘版本。"""
+    controller, _, _ = setup(tmp_path)
+    path = controller.model.document.path
+    external = read_document(path)
+    external.tree['monitor']['target'] = 'external.exe'
+    save_document(external, path, expected_fingerprint=external.fingerprint)
+
+    assert controller.save_as(lambda: path)
+    assert read_document(path).tree['monitor']['target'] == 'external.exe'
