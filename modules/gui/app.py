@@ -51,6 +51,7 @@ class App:
                              ('完整路径', self.show_path), ('打开日志目录', self.open_logs)):
             self.actions[name] = ttk.Button(toolbar, text=name, command=action)
             self.actions[name].pack(side='left')
+        self.actions['处理冲突'] = ttk.Button(toolbar, text='处理冲突', command=self._show_conflict)
         if isinstance(root, ctk_kit.App):
             self.appearance_path = preferences_path()
             self.appearance = load_preferences(self.appearance_path)
@@ -165,6 +166,11 @@ class App:
         pending = self.model.dirty or bool(self.model.input_errors)
         suffix = '（外部冲突）' if self.controller.conflicted else ' *' if pending else ''
         self.path_label.configure(text=f'{path or "未保存的新配置"}{suffix}')
+        conflict = self.actions['处理冲突']
+        if self.controller.conflicted:
+            conflict.pack(side='left')
+        else:
+            conflict.pack_forget()
 
     def _poll(self):
         """每 50ms 在 Tk 线程消费一次队列。"""
