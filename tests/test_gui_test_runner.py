@@ -547,28 +547,35 @@ def test_close_never_joins_on_tk(tmp_path):
 
 
 def test_terminate_timeout_escalates_to_kill(tmp_path):
-    """不响应 terminate 的进程在宽限期后升级 kill。"""
+    """不读取 stdin 且忽略 terminate 的进程在宽限期后升级 kill。"""
     results = queue.Queue()
-    runner = runner_for(results)
+    runner = runner_for(results, command=(sys.executable, '-c',
+                                          'import time; time.sleep(30)'))
     original = subprocess.Popen
     process_list = []
+    terminated = []
 
     def spawn(*args, **kwargs):
-        """真实进程忽略第一次终止以验证升级。"""
+        """替身进程不读 stdin、不响应 terminate，只由 kill 结束。"""
         process = original(*args, **kwargs)
         process_list.append(process)
-        process.terminate = lambda: None
+
+        def ignored():
+            """记录一次不生效的终止请求。"""
+            terminated.append(process)
+
+        process.terminate = ignored
         kill = process.kill
         process.kill = lambda: (process_list.append('kill'), kill())
         return process
 
     with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn):
-        runner.start(request(tmp_path, config={'large': 'x' * (9 * 1024 * 1024)}))
+        runner.start(request(tmp_path))
         while not process_list:
             threading.Event().wait(0.01)
         runner.cancel()
         assert results.get(timeout=10).status == 'failure'
-    assert 'kill' in process_list
+    assert len(terminated) == 1
     assert process_list.count('kill') == 1
     assert process_list[0].poll() is not None
 
