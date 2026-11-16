@@ -301,6 +301,128 @@ def test_adb_port_entry_supports_new_address_and_edit():
         root.destroy()
 
 
+def test_adb_port_out_of_range_has_business_diagnostic(tmp_path):
+    """数值端口越界时显示业务诊断，但不收紧 CLI 的 serial 规则。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '70000')
+        path = ('push', 'screenshot', 'targets', 0, 'target')
+        assert any(issue.path == path and issue.code == 'port_range'
+                   for issue in model.validate(tmp_path).issues)
+        assert model.get(path) == '127.0.0.1:70000'
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('operation, expected_index', [('move', 1), ('remove', 0)])
+def test_adb_port_draft_follows_target_on_list_edit(monkeypatch, operation, expected_index):
+    """重排或删除前一项时，端口原文与错误跟随仍在的目标。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': 'A:1000'},
+        {'provider': 'adb', 'target': 'B:2000'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
+                        lambda *args, **kwargs: True)
+    try:
+        port = page.target_rows[1 if operation == 'remove' else 0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '-')
+        if operation == 'move':
+            page.move_target(0, 1)
+        else:
+            page.remove_target(0)
+        path = ('push', 'screenshot', 'targets', expected_index, 'target')
+        assert model.raw_inputs == {path: '-'}
+        assert list(model.input_errors) == [path]
+        assert model.input_errors[path].path == path
+        assert page.target_rows[expected_index]['port'].get() == '-'
+    finally:
+        root.destroy()
+
+
+def test_removing_adb_target_discards_its_port_draft(monkeypatch):
+    """删除有未完成端口的目标时清理草稿及错误。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': 'A:1000'},
+        {'provider': 'adb', 'target': 'B:2000'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
+                        lambda *args, **kwargs: True)
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '-')
+        page.remove_target(0)
+        assert model.raw_inputs == {}
+        assert model.input_errors == {}
+        assert page.target_rows[0]['port'].get() == '2000'
+    finally:
+        root.destroy()
+
+
+def test_adb_six_digit_port_edit_does_not_append_another_colon():
+    """六位端口再编辑时只替换末尾端口，不污染地址。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '100000')
+        port.delete(0, 'end')
+        port.insert(0, '100001')
+        assert model.get(('push', 'screenshot', 'targets', 0, 'target')) == '127.0.0.1:100001'
+    finally:
+        root.destroy()
+
+
+def test_adb_port_stepper_replaces_raw_input():
+    """箭头步进后原文与目标一致，不恢复旧的前导零草稿。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '00081')
+        page._change_port(0, 1)
+        path = ('push', 'screenshot', 'targets', 0, 'target')
+        assert model.get(path) == '127.0.0.1:82'
+        assert model.get_input(path) == '82'
+        assert page.target_rows[0]['port'].get() == '82'
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize(('field', 'raw', 'expected'), [
     ('port', '-', '127.0.0.1:16384'),
     ('port', '70000', '127.0.0.1:70000'),

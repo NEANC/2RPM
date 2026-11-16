@@ -129,6 +129,23 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.refresh()
         self.model.on_list_edit()
 
+    def _remap_target_inputs(self, remap):
+        """将目标端口草稿和输入错误映射到仍存在的目标索引。"""
+        for mapping in (self.model.raw_inputs, self.model.input_errors):
+            updated = {}
+            for path, value in mapping.items():
+                if not isinstance(path, tuple) or path[:len(TARGETS)] != TARGETS or len(path) <= len(TARGETS) or not isinstance(path[len(TARGETS)], int):
+                    updated[path] = value
+                    continue
+                new_index = remap(path[len(TARGETS)])
+                if new_index is None:
+                    continue
+                new_path = (*TARGETS, new_index, *path[len(TARGETS) + 1:])
+                updated[new_path] = (Issue(new_path, value.code, value.severity, value.message)
+                                     if mapping is self.model.input_errors else value)
+            mapping.clear()
+            mapping.update(updated)
+
     def _source_index(self, path, display_index):
         """把可见行号转换为原始列表索引，结构异常项保持原位置。"""
         rows = self.target_rows if tuple(path[:len(TARGETS)]) == TARGETS else self.host_rows
@@ -173,6 +190,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             messagebox.showerror('截图目标', str(exc), parent=self)
             return
         self.model.set(('push',), updated['push'])
+        self._remap_target_inputs(lambda position: second if position == first else first if position == second else position)
         self._commit_list()
 
     def remove_target(self, index):
@@ -189,6 +207,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             messagebox.showerror('截图目标', str(exc), parent=self)
             return
         self.model.set(('push',), updated['push'])
+        self._remap_target_inputs(lambda position: None if position == source_index else position - 1 if position > source_index else position)
         self._commit_list()
 
     def add_host(self):
@@ -395,7 +414,7 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _split_adb(target):
         """仅拆分明确的地址数字端口，其余 serial 原文保留。"""
         target = '' if target is None else str(target)
-        match = re.fullmatch(r'(.+):(\d{1,5})', target)
+        match = re.fullmatch(r'(.+):(\d+)', target)
         return (match.group(1), int(match.group(2))) if match else (target, None)
 
     def _set_adb(self, index, address, port):
@@ -421,6 +440,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         address, port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
         if port is not None and 1 <= port + delta <= 65535:
             self._set_adb(index, address, port + delta)
+            self.model.raw_inputs[(*TARGETS, self._source_index(TARGETS, index), 'target')] = str(port + delta)
             self.refresh()
 
     def _show_host(self, index, item, source_index=None):
