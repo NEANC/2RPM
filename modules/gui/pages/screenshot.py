@@ -69,7 +69,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.cleanup.pack(anchor='w', padx=16, pady=8)
         ctk_kit.CTkLabel(retention, text='保留天数', font=FONT_BODY).pack(
             anchor='w', padx=16)
-        self.days = self._stepper(retention, lambda delta: self._change_days(delta), 0)
+        self.days = self._days_stepper(retention)
         self.days.pack(anchor='w', padx=16, pady=(6, 16))
         self.refresh()
 
@@ -94,6 +94,25 @@ class Page(ctk_kit.CTkScrollableFrame):
         frame.up.pack()
         frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
                                        command=lambda: action(1))
+        frame.down.pack()
+        return frame
+
+    def _days_stepper(self, parent):
+        """绘制与端口等宽等高的可编辑天数步进控件。"""
+        frame = ctk_kit.CTkFrame(parent, fg_color='transparent')
+        self.days_value = tk.StringVar(master=self)
+        self._refreshing_days = False
+        frame.number = ctk_kit.CTkEntry(frame, textvariable=self.days_value,
+                                        width=74, font=FONT_BODY)
+        frame.number.pack(side='left')
+        self.days_value.trace_add('write', lambda *_: self._edit_days(self.days_value.get()))
+        arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
+        arrows.pack(side='left')
+        frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
+                                     command=lambda: self._change_days(1))
+        frame.up.pack()
+        frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
+                                       command=lambda: self._change_days(-1))
         frame.down.pack()
         return frame
 
@@ -478,7 +497,15 @@ class Page(ctk_kit.CTkScrollableFrame):
             days = DEFAULT_RETENTION_DAYS
         if days + delta > 0:
             self.model.set((*RETENTION, 'max_days'), days + delta)
-            self.days.number.configure(text=str(days + delta))
+            self.days_value.set(str(days + delta))
+
+    def _edit_days(self, raw):
+        """仅把完整正整数写入配置，空输入保持为未完成草稿。"""
+        if self._refreshing_days:
+            return
+        _retention, editable = self._retention()
+        if editable and raw.isdecimal() and int(raw) > 0:
+            self.model.set((*RETENTION, 'max_days'), int(raw))
 
     def _screenshot_section(self):
         """返回映射类型的截图节；缺失为空映射，结构异常返回 None。"""
@@ -546,9 +573,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.days.up.configure(state=state)
         self.days.down.configure(state=state)
         days = retention.get('max_days') if editable else None
-        self.days.number.configure(
-            text=str(days) if isinstance(days, int) else
-            (str(DEFAULT_RETENTION_DAYS) if editable else '--'))
+        self.days.number.configure(state=state)
+        self._refreshing_days = True
+        try:
+            self.days_value.set(
+                str(days) if isinstance(days, int) else
+                (str(DEFAULT_RETENTION_DAYS) if editable else '--'))
+        finally:
+            self._refreshing_days = False
 
     def focus_issue(self, path):
         """聚焦当前截图目标或图床行。"""

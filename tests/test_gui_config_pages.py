@@ -102,20 +102,50 @@ def test_retention_missing_or_scalar_is_safe():
     document = new_document()
     del document.tree['push']['screenshot']['retention']
     model = EditorModel(document)
+    revision = model.revision
     page = ScreenshotPage(root, Mock(model=model))
     try:
-        assert page.days.number.cget('text') == '14'
+        assert page.days.number.get() == '14'
+        assert model.revision == revision
         page._change_days(1)
         assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 15
         model.set(('push', 'screenshot', 'retention'), 'broken')
         page.refresh()
-        assert page.days.number.cget('text') == '--'
+        assert page.days.number.get() == '--'
         assert page.cleanup.cget('state') == 'disabled'
         assert page.days.up.cget('state') == 'disabled'
         assert page.days.down.cget('state') == 'disabled'
         page._change_cleanup()
         page._change_days(1)
         assert model.get(('push', 'screenshot', 'retention')) == 'broken'
+    finally:
+        root.destroy()
+
+
+def test_retention_days_matches_port_stepper_and_edits_value():
+    """保留天数与端口同宽同高，可输入且上箭头递增、下箭头递减。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        port = page.target_rows[0]['port']
+        days = page.days.number
+        assert isinstance(days, ctk_kit.CTkEntry)
+        assert days.cget('width') == port.cget('width')
+        assert days.cget('height') == port.cget('height')
+        assert days.get() == '14'
+        days.delete(0, 'end')
+        days.insert(0, '7')
+        assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 7
+        page.days.up._command()
+        assert days.get() == '8'
+        page.days.down._command()
+        assert days.get() == '7'
     finally:
         root.destroy()
 
