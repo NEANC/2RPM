@@ -295,6 +295,99 @@ def test_validation_groups_issues_by_page_and_navigates(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_home_summary_groups_and_nested_reasons_follow_draft(tmp_path, monkeypatch):
+    """三级摘要默认收起，失败原因逐条显示并随草稿更新。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        home = app.visible_pages['主页']
+        assert set(home.groups) == {'通知事件', '事件截图', '外部程序'}
+        assert all(not group.expanded for group in home.groups.values())
+        before = home.groups['通知事件'].detail
+        assert '/4' in before
+        assert '/3' in home.groups['外部程序'].detail
+        home.groups['事件截图'].expand()
+        failed = next(row for row in home.screenshot_rows.values()
+                      if row['reasons'] is not None)
+        assert not failed['reasons'].expanded
+        assert len(failed['reasons'].body.winfo_children()) >= 2
+        failed['reasons'].expand()
+        assert failed['reasons'].body.winfo_manager() == 'pack'
+        app.model.set(('push', 'templates', 'on_end', 'enable'), False)
+        home.refresh()
+        assert home.groups['通知事件'].detail != before
+        assert home.groups['事件截图'].expanded
+    finally:
+        root.destroy()
+
+
+def test_home_actions_and_paths_have_expected_layout_and_tooltips(tmp_path, monkeypatch):
+    """保存入口与标题同排，路径和文件名突出且提示完整路径。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        home = app.visible_pages['主页']
+        assert home.save_button.master is home.summary_header
+        assert home.save_as_button.master is home.summary_header
+        assert home.save_button.pack_info()['side'] == 'right'
+        assert home.path_value.cget('text_color') == home.filename_value.cget('text_color')
+        assert home.path_tip.text == str(app.model.document.path)
+        path = app.model.document.path
+        assert home.path_tip.text == str(path)
+        assert home.filename_tip.text == str(path)
+        assert home.filename_value.cget('text') == path.name
+    finally:
+        root.destroy()
+
+
+def test_validation_entry_navigates_exact_field_not_first_group_issue(tmp_path, monkeypatch):
+    """同页不同问题保留各自路径，隐藏字段仅提示 YAML。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        issues = [SimpleNamespace(path=('monitor', 'target'), severity='warning'),
+                  SimpleNamespace(path=('monitor', 'common', 'max_wait'), severity='warning'),
+                  SimpleNamespace(path=('monitor', 'launch', 'cwd'), severity='warning')]
+        app.model.validate = lambda _: SimpleNamespace(issues=issues)
+        app.validate()
+        home = app.visible_pages['主页']
+        entries = home.validation_rows['监视设置']['issues']
+        assert len(entries) == 3
+        entries[1]['button'].invoke()
+        assert app.current_page == '监视设置'
+        assert app.visible_pages['监视设置'].widget_for_issue is app.visible_pages['监视设置'].fields[('monitor', 'common', 'max_wait')][1]._entry
+        entries[2]['button'].invoke()
+        assert 'YAML' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_validation_first_hidden_error_points_to_yaml(tmp_path, monkeypatch):
+    """首个错误属于隐藏字段时仍提示编辑 YAML，而不假装聚焦控件。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        issue = SimpleNamespace(path=('monitor', 'launch', 'cwd'), severity='error')
+        app.model.validate = lambda _: SimpleNamespace(issues=[issue])
+        app.validate()
+        assert app.current_page == '监视设置'
+        assert 'YAML' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_close_cancel_keeps_root(tmp_path, monkeypatch):
     """拒绝退出时窗口和草稿仍存在。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

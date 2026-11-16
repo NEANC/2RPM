@@ -1025,7 +1025,8 @@ def test_each_event_displays_screenshot_conditions_and_explicit_reference(tmp_pa
         app.visible_pages['消息推送设置'].insert_variable('on_end', 'screenshot')
         page.refresh()
         assert screenshot_conditions(app.model.snapshot(), 'on_end')['references']
-        assert '目标结束' in page.conditions.cget('text')
+        assert '目标结束' in page.screenshot_rows
+        assert page.screenshot_rows['目标结束']['reasons'] is not None
     finally:
         root.destroy()
 

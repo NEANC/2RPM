@@ -385,6 +385,7 @@ class App:
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
 
         counts = {name: [0, 0] for name in self.page_names}
+        by_page = {name: [] for name in self.page_names}
         def destination(issue):
             """结构问题归主页，高级隐藏字段归相关业务页。"""
             path = issue.path
@@ -397,8 +398,10 @@ class App:
             return {'monitor': '监视设置', 'push': '消息推送设置',
                     'log': '日志设置'}.get(path[0], '主页')
         for issue in candidate.issues:
-            counts[destination(issue)][0 if issue.severity == 'error' else 1] += 1
-        groups = [(name, error_count, other_count)
+            name = destination(issue)
+            counts[name][0 if issue.severity == 'error' else 1] += 1
+            by_page[name].append(issue)
+        groups = [(name, error_count, other_count, by_page[name])
                   for name, (error_count, other_count) in counts.items()
                   if error_count + other_count]
         self._validated = (self.model.document_generation, self.model.revision)
@@ -407,15 +410,22 @@ class App:
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            name = destination(issue)
-            self.show_page(name)
-            if name == '主页':
-                self.visible_pages['主页'].show_issue(getattr(issue, 'code', 'structure'))
-            elif name in self.visible_pages and hasattr(self.visible_pages[name], 'focus_issue'):
-                self.visible_pages[name].focus_issue(issue.path)
-            else:
-                self.status.configure(text=f'{name}：请在 YAML 中检查对应字段')
+            self.focus_validation_issue(destination(issue), issue)
         return candidate
+
+    def focus_validation_issue(self, name, issue):
+        """从主页诊断行前往实际字段，隐藏字段只指向所属页。"""
+        if not self.show_page(name):
+            return
+        if name == '主页':
+            self.visible_pages[name].show_issue(getattr(issue, 'code', 'structure'))
+            return
+        page = self.visible_pages[name]
+        path = tuple(issue.path)
+        if path == ('monitor', 'launch', 'cwd') or path[-1:] == ('capture_screenshot',):
+            self.status.configure(text=f'{name}：请在 YAML 中检查对应字段')
+            return
+        page.focus_issue(path)
 
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
