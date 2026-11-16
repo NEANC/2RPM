@@ -5,6 +5,8 @@
 
 import copy
 
+import pytest
+
 from modules.config_document import ConfigDocument, new_document
 from modules.gui.model import EditorModel
 
@@ -121,6 +123,23 @@ def test_validate_is_pure(tmp_path):
     assert model.snapshot() == before
     assert candidate.tree is not model.document.tree
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('value', ['broken', ['push'], 3])
+def test_validate_tolerates_non_mapping_push(tmp_path, value):
+    """push 为标量或其他非映射时仍能给出诊断而不抛 AttributeError。"""
+    document = new_document()
+    document.tree['push'] = value
+    candidate = EditorModel(document).validate(tmp_path)
+    assert candidate.issues
+
+
+def test_validate_tolerates_non_mapping_channel_settings(tmp_path):
+    """push_channel_settings 为标量时按无通道处理并保留结构诊断。"""
+    document = new_document()
+    document.tree['push']['push_channel_settings'] = 'broken'
+    candidate = EditorModel(document).validate(tmp_path)
+    assert candidate.issues
 
 
 def test_partial_number_keeps_raw_draft():

@@ -107,8 +107,11 @@ class EditorModel:
         """以当前草稿运行无文件写入的共享配置诊断。"""
         candidate = analyze_config(self._tree, config_dir=config_dir,
                                    defaults=get_default_config())
-        channels = self._tree.get('push', {}).get(
-            'push_channel_settings', {}).get('channels')
+        push = self._tree.get('push')
+        push = push if isinstance(push, Mapping) else {}
+        channel_settings = push.get('push_channel_settings')
+        channels = (channel_settings.get('channels')
+                    if isinstance(channel_settings, Mapping) else None)
         issues = list(candidate.issues)
         issues.extend(self.input_errors.values())
         for index, channel in enumerate(parse_push_channels(channels)):
