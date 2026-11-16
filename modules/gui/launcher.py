@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from modules.gui.build_identity import release_names
+
 
 class CliLocationError(Exception):
     """GUI 与 CLI 无法精确配对。"""
@@ -36,11 +38,11 @@ def resolve_cli_command(*, executable: Path, frozen: bool, project_dir: Path,
     if build_tool not in ('Nuitka', 'PyInstaller') or not build_tag:
         raise CliLocationError('GUI 构建身份无效')
     local_name = '2RPM-GUI.exe'
-    release_name = f'2RPM-GUI-{build_tool}-{build_tag}.exe'
+    gui_name, paired_name = release_names(build_tool, build_tag)
     if executable.name == local_name:
         cli_name = '2RPM.exe'
-    elif executable.name == release_name:
-        cli_name = f'2RPM-{build_tool}-{build_tag}.exe'
+    elif executable.name == gui_name:
+        cli_name = paired_name
     else:
         raise CliLocationError('GUI 文件名与构建身份不符')
     cli = executable.parent / cli_name
