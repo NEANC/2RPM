@@ -4,6 +4,7 @@
 """Fluent 主页、导航与设置的真实窗口回归。"""
 
 import tkinter as tk
+from types import SimpleNamespace
 
 import ctk_kit
 
@@ -155,6 +156,43 @@ def test_validation_result_invalidated_after_edit(tmp_path, monkeypatch):
         app.refresh()
         assert home.check.cget('text') == '尚未校验'
         assert home.issue_hint.cget('text') == ''
+    finally:
+        root.destroy()
+
+
+def test_validation_groups_issues_by_page_and_navigates(tmp_path, monkeypatch):
+    """主页按承载页面分组显示问题数与前往入口，且只显示安全类别。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        issues = [
+            SimpleNamespace(path=('monitor', 'launch', 'cwd'), severity='error'),
+            SimpleNamespace(path=('push', 'push_channel_settings', 'channels', 0, 'sckey'),
+                            severity='error'),
+            SimpleNamespace(path=('push', 'screenshot', 'targets', 0, 'target'),
+                            severity='warning'),
+            SimpleNamespace(path=('external', 'on_timeout'), severity='error'),
+            SimpleNamespace(path=('log', 'retention_days'), severity='warning'),
+        ]
+        app.model.validate = lambda _: SimpleNamespace(issues=issues)
+        app.validate()
+        home = app.visible_pages['主页']
+        assert '存在 5 个问题' in home.check.cget('text')
+        rows = home.validation_rows
+        assert set(rows) == {'监视设置', '消息推送设置', '截图设置',
+                             '外部程序设置', '日志设置'}
+        assert '1 个问题' in rows['消息推送设置']['label'].cget('text')
+        assert '错误 1' in rows['消息推送设置']['label'].cget('text')
+        assert '其他 0' in rows['消息推送设置']['label'].cget('text')
+        assert '1 个问题' in rows['截图设置']['label'].cget('text')
+        assert '错误 0' in rows['截图设置']['label'].cget('text')
+        assert '其他 1' in rows['截图设置']['label'].cget('text')
+        assert 'sckey' not in rows['消息推送设置']['label'].cget('text')
+        rows['日志设置']['button']._command()
+        assert app.current_page == '日志设置'
     finally:
         root.destroy()
 

@@ -37,6 +37,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(card, text='校验配置', command=app.validate, font=FONT_BODY).pack(anchor='e')
         self.check = ctk_kit.CTkLabel(card, text='尚未校验', font=FONT_BODY, anchor='w')
         self.check.pack(fill='x')
+        self.check_body = ctk_kit.CTkFrame(card, fg_color='transparent')
+        self.check_body.pack(fill='x')
+        self.validation_rows = {}
         self.issue_hint = ctk_kit.CTkLabel(card, text='', font=FONT_BODY, anchor='w')
         self.issue_hint.pack(fill='x')
         card = self._card('运行配置')
@@ -77,6 +80,35 @@ class Page(ctk_kit.CTkScrollableFrame):
         """草稿已变化时清空旧校验结果与诊断落点。"""
         self.check.configure(text='尚未校验')
         self.issue_hint.configure(text='')
+        self._clear_validation_rows()
+
+    def _clear_validation_rows(self):
+        """销毁旧分组行并清空可导航入口。"""
+        for child in self.check_body.winfo_children():
+            child.destroy()
+        self.validation_rows = {}
+
+    def show_validation(self, total, groups):
+        """按页面分组展示问题数量及前往设置入口。"""
+        self._clear_validation_rows()
+        errors = sum(error for _name, error, _other in groups)
+        others = total - errors
+        self.check.configure(
+            text=(f'存在 {total} 个问题（错误 {errors}，其他 {others}），请检查对应配置'
+                  if total else '配置检查：无问题'))
+        for name, error_count, other_count in groups:
+            row = ctk_kit.CTkFrame(self.check_body, fg_color='transparent')
+            row.pack(fill='x', pady=2)
+            label = ctk_kit.CTkLabel(
+                row, text=f'{name}：{error_count + other_count} 个问题'
+                          f'（错误 {error_count}，其他 {other_count}）',
+                font=FONT_BODY, anchor='w')
+            label.pack(side='left', fill='x', expand=True)
+            button = ctk_kit.CTkButton(
+                row, text='前往设置', width=80, font=FONT_BODY,
+                command=lambda target=name: self.app.show_page(target))
+            button.pack(side='right')
+            self.validation_rows[name] = {'label': label, 'button': button}
 
     def show_issue(self, code):
         """结构问题只显示类别，不显示未知诊断原文。"""

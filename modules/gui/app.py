@@ -347,7 +347,7 @@ class App:
         path = self.model.document.path
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
 
-        counts = {name: 0 for name in self.page_names}
+        counts = {name: [0, 0] for name in self.page_names}
         def destination(issue):
             """结构问题归主页，高级隐藏字段归相关业务页。"""
             path = issue.path
@@ -360,10 +360,12 @@ class App:
             return {'monitor': '监视设置', 'push': '消息推送设置',
                     'log': '日志设置'}.get(path[0], '主页')
         for issue in candidate.issues:
-            counts[destination(issue)] += 1
-        self.visible_pages['主页'].check.configure(
-            text=f'存在 {len(candidate.issues)} 个问题，请检查对应配置'
-            if candidate.issues else '配置检查：无问题')
+            counts[destination(issue)][0 if issue.severity == 'error' else 1] += 1
+        groups = [(name, error_count, other_count)
+                  for name, (error_count, other_count) in counts.items()
+                  if error_count + other_count]
+        self._validated = (self.model.document_generation, self.model.revision)
+        self.visible_pages['主页'].show_validation(len(candidate.issues), groups)
         self.status.configure(text=f'校验：{len(candidate.issues)} 个问题')
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
@@ -376,7 +378,6 @@ class App:
                 self.visible_pages[name].focus_issue(issue.path)
             else:
                 self.status.configure(text=f'{name}：请在 YAML 中检查对应字段')
-        self._validated = (self.model.document_generation, self.model.revision)
         return candidate
 
     def start_cli(self):
