@@ -5,6 +5,7 @@
 
 import copy
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 from modules.config import get_default_config
@@ -77,10 +78,13 @@ class EditorModel:
         """切换模式时只在内存中保存与恢复各分支目标。"""
         if mode not in ('watch', 'launch'):
             raise ValueError('无效的监视模式')
-        current = self._tree['monitor']['mode']
+        monitor = self._tree.get('monitor')
+        if not isinstance(monitor, Mapping):
+            return
+        current = monitor.get('mode')
         if mode == current:
             return
-        self._targets[current] = self._tree['monitor']['target']
+        self._targets[current] = monitor.get('target')
         self._tree['monitor']['mode'] = mode
         self._tree['monitor']['target'] = self._targets.get(mode, self._original_target)
         self.revision += 1
@@ -133,6 +137,12 @@ class EditorModel:
         self.input_errors = {}
         self.raw_inputs = {}
         self._tree = copy.deepcopy(document.tree)
-        self._original_target = self._tree['monitor']['target']
-        self._targets = {self._tree['monitor']['mode']: self._original_target}
+        monitor = self._tree.get('monitor')
+        if isinstance(monitor, Mapping):
+            self._original_target = monitor.get('target')
+            mode = monitor.get('mode')
+            self._targets = {mode: self._original_target} if mode in ('watch', 'launch') else {}
+        else:
+            self._original_target = None
+            self._targets = {}
         self.dirty = False

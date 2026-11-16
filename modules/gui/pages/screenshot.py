@@ -3,6 +3,7 @@
 
 """ctk-kit 截图目标、图床与本地保留设置页。"""
 
+from collections.abc import Mapping
 import re
 from io import StringIO
 import tkinter as tk
@@ -48,12 +49,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(targets_card, text='添加目标', font=FONT_BODY,
                           command=self.add_target).pack(anchor='e', padx=16, pady=4)
         self.targets_body = ctk_kit.CTkFrame(targets_card, fg_color='transparent')
-        self.targets_body.pack(fill='x', padx=16, pady=(4, 16))
+        self.targets_body.pack(fill='x', padx=16, pady=(4, 8))
+        self.targets_hint = ctk_kit.CTkLabel(targets_card, text='', font=FONT_SMALL, anchor='w')
+        self.targets_hint.pack(fill='x', padx=16, pady=(0, 8))
         hosts_card = self._card('图床')
         ctk_kit.CTkButton(hosts_card, text='添加图床', font=FONT_BODY,
                           command=self.add_host).pack(anchor='e', padx=16, pady=4)
         self.hosts_body = ctk_kit.CTkFrame(hosts_card, fg_color='transparent')
-        self.hosts_body.pack(fill='x', padx=16, pady=(4, 16))
+        self.hosts_body.pack(fill='x', padx=16, pady=(4, 8))
+        self.hosts_hint = ctk_kit.CTkLabel(hosts_card, text='', font=FONT_SMALL, anchor='w')
+        self.hosts_hint.pack(fill='x', padx=16, pady=(0, 8))
         retention = self._card('本地保留')
         self.cleanup = ctk_kit.CTkSwitch(retention, text='清理过期自动截图', font=FONT_BODY,
                                          command=self._change_cleanup)
@@ -357,25 +362,53 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.model.set((*RETENTION, 'max_days'), days + delta)
             self.days.number.configure(text=str(days + delta))
 
+    def _screenshot_section(self):
+        """返回映射类型的截图节，缺失或结构异常时为空映射。"""
+        snapshot = self.model.snapshot()
+        push = snapshot.get('push') if isinstance(snapshot, Mapping) else None
+        screenshot = push.get('screenshot') if isinstance(push, Mapping) else None
+        return screenshot if isinstance(screenshot, Mapping) else {}
+
     def refresh(self):
         """仅重绘列表与保留设置，不改写高级参数或修订号。"""
         if self.generation != self.model.document_generation:
             self.invalid_options.clear()
             self.generation = self.model.document_generation
+        section = self._screenshot_section()
         for body in (self.targets_body, self.hosts_body):
             for child in body.winfo_children():
                 child.destroy()
         self.target_rows = []
         self.host_rows = []
-        for index, target in enumerate(self.model.get(TARGETS)):
+        raw_targets = section.get('targets')
+        targets = [item for item in raw_targets if isinstance(item, Mapping)] \
+            if isinstance(raw_targets, list) else []
+        raw_hosts = section.get('image_host')
+        hosts = [item for item in raw_hosts if isinstance(item, Mapping)] \
+            if isinstance(raw_hosts, list) else []
+        self.targets_hint.configure(
+            text=('部分截图目标结构无效，已跳过显示'
+                  if len(targets) != len(raw_targets) else '')
+            if isinstance(raw_targets, list) else
+            ('截图目标配置缺失或结构无效，请在 YAML 中检查'
+             if raw_targets is not None else ''))
+        self.hosts_hint.configure(
+            text=('部分图床结构无效，已跳过显示'
+                  if len(hosts) != len(raw_hosts) else '')
+            if isinstance(raw_hosts, list) else
+            ('图床配置缺失或结构无效，请在 YAML 中检查'
+             if raw_hosts is not None else ''))
+        for index, target in enumerate(targets):
             self._show_target(index, target)
-        for index, host in enumerate(self.model.get(HOSTS)):
+        for index, host in enumerate(hosts):
             self._show_host(index, host)
-        if self.model.get((*RETENTION, 'enabled')):
+        retention = section.get('retention')
+        if isinstance(retention, Mapping) and retention.get('enabled'):
             self.cleanup.select()
         else:
             self.cleanup.deselect()
-        self.days.number.configure(text=str(self.model.get((*RETENTION, 'max_days'))))
+        days = retention.get('max_days') if isinstance(retention, Mapping) else None
+        self.days.number.configure(text=str(days) if isinstance(days, int) else '--')
 
     def focus_issue(self, path):
         """聚焦当前截图目标或图床行。"""

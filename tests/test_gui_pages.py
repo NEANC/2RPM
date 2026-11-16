@@ -1484,3 +1484,73 @@ def test_validation_routes_dynamic_diagnostic_path(
             assert page.target_rows[1]['entry'].winfo_exists()
     finally:
         root.destroy()
+
+
+def test_open_monitor_null_refreshes_without_crash(tmp_path):
+    """monitor 节点为 null 时仍能打开并显示待校验状态。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = tmp_path / 'monitor-null.yaml'
+        path.write_text('monitor: null\npush: {}\nlog: {}\nexternal: {}\n',
+                        encoding='utf-8')
+        assert app.controller.open(path)
+        app.show_page('主页')
+        assert '运行方式：待校验' in app.summary_text
+        assert '目标位置：待校验' in app.summary_text
+        assert app.show_page('监视设置')
+        assert app.visible_pages['监视设置'].fields[('monitor', 'target')][1].winfo_exists()
+    finally:
+        root.destroy()
+
+
+def test_open_missing_push_and_log_sections_refreshes_empty_state(tmp_path):
+    """缺少 push/log 节时页面按空状态刷新，不抛 KeyError。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = tmp_path / 'missing-sections.yaml'
+        path.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                        'external: {}\n', encoding='utf-8')
+        assert app.controller.open(path)
+        app.show_page('主页')
+        assert '通知通道：待校验' in app.summary_text
+        assert '截图目标：待校验' in app.summary_text
+        assert app.show_page('消息推送设置')
+        assert app.visible_pages['消息推送设置'].channel_rows == []
+        assert app.show_page('日志设置')
+        assert app.visible_pages['日志设置'].fields[('log', 'log_directory')][1].get() == ''
+        assert app.visible_pages['日志设置'].fields[('log', 'retention_days')][1].get() == ''
+    finally:
+        root.destroy()
+
+
+def test_open_non_mapping_list_items_skips_and_hints(tmp_path):
+    """通道、目标与图床列表中的非映射项被跳过并提示结构问题。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = tmp_path / 'invalid-items.yaml'
+        path.write_text(
+            'monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+            'push:\n  push_channel_settings:\n    channels:\n      - bad\n'
+            '      - {provider: serverchan, sckey: ""}\n'
+            '  screenshot:\n    targets:\n      - bad\n'
+            '      - {provider: window, target: A}\n'
+            '    image_host:\n      - bad\n'
+            '      - {provider: beeimg, token: ""}\n'
+            '  templates: {}\n  retry: {}\n'
+            'log: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(path)
+        app.show_page('消息推送设置')
+        push_page = app.visible_pages['消息推送设置']
+        assert len(push_page.channel_rows) == 1
+        assert '结构无效' in push_page.channel_hint.cget('text')
+        app.show_page('截图设置')
+        screenshot_page = app.visible_pages['截图设置']
+        assert len(screenshot_page.target_rows) == 1
+        assert len(screenshot_page.host_rows) == 1
+        assert '结构无效' in screenshot_page.targets_hint.cget('text')
+        assert '结构无效' in screenshot_page.hosts_hint.cget('text')
+    finally:
+        root.destroy()

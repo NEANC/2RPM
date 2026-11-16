@@ -87,13 +87,20 @@ class Page(ctk_kit.CTkScrollableFrame):
         """仅清空草稿目录路径。"""
         self.fields[('log', 'log_directory')][0].set('')
 
+    def _safe_value(self, path, kind):
+        """读取可能缺失的字段，结构异常时显示空文本。"""
+        try:
+            return (self.model.get_input(path) if kind == 'int'
+                    else str(self.model.get(path) or ''))
+        except (KeyError, IndexError, TypeError):
+            return ''
+
     def refresh(self):
         """从当前文档同步所有可见字段。"""
         self._refreshing = True
         try:
             for path, (variable, _entry, kind) in self.fields.items():
-                variable.set(self.model.get_input(path) if kind == 'int' else
-                             str(self.model.get(path) or ''))
+                variable.set(self._safe_value(path, kind))
         finally:
             self._refreshing = False
 

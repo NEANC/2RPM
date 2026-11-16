@@ -14,26 +14,39 @@ CONDITIONS = {'enabled': '事件或事件截图未启用', 'channels': '未配�
               'references': '消息缺少有效截图变量引用', 'targets': '未配置有效截图目标'}
 
 
+def _count(items):
+    """统计有效列表项，非列表返回待校验并标注被跳过的无效项。"""
+    if not isinstance(items, list):
+        return '待校验'
+    valid = sum(isinstance(item, Mapping) for item in items)
+    return f'{valid} 个' + ('（含无效项）' if valid != len(items) else '')
+
+
 def summary(config):
     """仅返回安全状态，不包含目标、凭证及未知原文。"""
-    monitor = config.get('monitor', {})
-    push = config.get('push', {})
-    templates = push.get('templates', {})
+    config = config if isinstance(config, Mapping) else {}
+    monitor = config.get('monitor')
+    monitor = monitor if isinstance(monitor, Mapping) else {}
+    push = config.get('push')
+    push = push if isinstance(push, Mapping) else {}
+    templates = push.get('templates')
     mode = {'watch': '等待目标运行', 'launch': '主动启动并监视'}.get(
         monitor.get('mode'), '待校验')
     target = monitor.get('target')
     target_state = ('已配置' if isinstance(target, str) and target.strip()
                     else '未配置' if isinstance(target, str) else '待校验')
-    common = monitor.get('common', {})
+    common = monitor.get('common')
     wait = common.get('max_wait') if isinstance(common, Mapping) else None
     wait_state = ('已配置' if isinstance(wait, str) and wait.strip()
                   else '未配置' if isinstance(wait, str) else '待校验')
-    channels = push.get('push_channel_settings', {}).get('channels', [])
-    hosts = push.get('screenshot', {}).get('targets', [])
+    channel_settings = push.get('push_channel_settings')
+    channels = channel_settings.get('channels') if isinstance(channel_settings, Mapping) else None
+    screenshot = push.get('screenshot')
+    hosts = screenshot.get('targets') if isinstance(screenshot, Mapping) else None
     lines = [f'运行方式：{mode}', f'目标位置：{target_state}',
              f'最长等待：{wait_state}',
-             f'通知通道：{len(channels) if isinstance(channels, list) else "待校验"} 个',
-             f'截图目标：{len(hosts) if isinstance(hosts, list) else "待校验"} 个']
+             f'通知通道：{_count(channels)}',
+             f'截图目标：{_count(hosts)}']
     details = []
     for key, title in EVENTS.items():
         event = templates.get(key) if isinstance(templates, Mapping) else None

@@ -3,6 +3,7 @@
 
 """ctk-kit 通道列表、事件模板与无外发消息预览。"""
 
+from collections.abc import Mapping
 import tkinter as tk
 from tkinter import messagebox
 
@@ -64,10 +65,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(card, text='添加通道', font=FONT_BODY,
                           command=self.open_add_dialog).pack(anchor='e', padx=16)
         self.channel_body = ctk_kit.CTkFrame(card, fg_color='transparent')
-        self.channel_body.pack(fill='x', padx=16, pady=(4, 16))
+        self.channel_body.pack(fill='x', padx=16, pady=(4, 8))
+        self.channel_hint = ctk_kit.CTkLabel(card, text='', font=FONT_SMALL, anchor='w')
+        self.channel_hint.pack(fill='x', padx=16, pady=(0, 8))
         card = self._card('通知事件与消息')
         self.events_body = ctk_kit.CTkFrame(card, fg_color='transparent')
-        self.events_body.pack(fill='x', padx=16, pady=(4, 16))
+        self.events_body.pack(fill='x', padx=16, pady=(4, 8))
+        self.events_hint = ctk_kit.CTkLabel(card, text='', font=FONT_SMALL, anchor='w')
+        self.events_hint.pack(fill='x', padx=16, pady=(0, 8))
         card = self._card('错误处理')
         for label, name in (('重试间隔', 'interval'), ('最大重试次数', 'max_count')):
             row = ctk_kit.CTkFrame(card, fg_color='transparent')
@@ -84,10 +89,24 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
         return card
 
+    def _safe_get(self, path, default=None):
+        """读取可能缺失的节，缺失或中间节点类型异常时返回默认值。"""
+        try:
+            return self.model.get(path)
+        except (KeyError, IndexError, TypeError):
+            return default
+
+    def _safe_input(self, path):
+        """读取原始输入，缺失字段返回空文本。"""
+        try:
+            return self.model.get_input(path)
+        except (KeyError, IndexError, TypeError):
+            return ''
+
     def _entry(self, parent, path, *, numeric=False):
         """绑定固定字段，保留数字原始输入。"""
-        variable = tk.StringVar(master=self, value=(self.model.get_input(path) if numeric else
-                                                   str(self.model.get(path) or '')))
+        variable = tk.StringVar(master=self, value=(self._safe_input(path) if numeric else
+                                                   str(self._safe_get(path) or '')))
         widget = ctk_kit.CTkEntry(parent, textvariable=variable, font=FONT_BODY)
         widget.pack(side='left', fill='x', expand=True, padx=4)
         variable.trace_add('write', lambda *_: self._changed(path, variable, numeric))
@@ -125,8 +144,8 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def change_channel_provider(self, index, provider):
         """通过可见选择器切换通道类型并重建当前行参数。"""
-        channels = self.model.get(CHANNELS)
-        if not 0 <= index < len(channels) or provider not in PROVIDERS.values():
+        channels = self._safe_get(CHANNELS, [])
+        if not isinstance(channels, list) or not 0 <= index < len(channels) or provider not in PROVIDERS.values():
             return
         if channels[index].get('provider') == provider:
             return
@@ -143,7 +162,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not self.model.before_list_edit() or identity != (
                 self.model.document_generation, self.model.revision):
             return
-        channels = self.model.get(CHANNELS)
+        channels = self._safe_get(CHANNELS, [])
+        if not isinstance(channels, list):
+            return
         channels.append({'provider': provider, **{field.name: '' for field in provider_fields(provider)
                                                 if field.required}})
         self.model.set(CHANNELS, channels)
@@ -153,7 +174,8 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def remove_channel(self, index):
         """确认后只删除当前行，列表变更前补存。"""
-        if not 0 <= index < len(self.model.get(CHANNELS)):
+        channels = self._safe_get(CHANNELS, [])
+        if not isinstance(channels, list) or not 0 <= index < len(channels):
             return
         identity = (self.model.document_generation, self.model.revision)
         if not self.model.before_list_edit() or identity != (
@@ -161,7 +183,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         if not messagebox.askyesno('删除通道', '删除该推送通道？', parent=self):
             return
-        channels = self.model.get(CHANNELS)
+        channels = self._safe_get(CHANNELS, [])
         channels.pop(index)
         self.model.set(CHANNELS, channels)
         self._expanded_channel = None
@@ -208,7 +230,15 @@ class Page(ctk_kit.CTkScrollableFrame):
             child.destroy()
         self.channel_rows = []
         self.channel_entries = {}
-        for index, channel in enumerate(self.model.get(CHANNELS)):
+        raw = self._safe_get(CHANNELS, None)
+        if not isinstance(raw, list):
+            channels = []
+            hint = '推送通道配置缺失或结构无效，请在 YAML 中检查' if raw is not None else ''
+        else:
+            channels = [item for item in raw if isinstance(item, Mapping)]
+            hint = ('部分通道项结构无效，已跳过显示' if len(channels) != len(raw) else '')
+        self.channel_hint.configure(text=hint)
+        for index, channel in enumerate(channels):
             line = ctk_kit.CTkFrame(self.channel_body, corner_radius=8)
             line.pack(fill='x', pady=4)
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
@@ -266,9 +296,11 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _variable_names(self, event):
         """组合事件合法变量与已配置截图输出名。"""
         snapshot = self.model.snapshot()
+        push = snapshot.get('push') if isinstance(snapshot, Mapping) else None
+        screenshot = push.get('screenshot') if isinstance(push, Mapping) else None
         names = event_variables(event)
         screenshot_names = _configured_screenshot_names(
-            snapshot['push']['screenshot'], set(names))
+            screenshot if isinstance(screenshot, Mapping) else {}, set(names))
         return dict.fromkeys([*names, 'screenshot', *sorted(screenshot_names)])
 
     def expand_event(self, event):
@@ -289,7 +321,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.variables = {}
         self.capture_switches = {}
         self._event_switches = {}
-        templates = self.model.get(('push', 'templates'))
+        raw = self._safe_get(('push', 'templates'), None)
+        templates = raw if isinstance(raw, Mapping) else {}
+        self.events_hint.configure(
+            text='' if isinstance(raw, Mapping) else '通知事件配置缺失或结构无效，请在 YAML 中检查')
         for event, label in EVENTS:
             path = ('push', 'templates', event)
             card = ctk_kit.CTkFrame(self.events_body, corner_radius=8)
@@ -326,7 +361,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             ctk_kit.CTkLabel(card, text='正文', font=FONT_BODY).pack(anchor='w', padx=12)
             text = ctk_kit.CTkTextbox(card, height=100, font=FONT_BODY, wrap='word')
             text.pack(fill='x', padx=12, pady=4)
-            text.insert('1.0', str(self.model.get((*path, 'content')) or ''))
+            text.insert('1.0', str(self._safe_get((*path, 'content')) or ''))
             text.bind('<KeyRelease>', lambda _, key=(*path, 'content'), widget=text:
                       self._text_changed(key, widget))
             text.bind('<FocusOut>', lambda _, key=(*path, 'content'), widget=text:
@@ -372,15 +407,22 @@ class Page(ctk_kit.CTkScrollableFrame):
             preview.pack_forget()
             return
         self._preview_events.add(event)
+        snapshot = self.model.snapshot()
         try:
-            title, content = preview_template(self.model.snapshot(), event)
-        except ValueError:
+            title, content = preview_template(snapshot, event)
+        except (ValueError, KeyError, TypeError):
             self._preview_text[event] = '示例预览：通知模板变量或格式无效'
         else:
-            conditions = screenshot_conditions(self.model.snapshot(), event)
-            capture = self.model.get(('push', 'templates', event, 'capture_screenshot'))
-            detail = ('截图被阻止，请检查配置文件：capture_screenshot 为 false' if capture is False
-                      else '截图条件：' + ('满足' if all(conditions.values()) else '未满足'))
+            try:
+                conditions = screenshot_conditions(snapshot, event)
+            except (KeyError, TypeError, ValueError):
+                detail = '截图条件：待校验'
+            else:
+                capture = self._safe_get(
+                    ('push', 'templates', event, 'capture_screenshot'))
+                detail = ('截图被阻止，请检查配置文件：capture_screenshot 为 false'
+                          if capture is False else
+                          '截图条件：' + ('满足' if all(conditions.values()) else '未满足'))
             self._preview_text[event] = f'示例预览\n{title}\n{content}\n{detail}'
         preview.configure(text=self._preview_text[event])
         preview.pack(fill='x', padx=12, pady=8)
@@ -398,8 +440,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.fields = {path: value for path, value in self.fields.items()
                            if len(path) == 3 and path[:2] == ('push', 'retry')}
             for path, (variable, _widget, kind) in self.fields.items():
-                variable.set(self.model.get_input(path) if kind == 'int' else
-                             str(self.model.get(path) or ''))
+                variable.set(self._safe_input(path) if kind == 'int' else
+                             str(self._safe_get(path) or ''))
             self._render_channels()
             self._render_events()
         finally:

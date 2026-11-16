@@ -111,6 +111,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         if button is not None:
             button.configure(state='normal' if event in self.action_drafts else 'disabled')
 
+    def _safe_value(self, path, kind):
+        """读取可能缺失的字段，结构异常时显示空文本。"""
+        try:
+            return (self.model.get_input(path) if kind == 'int'
+                    else str(self.model.get(path) or ''))
+        except (KeyError, IndexError, TypeError):
+            return ''
+
     def refresh(self):
         """显示已有路径与未完成的数字输入，文档替换后丢弃旧恢复草稿。"""
         if self.generation != self.model.document_generation:
@@ -119,8 +127,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._refreshing = True
         try:
             for path, (variable, _entry, kind) in self.fields.items():
-                variable.set(self.model.get_input(path) if kind == 'int' else
-                             str(self.model.get(path) or ''))
+                variable.set(self._safe_value(path, kind))
         finally:
             self._refreshing = False
         for event in self.restore_buttons:

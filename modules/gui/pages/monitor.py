@@ -4,6 +4,7 @@
 """使用 ctk-kit 绘制监视模式、目标及时间设置。"""
 
 import ntpath
+from collections.abc import Mapping
 import tkinter as tk
 from tkinter import filedialog
 
@@ -117,13 +118,18 @@ class Page(ctk_kit.CTkScrollableFrame):
         else:
             self.model.set(path, None if optional and not value else value)
 
+    def _monitor(self):
+        """返回映射类型的 monitor 节，缺失或结构异常时为空映射。"""
+        monitor = self.model.snapshot().get('monitor')
+        return monitor if isinstance(monitor, Mapping) else {}
+
     def _target_changed(self, entry):
         """对启动文件目标的主动编辑同步工作目录。"""
         if self._refreshing:
             return
         value = entry.get()
         self.model.set(('monitor', 'target'), value)
-        if self.model.get(('monitor', 'mode')) == 'launch' and self._target_type == 'file':
+        if self._monitor().get('mode') == 'launch' and self._target_type == 'file':
             try:
                 resolved = resolve_monitor_target('launch', value, self._config_dir(), None)
             except ValueError:
@@ -151,7 +157,7 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _select_type(self, value):
         """用户选择任务目标时清空启动参数，不碰工作目录。"""
         self._target_type = 'task' if value in ('task', '计划任务') else 'file'
-        if self._target_type == 'task' and self.model.get(('monitor', 'mode')) == 'launch':
+        if self._target_type == 'task' and self._monitor().get('mode') == 'launch':
             self.model.set(('monitor', 'launch', 'args'), None)
         self.fields[('monitor', 'target')] = (
             self.task_variable if self._target_type == 'task' else self.file_variable,
@@ -166,7 +172,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.args_row.pack_forget()
         row = self.task_row if self._target_type == 'task' else self.file_row
         row.pack(fill='x', padx=16, pady=8)
-        if self.model.get(('monitor', 'mode')) == 'launch' and self._target_type == 'file':
+        if self._monitor().get('mode') == 'launch' and self._target_type == 'file':
             self.args_row.pack(fill='x', pady=4)
 
     def _browse(self):
@@ -183,11 +189,13 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _update_preview(self):
         """只显示安全的目标类型提示，不执行目标。"""
+        monitor = self._monitor()
+        launch = monitor.get('launch')
+        cwd = launch.get('cwd') if isinstance(launch, Mapping) else None
         try:
             target = resolve_monitor_target(
-                self.model.get(('monitor', 'mode')),
-                self.model.get(('monitor', 'target')),
-                self._config_dir(), self.model.get(('monitor', 'launch', 'cwd')))
+                monitor.get('mode'), monitor.get('target'),
+                self._config_dir(), cwd)
             if target.kind == 'process':
                 text = '此目标需在 YAML 中编辑；已保留原目标'
             else:
@@ -204,9 +212,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         """同步模型值，打开已有任务不触发用户切换逻辑。"""
         self._refreshing = True
         try:
-            mode = self.model.get(('monitor', 'mode'))
+            monitor = self._monitor()
+            mode = monitor.get('mode')
             self.mode.set('主动启动并监视' if mode == 'launch' else '等待目标运行')
-            target = self.model.get(('monitor', 'target'))
+            target = monitor.get('target')
             try:
                 kind = resolve_monitor_target(mode, target, self._config_dir()).kind
             except (ValueError, TypeError):
