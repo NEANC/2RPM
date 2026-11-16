@@ -18,7 +18,7 @@ from modules.config_rules import Issue
 from modules.gui.appearance import COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
-from modules.gui.widgets import scroll_to_widget
+from modules.gui.widgets import PRESAVE_HINT, scroll_to_widget
 
 
 TARGETS = ('push', 'screenshot', 'targets')
@@ -96,9 +96,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         return frame
 
     def _before(self):
-        """优先补存现有编辑，若重载或冲突则停止本次列表操作。"""
+        """优先补存现有编辑，若冲突或重载则停止并提示本次列表操作。"""
         generation = self.model.document_generation
-        return self.model.before_list_edit() and generation == self.model.document_generation
+        writable = self.model.before_list_edit()
+        if not writable:
+            self.app.status.configure(text=PRESAVE_HINT)
+        return writable and generation == self.model.document_generation
 
     def _commit_list(self):
         """列表编辑后按既有保存协调器立即落盘。"""

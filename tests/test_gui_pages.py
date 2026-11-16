@@ -96,6 +96,26 @@ def test_list_operations_persist_immediately(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_list_edit_presave_failure_updates_status(tmp_path):
+    """补存失败时截图与通知列表操作提示先保存或处理冲突。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        screenshot = app.visible_pages['截图设置']
+        channels = app.visible_pages['消息推送设置']
+        app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
+        before = app.model.get(('push', 'screenshot', 'targets'))
+        screenshot.add_target()
+        assert '配置未保存' in app.status.cget('text')
+        assert app.model.get(('push', 'screenshot', 'targets')) == before
+        channels.add_channel('telegram')
+        assert '配置未保存' in app.status.cget('text')
+        assert all(item.get('provider') != 'telegram'
+                   for item in app.model.get(channels.channels_path))
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('operation', ['channel_add', 'channel_remove', 'target_add',
                                        'target_remove', 'host_add', 'host_remove', 'host_move'])
 def test_list_entry_presaves_before_mutation(tmp_path, operation, monkeypatch):

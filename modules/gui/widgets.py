@@ -9,6 +9,7 @@ from tkinter import ttk
 
 
 STRUCTURE_HINT = '配置结构异常，请在 YAML 中修复'
+PRESAVE_HINT = '配置未保存，请先保存或处理冲突后再修改列表'
 
 
 def path_writable(model, path) -> bool:

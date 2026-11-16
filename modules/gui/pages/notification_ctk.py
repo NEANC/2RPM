@@ -11,7 +11,7 @@ import ctk_kit
 
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.forms import event_variables, preview_template, provider_fields, screenshot_conditions
-from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
+from modules.gui.widgets import PRESAVE_HINT, STRUCTURE_HINT, path_writable, scroll_to_widget
 from modules.notification import _configured_screenshot_names
 
 
@@ -175,8 +175,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         if provider not in PROVIDERS.values() or not path_writable(self.model, CHANNELS):
             return
         identity = (self.model.document_generation, self.model.revision)
-        if not self.model.before_list_edit() or identity != (
-                self.model.document_generation, self.model.revision):
+        writable = self.model.before_list_edit()
+        if not writable:
+            self.app.status.configure(text=PRESAVE_HINT)
+            return
+        if identity != (self.model.document_generation, self.model.revision):
             return
         channels = self._safe_get(CHANNELS, [])
         if not isinstance(channels, list):
@@ -196,8 +199,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not isinstance(channels, list) or not 0 <= source_index < len(channels):
             return
         identity = (self.model.document_generation, self.model.revision)
-        if not self.model.before_list_edit() or identity != (
-                self.model.document_generation, self.model.revision):
+        writable = self.model.before_list_edit()
+        if not writable:
+            self.app.status.configure(text=PRESAVE_HINT)
+            return
+        if identity != (self.model.document_generation, self.model.revision):
             return
         if not messagebox.askyesno('删除通道', '删除该推送通道？', parent=self):
             return
