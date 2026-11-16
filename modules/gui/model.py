@@ -4,6 +4,7 @@
 """不持有控件的 GUI 配置草稿。"""
 
 import copy
+import ntpath
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +13,7 @@ from modules.config import get_default_config
 from modules.config_document import ConfigDocument
 from modules.config_rules import Candidate, Issue, analyze_config
 from modules.gui.forms import provider_fields
+from modules.monitor_target import resolve_monitor_target
 from modules.utils import parse_push_channels
 
 
@@ -117,6 +119,24 @@ class EditorModel:
                     if isinstance(channel_settings, Mapping) else None)
         issues = list(candidate.issues)
         issues.extend(self.input_errors.values())
+        monitor = self._tree.get('monitor')
+        if isinstance(monitor, Mapping):
+            mode = monitor.get('mode')
+            target_type = self._gui_target_types.get(mode)
+            target = monitor.get('target')
+            if target_type and isinstance(target, str) and target.strip():
+                try:
+                    resolved = resolve_monitor_target(mode, target, str(config_dir))
+                except (ValueError, TypeError):
+                    resolved = None
+                if target_type == 'task' and (resolved is None or resolved.kind != 'task'):
+                    issues.append(Issue(('monitor', 'target'), 'gui_task_path', 'error',
+                                        '计划任务须填写完整任务路径'))
+                if target_type == 'file' and (resolved is None or resolved.kind != 'file'
+                        or not ntpath.isabs(target) or
+                        (mode == 'watch' and ntpath.splitext(target)[1].lower() != '.exe')):
+                    issues.append(Issue(('monitor', 'target'), 'gui_file_path', 'error',
+                                        '程序文件须填写绝对路径；等待模式仅支持 EXE'))
         targets = push.get('screenshot')
         targets = targets.get('targets') if isinstance(targets, Mapping) else None
         if isinstance(targets, list):
@@ -142,6 +162,7 @@ class EditorModel:
         changed_path = document.path != self.document.path
         changed_tree = document.tree != self._tree
         raw_inputs = self.raw_inputs if not changed_tree else {}
+        gui_target_types = self._gui_target_types
         if changed_path:
             self.document_generation += 1
             self.revision = 0
@@ -149,6 +170,7 @@ class EditorModel:
             self.revision += 1
         self._adopt(document)
         self.raw_inputs = raw_inputs
+        self._gui_target_types = gui_target_types
 
     def replace_document(self, document: ConfigDocument) -> None:
         """新建或打开成功后替换同一模型实例的文档。"""
@@ -161,6 +183,7 @@ class EditorModel:
         self.document = document
         self.input_errors = {}
         self.raw_inputs = {}
+        self._gui_target_types = {}
         self._tree = copy.deepcopy(document.tree)
         monitor = self._tree.get('monitor')
         if isinstance(monitor, Mapping):

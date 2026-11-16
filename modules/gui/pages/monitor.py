@@ -131,6 +131,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         value = entry.get()
         self.model.set(('monitor', 'target'), value)
+        self.model._gui_target_types[self._monitor().get('mode')] = self._target_type
         if self._monitor().get('mode') == 'launch' and self._target_type == 'file':
             try:
                 resolved = resolve_monitor_target('launch', value, self._config_dir(), None)

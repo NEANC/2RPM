@@ -36,6 +36,18 @@ def test_dirty_start_saves_or_cancels(tmp_path, monkeypatch):
     launch.assert_not_called()
 
 
+def test_existing_bare_watch_target_still_starts(tmp_path, monkeypatch):
+    """旧配置裸进程名不受 GUI 新输入规则影响。"""
+    document = save_document(new_document(), tmp_path / 'old.yaml',
+                             expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, document)
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+    result = controller.start_cli()
+    assert result is not None and result.created
+    launch.assert_called_once()
+
+
 def test_cancel_keeps_dirty(tmp_path):
     """取消替换文档后保持原有草稿及代次。"""
     controller, _, runner = make_controller(tmp_path, answers=['cancel', 'cancel'])

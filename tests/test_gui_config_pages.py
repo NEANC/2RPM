@@ -4,6 +4,7 @@
 """监视业务表单的模型与可见控件测试。"""
 
 import tkinter as tk
+from pathlib import Path
 
 import pytest
 import ctk_kit
@@ -818,5 +819,78 @@ def test_existing_bare_name_is_preserved():
         page.refresh()
         assert model.get(('monitor', 'target')) == 'notepad.exe'
         assert 'YAML' in page.preview.cget('text')
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('value', ['new.exe', r'.\new.exe', r'C:\Apps\new.bat'])
+def test_watch_gui_file_requires_absolute_exe_but_saves_complete_draft(value):
+    """GUI 新输入不接受裸名、相对路径或非 EXE，但原文仍可保存。"""
+    root, model, page = _page()
+    try:
+        page.set_field(('monitor', 'target'), value)
+        assert model.get(('monitor', 'target')) == value
+        assert not model.input_errors
+        assert any(issue.path == ('monitor', 'target') and issue.severity == 'error'
+                   for issue in model.validate(Path('C:/config')).issues)
+    finally:
+        root.destroy()
+
+
+def test_watch_gui_file_absolute_exe_is_valid():
+    """GUI 完整 EXE 路径通过目标校验。"""
+    root, model, page = _page()
+    try:
+        page.set_field(('monitor', 'target'), r'C:\Apps\new.exe')
+        assert not any(issue.path == ('monitor', 'target')
+                       for issue in model.validate(Path('C:/config')).issues)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('value', ['NewTask', 'Tasks\\NewTask', r'C:\Apps\new.exe'])
+def test_gui_task_requires_full_task_path(value):
+    """计划任务输入必须为反斜杠开头的完整任务路径。"""
+    root, model, page = _page()
+    try:
+        page._select_type('task')
+        page.set_field(('monitor', 'target'), value)
+        assert model.get(('monitor', 'target')) == value
+        assert not model.input_errors
+        assert any(issue.path == ('monitor', 'target') and issue.severity == 'error'
+                   for issue in model.validate(Path('C:/config')).issues)
+    finally:
+        root.destroy()
+
+
+def test_existing_bare_name_stays_valid_until_gui_edits_target():
+    """打开、切页及保存旧裸名不新增 GUI 输入限制。"""
+    root, model, page = _page()
+    try:
+        page.refresh()
+        assert not any(issue.path == ('monitor', 'target')
+                       for issue in model.validate(Path('C:/config')).issues)
+        page.set_field(('monitor', 'target'), 'new.exe')
+        assert any(issue.path == ('monitor', 'target')
+                   for issue in model.validate(Path('C:/config')).issues)
+    finally:
+        root.destroy()
+
+
+def test_gui_target_rule_survives_save_but_external_reload_resets_it(tmp_path):
+    """保存无效业务值不丢诊断；外部重载按已有配置规则处理。"""
+    from modules.config_document import read_document, save_document
+
+    root, model, page = _page()
+    try:
+        page.set_field(('monitor', 'target'), 'new.exe')
+        saved = save_document(model.materialize(), tmp_path / 'monitor.yaml',
+                              expected_fingerprint=None)
+        model.accept_saved(saved)
+        assert any(issue.code == 'gui_file_path'
+                   for issue in model.validate(Path('C:/config')).issues)
+        model.replace_document(read_document(saved.path))
+        assert not any(issue.code == 'gui_file_path'
+                       for issue in model.validate(Path('C:/config')).issues)
     finally:
         root.destroy()
