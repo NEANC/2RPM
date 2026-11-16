@@ -161,3 +161,23 @@ def _imports_ui(node):
     module = node.module or ''
     return module.split('.')[0] in ('tkinter', 'ctk_kit', 'customtkinter')
 
+
+def test_ci_installs_gui_dependencies_and_builds_named_pair():
+    """CI 安装 GUI 依赖并分别校验 GUI/CLI 构建与配对命名。"""
+    build_workflow = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
+    unit_workflow = (ROOT / '.github/workflows/unit_test.yml').read_text(encoding='utf-8')
+
+    assert 'pip install -r requirements-gui.txt' in unit_workflow
+    assert 'tests/test_gui_build_config.py' in unit_workflow
+
+    assert 'pip install -r requirements-gui.txt' in build_workflow
+    assert "pyinstaller 2RPM.spec" in build_workflow
+    assert "pyinstaller 2RPM-GUI.spec" in build_workflow
+    for tool, tag in (('Nuitka', '${{ needs.meta.outputs.tag }}'),
+                      ('PyInstaller', '${{ needs.meta.outputs.tag }}')):
+        assert f'2RPM-GUI-{tool}-{tag}' in build_workflow
+        assert f'2RPM-{tool}-{tag}' in build_workflow
+    assert "script-name: 2RPM_gui.py" in build_workflow
+    assert "write_identity(Path('modules/gui/build_identity.py'), 'Nuitka'" in build_workflow
+    assert "write_identity(Path('modules/gui/build_identity.py'), 'PyInstaller'" in build_workflow
+

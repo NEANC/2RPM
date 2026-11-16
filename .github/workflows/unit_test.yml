@@ -44,6 +44,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+          pip install -r requirements-gui.txt
+
+      - name: Validate GUI Dependencies and Build Config
+        run: |
+          python -c "import tkinter, customtkinter, ctk_kit; print('GUI dependencies ready')"
+          python -m pytest tests/test_gui_build_config.py -q -p no:cacheprovider --color=yes
 
       - name: Run Unit Tests
         run: |
