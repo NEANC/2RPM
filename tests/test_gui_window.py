@@ -10,6 +10,8 @@ from unittest.mock import Mock
 import ctk_kit
 import pytest
 
+from tests.test_gui_pages import make_app
+
 
 @pytest.fixture
 def window():
@@ -73,3 +75,74 @@ def test_close_button_uses_existing_confirmation_callback(window):
     shell.close_button.invoke()
     close.assert_called_once_with()
     assert root.winfo_exists()
+
+
+@pytest.mark.parametrize('entry', ('button', 'protocol'))
+def test_real_app_close_cancel_preserves_window(tmp_path, entry):
+    """真实 App 的按钮和窗口关闭协议取消后仍可继续使用。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.confirm = lambda *_: 'cancel'
+        root.update()
+        if entry == 'button':
+            app.window.close_button.invoke()
+        else:
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        assert root.winfo_exists()
+        assert app.window.maximize.winfo_exists()
+        assert root.overrideredirect()
+    finally:
+        if root.winfo_exists():
+            root.destroy()
+        tk._default_root = None
+
+
+@pytest.mark.parametrize('entry', ('button', 'protocol'))
+def test_real_app_close_confirm_destroys_window(tmp_path, entry):
+    """真实 App 的按钮和窗口关闭协议确认后结束窗口。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.confirm = lambda *_: 'confirm'
+        root.update()
+        if entry == 'button':
+            app.window.close_button.invoke()
+        else:
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        assert not root.tk.call('info', 'commands', root._w)
+        app.controller.runner.close.assert_called_once()
+    finally:
+        if root.tk.call('info', 'commands', root._w):
+            root.destroy()
+        tk._default_root = None
+
+
+def test_real_app_window_buttons_toggle_state(tmp_path):
+    """真实 App 内嵌最大化与最小化按钮操作其主窗口。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        app.window.maximize.invoke()
+        root.update()
+        assert root.state() == 'zoomed'
+        app.window.maximize.invoke()
+        root.update()
+        assert root.state() == 'normal'
+        app.window.minimize.invoke()
+        root.update()
+        assert root.state() == 'iconic'
+        root.deiconify()
+        root.update()
+        assert root.overrideredirect()
+    finally:
+        if root.winfo_exists():
+            root.destroy()
+        tk._default_root = None
