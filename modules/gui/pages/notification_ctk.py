@@ -146,7 +146,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.model.set(CHANNELS, channels)
         if name in ('provider',) or any(field.name == name and field.required
                                          for field in provider_fields(channel.get('provider', ''))):
-            self.channel_rows[index]['status'].configure(text=self._status(channel))
+            self._update_channel_status(self.channel_rows[index]['status'], self._status(channel))
+
+    @staticmethod
+    def _update_channel_status(widget, status):
+        """同步通道状态徽标的文字、底色和边框。"""
+        configured = status == '已配置'
+        widget.configure(text=status,
+                         text_color=('#067647', '#12B76A') if configured else ('#9A6700', '#F0B429'),
+                         fg_color=('#E7F5EC', '#193D30') if configured else ('#FFF4D6', '#4A371A'),
+                         border_color=('#6CCB91', '#31885B') if configured else ('#D8A32C', '#AB7824'))
 
     @staticmethod
     def _status(channel):
@@ -270,6 +279,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             line.pack(fill='x', pady=4)
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
             top.pack(fill='x', padx=8, pady=6)
+            top.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
+            top._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
             provider = channel.get('provider')
             provider = provider if isinstance(provider, str) else '未知'
             status_text = self._status(channel)
@@ -278,15 +289,21 @@ class Page(ctk_kit.CTkScrollableFrame):
                                          font=FONT_BODY, fg_color='transparent',
                                          command=lambda i=index: self.expand_channel(i))
             toggle.pack(side='left', fill='x', expand=True)
-            colors = (('#067647', '#12B76A') if status_text == '已配置'
-                      else ('#9A6700', '#F0B429'))
             status = ctk_kit.CTkLabel(top, text=status_text, font=FONT_SMALL,
-                                      text_color=colors)
+                                      corner_radius=6, border_width=1, padx=8)
+            self._update_channel_status(status, status_text)
+            status.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
+            status._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
             status.pack(side='left', padx=8)
-            ctk_kit.CTkButton(top, text='删除', width=60,
+            delete = ctk_kit.CTkButton(top, text='删除', width=60,
                               text_color=('#B42318', '#FF7575'),
-                              command=lambda i=index: self.remove_channel(i)).pack(side='left')
-            self.channel_rows.append({'toggle': toggle, 'status': status,
+                              fg_color=('#FDECEB', '#462426'),
+                              hover_color=('#F9D6D3', '#603034'),
+                              border_color=('#E8A49D', '#B74C50'), border_width=1,
+                              command=lambda i=index: self.remove_channel(i))
+            delete.pack(side='left')
+            self.channel_rows.append({'toggle': toggle, 'header': top, 'status': status,
+                                      'delete': delete,
                                       'provider': None, 'source_index': source_index})
             if index != self._expanded_channel:
                 continue

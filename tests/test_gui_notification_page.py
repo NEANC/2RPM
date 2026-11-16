@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import ctk_kit
 
 from modules.config_document import new_document
+from modules.gui.forms import provider_fields
 from modules.gui.model import EditorModel
 
 
@@ -129,6 +130,75 @@ def test_non_string_channel_provider_is_unknown():
         assert page.channel_rows[0]['status'].cget('text') == '需要填写参数'
         assert model.get(('push', 'push_channel_settings', 'channels')) == [
             {'provider': [], 'token': 'secret'}]
+    finally:
+        root.destroy()
+
+
+def test_channel_whole_header_toggles_except_delete(monkeypatch):
+    """标题空白与状态徽标均能折叠，删除只影响对应通道。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    root.geometry('900x680+100+100')
+    model = EditorModel(new_document())
+    model.before_list_edit = Mock(return_value=True)
+    model.on_list_edit = Mock()
+    page = Page(root, Mock(model=model, notify=Mock()))
+    try:
+        monkeypatch.setattr('modules.gui.pages.notification_ctk.messagebox.askyesno',
+                            lambda *args, **kwargs: True)
+        page.add_channel('telegram')
+        page.expand_channel(0)
+        page.pack(fill='both', expand=True)
+        root.update()
+        assert page._expanded_channel == 0
+        page.channel_rows[0]['header']._canvas.event_generate('<Button-1>')
+        assert page._expanded_channel is None
+        root.update_idletasks()
+        page.channel_rows[0]['status']._canvas.event_generate('<Button-1>')
+        assert page._expanded_channel == 0
+        before = len(model.get(page.channels_path))
+        page.channel_rows[0]['delete'].invoke()
+        assert len(model.get(page.channels_path)) == before - 1
+        assert page._expanded_channel is None
+    finally:
+        root.destroy()
+
+
+def test_channel_status_badge_updates_immediately():
+    """填入和清除必填字段同步更新文字、底色与边框。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    root.withdraw()
+    model = EditorModel(new_document())
+    model.before_list_edit = Mock(return_value=True)
+    model.on_list_edit = Mock()
+    page = Page(root, Mock(model=model, notify=Mock()))
+    try:
+        page.add_channel('telegram')
+        index = len(page.channel_rows) - 1
+        row = page.channel_rows[index]
+        required = [field for field in provider_fields(
+            model.get(page.channels_path)[-1]['provider']) if field.required]
+        assert required
+        badge = row['status']
+        entry = page.channel_entries[required[0].name]
+        initial = (badge.cget('fg_color'), badge.cget('border_color'))
+        for field in required:
+            widget = page.channel_entries[field.name]
+            widget.delete(0, 'end')
+            widget.insert(0, 'filled')
+        assert badge.cget('text') == '已配置'
+        assert badge.cget('border_width') == 1
+        assert (badge.cget('fg_color'), badge.cget('border_color')) != initial
+        entry.delete(0, 'end')
+        assert badge.cget('text') == '需要填写参数'
+        assert (badge.cget('fg_color'), badge.cget('border_color')) == initial
+        assert row['delete'].cget('fg_color') != 'transparent'
+        assert row['delete'].cget('border_width') == 1
     finally:
         root.destroy()
 
