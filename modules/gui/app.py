@@ -93,6 +93,12 @@ class App:
                                            pages=builders,
                                            bottom_pages={'设置': build('设置', settings)},
                                            initial='主页', on_change=self._page_changed)
+        self.config_group_button = ctk_kit.CTkButton(
+            self.sidebar.nav_scroll, text='配置  ▾', height=38, anchor='w',
+            fg_color='transparent', font=FONT_BODY,
+            command=self._toggle_config_group)
+        self.config_group_button.pack(fill='x', padx=10, pady=3,
+                                      before=self.sidebar._buttons['监视设置'])
         self.sidebar.pack(fill='both', expand=True)
         self.sidebar._warm_enabled = False
         self.status.pack(fill='x', padx=12)
@@ -104,6 +110,21 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
         self._after_id = root.after(50, self._poll)
+
+    def _toggle_config_group(self):
+        """切换五个配置导航入口的可见性，保持原有页面顺序。"""
+        names = self.page_names[1:-1]
+        buttons = self.sidebar._buttons
+        if buttons[names[0]].winfo_manager():
+            for name in names:
+                buttons[name].pack_forget()
+            self.config_group_button.configure(text='配置  ▸')
+            return
+        previous = self.config_group_button
+        for name in names:
+            buttons[name].pack(fill='x', padx=10, pady=3, after=previous)
+            previous = buttons[name]
+        self.config_group_button.configure(text='配置  ▾')
 
     def _page_changed(self, name):
         """侧栏切换时更新当前页，配置页离开时尝试补存。"""

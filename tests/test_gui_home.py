@@ -85,6 +85,39 @@ def test_sidebar_order_and_home(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_config_group_starts_open_and_keeps_five_pages_in_order(tmp_path, monkeypatch):
+    """配置组默认展开，收起与展开不影响主页和底部设置。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        names = NAMES[1:-1]
+        buttons = app.sidebar._buttons
+        group = app.config_group_button
+        assert app.sidebar._nav_names == list(NAMES[:-1])
+        assert list(app.sidebar._bottom_buttons) == ['设置']
+        assert group.cget('text') == '配置  ▾'
+        assert app.sidebar.nav_scroll.pack_slaves().index(group) < app.sidebar.nav_scroll.pack_slaves().index(buttons[names[0]])
+        assert all(buttons[name].winfo_manager() == 'pack' for name in names)
+
+        group.invoke()
+        assert group.cget('text') == '配置  ▸'
+        assert all(not buttons[name].winfo_manager() for name in names)
+        assert buttons['主页'].winfo_manager() == 'pack'
+        assert app.sidebar._bottom_buttons['设置'].winfo_manager() == 'pack'
+
+        group.invoke()
+        assert group.cget('text') == '配置  ▾'
+        packed = app.sidebar.nav_scroll.pack_slaves()
+        assert [widget for widget in packed if widget in [buttons[name] for name in names]] == [buttons[name] for name in names]
+        assert app.show_page('日志设置')
+        assert app.current_page == '日志设置'
+    finally:
+        root.destroy()
+
+
 def test_failed_flush_preserves_page_inputs(tmp_path, monkeypatch):
     """数字草稿未完成时可回主页并再次回原页。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
