@@ -96,6 +96,25 @@ def test_relocation_previews_new_base(tmp_path):
     assert controller.model.document == document
 
 
+def test_business_invalid_target_can_save_as_another_directory(tmp_path):
+    """业务无效目标也允许跨目录另存，并保留路径变化确认。"""
+    source = tmp_path / 'source'
+    target = tmp_path / 'target'
+    source.mkdir()
+    target.mkdir()
+    document = save_document(new_document(), source / 'a.yaml', expected_fingerprint=None)
+    controller, confirm, _ = make_controller(tmp_path, document, ['confirm'])
+    controller.model.set(('monitor', 'mode'), 'launch')
+    controller.model.set(('monitor', 'target'), 'invalid-target')
+    before = document.path.read_bytes()
+    assert controller.save_as(lambda: target / 'b.yaml')
+    assert confirm.call_args.args[0] == 'relocate'
+    assert confirm.call_args.args[1]['resolved_target'] == '待校验'
+    assert read_document(target / 'b.yaml').tree['monitor']['target'] == 'invalid-target'
+    assert document.path.read_bytes() == before
+    assert controller.model.document.path == target / 'b.yaml'
+
+
 def test_clean_uppercase_path_saves_before_launch(tmp_path, monkeypatch):
     """干净的大写扩展名也须另存到 CLI 真正读取的路径。"""
     original = save_document(new_document(), tmp_path / 'a.yaml', expected_fingerprint=None)

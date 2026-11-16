@@ -215,11 +215,12 @@ class Controller:
             cwd = self.model.get(('monitor', 'launch', 'cwd'))
             try:
                 resolved = resolve_monitor_target(mode, monitor, str(target.parent), cwd)
-            except ValueError:
-                return False
+                resolved_target, resolved_cwd = resolved.value, resolved.cwd
+            except (ValueError, TypeError):
+                resolved_target, resolved_cwd = '待校验', '待校验'
             detail = {'from': str(previous.parent), 'to': str(target.parent),
-                      'target': str(target), 'resolved_target': resolved.value,
-                      'resolved_cwd': resolved.cwd}
+                      'target': str(target), 'resolved_target': resolved_target,
+                      'resolved_cwd': resolved_cwd}
             if self.confirm('relocate', detail) != 'confirm':
                 return False
         if same:
