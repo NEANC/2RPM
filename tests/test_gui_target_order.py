@@ -86,3 +86,26 @@ def test_invalid_mapping_blocks_without_partial_changes():
     config = _config(content='{screenshot_1.attr}')
     with pytest.raises(ValueError):
         move_screenshot_target(config, 0, 1)
+
+
+@pytest.mark.parametrize('mutate', [
+    lambda config: config.update({'push': None}),
+    lambda config: config['push'].update({'templates': 'bad'}),
+    lambda config: config['push']['templates'].update({'on_end': 'bad'}),
+])
+def test_non_mapping_structure_raises_value_error(mutate):
+    """push 或模板结构非映射时统一拒绝，不抛其他异常类型。"""
+    config = _config()
+    mutate(config)
+    with pytest.raises(ValueError, match='消息模板结构无效'):
+        move_screenshot_target(config, 0, 1)
+    with pytest.raises(ValueError, match='消息模板结构无效'):
+        delete_screenshot_target(config, 0)
+
+
+def test_missing_templates_allows_target_reorder():
+    """未配置 templates 等同于空模板，不影响目标重排。"""
+    config = _config()
+    config['push'].pop('templates')
+    updated = move_screenshot_target(config, 0, 1)
+    assert updated['push']['screenshot']['targets'][0]['target'] == 'B'

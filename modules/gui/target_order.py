@@ -5,6 +5,7 @@
 
 import copy
 import re
+from collections.abc import Mapping
 from string import Formatter
 
 from modules.notification import _RESERVED_VARIABLES
@@ -57,6 +58,18 @@ def _rewrite(text, replacements):
 
 def _transform(config, index, destination=None):
     """深复制配置，先验证双向映射再更新目标和模板。"""
+    if not isinstance(config, Mapping):
+        raise ValueError('消息模板结构无效，无法安全更新引用')
+    push = config.get('push')
+    if not isinstance(push, Mapping):
+        raise ValueError('消息模板结构无效，无法安全更新引用')
+    screenshot = push.get('screenshot')
+    if not isinstance(screenshot, Mapping):
+        raise ValueError('截图目标列表结构无效，无法安全更新')
+    templates = push.get('templates', {})
+    if not isinstance(templates, Mapping) or not all(
+            isinstance(template, Mapping) for template in templates.values()):
+        raise ValueError('消息模板结构无效，无法安全更新引用')
     updated = copy.deepcopy(config)
     targets = updated['push']['screenshot']['targets']
     if not isinstance(index, int) or not 0 <= index < len(targets):
@@ -76,6 +89,7 @@ def _transform(config, index, destination=None):
         replacements[before[identity]] = new_name
     templates = updated['push'].get('templates', {})
     for template in templates.values():
+
         for key in ('title', 'content'):
             if key in template:
                 template[key] = _rewrite(template[key], replacements)
