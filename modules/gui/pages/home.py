@@ -184,20 +184,38 @@ class Page(ctk_kit.CTkScrollableFrame):
                 item = ctk_kit.CTkFrame(row, fg_color='transparent')
                 item.pack(fill='x', padx=12)
                 category = '错误' if issue.severity == 'error' else '其他'
-                ctk_kit.CTkLabel(item, text=f'{category} · {self._issue_category(issue.path)}',
-                                 font=FONT_BODY, anchor='w').pack(side='left', fill='x', expand=True)
+                issue_label = ctk_kit.CTkLabel(
+                    item, text=f'{category} · {self._issue_category(issue.path)}',
+                    font=FONT_BODY, anchor='w')
+                issue_label.pack(side='left', fill='x', expand=True)
                 link = ctk_kit.CTkButton(
                     item, text='前往设置', width=80, font=FONT_BODY,
                     command=lambda target=name, current=issue: self.app.focus_validation_issue(target, current))
                 link.pack(side='right')
-                entries.append({'button': link})
+                entries.append({'button': link, 'label': issue_label})
             self.validation_rows[name] = {'label': label, 'button': button, 'issues': entries}
 
     @staticmethod
     def _issue_category(path):
-        """只从已知路径结构生成脱敏问题类别。"""
+        """仅从可信字段路径生成安全字段名称。"""
         if not path:
             return '配置结构与兼容性'
+        if tuple(path) == ('push', 'screenshot', 'retention', 'max_days'):
+            return '保留天数'
+        if path[:3] == ('push', 'screenshot', 'image_host'):
+            return '图床配置'
+        if path[:3] == ('push', 'screenshot', 'targets'):
+            return '截图目标'
+        if path[:3] == ('push', 'push_channel_settings', 'channels'):
+            return '通知通道'
+        if path[:2] == ('push', 'retry'):
+            return '重试设置'
+        if path[:2] == ('push', 'templates'):
+            return '通知事件'
+        if tuple(path) == ('monitor', 'target'):
+            return '监视目标'
+        if path[:2] == ('monitor', 'common'):
+            return '监视通用设置'
         return {'monitor': '监视配置', 'push': '消息与截图配置',
                 'external': '外部程序配置', 'log': '日志配置'}.get(path[0], '配置结构与兼容性')
 

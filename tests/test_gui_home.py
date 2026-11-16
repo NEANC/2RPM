@@ -388,6 +388,56 @@ def test_validation_first_hidden_error_points_to_yaml(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_real_retention_days_validation_focuses_visible_entry(tmp_path, monkeypatch):
+    """真实未完成天数输入校验后定位到可见天数框。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        screenshot = app.visible_pages['截图设置']
+        screenshot.days.number.delete(0, 'end')
+        screenshot.days.number.insert(0, '-')
+        candidate = app.validate()
+        path = ('push', 'screenshot', 'retention', 'max_days')
+        assert any(issue.path == path and issue.severity == 'error' for issue in candidate.issues)
+        assert app.current_page == '截图设置'
+        assert screenshot.widget_for_issue is screenshot.days.number._entry
+        assert screenshot.days.number.get() == '-'
+    finally:
+        root.destroy()
+
+
+def test_same_page_issue_names_are_distinct_and_redacted(tmp_path, monkeypatch):
+    """同页诊断显示安全字段名，不显示原始路径与消息。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        secret = 'private-token-C:/秘密目录'
+        issues = [SimpleNamespace(path=('push', 'screenshot', 'retention', 'max_days'),
+                                  severity='warning', message=secret),
+                  SimpleNamespace(path=('push', 'screenshot', 'image_host', 0, 'token'),
+                                  severity='warning', message=secret),
+                  SimpleNamespace(path=('push', 'screenshot', secret),
+                                  severity='warning', message=secret)]
+        app.model.validate = lambda _: SimpleNamespace(issues=issues)
+        app.validate()
+        entries = app.visible_pages['主页'].validation_rows['截图设置']['issues']
+        names = [entry['label'].cget('text') for entry in entries]
+        assert '保留天数' in names[0]
+        assert '图床' in names[1]
+        assert names[0] != names[1]
+        assert all(secret not in text and 'token' not in text for text in names)
+        assert all(secret not in widget.cget('text')
+                   for widget in (app.status, app.visible_pages['主页'].check))
+    finally:
+        root.destroy()
+
+
 def test_close_cancel_keeps_root(tmp_path, monkeypatch):
     """拒绝退出时窗口和草稿仍存在。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

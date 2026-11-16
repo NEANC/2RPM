@@ -38,6 +38,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.model = app.model
         self.target_rows = []
         self.host_rows = []
+        self.widget_for_issue = None
         self.invalid_options = {}
         self.generation = self.model.document_generation
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
@@ -615,7 +616,13 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._refreshing_days = False
 
     def focus_issue(self, path):
-        """聚焦当前截图目标或图床行。"""
+        """聚焦当前保留天数、截图目标或图床行。"""
+        if tuple(path) == (*RETENTION, 'max_days'):
+            widget = self.days.number._entry
+            scroll_to_widget(self, widget)
+            self.widget_for_issue = widget
+            widget.focus_force()
+            return
         rows = self.target_rows if tuple(path[:len(TARGETS)]) == TARGETS else self.host_rows
         if len(path) > 3 and isinstance(path[3], int):
             row_index = next((row for row, item in enumerate(rows)
