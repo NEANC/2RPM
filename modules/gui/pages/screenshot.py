@@ -367,7 +367,9 @@ class Page(ctk_kit.CTkScrollableFrame):
                 index, value, self._split_adb(self._item_at(TARGETS, index).get('target', ''))[1]))
             port_frame = ctk_kit.CTkFrame(row, fg_color='transparent')
             port_frame.pack(side='left', padx=4)
-            port_value = tk.StringVar(master=self, value='' if port is None else str(port))
+            port_path = (*TARGETS, source_index if source_index is not None else index, 'target')
+            port_value = tk.StringVar(master=self, value=self.model.raw_inputs.get(
+                port_path, '' if port is None else str(port)))
             port_entry = ctk_kit.CTkEntry(port_frame, textvariable=port_value,
                                           width=74, font=FONT_BODY, placeholder_text='端口')
             port_entry.pack(side='left')
@@ -403,12 +405,16 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _edit_port(self, index, raw):
         """数字端口回写单个 target；未完成输入保留在输入框。"""
-        if raw and not re.fullmatch(r'\d{1,5}', raw):
+        path = (*TARGETS, self._source_index(TARGETS, index), 'target')
+        if not re.fullmatch(r'\d+', raw):
+            self.model.set_input(path, raw, kind='int')
             return
         address, _port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
-        if raw and not 1 <= int(raw) <= 65535:
-            return
-        self._set_adb(index, address, int(raw) if raw else None)
+        self._set_adb(index, address, int(raw))
+        self.model.raw_inputs[path] = raw
+        if self.model.input_errors.pop(path, None) is not None:
+            self.model.revision += 1
+            self.model.on_edit()
 
     def _change_port(self, index, delta):
         """步进合法数字端口且保留地址。"""
@@ -496,7 +502,6 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not isinstance(days, int):
             days = DEFAULT_RETENTION_DAYS
         if days + delta > 0:
-            self.model.set((*RETENTION, 'max_days'), days + delta)
             self.days_value.set(str(days + delta))
 
     def _edit_days(self, raw):
@@ -504,8 +509,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         if self._refreshing_days:
             return
         _retention, editable = self._retention()
-        if editable and raw.isdecimal() and int(raw) > 0:
-            self.model.set((*RETENTION, 'max_days'), int(raw))
+        if editable:
+            self.model.set_input((*RETENTION, 'max_days'), raw, kind='int')
 
     def _screenshot_section(self):
         """返回映射类型的截图节；缺失为空映射，结构异常返回 None。"""
@@ -576,9 +581,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.days.number.configure(state=state)
         self._refreshing_days = True
         try:
-            self.days_value.set(
-                str(days) if isinstance(days, int) else
-                (str(DEFAULT_RETENTION_DAYS) if editable else '--'))
+            self.days_value.set(self.model.raw_inputs.get(
+                (*RETENTION, 'max_days'), str(days) if isinstance(days, int) else
+                str(DEFAULT_RETENTION_DAYS)) if editable else '--')
         finally:
             self._refreshing_days = False
 

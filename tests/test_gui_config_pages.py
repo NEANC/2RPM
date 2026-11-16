@@ -301,6 +301,106 @@ def test_adb_port_entry_supports_new_address_and_edit():
         root.destroy()
 
 
+@pytest.mark.parametrize(('field', 'raw', 'expected'), [
+    ('port', '-', '127.0.0.1:16384'),
+    ('port', '70000', '127.0.0.1:70000'),
+    ('days', '-', 14),
+])
+def test_screenshot_numeric_drafts_survive_refresh_and_block_save_and_test(
+        tmp_path, field, raw, expected):
+    """不完整输入阻断补存与测试，可表示整数则保留供业务校验。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+    from modules.gui.save_coordinator import SaveCoordinator
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    coordinator = SaveCoordinator(controller, lambda *_: None, lambda *_: None)
+    controller.model.before_list_edit = coordinator.flush
+    page = ScreenshotPage(root, Mock(model=controller.model))
+    path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
+            else ('push', 'screenshot', 'retention', 'max_days'))
+    try:
+        entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        page.refresh()
+        entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
+        assert entry.get() == raw
+        assert controller.model.get_input(path) == raw
+        assert controller.model.get(path) == expected
+        if raw == '-':
+            assert path in controller.model.input_errors
+            assert not controller.save()
+            assert controller.start_cli() is None
+            assert not controller.model.before_list_edit()
+            assert read_document(saved.path).tree['push']['screenshot'][
+                'targets' if field == 'port' else 'retention'] == saved.tree['push']['screenshot'][
+                    'targets' if field == 'port' else 'retention']
+        else:
+            assert path not in controller.model.input_errors
+            assert controller.save()
+            assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == expected
+            assert controller.model.get_input(path) == raw
+            page.refresh()
+            assert page.target_rows[0]['port'].get() == raw
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('field', 'valid', 'expected'), [
+    ('port', '00081', '127.0.0.1:81'),
+    ('days', '007', 7),
+])
+def test_screenshot_numeric_drafts_recover_and_save_original_text(
+        tmp_path, field, valid, expected):
+    """输入恢复可表示值后解除阻断并保持原文，磁盘保存解析后的值。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    page = ScreenshotPage(root, Mock(model=controller.model))
+    path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
+            else ('push', 'screenshot', 'retention', 'max_days'))
+    try:
+        entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
+        entry.delete(0, 'end')
+        entry.insert(0, '-')
+        assert path in controller.model.input_errors
+        entry.delete(0, 'end')
+        entry.insert(0, valid)
+        assert path not in controller.model.input_errors
+        assert controller.model.get(path) == expected
+        assert controller.save()
+        page.refresh()
+        entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
+        assert entry.get() == valid
+        assert controller.model.get_input(path) == valid
+        assert read_document(saved.path).tree['push']['screenshot'][
+            'targets' if field == 'port' else 'retention'][
+                0 if field == 'port' else 'max_days'] == (
+                    {'provider': 'adb', 'target': expected} if field == 'port' else expected)
+    finally:
+        root.destroy()
+
+
 def test_adb_port_stepper_stacks_arrows_and_updates_target():
     """端口输入与右侧竖排箭头组成窄步进控件，箭头按方向修改目标。"""
     from unittest.mock import Mock
