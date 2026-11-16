@@ -85,6 +85,29 @@ def test_partial_number_keeps_raw_draft(tmp_path):
     assert controller.model.document.path.read_bytes() == before
 
 
+def test_restored_number_restarts_debounce_with_other_dirty_field(tmp_path, monkeypatch):
+    """数字恢复原值后，其他字段的待保存草稿从恢复输入重新计时。"""
+    controller, coordinator, clock = setup(tmp_path)
+    controller.model.on_edit = coordinator.edited
+    save = Mock(wraps=controller.save)
+    monkeypatch.setattr(controller, 'save', save)
+    path = ('monitor', 'common', 'timeout_threshold')
+    original = controller.model.get(path)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set_input(path, '-', kind='int')
+    clock.advance(400)
+    controller.model.set_input(path, str(original), kind='int')
+    assert controller.model.dirty
+    assert not controller.model.input_errors
+    clock.advance(100)
+    save.assert_not_called()
+    clock.advance(399)
+    save.assert_not_called()
+    clock.advance(1)
+    save.assert_called_once_with()
+    assert read_document(controller.model.document.path).tree['monitor']['target'] == 'draft.exe'
+
+
 def test_saved_number_restores_edit_text(tmp_path):
     """成功保存数值后，输入框仍保留用户输入的原文。"""
     controller, coordinator, _ = setup(tmp_path)

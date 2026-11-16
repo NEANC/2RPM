@@ -38,7 +38,7 @@ class EditorModel:
     def set(self, path: tuple[str | int, ...], value: object) -> None:
         """仅在字段发生实际改变时递增修订号。"""
         self.raw_inputs.pop(path, None)
-        self.input_errors.pop(path, None)
+        had_input_error = self.input_errors.pop(path, None) is not None
         node = self._tree
         for key in path[:-1]:
             if not isinstance(node, Mapping):
@@ -50,6 +50,9 @@ class EditorModel:
                 raise TypeError('配置结构异常，无法写入字段')
         leaf = path[-1]
         if leaf in node and node[leaf] == value:
+            if had_input_error:
+                self.revision += 1
+                self.on_edit()
             return
         node[leaf] = copy.deepcopy(value)
         self.revision += 1
