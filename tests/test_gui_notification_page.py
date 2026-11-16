@@ -114,6 +114,25 @@ def test_channel_remove_refuses_stale_index_after_reload(monkeypatch):
         root.destroy()
 
 
+def test_non_string_channel_provider_is_unknown():
+    """通道 provider 非字符串时按未知通道展示且不崩溃。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    model = EditorModel(new_document())
+    model.set(('push', 'push_channel_settings', 'channels'),
+              [{'provider': [], 'token': 'secret'}])
+    page = Page(root, Mock(model=model, notify=Mock()))
+    try:
+        assert 'unknown' in page.channel_rows[0]['toggle'].cget('text')
+        assert page.channel_rows[0]['status'].cget('text') == '需要填写参数'
+        assert model.get(('push', 'push_channel_settings', 'channels')) == [
+            {'provider': [], 'token': 'secret'}]
+    finally:
+        root.destroy()
+
+
 def descendants(widget):
     """递归检查可见控件类别。"""
     for child in widget.winfo_children():

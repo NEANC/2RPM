@@ -275,6 +275,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _entry(self, parent, value, callback, *, secret=False):
         """建立粘贴也能触发回写的输入框。"""
+        value = '' if value is None else str(value)
         variable = tk.StringVar(master=self, value=value)
         entry = ctk_kit.CTkEntry(parent, textvariable=variable,
                                  show='●' if secret else '', font=FONT_BODY)
@@ -320,7 +321,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper = self._stepper(row, lambda delta: self.move_target(index, delta), index + 1)
         stepper.pack(side='left')
         provider = item.get('provider', 'window')
-        chooser = ctk_kit.CTkOptionMenu(row, values=['window', 'adb'], width=95,
+        provider = provider if isinstance(provider, str) else 'unknown'
+        values = ['window', 'adb']
+        if provider not in values:
+            values.append(provider)
+        chooser = ctk_kit.CTkOptionMenu(row, values=values, width=95,
                                          command=lambda value: self._change_provider(index, value))
         chooser.set(provider)
         chooser.pack(side='left', padx=4)
@@ -360,6 +365,7 @@ class Page(ctk_kit.CTkScrollableFrame):
     @staticmethod
     def _split_adb(target):
         """仅拆分明确的地址数字端口，其余 serial 原文保留。"""
+        target = '' if target is None else str(target)
         match = re.fullmatch(r'(.+):(\d{1,5})', target)
         return (match.group(1), int(match.group(2))) if match else (target, None)
 
@@ -392,6 +398,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper = self._stepper(row, lambda delta: self.move_host(index, delta), index + 1)
         stepper.pack(side='left')
         current = item.get('provider', 'beeimg')
+        current = current if isinstance(current, str) else 'unknown'
         provider = ctk_kit.CTkOptionMenu(row, values=list(PROVIDERS) +
                                          ([current] if current not in PROVIDERS else []),
                                          width=120, command=lambda value: self._set_item(

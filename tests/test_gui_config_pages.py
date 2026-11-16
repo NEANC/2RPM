@@ -151,6 +151,26 @@ def test_remove_host_renumbers_only_host_option_errors(monkeypatch):
         root.destroy()
 
 
+def test_non_string_target_fields_are_shown_safely():
+    """ADB target 非字符串与 provider 非字符串时页面不崩溃且不改写配置。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': 123},
+        {'provider': [], 'target': 'demo'}])
+    try:
+        page = ScreenshotPage(root, Mock(model=model))
+        assert len(page.target_rows) == 2
+        assert model.get(('push', 'screenshot', 'targets')) == [
+            {'provider': 'adb', 'target': 123},
+            {'provider': [], 'target': 'demo'}]
+    finally:
+        root.destroy()
+
+
 def test_window_target_selection_keeps_custom_out(monkeypatch):
     """窗口枚举使用现有 Win32 枚举，空列表和取消不破坏输入。"""
     from unittest.mock import Mock

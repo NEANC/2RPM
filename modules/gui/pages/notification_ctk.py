@@ -268,8 +268,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             line.pack(fill='x', pady=4)
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
             top.pack(fill='x', padx=8, pady=6)
+            provider = channel.get('provider')
+            provider = provider if isinstance(provider, str) else 'unknown'
             status_text = self._status(channel)
-            toggle = ctk_kit.CTkButton(top, text=f'{index + 1}. {channel.get("provider", "未知")}  '
+            toggle = ctk_kit.CTkButton(top, text=f'{index + 1}. {provider}  '
                                           + ('⌄' if self._expanded_channel == index else '›'),
                                          font=FONT_BODY, fg_color='transparent',
                                          command=lambda i=index: self.expand_channel(i))
@@ -286,7 +288,6 @@ class Page(ctk_kit.CTkScrollableFrame):
                                       'provider': None, 'source_index': source_index})
             if index != self._expanded_channel:
                 continue
-            provider = channel.get('provider', '')
             selector_row = ctk_kit.CTkFrame(line, fg_color='transparent')
             selector_row.pack(fill='x', padx=12, pady=(6, 2))
             ctk_kit.CTkLabel(selector_row, text='通道类型', font=FONT_BODY,

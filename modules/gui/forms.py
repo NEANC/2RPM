@@ -46,6 +46,8 @@ class ProviderField:
 
 def provider_fields(provider: str) -> tuple[ProviderField, ...]:
     """从已安装 OnePush 定义获取字段，未知通道不推测参数。"""
+    if not isinstance(provider, str):
+        return ()
     try:
         params = get_notifier(provider).params
     except NoSuchNotifierError:
