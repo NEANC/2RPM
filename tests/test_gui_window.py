@@ -85,6 +85,7 @@ def test_real_app_close_cancel_preserves_window(tmp_path, entry):
                        remember_theme=False, notifier=False, backdrop='none')
     try:
         app = make_app(root, tmp_path)
+        app.controller.runner.active = True
         app.controller.confirm = lambda *_: 'cancel'
         root.update()
         if entry == 'button':
@@ -94,6 +95,7 @@ def test_real_app_close_cancel_preserves_window(tmp_path, entry):
         assert root.winfo_exists()
         assert app.window.maximize.winfo_exists()
         assert root.overrideredirect()
+        app.controller.runner.close.assert_not_called()
     finally:
         if root.winfo_exists():
             root.destroy()
@@ -108,6 +110,7 @@ def test_real_app_close_confirm_destroys_window(tmp_path, entry):
                        remember_theme=False, notifier=False, backdrop='none')
     try:
         app = make_app(root, tmp_path)
+        app.controller.runner.active = True
         app.controller.confirm = lambda *_: 'confirm'
         root.update()
         if entry == 'button':
