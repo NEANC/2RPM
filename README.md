@@ -27,6 +27,7 @@
 
 - 支持配置文件运行，默认配置文件为 `config.yaml`
 - 支持 CLI 与配置文件双入口：`-c/--config` 或直接传入配置文件路径
+- 提供独立 GUI 配置编辑器与测试入口，见 [图形界面（GUI）](#图形界面gui)
 - 通知模板化（支持多种消息类型）
 - 异步主循环，减少阻塞影响
 - 外部程序联动：进程结束/超时场景可自动执行脚本
@@ -552,6 +553,19 @@ python .\2RPM.py screenshot --source 'window:完整窗口标题' --output --uplo
 
 ---
 
+## 图形界面（GUI）
+
+GUI 是独立的配置编辑器与测试工具：编辑当前 YAML、执行截图／上传／通知测试，并启动独立 CLI。它不代替 CLI，也不监视 CLI 进程、不显示或收集运行日志。
+
+- 独立入口：源码运行 `python .\2RPM_gui.py`；冻结版为 `2RPM-GUI.exe`（发布包内为 `2RPM-GUI-Nuitka-*.exe` 或 `2RPM-GUI-PyInstaller-*.exe`）。GUI 只与同目录、同构建工具、同完整版本的 `2RPM-*.exe` 配对，缺失或工具／版本不符时不回退到其他文件。
+- 启动 CLI：只创建拥有独立控制台的 CLI 进程，成功反馈仅表示进程已创建；关闭 GUI 不影响已启动的 CLI，GUI 不提供停止、运行状态跟踪或日志查看。
+- 实时保存：停止输入约 500 ms 后自动写入当前 YAML；切换页面、执行测试、增删列表项及启动 CLI 前先补存。输入尚不能表示为字段值（如只输入 `-`）时保留原文草稿而不写入；能表示但业务校验不通过的值仍会保存，保存不代表配置正确。
+- 文件冲突：检测到外部修改时，若存在未保存草稿则暂停自动保存并提示处理（重新加载／另存为／暂不处理）；任何覆盖写入前都会再次核对磁盘版本。
+- 测试外发：截图测试只截图；上传测试会向所选图床发送请求；通知测试会按固定文案向已配置通道真实发送。结果不显示凭证，真实外发前请自行确认。
+- 外观偏好（深色模式、背景材质）保存在 `%LOCALAPPDATA%\2RPM\gui.ini`，不写入业务 `config.yaml`。
+
+---
+
 ## 从源码运行
 
 ```powershell
@@ -560,7 +574,10 @@ cd 2RPM
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -r requirements-gui.txt
 ```
+
+仅使用 CLI 时只需安装 `requirements.txt`；GUI 依赖单独放在 `requirements-gui.txt`。
 
 ---
 
