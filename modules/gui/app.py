@@ -118,7 +118,8 @@ class App:
     def _page_changed(self, name):
         """侧栏切换时更新当前页，配置页离开时尝试补存。"""
         if getattr(self, 'current_page', '主页') != name and self.current_page != '主页':
-            self.save_coordinator.flush()
+            if not self.save_coordinator.flush():
+                self.status.configure(text='配置未保存，已保留草稿')
         self.current_page = name
 
     def show_page(self, name: str) -> bool:

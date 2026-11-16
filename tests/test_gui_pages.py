@@ -1489,6 +1489,38 @@ def test_validation_routes_dynamic_diagnostic_path(
         root.destroy()
 
 
+def test_leaving_config_page_flushes_immediately(tmp_path):
+    """离开配置页立即落盘，不依赖 500ms 防抖回调。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        assert app.show_page('监视设置')
+        app.model.set(('monitor', 'target'), 'switch.exe')
+        assert app.model.dirty
+        assert app.show_page('主页')
+        assert not app.model.dirty
+        assert read_document(path).tree['monitor']['target'] == 'switch.exe'
+    finally:
+        root.destroy()
+
+
+def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
+    """补存失败仍允许回主页，并提示草稿已保留。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        assert app.show_page('监视设置')
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        app.save_coordinator.flush = Mock(return_value=False)
+        assert app.show_page('主页')
+        assert '配置未保存，已保留草稿' in app.status.cget('text')
+        assert app.current_page == '主页'
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    finally:
+        root.destroy()
+
+
 def test_open_monitor_null_refreshes_without_crash(tmp_path):
     """monitor 节点为 null 时仍能打开并显示待校验状态。"""
     root = tk.Tk()
