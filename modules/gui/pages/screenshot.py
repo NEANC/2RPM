@@ -16,7 +16,8 @@ import win32gui
 from modules.config_rules import Issue
 
 from modules.gui.appearance import COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.target_order import delete_screenshot_target, move_screenshot_target
+from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
+                                      swap_screenshot_targets)
 from modules.gui.widgets import scroll_to_widget
 
 
@@ -101,6 +102,13 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.refresh()
         self.model.on_list_edit()
 
+    def _source_index(self, path, display_index):
+        """把可见行号转换为原始列表索引，结构异常项保持原位置。"""
+        rows = self.target_rows if tuple(path[:len(TARGETS)]) == TARGETS else self.host_rows
+        if 0 <= display_index < len(rows):
+            return rows[display_index].get('source_index', display_index)
+        return display_index
+
     def add_target(self):
         """新增空窗口目标，留给用户填写完整标题。"""
         if not self._before():
@@ -112,10 +120,15 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def move_target(self, index, offset):
         """整项目标重排并一次替换 push 草稿，阻止错误映射保存。"""
-        if not 0 <= index + offset < len(self.model.get(TARGETS)) or not self._before():
+        other = index + offset
+        if not 0 <= index < len(self.target_rows) or not 0 <= other < len(self.target_rows):
             return
+        if not self._before():
+            return
+        first = self._source_index(TARGETS, index)
+        second = self._source_index(TARGETS, other)
         try:
-            updated = move_screenshot_target(self.model.snapshot(), index, offset)
+            updated = swap_screenshot_targets(self.model.snapshot(), first, second)
         except ValueError as exc:
             messagebox.showerror('截图目标', str(exc), parent=self)
             return
@@ -124,13 +137,14 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def remove_target(self, index):
         """确认后原子删除目标及其消息引用。"""
-        if not 0 <= index < len(self.model.get(TARGETS)) or not self._before():
+        if not 0 <= index < len(self.target_rows) or not self._before():
             return
+        source_index = self._source_index(TARGETS, index)
         if not messagebox.askyesno('删除截图目标',
                                    '删除该目标会同步移除其消息引用，是否继续？', parent=self):
             return
         try:
-            updated = delete_screenshot_target(self.model.snapshot(), index)
+            updated = delete_screenshot_target(self.model.snapshot(), source_index)
         except ValueError as exc:
             messagebox.showerror('截图目标', str(exc), parent=self)
             return
@@ -150,62 +164,76 @@ class Page(ctk_kit.CTkScrollableFrame):
         """移动图床完整配置及其隐含回退顺序。"""
         hosts = self.model.get(HOSTS)
         other = index + offset
-        if not 0 <= other < len(hosts) or not self._before():
+        if not 0 <= index < len(self.host_rows) or not 0 <= other < len(self.host_rows):
             return
-        hosts[index], hosts[other] = hosts[other], hosts[index]
+        if not self._before():
+            return
+        first = self._source_index(HOSTS, index)
+        second = self._source_index(HOSTS, other)
+        if not isinstance(hosts, list) or not 0 <= first < len(hosts) or not 0 <= second < len(hosts):
+            return
+        hosts[first], hosts[second] = hosts[second], hosts[first]
         for mapping in (self.invalid_options, self.model.input_errors):
-            first = index if mapping is self.invalid_options else (*HOSTS, index, 'options')
-            second = other if mapping is self.invalid_options else (*HOSTS, other, 'options')
-            left = mapping.pop(first, None)
-            right = mapping.pop(second, None)
+            first_key = first if mapping is self.invalid_options else (*HOSTS, first, 'options')
+            second_key = second if mapping is self.invalid_options else (*HOSTS, second, 'options')
+            left = mapping.pop(first_key, None)
+            right = mapping.pop(second_key, None)
             if left is not None:
-                mapping[second] = left if mapping is self.invalid_options else Issue(
-                    second, left.code, left.severity, left.message)
+                mapping[second_key] = left if mapping is self.invalid_options else Issue(
+                    second_key, left.code, left.severity, left.message)
             if right is not None:
-                mapping[first] = right if mapping is self.invalid_options else Issue(
-                    first, right.code, right.severity, right.message)
+                mapping[first_key] = right if mapping is self.invalid_options else Issue(
+                    first_key, right.code, right.severity, right.message)
         self.model.set(HOSTS, hosts)
         self._commit_list()
 
     def remove_host(self, index):
         """只删除指定图床。"""
-        if not 0 <= index < len(self.model.get(HOSTS)) or not self._before():
+        if not 0 <= index < len(self.host_rows) or not self._before():
             return
+        source_index = self._source_index(HOSTS, index)
         hosts = self.model.get(HOSTS)
-        hosts.pop(index)
-        self.invalid_options = {key - (key > index): value
-                                for key, value in self.invalid_options.items() if key != index}
+        if not isinstance(hosts, list) or not 0 <= source_index < len(hosts):
+            return
+        hosts.pop(source_index)
+        self.invalid_options = {
+            key - (key > source_index): value
+            for key, value in self.invalid_options.items() if key != source_index}
         self.model.input_errors = {
-            (*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > index), 'options'):
-            Issue((*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > index), 'options'),
+            (*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > source_index), 'options'):
+            Issue((*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > source_index), 'options'),
                   issue.code, issue.severity, issue.message)
             for key, issue in self.model.input_errors.items()
-            if key != (*HOSTS, index, 'options')}
+            if key != (*HOSTS, source_index, 'options')}
         self.model.set(HOSTS, hosts)
         self._commit_list()
 
     def _set_item(self, path, index, key, value):
         """仅改写指定基础字段，保留未知字段与图床专有参数。"""
         items = self.model.get(path)
+        source_index = self._source_index(path, index)
+        if (not isinstance(items, list) or not 0 <= source_index < len(items)
+                or not isinstance(items[source_index], Mapping)):
+            return
         if key == 'options':
             try:
                 parsed = YAML(typ='safe').load(value) if value.strip() else {}
             except Exception:
                 parsed = None
-            issue_path = (*path, index, key)
+            issue_path = (*path, source_index, key)
             if not isinstance(parsed, dict):
-                self.invalid_options[index] = value
+                self.invalid_options[source_index] = value
                 self.model.input_errors[issue_path] = Issue(
                     issue_path, 'invalid_options', 'error', 'options 必须是有效 YAML 映射')
                 self.host_rows[index]['error'].configure(text='options 必须是有效 YAML 映射')
                 return
-            self.invalid_options.pop(index, None)
+            self.invalid_options.pop(source_index, None)
             self.model.input_errors.pop(issue_path, None)
             self.host_rows[index]['error'].configure(text='')
             value = parsed
-        if items[index].get(key) == value:
+        if items[source_index].get(key) == value:
             return
-        items[index][key] = value
+        items[source_index][key] = value
         self.model.set(path, items)
 
     def _entry(self, parent, value, callback, *, secret=False):
@@ -216,6 +244,15 @@ class Page(ctk_kit.CTkScrollableFrame):
         entry.pack(side='left', fill='x', expand=True, padx=4)
         variable.trace_add('write', lambda *_: callback(variable.get()))
         return entry
+
+    def _item_at(self, path, display_index):
+        """按可见行号读取原始映射项，结构异常时返回空映射。"""
+        source_index = self._source_index(path, display_index)
+        items = self.model.get(path)
+        if (isinstance(items, list) and 0 <= source_index < len(items)
+                and isinstance(items[source_index], Mapping)):
+            return items[source_index]
+        return {}
 
     def _choose_window(self, index):
         """枚举可见窗口，取消或空列表不改变当前目标。"""
@@ -239,7 +276,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._set_item(TARGETS, index, 'target', selected.get()),
             dialog.destroy(), self.refresh())).pack(pady=(0, 16))
 
-    def _show_target(self, index, item):
+    def _show_target(self, index, item, source_index=None):
         """显示窗口搜索框或可编辑的 ADB 地址和数字端口。"""
         row = ctk_kit.CTkFrame(self.targets_body, fg_color='transparent')
         row.pack(fill='x', pady=4)
@@ -262,7 +299,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         else:
             address, port = self._split_adb(item.get('target', ''))
             self._entry(row, address, lambda value: self._set_adb(
-                index, value, self._split_adb(self.model.get(TARGETS)[index].get('target', ''))[1]))
+                index, value, self._split_adb(self._item_at(TARGETS, index).get('target', ''))[1]))
             port_value = tk.StringVar(master=self, value='' if port is None else str(port))
             port_entry = ctk_kit.CTkEntry(row, textvariable=port_value,
                                           width=74, font=FONT_BODY, placeholder_text='端口')
@@ -275,7 +312,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_target(index)).pack(side='right')
         self.target_rows.append({'number': stepper.number, 'entry': entry,
-                                 'port': port_entry})
+                                 'port': port_entry,
+                                 'source_index': index if source_index is None else source_index})
 
     def _change_provider(self, index, value):
         """主动修改来源时保留可编辑的原始目标。"""
@@ -297,20 +335,21 @@ class Page(ctk_kit.CTkScrollableFrame):
         """数字端口回写单个 target；未完成输入保留在输入框。"""
         if raw and not re.fullmatch(r'\d{1,5}', raw):
             return
-        address, _port = self._split_adb(self.model.get(TARGETS)[index].get('target', ''))
+        address, _port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
         if raw and not 1 <= int(raw) <= 65535:
             return
         self._set_adb(index, address, int(raw) if raw else None)
 
     def _change_port(self, index, delta):
         """步进合法数字端口且保留地址。"""
-        address, port = self._split_adb(self.model.get(TARGETS)[index].get('target', ''))
+        address, port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
         if port is not None and 1 <= port + delta <= 65535:
             self._set_adb(index, address, port + delta)
             self.refresh()
 
-    def _show_host(self, index, item):
+    def _show_host(self, index, item, source_index=None):
         """图床行展示当前 provider 与遮挡凭证。"""
+        source_index = index if source_index is None else source_index
         row = ctk_kit.CTkFrame(self.hosts_body, fg_color='transparent')
         row.pack(fill='x', pady=4)
         stepper = self._stepper(row, lambda delta: self.move_host(index, delta), index + 1)
@@ -339,21 +378,22 @@ class Page(ctk_kit.CTkScrollableFrame):
             yaml.default_flow_style = True
             yaml.dump(value, stream)
             value = stream.getvalue().strip()
-        options = self._entry(advanced, self.invalid_options.get(index, str(value)),
+        options = self._entry(advanced, self.invalid_options.get(source_index, str(value)),
                               lambda raw: self._set_item(HOSTS, index, 'options', raw), secret=True)
         options_toggle = ctk_kit.CTkButton(
             advanced, text='显示', width=55,
             command=lambda widget=options: widget.configure(
                 show='' if widget.cget('show') else '●'))
         options_toggle.pack(side='left', padx=4)
-        error = ctk_kit.CTkLabel(self.hosts_body,
-                                 text='options 必须是有效 YAML 映射' if index in self.invalid_options else '',
-                                 font=FONT_SMALL)
+        error = ctk_kit.CTkLabel(
+            self.hosts_body,
+            text='options 必须是有效 YAML 映射' if source_index in self.invalid_options else '',
+            font=FONT_SMALL)
         error.pack(anchor='w')
         self.host_rows.append({'number': stepper.number, 'provider': provider,
                                'token': token, 'expiration': expiration,
                                'options': options, 'options_toggle': options_toggle,
-                               'error': error})
+                               'error': error, 'source_index': source_index})
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_host(index)).pack(side='right')
 
@@ -387,11 +427,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.target_rows = []
         self.host_rows = []
         raw_targets = section.get('targets')
-        targets = [item for item in raw_targets if isinstance(item, Mapping)] \
-            if isinstance(raw_targets, list) else []
+        targets = [(source_index, item) for source_index, item in enumerate(raw_targets)
+                   if isinstance(item, Mapping)] if isinstance(raw_targets, list) else []
         raw_hosts = section.get('image_host')
-        hosts = [item for item in raw_hosts if isinstance(item, Mapping)] \
-            if isinstance(raw_hosts, list) else []
+        hosts = [(source_index, item) for source_index, item in enumerate(raw_hosts)
+                 if isinstance(item, Mapping)] if isinstance(raw_hosts, list) else []
         self.targets_hint.configure(
             text=('部分截图目标结构无效，已跳过显示'
                   if len(targets) != len(raw_targets) else '')
@@ -404,10 +444,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             if isinstance(raw_hosts, list) else
             ('图床配置缺失或结构无效，请在 YAML 中检查'
              if raw_hosts is not None else ''))
-        for index, target in enumerate(targets):
-            self._show_target(index, target)
-        for index, host in enumerate(hosts):
-            self._show_host(index, host)
+        for index, (source_index, target) in enumerate(targets):
+            self._show_target(index, target, source_index)
+        for index, (source_index, host) in enumerate(hosts):
+            self._show_host(index, host, source_index)
         retention = section.get('retention')
         if isinstance(retention, Mapping) and retention.get('enabled'):
             self.cleanup.select()
@@ -419,7 +459,10 @@ class Page(ctk_kit.CTkScrollableFrame):
     def focus_issue(self, path):
         """聚焦当前截图目标或图床行。"""
         rows = self.target_rows if tuple(path[:len(TARGETS)]) == TARGETS else self.host_rows
-        if len(path) > 3 and isinstance(path[3], int) and 0 <= path[3] < len(rows):
-            widget = rows[path[3]]['number']
-            scroll_to_widget(self, widget)
-            widget.focus_force()
+        if len(path) > 3 and isinstance(path[3], int):
+            row_index = next((row for row, item in enumerate(rows)
+                              if item.get('source_index') == path[3]), None)
+            if row_index is not None:
+                widget = rows[row_index]['number']
+                scroll_to_widget(self, widget)
+                widget.focus_force()

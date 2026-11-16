@@ -125,14 +125,25 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not self._refreshing:
             self.model.set(path, widget.get('1.0', 'end-1c'))
 
+    def _source_index(self, display_index):
+        """把可见行号转换为原始列表索引，结构异常项保持原位置。"""
+        if 0 <= display_index < len(self.channel_rows):
+            return self.channel_rows[display_index].get('source_index', display_index)
+        return display_index
+
     def _set_channel(self, index, name, value):
         """修改指定通道参数而不删除未展示的高级参数。"""
         channels = self.model.get(CHANNELS)
-        channels[index][name] = value
+        source_index = self._source_index(index)
+        if (not isinstance(channels, list) or not 0 <= source_index < len(channels)
+                or not isinstance(channels[source_index], Mapping)):
+            return
+        channel = channels[source_index]
+        channel[name] = value
         self.model.set(CHANNELS, channels)
         if name in ('provider',) or any(field.name == name and field.required
-                                         for field in provider_fields(channels[index].get('provider', ''))):
-            self.channel_rows[index]['status'].configure(text=self._status(channels[index]))
+                                         for field in provider_fields(channel.get('provider', ''))):
+            self.channel_rows[index]['status'].configure(text=self._status(channel))
 
     @staticmethod
     def _status(channel):
@@ -144,11 +155,14 @@ class Page(ctk_kit.CTkScrollableFrame):
     def change_channel_provider(self, index, provider):
         """通过可见选择器切换通道类型并重建当前行参数。"""
         channels = self._safe_get(CHANNELS, [])
-        if not isinstance(channels, list) or not 0 <= index < len(channels) or provider not in PROVIDERS.values():
+        source_index = self._source_index(index)
+        if (not isinstance(channels, list) or not 0 <= source_index < len(channels)
+                or not isinstance(channels[source_index], Mapping)
+                or provider not in PROVIDERS.values()):
             return
-        if channels[index].get('provider') == provider:
+        if channels[source_index].get('provider') == provider:
             return
-        channels[index]['provider'] = provider
+        channels[source_index]['provider'] = provider
         self.model.set(CHANNELS, channels)
         self._expanded_channel = index
         self.refresh()
@@ -167,14 +181,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         channels.append({'provider': provider, **{field.name: '' for field in provider_fields(provider)
                                                 if field.required}})
         self.model.set(CHANNELS, channels)
-        self._expanded_channel = len(channels) - 1
+        self.refresh()
+        self._expanded_channel = len(self.channel_rows) - 1
         self.refresh()
         self.model.on_list_edit()
 
     def remove_channel(self, index):
         """确认后只删除当前行，列表变更前补存。"""
         channels = self._safe_get(CHANNELS, [])
-        if not isinstance(channels, list) or not 0 <= index < len(channels):
+        source_index = self._source_index(index)
+        if not isinstance(channels, list) or not 0 <= source_index < len(channels):
             return
         identity = (self.model.document_generation, self.model.revision)
         if not self.model.before_list_edit() or identity != (
@@ -183,7 +199,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not messagebox.askyesno('删除通道', '删除该推送通道？', parent=self):
             return
         channels = self._safe_get(CHANNELS, [])
-        channels.pop(index)
+        channels.pop(source_index)
         self.model.set(CHANNELS, channels)
         self._expanded_channel = None
         self.refresh()
@@ -234,10 +250,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             channels = []
             hint = '推送通道配置缺失或结构无效，请在 YAML 中检查' if raw is not None else ''
         else:
-            channels = [item for item in raw if isinstance(item, Mapping)]
+            channels = [(source_index, item) for source_index, item in enumerate(raw)
+                        if isinstance(item, Mapping)]
             hint = ('部分通道项结构无效，已跳过显示' if len(channels) != len(raw) else '')
         self.channel_hint.configure(text=hint)
-        for index, channel in enumerate(channels):
+        for index, (source_index, channel) in enumerate(channels):
             line = ctk_kit.CTkFrame(self.channel_body, corner_radius=8)
             line.pack(fill='x', pady=4)
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
@@ -256,7 +273,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             ctk_kit.CTkButton(top, text='删除', width=60,
                               text_color=('#B42318', '#FF7575'),
                               command=lambda i=index: self.remove_channel(i)).pack(side='left')
-            self.channel_rows.append({'toggle': toggle, 'status': status, 'provider': None})
+            self.channel_rows.append({'toggle': toggle, 'status': status,
+                                      'provider': None, 'source_index': source_index})
             if index != self._expanded_channel:
                 continue
             provider = channel.get('provider', '')
@@ -442,11 +460,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         """对诊断的通道或事件展开对应行并滚动聚焦字段。"""
         path = tuple(path)
         if path[:len(CHANNELS)] == CHANNELS and len(path) > len(CHANNELS):
-            index = path[len(CHANNELS)]
-            if isinstance(index, int) and 0 <= index < len(self.channel_rows):
-                self._expanded_channel = index
+            source_index = path[len(CHANNELS)]
+            row_index = next((row for row, item in enumerate(self.channel_rows)
+                              if item.get('source_index') == source_index), None)
+            if isinstance(source_index, int) and row_index is not None:
+                self._expanded_channel = row_index
                 self.refresh()
-                widget = self.channel_entries.get(path[-1], self.channel_rows[index]['toggle'])
+                widget = self.channel_entries.get(path[-1],
+                                                  self.channel_rows[row_index]['toggle'])
                 self._focus_widget(widget)
             return
         if path[:2] == ('push', 'templates') and len(path) > 2:

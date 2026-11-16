@@ -103,6 +103,13 @@ def move_screenshot_target(config: dict, index: int, offset: int) -> dict:
     return _transform(config, index, index + offset)
 
 
+def swap_screenshot_targets(config: dict, first: int, second: int) -> dict:
+    """交换两个原始位置的目标并维护模板引用身份。"""
+    if not isinstance(first, int) or not isinstance(second, int) or first == second:
+        raise ValueError('截图目标位置无效')
+    return _transform(config, first, second)
+
+
 def delete_screenshot_target(config: dict, index: int) -> dict:
     """删除目标及其精确引用，重新编号存活目标的引用。"""
     return _transform(config, index)

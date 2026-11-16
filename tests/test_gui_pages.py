@@ -1528,6 +1528,118 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_invalid_channel_item_keeps_visible_row_actions(tmp_path, monkeypatch):
+    """坏通道项在首位时，编辑、切换与删除仍作用于用户所见行。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = page.channels_path
+        app.model.set(path, ['bad',
+                             {'provider': 'serverchan', 'sckey': 'first'},
+                             {'provider': 'serverchan', 'sckey': 'second'}])
+        page.refresh()
+        assert len(page.channel_rows) == 2
+        page.expand_channel(1)
+        page.channel_entries['sckey'].insert(0, 'edited-')
+        channels = app.model.get(path)
+        assert channels[0] == 'bad'
+        assert channels[1]['sckey'] == 'first'
+        assert channels[2]['sckey'] == 'edited-second'
+        page.change_channel_provider(1, 'bark')
+        channels = app.model.get(path)
+        assert channels[1]['provider'] == 'serverchan'
+        assert channels[2]['provider'] == 'bark'
+        monkeypatch.setattr('modules.gui.pages.notification_ctk.messagebox.askyesno',
+                            lambda *a, **k: True)
+        page.remove_channel(1)
+        assert app.model.get(path) == ['bad', {'provider': 'serverchan', 'sckey': 'first'}]
+    finally:
+        root.destroy()
+
+
+def test_invalid_target_item_keeps_visible_row_actions(tmp_path, monkeypatch):
+    """坏目标项在首位时，编辑、移动与删除均按原始索引执行。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        path = ('push', 'screenshot', 'targets')
+        app.model.set(path, ['bad',
+                             {'provider': 'window', 'target': 'A'},
+                             {'provider': 'window', 'target': 'B'}])
+        page.refresh()
+        assert len(page.target_rows) == 2
+        entry = page.target_rows[1]['entry']
+        entry.delete(0, 'end')
+        entry.insert(0, 'B-edited')
+        targets = app.model.get(path)
+        assert targets[0] == 'bad'
+        assert targets[1]['target'] == 'A'
+        assert targets[2]['target'] == 'B-edited'
+        page.move_target(0, 1)
+        assert app.model.get(path) == ['bad',
+                                       {'provider': 'window', 'target': 'B-edited'},
+                                       {'provider': 'window', 'target': 'A'}]
+        monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
+                            lambda *a, **k: True)
+        page.remove_target(1)
+        assert app.model.get(path) == ['bad',
+                                       {'provider': 'window', 'target': 'B-edited'}]
+    finally:
+        root.destroy()
+
+
+def test_invalid_host_item_keeps_visible_row_actions(tmp_path):
+    """坏图床项在首位时，编辑、排序与删除均按原始索引执行。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        path = ('push', 'screenshot', 'image_host')
+        app.model.set(path, ['bad',
+                             {'provider': 'catbox', 'token': 'first'},
+                             {'provider': 'beeimg', 'token': 'second'}])
+        page.refresh()
+        assert len(page.host_rows) == 2
+        token = page.host_rows[1]['token']
+        token.delete(0, 'end')
+        token.insert(0, 'second-edited')
+        hosts = app.model.get(path)
+        assert hosts[0] == 'bad'
+        assert hosts[1]['token'] == 'first'
+        assert hosts[2]['token'] == 'second-edited'
+        page.move_host(0, 1)
+        assert app.model.get(path) == ['bad',
+                                       {'provider': 'beeimg', 'token': 'second-edited'},
+                                       {'provider': 'catbox', 'token': 'first'}]
+        page.remove_host(1)
+        assert app.model.get(path) == ['bad',
+                                       {'provider': 'beeimg', 'token': 'second-edited'}]
+    finally:
+        root.destroy()
+
+
+def test_invalid_target_item_keeps_adb_port_editing(tmp_path):
+    """坏目标项在首位时，ADB 端口仍写入所见目标。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        path = ('push', 'screenshot', 'targets')
+        app.model.set(path, ['bad',
+                             {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+        page.refresh()
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '16385')
+        targets = app.model.get(path)
+        assert targets[0] == 'bad'
+        assert targets[1]['target'] == '127.0.0.1:16385'
+    finally:
+        root.destroy()
+
+
 def test_open_monitor_null_refreshes_without_crash(tmp_path):
     """monitor 节点为 null 时仍能打开并显示待校验状态。"""
     root = tk.Tk()
