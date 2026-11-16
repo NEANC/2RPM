@@ -171,6 +171,25 @@ def test_non_string_target_fields_are_shown_safely():
         root.destroy()
 
 
+def test_list_creation_refuses_non_mapping_screenshot_section():
+    """截图节为标量时列表创建只提示结构异常，不覆盖原值。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot'), 'broken')
+    try:
+        page = ScreenshotPage(root, Mock(model=model))
+        page.add_target()
+        page.add_host()
+        assert model.get(('push', 'screenshot')) == 'broken'
+        assert '结构无效' in page.targets_hint.cget('text')
+        assert '结构无效' in page.hosts_hint.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_window_target_selection_keeps_custom_out(monkeypatch):
     """窗口枚举使用现有 Win32 枚举，空列表和取消不破坏输入。"""
     from unittest.mock import Mock

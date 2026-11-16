@@ -119,8 +119,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         """读取可编辑列表；缺失允许创建，结构异常返回 None。"""
         try:
             items = self.model.get(path)
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError):
             return []
+        except TypeError:
+            return None
         return items if isinstance(items, list) else None
 
     def add_target(self):

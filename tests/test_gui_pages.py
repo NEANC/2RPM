@@ -2013,6 +2013,23 @@ def test_empty_push_and_log_sections_allow_creation_and_actions(tmp_path, monkey
         root.destroy()
 
 
+def test_malformed_screenshot_and_channel_sections_hint_without_overwrite(tmp_path):
+    """截图或通道节为标量时测试入口只提示结构异常，不覆盖原值。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('push', 'screenshot'), 'broken')
+        app.upload()
+        assert '结构无效' in app.status.cget('text')
+        app.model.set(('push', 'push_channel_settings'), 'broken')
+        app.notify()
+        assert '结构无效' in app.status.cget('text')
+        assert app.model.get(('push', 'screenshot')) == 'broken'
+        assert app.model.get(('push', 'push_channel_settings')) == 'broken'
+    finally:
+        root.destroy()
+
+
 def test_open_non_mapping_list_items_skips_and_hints(tmp_path):
     """通道、目标与图床列表中的非映射项被跳过并提示结构问题。"""
     root = tk.Tk()

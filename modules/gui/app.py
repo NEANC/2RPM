@@ -481,8 +481,11 @@ class App:
             return
         try:
             hosts = self.model.get(('push', 'screenshot', 'image_host'))
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError):
             hosts = []
+        except TypeError:
+            self.status.configure(text='图床配置结构无效，请在 YAML 中修复')
+            return
         if not isinstance(hosts, list):
             self.status.configure(text='图床配置结构无效，请在 YAML 中修复')
             return
@@ -515,8 +518,11 @@ class App:
             return
         try:
             channels = self.model.get(('push', 'push_channel_settings', 'channels'))
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError):
             channels = []
+        except TypeError:
+            self.status.configure(text='推送通道配置结构无效，请在 YAML 中修复')
+            return
         if not channels:
             self.status.configure(text='请先添加推送通道')
             return
