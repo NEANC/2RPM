@@ -439,8 +439,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         """步进合法数字端口且保留地址。"""
         address, port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
         if port is not None and 1 <= port + delta <= 65535:
+            path = (*TARGETS, self._source_index(TARGETS, index), 'target')
+            self.model.input_errors.pop(path, None)
             self._set_adb(index, address, port + delta)
-            self.model.raw_inputs[(*TARGETS, self._source_index(TARGETS, index), 'target')] = str(port + delta)
+            self.model.raw_inputs[path] = str(port + delta)
             self.refresh()
 
     def _show_host(self, index, item, source_index=None):

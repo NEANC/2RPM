@@ -423,6 +423,38 @@ def test_adb_port_stepper_replaces_raw_input():
         root.destroy()
 
 
+def test_adb_port_stepper_after_incomplete_input_clears_error_and_saves(tmp_path):
+    """端口输入 '-' 后步进恢复有效值，并允许保存到磁盘。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    page = ScreenshotPage(root, Mock(model=controller.model))
+    path = (*('push', 'screenshot', 'targets'), 0, 'target')
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '-')
+        assert path in controller.model.input_errors
+        page._change_port(0, 1)
+        assert controller.model.get(path) == '127.0.0.1:16385'
+        assert controller.model.get_input(path) == '16385'
+        assert path not in controller.model.input_errors
+        assert controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16385'
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize(('field', 'raw', 'expected'), [
     ('port', '-', '127.0.0.1:16384'),
     ('port', '70000', '127.0.0.1:70000'),
