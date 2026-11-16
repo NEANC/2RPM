@@ -415,7 +415,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         """仅拆分明确的地址数字端口，其余 serial 原文保留。"""
         target = '' if target is None else str(target)
         match = re.fullmatch(r'(.+):(\d+)', target)
-        return (match.group(1), int(match.group(2))) if match else (target, None)
+        if not match:
+            return target, None
+        try:
+            return match.group(1), int(match.group(2))
+        except ValueError:
+            return target, None
 
     def _set_adb(self, index, address, port):
         """把地址与数字端口还原成既有单个 target 字段。"""

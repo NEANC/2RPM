@@ -627,6 +627,33 @@ def test_adb_serial_not_destroyed_on_refresh():
         root.destroy()
 
 
+def test_adb_oversized_numeric_serial_builds_page_without_changing_target(tmp_path):
+    """超过 Python 整数转换限制的数字后缀仍以 CLI 原始 serial 展示和保存。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    serial = 'device:' + '9' * 5000
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': serial}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    try:
+        page = ScreenshotPage(root, Mock(model=controller.model))
+        assert controller.model.get(('push', 'screenshot', 'targets', 0, 'target')) == serial
+        assert page.target_rows[0]['port'].get() == ''
+        page.refresh()
+        assert controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == serial
+    finally:
+        root.destroy()
+
+
 def test_screenshot_page_visible_and_safe_operations(monkeypatch):
     """截图页为 ctk 控件，排序删除同步模板且图床保留高级字段。"""
     from modules.gui.pages.screenshot import Page as ScreenshotPage
