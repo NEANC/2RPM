@@ -544,7 +544,8 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
     try:
         app = make_app(root, tmp_path)
         page = app.visible_pages['截图设置']
-        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'demo.exe')
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'),
+                                             str(tmp_path / 'demo.exe'))
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
         hosts[0]['custom'] = 'first'
