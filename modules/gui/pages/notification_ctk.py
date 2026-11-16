@@ -47,7 +47,6 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.event_bodies = {}
         self.preview_labels = {}
         self.variables = {}
-        self.capture_switches = {}
         self._event_switches = {}
         self._refreshing = False
         self._expanded_channel = None
@@ -319,7 +318,6 @@ class Page(ctk_kit.CTkScrollableFrame):
             child.destroy()
         self.preview_labels = {}
         self.variables = {}
-        self.capture_switches = {}
         self._event_switches = {}
         raw = self._safe_get(('push', 'templates'), None)
         templates = raw if isinstance(raw, Mapping) else {}
@@ -344,18 +342,6 @@ class Page(ctk_kit.CTkScrollableFrame):
                               command=lambda key=event: self.expand_event(key)).pack(side='right')
             if event not in self._expanded_events:
                 continue
-            capture_row = ctk_kit.CTkFrame(card, fg_color='transparent')
-            capture_row.pack(fill='x', padx=12, pady=(4, 0))
-            ctk_kit.CTkLabel(capture_row, text='事件截图', font=FONT_BODY).pack(side='left')
-            capture = ctk_kit.CTkSwitch(capture_row, text='', font=FONT_BODY)
-            capture.configure(command=lambda key=event, widget=capture:
-                              self.model.set(('push', 'templates', key, 'capture_screenshot'),
-                                             bool(widget.get())))
-            capture.pack(side='right')
-            if isinstance(templates, dict) and isinstance(templates.get(event), dict) and \
-                    templates[event].get('capture_screenshot') is not False:
-                capture.select()
-            self.capture_switches[event] = capture
             ctk_kit.CTkLabel(card, text='标题', font=FONT_BODY).pack(anchor='w', padx=12)
             self._entry(card, (*path, 'title'))
             ctk_kit.CTkLabel(card, text='正文', font=FONT_BODY).pack(anchor='w', padx=12)

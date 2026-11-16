@@ -1321,22 +1321,25 @@ def test_normal_close_cancels_pending_poll(tmp_path):
 
 
 def test_screenshot_conditions_update_on_tab_switch(tmp_path):
-    """通知页切换事件截图开关后进入附件页立即看到新条件。"""
+    """隐藏的截图开关由模型保存，预览和主页条件同步反映该值。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         event = 'on_timeout'
+        path = ('push', 'templates', event, 'capture_screenshot')
         app.show_page('消息推送设置')
         page = app.visible_pages['消息推送设置']
         page.expand_event(event)
-        capture = page.capture_switches[event]
-        assert capture.get()
-        capture.toggle()
-        assert app.model.get(('push', 'templates', event, 'capture_screenshot')) is False
+        assert not hasattr(page, 'capture_switches')
+        assert path not in page.fields
+        app.model.set(path, False)
+        page.preview_event(event)
+        assert '截图被阻止' in page.preview_labels[event].cget('text')
         app.show_page('截图设置')
         root.update()
         app.visible_pages['主页'].refresh()
         assert '运行超时：条件未满足' in app.visible_pages['主页'].conditions.cget('text')
+        assert app.model.get(path) is False
     finally:
         root.destroy()
 
