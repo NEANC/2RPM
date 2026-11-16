@@ -214,15 +214,31 @@ class Page(ctk_kit.CTkScrollableFrame):
         if hosts is None or not 0 <= source_index < len(hosts):
             return
         hosts.pop(source_index)
-        self.invalid_options = {
-            key - (key > source_index): value
-            for key, value in self.invalid_options.items() if key != source_index}
-        self.model.input_errors = {
-            (*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > source_index), 'options'):
-            Issue((*HOSTS, key[len(HOSTS)] - (key[len(HOSTS)] > source_index), 'options'),
-                  issue.code, issue.severity, issue.message)
-            for key, issue in self.model.input_errors.items()
-            if key != (*HOSTS, source_index, 'options')}
+        invalid_options = {}
+        for key, value in self.invalid_options.items():
+            if key == source_index:
+                continue
+            new_key = key - 1 if isinstance(key, int) and key > source_index else key
+            invalid_options[new_key] = value
+        self.invalid_options = invalid_options
+        errors = {}
+        for key, issue in self.model.input_errors.items():
+            if not isinstance(key, tuple) or key[:len(HOSTS)] != HOSTS:
+                errors[key] = issue
+                continue
+            if len(key) <= len(HOSTS):
+                errors[key] = issue
+                continue
+            index = key[len(HOSTS)]
+            if not isinstance(index, int):
+                errors[key] = issue
+                continue
+            if index == source_index:
+                continue
+            new_index = index - 1 if index > source_index else index
+            new_key = (*HOSTS, new_index, *key[len(HOSTS) + 1:])
+            errors[new_key] = Issue(new_key, issue.code, issue.severity, issue.message)
+        self.model.input_errors = errors
         self.model.set(HOSTS, hosts)
         self._commit_list()
 

@@ -120,6 +120,37 @@ def test_retention_missing_or_scalar_is_safe():
         root.destroy()
 
 
+def test_remove_host_renumbers_only_host_option_errors(monkeypatch):
+    """删除图床时仅重编号图床 options 错误，无关字段错误原样保留。"""
+    from unittest.mock import Mock
+    from modules.config_rules import Issue
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'image_host'), [
+        {'provider': 'beeimg', 'token': 'a'},
+        {'provider': 'beeimg', 'token': 'b'},
+        {'provider': 'beeimg', 'token': 'c'}])
+    unrelated = ('monitor', 'common', 'timeout_threshold')
+    model.input_errors[unrelated] = Issue(
+        unrelated, 'incomplete_input', 'error', '输入尚未完成')
+    host_path = ('push', 'screenshot', 'image_host', 2, 'options')
+    model.input_errors[host_path] = Issue(
+        host_path, 'invalid_options', 'error', 'options 必须是有效 YAML 映射')
+    page = ScreenshotPage(root, Mock(model=model))
+    monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
+                        lambda *args, **kwargs: True)
+    try:
+        page.remove_host(0)
+        assert model.input_errors[unrelated].code == 'incomplete_input'
+        moved = ('push', 'screenshot', 'image_host', 1, 'options')
+        assert model.input_errors[moved].path == moved
+        assert host_path not in model.input_errors
+    finally:
+        root.destroy()
+
+
 def test_window_target_selection_keeps_custom_out(monkeypatch):
     """窗口枚举使用现有 Win32 枚举，空列表和取消不破坏输入。"""
     from unittest.mock import Mock
