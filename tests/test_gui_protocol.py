@@ -90,6 +90,30 @@ def test_capture_accepts_window_and_adb_input(tmp_path, provider, target):
     assert decode_request(encode_request(request)) == request
 
 
+def test_saved_quoted_scalars_encode_as_plain_json(tmp_path):
+    """保存并重开的引号标量必须降级为协议可接受的 JSON 基础类型。"""
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    from modules.config_document import new_document, read_document, save_document
+    from modules.gui.app import App
+    from modules.gui.model import EditorModel
+
+    document = new_document()
+    document.tree['push']['templates']['on_end']['content'] = DoubleQuotedScalarString(
+        '内容 {process_name}')
+    document.tree['push']['screenshot']['image_host'][0]['token'] = (
+        DoubleQuotedScalarString('token-value'))
+    saved = save_document(document, tmp_path / 'quoted.yaml',
+                          expected_fingerprint=None)
+    model = EditorModel(read_document(saved.path))
+    request = GuiRequest('req-1', model.document_generation, model.revision,
+                         'capture', App._plain_value(model.snapshot()),
+                         str(tmp_path), str(tmp_path), 0, None, None, None)
+    assert type(request.config['push']['templates']['on_end']['content']) is str
+    assert type(request.config['push']['screenshot']['image_host'][0]['token']) is str
+    encode_request(request)
+
+
 def test_result_round_trip_channels_and_legacy_defaults(gui_request):
     """结果嵌套记录可恢复类型，旧消息缺省新字段可读。"""
     from modules.gui.protocol import ChannelTestResult

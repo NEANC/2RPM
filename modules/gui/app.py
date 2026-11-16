@@ -3,6 +3,7 @@
 
 """Tk 主线程窗口、侧栏导航及隔离测试结果消费。"""
 
+from collections.abc import Mapping
 import queue
 import shutil
 import tempfile
@@ -162,9 +163,17 @@ class App:
 
     @staticmethod
     def _plain_value(value):
-        """把 YAML 的字典列表子类转换为协议可接受的基础容器。"""
-        if isinstance(value, dict):
-            return {key: App._plain_value(item) for key, item in value.items()}
+        """把 YAML 容器与标量子类转换为协议可接受的基础类型。"""
+        if isinstance(value, bool):
+            return bool(value)
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            return float(value)
+        if isinstance(value, str):
+            return str(value)
+        if isinstance(value, Mapping):
+            return {str(key): App._plain_value(item) for key, item in value.items()}
         if isinstance(value, list):
             return [App._plain_value(item) for item in value]
         return value
