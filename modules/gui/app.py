@@ -9,7 +9,8 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
 from PIL import Image, ImageTk
 import ctk_kit
@@ -17,7 +18,7 @@ import ctk_kit
 from modules.gui.appearance import (AppearancePreferences, apply_appearance,
                                     FONT_BODY, load_preferences, preferences_path,
                                     save_preferences)
-from modules.gui.pages import attachments, monitor, notification, review
+from modules.gui.pages import attachments, external, home, logs, monitor, notification_ctk, review, screenshot, settings
 from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
@@ -29,6 +30,9 @@ class App:
 
     def __init__(self, root, controller):
         """建立四页导航和主线程结果泵。"""
+        # ctk-kit 字体和 CustomTkinter 内部字体依赖 Tk 默认根，不能沿用已销毁解释器。
+        if tk._default_root is not root:
+            tk._default_root = root
         self.root = root
         self.controller = controller
         self.model = controller.model
@@ -43,56 +47,67 @@ class App:
         self.result_text = ''
         self.preview_image = None
         self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
-        self.page_names = ('监视什么', '如何通知我', '附图与后续动作', '检查与启动')
+        self.page_names = ('主页', '监视设置', '截图设置', '消息推送设置',
+                           '外部程序设置', '日志设置', '设置')
+        self.current_page = '主页'
         root._gui_program_dir = controller.program_dir
         root.title('2RPM 配置')
         root.geometry('900x680')
-        self.path_label = ttk.Label(root)
-        self.path_label.pack(fill='x', padx=12, pady=6)
-        toolbar = ttk.Frame(root)
-        toolbar.pack(fill='x', padx=12)
-        self.actions = {}
-        for name, action in (('新建', self.new), ('打开', self.open),
-                             ('保存', self.save), ('另存为', self.save_as),
-                             ('完整路径', self.show_path), ('打开日志目录', self.open_logs)):
-            self.actions[name] = ttk.Button(toolbar, text=name, command=action)
-            self.actions[name].pack(side='left')
-        self.actions['处理冲突'] = ttk.Button(toolbar, text='处理冲突', command=self._show_conflict)
+        self.appearance_path = preferences_path()
+        self.appearance = load_preferences(self.appearance_path)
         if isinstance(root, ctk_kit.App):
-            self.appearance_path = preferences_path()
-            self.appearance = load_preferences(self.appearance_path)
             apply_appearance(root, self.appearance)
-            self.appearance_theme = ctk_kit.CTkOptionMenu(
-                toolbar, values=['跟随系统', '深色', '浅色'],
-                command=self.choose_theme, width=100, font=FONT_BODY,
-                dropdown_font=FONT_BODY)
-            self.appearance_theme.set({None: '跟随系统', True: '深色',
-                                       False: '浅色'}[self.appearance.dark])
-            self.appearance_theme.pack(side='right', padx=4)
-            self.appearance_material = ctk_kit.CTkOptionMenu(
-                toolbar, values=['Mica', 'Acrylic', 'none'],
-                command=self.choose_material, width=100, font=FONT_BODY,
-                dropdown_font=FONT_BODY)
-            self.appearance_material.set(self.appearance.material)
-            self.appearance_material.pack(side='right', padx=4)
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill='both', expand=True, padx=12, pady=8)
-        self.pages = [page.Page(self.notebook, self.model)
-                      for page in (monitor, notification, attachments, review)]
-        for title, page in zip(self.page_names, self.pages):
-            self.notebook.add(page, text=title)
-        self.notebook.bind('<<NotebookTabChanged>>', self._tab_changed)
-        self.status = ttk.Label(root, text='新建配置或打开现有 YAML')
+        self.actions = {}
+        self.path_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
+        self.status = ctk_kit.CTkLabel(root, text='新建配置或打开现有 YAML', font=FONT_BODY)
+        self.preview_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
+        self.actions['处理冲突'] = ctk_kit.CTkButton(root, text='处理冲突', command=self._show_conflict, font=FONT_BODY)
+        self.actions['测试通知'] = ctk_kit.CTkButton(root, text='通知测试', command=self.notify, font=FONT_BODY)
+        self.pages = []
+        self.visible_pages = {}
+
+        def build(name, module, *, legacy=False):
+            """在侧栏真实内容区域装入常驻页面。"""
+            def create(parent):
+                """业务页暂用旧表单桥接；后续逐页改用 ctk-kit。"""
+                container = ctk_kit.CTkFrame(parent, corner_radius=0)
+                if legacy:
+                    actions = {
+                        '截图设置': (('截图测试', self.capture), ('上传测试', self.upload)),
+                        '消息推送设置': (('通知测试', self.notify),),
+                        '日志设置': (('打开日志目录', self.open_logs),),
+                    }
+                    for label, callback in actions.get(name, ()):
+                        button = ctk_kit.CTkButton(container, text=label,
+                                                   command=callback, font=FONT_BODY)
+                        button.pack(side='top', anchor='e', padx=12, pady=4)
+                        if name == '消息推送设置':
+                            self.actions['测试通知'] = button
+                page = module.Page(container, self.model if legacy else self)
+                page.pack(fill='both', expand=True)
+                self.visible_pages[name] = page
+                return container
+            return create
+
+        builders = {'主页': build('主页', home),
+                    '监视设置': build('监视设置', monitor, legacy=True),
+                    '截图设置': build('截图设置', screenshot),
+                    '消息推送设置': build('消息推送设置', notification_ctk),
+                    '外部程序设置': build('外部程序设置', external),
+                    '日志设置': build('日志设置', logs)}
+        self.sidebar = ctk_kit.SidebarNav(root, title='2RPM', logo=False,
+                                           pages=builders,
+                                           bottom_pages={'设置': build('设置', settings)},
+                                           initial='主页', on_change=self._page_changed)
+        self.sidebar.pack(fill='both', expand=True)
+        self.sidebar._warm_enabled = False
+        for name in ('监视设置', '消息推送设置', '截图设置', '日志设置'):
+            self.sidebar.page(name)
+            self.pages.append(self.visible_pages[name])
+        self.actions['测试通知'] = self.visible_pages['消息推送设置'].notify_button
         self.status.pack(fill='x', padx=12)
-        self.preview_label = ttk.Label(root)
-        self.preview_label.pack(fill='x', padx=12)
-        controls = ttk.Frame(root)
-        controls.pack(fill='x', padx=12, pady=8)
-        for name, action in (('校验', self.validate), ('截图预览', self.capture),
-                             ('上传测试', self.upload), ('测试通知', self.notify),
-                             ('取消测试', self.cancel_test), ('启动 CLI', self.start_cli)):
-            self.actions[name] = ttk.Button(controls, text=name, command=action)
-            self.actions[name].pack(side='left')
+        self.path_label.pack(fill='x', padx=12)
+        self.actions['处理冲突'].pack_forget()
         self.controller.on_change = self.refresh
         self.controller.on_edit = self._refresh_save_status
         self.controller.on_conflict = self._show_conflict
@@ -100,12 +115,21 @@ class App:
         self.refresh()
         self._after_id = root.after(50, self._poll)
 
-    def _tab_changed(self, event):
-        """离开配置页时尝试补存，失败仍允许返回检查页。"""
-        index = self.notebook.index('current')
-        if index == 3:
+    def _page_changed(self, name):
+        """侧栏切换时更新当前页，配置页离开时尝试补存。"""
+        if getattr(self, 'current_page', '主页') != name and self.current_page != '主页':
             self.save_coordinator.flush()
-        self.pages[index].refresh()
+        self.current_page = name
+
+    def show_page(self, name: str) -> bool:
+        """按业务名称切页；返回主页不因未完成草稿而拒绝。"""
+        if name not in self.page_names:
+            return False
+        self.sidebar.show(name)
+        page = self.visible_pages[name]
+        if hasattr(page, 'refresh'):
+            page.refresh()
+        return True
 
     def _show_conflict(self):
         """向用户提供重载、另存为与暂不处理三个选择。"""
@@ -139,11 +163,13 @@ class App:
             messagebox.showerror('外观设置', '无法保存外观偏好', parent=self.root)
         self.appearance = preferences
         apply_appearance(self.root, preferences)
+        if '设置' in getattr(self, 'visible_pages', {}):
+            self.visible_pages['设置'].refresh()
 
     @property
     def summary_text(self):
         """返回不包含凭证的检查页文字。"""
-        return self.pages[3].summary.cget('text')
+        return self.visible_pages['主页'].summary.cget('text')
 
     @staticmethod
     def _plain_value(value):
@@ -164,11 +190,13 @@ class App:
                 self.result_text = ''
                 self.preview_image = None
                 self.preview_label.configure(image='', text='')
-            for selector in (self.pages[1].channel_list, self.pages[2].target_list,
-                             self.pages[2].host_list):
-                selector.set('')
+            self.visible_pages['消息推送设置']._expanded_channel = None
+            self.visible_pages['消息推送设置']._expanded_events.clear()
             self.generation = self.model.document_generation
             self.document_path = self.model.document.path
+        for page in self.visible_pages.values():
+            if hasattr(page, 'refresh'):
+                page.refresh()
         for page in self.pages:
             page.refresh()
         self._refresh_save_status()
@@ -177,7 +205,7 @@ class App:
         """编辑时仅刷新保存标记，不重建正在输入的控件。"""
         path = self.model.document.path
         pending = self.model.dirty or bool(self.model.input_errors)
-        suffix = '（外部冲突）' if self.controller.conflicted else ' *' if pending else ''
+        suffix = '（外部冲突）' if self.controller.conflicted else '（未保存）' if pending else ''
         self.path_label.configure(text=f'{path or "未保存的新配置"}{suffix}')
         conflict = self.actions['处理冲突']
         if self.controller.conflicted:
@@ -202,9 +230,8 @@ class App:
         identity = (self.model.document_generation, self.model.revision)
         saved = self.save_coordinator.flush()
         if identity != (self.model.document_generation, self.model.revision):
-            for selector in (self.pages[1].channel_list, self.pages[2].target_list,
-                             self.pages[2].host_list):
-                selector.set('')
+            self.visible_pages['消息推送设置']._expanded_channel = None
+            self.visible_pages['消息推送设置'].refresh()
             self.status.configure(text='配置已更新，请重新选择列表项')
             return False
         return saved
@@ -307,36 +334,35 @@ class App:
         path = self.model.document.path
         candidate = self.model.validate(path.parent if path else self.controller.program_dir)
 
-        def page_index(issue):
-            """按字段所在页面统一计算诊断路由。"""
-            issue_path = issue.path
-            if getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping') and issue_path != ('monitor', 'common'):
-                return 3
-            if not issue_path:
-                return 3
-            if (issue_path == ('monitor', 'common', 'timeout_threshold')
-                    or issue_path[0] == 'external'
-                    or issue_path[:2] == ('push', 'screenshot')):
-                return 2
-            return {'monitor': 0, 'push': 1}.get(issue_path[0], 3)
-
-        counts = [0] * len(self.pages)
+        counts = {name: 0 for name in self.page_names}
+        def destination(issue):
+            """结构问题归主页，高级隐藏字段归相关业务页。"""
+            path = issue.path
+            if not path or getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping'):
+                return '主页'
+            if path[:3] == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
+                return '外部程序设置'
+            if path[:2] == ('push', 'screenshot'):
+                return '截图设置'
+            return {'monitor': '监视设置', 'push': '消息推送设置',
+                    'log': '日志设置'}.get(path[0], '主页')
         for issue in candidate.issues:
-            counts[page_index(issue)] += 1
-        for index, name in enumerate(self.page_names):
-            self.notebook.tab(index, text=f'{name} ({counts[index]})' if counts[index] else name)
-        self.status.configure(text=f'校验：{sum(counts)} 个问题')
+            counts[destination(issue)] += 1
+        self.visible_pages['主页'].check.configure(
+            text=f'存在 {len(candidate.issues)} 个问题，请检查对应配置'
+            if candidate.issues else '配置检查：无问题')
+        self.status.configure(text=f'校验：{len(candidate.issues)} 个问题')
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            index = page_index(issue)
-            self.notebook.select(index)
-            self.root.update()
-            self.pages[index].refresh()
-            if index == 3 and getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping'):
-                self.pages[index].show_issue(issue.code)
+            name = destination(issue)
+            self.show_page(name)
+            if name == '主页':
+                self.visible_pages['主页'].show_issue(getattr(issue, 'code', 'structure'))
+            elif name in self.visible_pages and hasattr(self.visible_pages[name], 'focus_issue'):
+                self.visible_pages[name].focus_issue(issue.path)
             else:
-                self.pages[index].focus_issue(issue.path)
+                self.status.configure(text=f'{name}：请在 YAML 中检查对应字段')
         return candidate
 
     def start_cli(self):
@@ -441,7 +467,7 @@ class App:
         """配置变动后重开新图床列表，不复用旧索引。"""
         if not self._require_saved():
             return
-        hosts = self.model.get(self.pages[2].hosts_path)
+        hosts = self.model.get(('push', 'screenshot', 'image_host'))
         names = [item.get('provider', '未知') if isinstance(item, dict) else '未知'
                  for item in hosts]
         identity = (self.model.document_generation, self.model.revision, hosts)
@@ -451,7 +477,7 @@ class App:
             if not self._require_saved():
                 return False
             if (identity != (self.model.document_generation, self.model.revision,
-                             self.model.get(self.pages[2].hosts_path))
+                             self.model.get(('push', 'screenshot', 'image_host')))
                     or index >= len(hosts)):
                 self.status.configure(text='配置已更新，请重新选择图床')
                 self.open_upload_selection()
@@ -470,7 +496,7 @@ class App:
         if not channels:
             self.status.configure(text='请先添加推送通道')
             return
-        self._request('notify', template_key=self.pages[1].selected_event.get())
+        self._request('notify', template_key='on_end')
 
     def cancel_test(self):
         """取消仅针对截图或上传 worker，不影响 CLI。"""

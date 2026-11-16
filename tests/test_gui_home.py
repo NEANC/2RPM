@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+
+"""Fluent 主页、导航与设置的真实窗口回归。"""
+
+import tkinter as tk
+
+import ctk_kit
+
+from modules.gui.home_summary import summary
+from modules.config_document import new_document
+from tests.test_gui_pages import make_app
+
+
+NAMES = ('主页', '监视设置', '截图设置', '消息推送设置',
+         '外部程序设置', '日志设置', '设置')
+
+
+def test_summary_uses_draft_and_redacts():
+    """摘要只使用结构状态，草稿内目标和凭证不出现。"""
+    config = new_document().tree
+    config['monitor']['target'] = 'C:/private/秘密程序.exe'
+    config['push']['push_channel_settings']['channels'] = [
+        {'provider': 'serverchan', 'sckey': 'private-token'}]
+    text, _ = summary(config)
+    assert '已配置' in text
+    assert '秘密程序' not in text
+    assert 'private-token' not in text
+
+
+def test_all_unmet_conditions_are_shown():
+    """事件截图只列出真实缺失项，不把已满足条件列为失败。"""
+    config = new_document().tree
+    config['push']['templates']['on_end']['capture_screenshot'] = False
+    _, details = summary(config)
+    end = next(item for item in details if item[0] == '目标结束')
+    assert end[1] == '条件未满足'
+    assert '事件或事件截图未启用' in end[2]
+    assert len(end[2]) >= 2
+
+
+def test_sidebar_order_and_home(tmp_path, monkeypatch):
+    """七页侧栏必须保持业务编辑入口可达，不把隐藏旧表单当作迁移。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        assert app.page_names == NAMES
+        assert not hasattr(app, 'notebook')
+        assert app.current_page == '主页'
+        assert app.show_page('监视设置')
+        monitor_page = app.visible_pages['监视设置']
+        assert ('monitor', 'target') in monitor_page.fields
+        assert app.show_page('截图设置')
+        screenshot_page = app.visible_pages['截图设置']
+        assert screenshot_page.model is app.model
+        assert app.model.get(('push', 'screenshot', 'targets')) == []
+        assert app.show_page('消息推送设置')
+        push_page = app.visible_pages['消息推送设置']
+        assert push_page.channels_path == ('push', 'push_channel_settings', 'channels')
+        assert app.show_page('主页')
+    finally:
+        root.destroy()
+
+
+def test_failed_flush_preserves_page_inputs(tmp_path, monkeypatch):
+    """数字草稿未完成时可回主页并再次回原页。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
+        assert app.show_page('监视设置')
+        assert app.show_page('主页')
+        assert app.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
+        assert '未保存' in app.path_label.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_settings_persist_without_editing_business_revision(tmp_path, monkeypatch):
+    """设置页切换外观，业务草稿修订不受影响。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        revision = app.model.revision
+        assert app.show_page('设置')
+        app.choose_material('none')
+        assert app.model.revision == revision
+        assert app.visible_pages['设置'].material.get() == '无材质'
+    finally:
+        root.destroy()
+
+
+def test_sidebar_business_pages_keep_editing_and_actions(tmp_path, monkeypatch):
+    """桥接期各业务入口均能编辑对应字段且测试操作可访问。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        for name, path in (
+                ('监视设置', ('monitor', 'target')),
+                ('消息推送设置', ('push', 'retry', 'interval')),
+                ('外部程序设置', ('external', 'on_end')),
+                ('日志设置', ('log', 'log_directory'))):
+            assert app.show_page(name)
+            page = app.visible_pages[name]
+            assert path in page.fields
+            assert page.fields[path][1].winfo_exists()
+        assert app.show_page('截图设置')
+        assert app.visible_pages['截图设置'].days.winfo_exists()
+        buttons = [child for header in app.visible_pages['截图设置'].winfo_children()
+                   for child in header.winfo_children()]
+        assert '截图测试' in [child.cget('text') for child in buttons
+                           if isinstance(child, ctk_kit.CTkButton)]
+    finally:
+        root.destroy()
+
+
+def test_recreated_ctk_root_keeps_font_resources(tmp_path, monkeypatch):
+    """关闭旧窗口后创建新窗口仍可构建侧栏与字体。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    for index in range(2):
+        root = ctk_kit.App(title='测试', remember_geometry=False,
+                           remember_theme=False, notifier=False, backdrop='none')
+        root.withdraw()
+        try:
+            app = make_app(root, tmp_path / str(index))
+            assert app.show_page('监视设置')
+        finally:
+            root.destroy()
+
+
+def test_close_cancel_keeps_root(tmp_path, monkeypatch):
+    """拒绝退出时窗口和草稿仍存在。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.confirm = lambda *_: 'cancel'
+        app.close()
+        assert root.winfo_exists()
+    finally:
+        root.destroy()

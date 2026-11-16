@@ -27,7 +27,10 @@ class Page(ScrollForm):
         """创建同模型字段绑定的标签和输入框。"""
         row = ttk.Frame(parent)
         row.pack(fill='x', pady=3)
-        ttk.Label(row, text=label, width=22).pack(side='left')
+        if kind == 'multiline':
+            ttk.Label(row, text=label).pack(anchor='w')
+        else:
+            ttk.Label(row, text=label, width=12).pack(side='left')
         value = self.model.get(path)
         if kind == 'multiline':
             variable = None
@@ -144,4 +147,9 @@ class Page(ScrollForm):
         widget.focus_force()
         self.update_idletasks()
         if self.body.winfo_height():
-            self.canvas.yview_moveto(widget.winfo_y() / self.body.winfo_height())
+            offset = 0
+            current = widget
+            while current is not self.body:
+                offset += current.winfo_y()
+                current = current.master
+            self.canvas.yview_moveto(offset / self.body.winfo_height())

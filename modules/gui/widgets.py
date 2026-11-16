@@ -7,6 +7,25 @@ import tkinter as tk
 from tkinter import ttk
 
 
+def scroll_to_widget(container, widget) -> None:
+    """把 ctk 可滚动容器滚动到目标控件所在位置。
+
+    Args:
+        container: `CTkScrollableFrame` 实例。
+        widget: 容器内需要显示并聚焦的控件。
+    """
+    container.update_idletasks()
+    offset = 0
+    current = widget
+    while current is not container and current is not None:
+        offset += current.winfo_y()
+        current = current.master
+    canvas = getattr(container, '_parent_canvas', None)
+    height = container.winfo_height()
+    if canvas is not None and height > 1:
+        canvas.yview_moveto(min(1.0, offset / height))
+
+
 class ValueBinding:
     """让会触发回调的控件在程序刷新时不写回模型。"""
 

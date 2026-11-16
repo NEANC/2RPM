@@ -211,9 +211,10 @@ def test_stale_host_selection_requires_reselect(tmp_path):
         app.test_dialogs.open_upload = Mock()
         app.upload()
         _, submit = app.test_dialogs.open_upload.call_args.args
-        hosts = app.model.get(app.pages[2].hosts_path)
+        path = ('push', 'screenshot', 'image_host')
+        hosts = app.model.get(path)
         hosts.append({'provider': 'beeimg', 'token': 'placeholder'})
-        app.model.set(app.pages[2].hosts_path, hosts)
+        app.model.set(path, hosts)
         assert not submit(0, str(tmp_path / 'image.png'))
         app.controller.runner.start.assert_not_called()
         assert app.test_dialogs.open_upload.call_count == 2
