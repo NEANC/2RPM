@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
 
-"""Tk 主线程窗口、四页导航及隔离测试结果消费。"""
+"""Tk 主线程窗口、侧栏导航及隔离测试结果消费。"""
 
 import queue
 import shutil
@@ -18,7 +18,8 @@ import ctk_kit
 from modules.gui.appearance import (AppearancePreferences, apply_appearance,
                                     FONT_BODY, load_preferences, preferences_path,
                                     save_preferences)
-from modules.gui.pages import attachments, external, home, logs, monitor, notification_ctk, review, screenshot, settings
+from modules.gui.pages import (external, home, logs, monitor, notification_ctk,
+                               screenshot, settings)
 from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
@@ -29,7 +30,7 @@ class App:
     """只在 Tk 主线程上更新控件，不读取 CLI 日志或进程。"""
 
     def __init__(self, root, controller):
-        """建立四页导航和主线程结果泵。"""
+        """建立侧栏导航和主线程结果泵。"""
         # ctk-kit 字体和 CustomTkinter 内部字体依赖 Tk 默认根，不能沿用已销毁解释器。
         if tk._default_root is not root:
             tk._default_root = root
@@ -64,34 +65,23 @@ class App:
         self.preview_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
         self.actions['处理冲突'] = ctk_kit.CTkButton(root, text='处理冲突', command=self._show_conflict, font=FONT_BODY)
         self.actions['测试通知'] = ctk_kit.CTkButton(root, text='通知测试', command=self.notify, font=FONT_BODY)
-        self.pages = []
         self.visible_pages = {}
 
-        def build(name, module, *, legacy=False):
+        def build(name, module, *, with_model=False):
             """在侧栏真实内容区域装入常驻页面。"""
             def create(parent):
-                """业务页暂用旧表单桥接；后续逐页改用 ctk-kit。"""
+                """按页面约定注入共享模型或窗口对象。"""
                 container = ctk_kit.CTkFrame(parent, corner_radius=0)
-                if legacy:
-                    actions = {
-                        '截图设置': (('截图测试', self.capture), ('上传测试', self.upload)),
-                        '消息推送设置': (('通知测试', self.notify),),
-                        '日志设置': (('打开日志目录', self.open_logs),),
-                    }
-                    for label, callback in actions.get(name, ()):
-                        button = ctk_kit.CTkButton(container, text=label,
-                                                   command=callback, font=FONT_BODY)
-                        button.pack(side='top', anchor='e', padx=12, pady=4)
-                        if name == '消息推送设置':
-                            self.actions['测试通知'] = button
-                page = module.Page(container, self.model if legacy else self)
+                page = module.Page(container, self.model if with_model else self)
                 page.pack(fill='both', expand=True)
                 self.visible_pages[name] = page
+                if name == '消息推送设置':
+                    self.actions['测试通知'] = page.notify_button
                 return container
             return create
 
         builders = {'主页': build('主页', home),
-                    '监视设置': build('监视设置', monitor, legacy=True),
+                    '监视设置': build('监视设置', monitor, with_model=True),
                     '截图设置': build('截图设置', screenshot),
                     '消息推送设置': build('消息推送设置', notification_ctk),
                     '外部程序设置': build('外部程序设置', external),
@@ -102,10 +92,6 @@ class App:
                                            initial='主页', on_change=self._page_changed)
         self.sidebar.pack(fill='both', expand=True)
         self.sidebar._warm_enabled = False
-        for name in ('监视设置', '消息推送设置', '截图设置', '日志设置'):
-            self.sidebar.page(name)
-            self.pages.append(self.visible_pages[name])
-        self.actions['测试通知'] = self.visible_pages['消息推送设置'].notify_button
         self.status.pack(fill='x', padx=12)
         self.path_label.pack(fill='x', padx=12)
         self.actions['处理冲突'].pack_forget()
@@ -202,15 +188,15 @@ class App:
                 self.result_text = ''
                 self.preview_image = None
                 self.preview_label.configure(image='', text='')
-            self.visible_pages['消息推送设置']._expanded_channel = None
-            self.visible_pages['消息推送设置']._expanded_events.clear()
+            message_page = self.visible_pages.get('消息推送设置')
+            if message_page is not None:
+                message_page._expanded_channel = None
+                message_page._expanded_events.clear()
             self.generation = self.model.document_generation
             self.document_path = self.model.document.path
         for page in self.visible_pages.values():
             if hasattr(page, 'refresh'):
                 page.refresh()
-        for page in self.pages:
-            page.refresh()
         self._refresh_save_status()
 
     def _refresh_save_status(self):
@@ -243,8 +229,10 @@ class App:
         identity = (self.model.document_generation, self.model.revision)
         saved = self.save_coordinator.flush()
         if identity != (self.model.document_generation, self.model.revision):
-            self.visible_pages['消息推送设置']._expanded_channel = None
-            self.visible_pages['消息推送设置'].refresh()
+            message_page = self.visible_pages.get('消息推送设置')
+            if message_page is not None:
+                message_page._expanded_channel = None
+                message_page.refresh()
             self.status.configure(text='配置已更新，请重新选择列表项')
             return False
         return saved

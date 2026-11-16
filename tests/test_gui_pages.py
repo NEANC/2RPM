@@ -40,7 +40,10 @@ def make_app(root, tmp_path):
     controller = Controller(model, confirm=lambda kind, _: 'confirm' if kind == 'exit' else 'cancel',
                             choose_path=lambda: tmp_path / 'a.yaml', cli_command=('python.exe',),
                             runner=runner, program_dir=tmp_path)
-    return App(root, controller)
+    app = App(root, controller)
+    for name in ('监视设置', '消息推送设置', '截图设置', '日志设置'):
+        app.sidebar.page(name)
+    return app
 
 
 def test_conflict_can_be_reopened_after_later(tmp_path, monkeypatch):
@@ -100,7 +103,8 @@ def test_list_entry_presaves_before_mutation(tmp_path, operation, monkeypatch):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        channels, attachments = app.pages[1:3]
+        channels = app.visible_pages['消息推送设置']
+        attachments = app.visible_pages['截图设置']
         targets_path = ('push', 'screenshot', 'targets')
         hosts_path = ('push', 'screenshot', 'image_host')
         if operation == 'host_move':
@@ -143,7 +147,8 @@ def test_list_entry_reselects_after_clean_draft_external_reload(tmp_path, operat
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        channels, attachments = app.pages[1:3]
+        channels = app.visible_pages['消息推送设置']
+        attachments = app.visible_pages['截图设置']
         targets_path = ('push', 'screenshot', 'targets')
         hosts_path = ('push', 'screenshot', 'image_host')
         if operation == 'target_remove':
@@ -197,7 +202,8 @@ def test_document_reload_refresh_keeps_lists_unselected(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        channels, attachments = app.pages[1:3]
+        channels = app.visible_pages['消息推送设置']
+        attachments = app.visible_pages['截图设置']
         attachments.add_target()
         channels.expand_channel(0)
         old_entry = channels.channel_entries['sckey']
@@ -225,7 +231,8 @@ def test_reload_clears_list_editors_until_explicit_selection(tmp_path, kind):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        channels, attachments = app.pages[1:3]
+        channels = app.visible_pages['消息推送设置']
+        attachments = app.visible_pages['截图设置']
         attachments.add_target()
         paths = {'channel': channels.channels_path,
                  'target': ('push', 'screenshot', 'targets'),
@@ -265,15 +272,15 @@ def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        app.pages[0].set_field(('monitor', 'target'), 'demo.exe')
-        app.pages[0].set_field(('monitor', 'common', 'loop_interval'), '2s')
-        app.pages[1].expand_channel(0)
-        app.pages[1].channel_entries['sckey'].insert('end', 'x')
-        host_entry = next(widget for widget in app.pages[2].hosts_body.winfo_children()[0].winfo_children()
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'demo.exe')
+        app.visible_pages['监视设置'].set_field(('monitor', 'common', 'loop_interval'), '2s')
+        app.visible_pages['消息推送设置'].expand_channel(0)
+        app.visible_pages['消息推送设置'].channel_entries['sckey'].insert('end', 'x')
+        host_entry = next(widget for widget in app.visible_pages['截图设置'].hosts_body.winfo_children()[0].winfo_children()
                           if isinstance(widget, ctk_kit.CTkEntry))
         host_entry.insert('end', 'x')
         assert app.model.get(('monitor', 'target')) == 'demo.exe'
-        assert app.model.get(app.pages[1].channels_path)[0]['sckey'].endswith('x')
+        assert app.model.get(app.visible_pages['消息推送设置'].channels_path)[0]['sckey'].endswith('x')
         assert app.model.get(('push', 'screenshot', 'image_host'))[0]['token'].endswith('x')
     finally:
         root.destroy()
@@ -314,7 +321,7 @@ def test_error_expands_and_focuses(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[0]
+        page = app.visible_pages['监视设置']
         path = ('monitor', 'common', 'loop_interval')
         page.section_for_issue.set_expanded(False)
         assert app.show_page('监视设置')
@@ -368,7 +375,7 @@ def test_fold_keeps_nondefault_value_and_required_fields(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[0]
+        page = app.visible_pages['监视设置']
         advanced = ('monitor', 'common', 'loop_interval')
         target = ('monitor', 'target')
         page.set_field(advanced, '3s')
@@ -393,9 +400,10 @@ def test_page_model_identity_and_refresh_after_open(tmp_path):
         document.tree['monitor']['target'] = '中文目标.exe'
         model.replace_document(document)
         app.refresh()
-        assert all(page.model is model for page in app.pages)
-        assert app.pages[0].fields[('monitor', 'target')][0].get() == '中文目标.exe'
-        app.pages[0].set_field(('monitor', 'target'), '新目标.exe')
+        assert all(app.visible_pages[name].model is model
+                   for name in ('监视设置', '消息推送设置', '截图设置', '日志设置'))
+        assert app.visible_pages['监视设置'].fields[('monitor', 'target')][0].get() == '中文目标.exe'
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), '新目标.exe')
         assert model.get(('monitor', 'target')) == '新目标.exe'
     finally:
         root.destroy()
@@ -409,8 +417,8 @@ def test_monitor_preview_resolves_relative_target_and_cwd(tmp_path):
         app.model.switch_mode('launch')
         app.model.set(('monitor', 'target'), '.\\demo.exe')
         app.model.set(('monitor', 'launch', 'cwd'), '.\\work')
-        app.pages[0].refresh()
-        text = app.pages[0].preview.cget('text')
+        app.visible_pages['监视设置'].refresh()
+        text = app.visible_pages['监视设置'].preview.cget('text')
         assert 'demo.exe' in text
         assert 'work' in text
         assert '待校验' not in text
@@ -423,7 +431,7 @@ def test_unedited_host_options_keep_mapping_type(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         hosts = app.model.get(('push', 'screenshot', 'image_host'))
         hosts[0]['options'] = {'album_id': 12}
         app.model.set(('push', 'screenshot', 'image_host'), hosts)
@@ -442,8 +450,8 @@ def test_test_request_uses_document_directory(tmp_path):
         app = make_app(root, tmp_path)
         app.test_dialogs.open_capture = Mock()
         app.test_dialogs.show_result = Mock()
-        app.pages[2].add_target()
-        app.pages[2]._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
+        app.visible_pages['截图设置'].add_target()
+        app.visible_pages['截图设置']._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
         app.capture()
         assert app.test_dialogs.open_capture.call_args.args[0]('window', '测试窗口')
         request = app.controller.runner.start.call_args.args[0]
@@ -460,7 +468,7 @@ def test_host_options_edit_stays_mapping(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         options = page.host_rows[0]['options']
         options.delete(0, 'end')
         options.insert(0, '{album_id: 12}')
@@ -476,7 +484,7 @@ def test_host_options_display_roundtrips_and_invalid_input_blocks_save(tmp_path)
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
         hosts[0]['options'] = {'album_id': 12, 'enabled': False}
@@ -514,8 +522,8 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
-        app.pages[0].set_field(('monitor', 'target'), 'demo.exe')
+        page = app.visible_pages['截图设置']
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'demo.exe')
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
         hosts[0]['custom'] = 'first'
@@ -554,7 +562,7 @@ def test_invalid_options_block_host_reorder(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         page.add_host()
         entry = page.host_rows[0]['options']
         entry.delete(0, 'end')
@@ -578,7 +586,7 @@ def test_invalid_options_on_clean_model_requires_discard_confirmation(tmp_path, 
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         destination = tmp_path / 'another.yaml'
         if action == 'open':
             save_document(new_document(), destination, expected_fingerprint=None)
@@ -607,7 +615,7 @@ def test_invalid_options_on_clean_model_save_or_discard(tmp_path, answer, expect
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         page.host_rows[0]['options'].delete(0, 'end')
         page.host_rows[0]['options'].insert(0, '{broken: [}')
         app.controller.confirm = Mock(side_effect=lambda kind, _: 'confirm' if kind == 'exit' else answer)
@@ -629,7 +637,7 @@ def test_request_with_non_json_yaml_value_is_rejected_before_worker(tmp_path):
         config = app.model.get(('push', 'screenshot', 'image_host'))
         config[0]['options'] = {1: object()}
         app.model.set(('push', 'screenshot', 'image_host'), config)
-        app.pages[2].add_target()
+        app.visible_pages['截图设置'].add_target()
         app.capture()
         app.controller.runner.start.assert_not_called()
         assert not app.model.get(('push', 'screenshot', 'targets'))
@@ -667,7 +675,7 @@ def test_cli_launch_keeps_forms_editable(tmp_path, monkeypatch):
         assert app.page_names == ('主页', '监视设置', '截图设置', '消息推送设置',
                                   '外部程序设置', '日志设置', '设置')
         assert not any(name in app.actions for name in ('停止 CLI', '查看日志', '复制日志'))
-        app.pages[0].set_field(('monitor', 'target'), '继续编辑.exe')
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), '继续编辑.exe')
         assert app.controller.model.dirty
         assert 'SCTxxxx' not in app.summary_text
     finally:
@@ -692,7 +700,7 @@ def test_notification_event_preview_and_variable_controls_are_visible(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         page.expand_event('on_end')
         texts = [child.cget('text') for card in page.events_body.winfo_children()
                  for row in card.winfo_children() for child in row.winfo_children()
@@ -708,7 +716,7 @@ def test_channel_required_secret_is_visible_outside_advanced_section(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         page.expand_channel(0)
         entry = page.channel_entries['sckey']
         assert entry.cget('show') == '●'
@@ -727,7 +735,7 @@ def test_channel_edit_survives_selection_and_refresh(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         app.model.set(page.channels_path, [{'provider': 'serverchan', 'sckey': ''},
                                            {'provider': 'serverchan', 'sckey': ''}])
         page.refresh()
@@ -749,7 +757,7 @@ def test_provider_edit_refresh_keeps_selected_channel(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         app.model.set(page.channels_path, [{'provider': 'serverchan', 'sckey': 'first'},
                                            {'provider': 'serverchan', 'sckey': 'second'}])
         page.refresh()
@@ -772,7 +780,7 @@ def test_host_edit_refresh_keeps_selected_upload_host(tmp_path, monkeypatch):
         app = make_app(root, tmp_path)
         app.test_dialogs.open_upload = Mock()
         app.test_dialogs.show_result = Mock()
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         page.add_host()
         page.host_rows[1]['provider'].set('superbed')
         page._set_item(('push', 'screenshot', 'image_host'), 1, 'provider', 'superbed')
@@ -794,7 +802,7 @@ def test_host_options_credentials_are_masked(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
         hosts[0]['options'] = {'api_key': 'demo'}
@@ -822,7 +830,7 @@ def test_request_uses_selected_event_and_host(tmp_path, monkeypatch):
         assert app.controller.runner.start.call_args.args[0].template_key == 'on_end'
         app.test_session.active_request = None
         app.controller.runner.start.reset_mock()
-        app.pages[2].add_host()
+        app.visible_pages['截图设置'].add_host()
         app.test_dialogs.open_upload = Mock()
         app.test_dialogs.show_result = Mock()
         app.upload()
@@ -859,8 +867,8 @@ def test_capture_session_is_not_written_next_to_program(tmp_path):
         app = make_app(root, tmp_path)
         app.test_dialogs.open_capture = Mock()
         app.test_dialogs.show_result = Mock()
-        app.pages[2].add_target()
-        app.pages[2]._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
+        app.visible_pages['截图设置'].add_target()
+        app.visible_pages['截图设置']._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
         app.capture()
         assert app.test_dialogs.open_capture.call_args.args[0]('window', '测试窗口')
         session = Path(app.controller.runner.start.call_args.args[0].session_dir)
@@ -901,7 +909,7 @@ def test_error_focuses_advanced_field_without_changing_model_revision(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[0]
+        page = app.visible_pages['监视设置']
         before = app.model.revision
         page.focus_issue(('monitor', 'common', 'loop_interval'))
         root.update_idletasks()
@@ -929,7 +937,7 @@ def test_six_image_hosts_edit_and_reorder(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[2]
+        page = app.visible_pages['截图设置']
         path = ('push', 'screenshot', 'image_host')
         for provider in ('wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed'):
             page.add_host()
@@ -992,7 +1000,7 @@ def test_each_event_displays_screenshot_conditions_and_explicit_reference(tmp_pa
             before = app.model.get(('push', 'templates', event, 'content'))
             page.refresh()
             assert app.model.get(('push', 'templates', event, 'content')) == before
-        app.pages[1].insert_variable('on_end', 'screenshot')
+        app.visible_pages['消息推送设置'].insert_variable('on_end', 'screenshot')
         page.refresh()
         assert screenshot_conditions(app.model.snapshot(), 'on_end')['references']
         assert '目标结束' in page.conditions.cget('text')
@@ -1005,11 +1013,11 @@ def test_dynamic_and_static_issue_paths_focus_exact_field(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        app.model.set(app.pages[1].channels_path, [
+        app.model.set(app.visible_pages['消息推送设置'].channels_path, [
             {'provider': 'serverchan', 'sckey': ''}] * 2)
-        app.pages[2].add_host()
-        app.pages[2].add_target()
-        app.pages[2].add_target()
+        app.visible_pages['截图设置'].add_host()
+        app.visible_pages['截图设置'].add_target()
+        app.visible_pages['截图设置'].add_target()
         cases = [
             ('监视设置', ('monitor', 'launch', 'cwd')),
             ('消息推送设置', ('push', 'templates', 'on_external', 'content')),
@@ -1198,8 +1206,8 @@ def test_review_screenshot_requires_all_effective_conditions(tmp_path):
         app.model.set(('push', 'templates', event, 'content'), '{screenshot}')
         app.model.set(('push', 'push_channel_settings', 'channels'),
                       [{'provider': 'serverchan', 'sckey': 'private-key'}])
-        app.pages[2].add_target()
-        app.pages[2]._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
+        app.visible_pages['截图设置'].add_target()
+        app.visible_pages['截图设置']._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
         app.refresh()
         assert all(screenshot_conditions(app.model.snapshot(), event).values())
         assert '目标结束：条件满足' in app.visible_pages['主页'].conditions.cget('text')
@@ -1256,7 +1264,7 @@ def test_nested_field_focus_scrolls_to_content(tmp_path):
         root.geometry('600x420')
         app.show_page('消息推送设置')
         root.update()
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         path = ('push', 'templates', 'on_end', 'content')
         page.focus_issue(path)
         root.update_idletasks()
@@ -1281,7 +1289,7 @@ def test_real_tk_scaling_keeps_long_form_scrollable_and_keyboard_reachable(
         root.geometry('600x420')
         app.show_page('消息推送设置')
         root.update()
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         path = ('push', 'templates', 'on_end', 'content')
         page.focus_issue(path)
         root.update()
@@ -1359,7 +1367,7 @@ def test_after_heartbeat_continues_during_long_worker(tmp_path):
     heartbeat_id = None
     try:
         app = make_app(root, tmp_path)
-        app.pages[2].add_target()
+        app.visible_pages['截图设置'].add_target()
         app.test_dialogs.open_capture = Mock()
         app.test_dialogs.show_result = Mock()
         ticks = []
@@ -1404,7 +1412,7 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        page = app.pages[1]
+        page = app.visible_pages['消息推送设置']
         path = ('push', 'templates', 'on_end', 'content')
         app.show_page('消息推送设置')
         root.update()
@@ -1435,7 +1443,9 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
     try:
         app = make_app(root, tmp_path)
         root.deiconify()
-        cases = [(index, path) for index, page in enumerate(app.pages)
+        pages = [app.visible_pages[name] for name in
+                 ('监视设置', '消息推送设置', '截图设置', '日志设置')]
+        cases = [(index, path) for index, page in enumerate(pages)
                  for path in getattr(page, 'fields', {})]
         assert cases
         for index, path in cases:
@@ -1473,17 +1483,17 @@ def test_validation_routes_dynamic_diagnostic_path(
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        app.model.set(app.pages[1].channels_path, [
+        app.model.set(app.visible_pages['消息推送设置'].channels_path, [
             {'provider': 'serverchan', 'sckey': ''} for _ in range(2)])
-        app.pages[2].add_host()
-        app.pages[2].add_target()
-        app.pages[2].add_target()
+        app.visible_pages['截图设置'].add_host()
+        app.visible_pages['截图设置'].add_target()
+        app.visible_pages['截图设置'].add_target()
         app.refresh()
         app.model.validate = lambda _: SimpleNamespace(issues=[
             SimpleNamespace(path=path, severity='error')])
         app.validate()
         root.update()
-        page = app.pages[page_index]
+        page = app.visible_pages['消息推送设置' if page_index == 1 else '截图设置']
         assert app.current_page == {1: '消息推送设置', 2: '截图设置'}[page_index]
         if page_index == 1:
             assert page._expanded_channel == 1
