@@ -479,7 +479,16 @@ class App:
         """配置变动后重开新图床列表，不复用旧索引。"""
         if not self._require_saved():
             return
-        hosts = self.model.get(('push', 'screenshot', 'image_host'))
+        try:
+            hosts = self.model.get(('push', 'screenshot', 'image_host'))
+        except (KeyError, IndexError, TypeError):
+            hosts = []
+        if not isinstance(hosts, list):
+            self.status.configure(text='图床配置结构无效，请在 YAML 中修复')
+            return
+        if not hosts:
+            self.status.configure(text='请先添加图床后再测试')
+            return
         names = [item.get('provider', '未知') if isinstance(item, dict) else '未知'
                  for item in hosts]
         identity = (self.model.document_generation, self.model.revision, hosts)
@@ -504,7 +513,10 @@ class App:
             return
         if not self._require_saved():
             return
-        channels = self.model.get(('push', 'push_channel_settings', 'channels'))
+        try:
+            channels = self.model.get(('push', 'push_channel_settings', 'channels'))
+        except (KeyError, IndexError, TypeError):
+            channels = []
         if not channels:
             self.status.configure(text='请先添加推送通道')
             return

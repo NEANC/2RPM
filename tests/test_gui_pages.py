@@ -1964,6 +1964,35 @@ def test_open_missing_push_and_log_sections_refreshes_empty_state(tmp_path):
         root.destroy()
 
 
+def test_empty_push_and_log_sections_allow_creation_and_actions(tmp_path, monkeypatch):
+    """push 为空且缺少 log 节时，列表创建与测试入口给出提示而不抛 KeyError。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = tmp_path / 'empty-push.yaml'
+        path.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                        'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(path)
+        app.test_dialogs.open_upload = Mock()
+        app.upload()
+        assert '请先添加图床' in app.status.cget('text')
+        app.test_dialogs.open_upload.assert_not_called()
+        app.notify()
+        assert '请先添加推送通道' in app.status.cget('text')
+        notices = []
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo',
+                            lambda *args, **kwargs: notices.append(args))
+        app.open_logs()
+        assert notices
+        screenshot = app.visible_pages['截图设置']
+        screenshot.add_target()
+        screenshot.add_host()
+        assert app.model.get(('push', 'screenshot', 'targets'))
+        assert app.model.get(('push', 'screenshot', 'image_host'))
+    finally:
+        root.destroy()
+
+
 def test_open_non_mapping_list_items_skips_and_hints(tmp_path):
     """通道、目标与图床列表中的非映射项被跳过并提示结构问题。"""
     root = tk.Tk()

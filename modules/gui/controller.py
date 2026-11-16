@@ -357,5 +357,8 @@ class Controller:
 
     def log_directory(self, program_dir: Path) -> Path:
         """按 CLI 程序目录解析日志目录，不读取或创建日志。"""
-        value = self.model.get(('log', 'log_directory'))
-        return (program_dir / (value or 'logs')).absolute()
+        try:
+            value = self.model.get(('log', 'log_directory'))
+        except (KeyError, IndexError, TypeError):
+            value = ''
+        return (program_dir / (value if isinstance(value, str) and value else 'logs')).absolute()

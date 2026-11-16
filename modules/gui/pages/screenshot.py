@@ -109,11 +109,22 @@ class Page(ctk_kit.CTkScrollableFrame):
             return rows[display_index].get('source_index', display_index)
         return display_index
 
+    def _items(self, path):
+        """读取可编辑列表；缺失允许创建，结构异常返回 None。"""
+        try:
+            items = self.model.get(path)
+        except (KeyError, IndexError, TypeError):
+            return []
+        return items if isinstance(items, list) else None
+
     def add_target(self):
         """新增空窗口目标，留给用户填写完整标题。"""
         if not self._before():
             return
-        targets = self.model.get(TARGETS)
+        targets = self._items(TARGETS)
+        if targets is None:
+            self.targets_hint.configure(text='截图目标配置结构无效，请在 YAML 中修复')
+            return
         targets.append({'provider': 'window', 'target': ''})
         self.model.set(TARGETS, targets)
         self._commit_list()
@@ -155,22 +166,26 @@ class Page(ctk_kit.CTkScrollableFrame):
         """新增默认 beeimg 图床，不改动旧 catbox。"""
         if not self._before():
             return
-        hosts = self.model.get(HOSTS)
+        hosts = self._items(HOSTS)
+        if hosts is None:
+            self.hosts_hint.configure(text='图床配置结构无效，请在 YAML 中修复')
+            return
         hosts.append({'provider': 'beeimg', 'token': ''})
         self.model.set(HOSTS, hosts)
         self._commit_list()
 
     def move_host(self, index, offset):
         """移动图床完整配置及其隐含回退顺序。"""
-        hosts = self.model.get(HOSTS)
         other = index + offset
         if not 0 <= index < len(self.host_rows) or not 0 <= other < len(self.host_rows):
             return
         if not self._before():
             return
+        hosts = self._items(HOSTS)
         first = self._source_index(HOSTS, index)
         second = self._source_index(HOSTS, other)
-        if not isinstance(hosts, list) or not 0 <= first < len(hosts) or not 0 <= second < len(hosts):
+        if (hosts is None or not 0 <= first < len(hosts)
+                or not 0 <= second < len(hosts)):
             return
         hosts[first], hosts[second] = hosts[second], hosts[first]
         for mapping in (self.invalid_options, self.model.input_errors):
@@ -192,8 +207,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not 0 <= index < len(self.host_rows) or not self._before():
             return
         source_index = self._source_index(HOSTS, index)
-        hosts = self.model.get(HOSTS)
-        if not isinstance(hosts, list) or not 0 <= source_index < len(hosts):
+        hosts = self._items(HOSTS)
+        if hosts is None or not 0 <= source_index < len(hosts):
             return
         hosts.pop(source_index)
         self.invalid_options = {
