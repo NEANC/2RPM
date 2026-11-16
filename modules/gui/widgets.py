@@ -12,20 +12,25 @@ STRUCTURE_HINT = '配置结构异常，请在 YAML 中修复'
 
 
 def path_writable(model, path) -> bool:
-    """判断字段路径的中间节点是否均为映射，可直接写入模型。
+    """判断字段路径是否可写，允许自动创建缺失的中间映射。
 
     Args:
         model: `EditorModel` 实例。
         path: 字段路径元组。
 
     Returns:
-        中间节点均可写入时返回 True。
+        中间节点为映射或缺失时返回 True；遇到 null/标量返回 False。
     """
     node = model.snapshot()
     for key in path[:-1]:
-        if not isinstance(node, Mapping) or key not in node:
+        if not isinstance(node, Mapping):
             return False
+        if key not in node:
+            node = {}
+            continue
         node = node[key]
+        if not isinstance(node, Mapping):
+            return False
     return isinstance(node, Mapping)
 
 

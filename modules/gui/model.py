@@ -41,10 +41,17 @@ class EditorModel:
         self.input_errors.pop(path, None)
         node = self._tree
         for key in path[:-1]:
+            if not isinstance(node, Mapping):
+                raise TypeError('配置结构异常，无法写入字段')
+            if key not in node:
+                node[key] = {}
             node = node[key]
-        if node[path[-1]] == value:
+            if not isinstance(node, Mapping):
+                raise TypeError('配置结构异常，无法写入字段')
+        leaf = path[-1]
+        if leaf in node and node[leaf] == value:
             return
-        node[path[-1]] = copy.deepcopy(value)
+        node[leaf] = copy.deepcopy(value)
         self.revision += 1
         self.dirty = True
         if path == ('monitor', 'target'):

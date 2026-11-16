@@ -240,6 +240,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                 try:
                     value = self.model.get_input(path) if kind == 'int' else self.model.get(path)
                 except (KeyError, IndexError, TypeError):
+                    entry.delete(0, 'end')
                     continue
                 entry.delete(0, 'end')
                 entry.insert(0, '' if value is None else str(value))

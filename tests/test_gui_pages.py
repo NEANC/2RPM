@@ -1528,6 +1528,63 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_missing_common_mapping_is_editable_and_created_on_save(tmp_path):
+    """monitor.common 缺失属于可自动创建的映射，不应禁用字段。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        source = tmp_path / 'missing-common.yaml'
+        source.write_text('monitor:\n  mode: watch\n  target: demo.exe\n'
+                          'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(source)
+        assert app.show_page('监视设置')
+        page = app.visible_pages['监视设置']
+        path = ('monitor', 'common', 'loop_interval')
+        widget = page.fields[path][1]
+        assert widget.cget('state') == 'normal'
+        widget.insert(0, '3s')
+        assert app.model.get(path) == '3s'
+        assert app.controller.save()
+        assert read_document(source).tree['monitor']['common']['loop_interval'] == '3s'
+    finally:
+        root.destroy()
+
+
+def test_missing_log_leaf_is_editable_and_created_on_save(tmp_path):
+    """log 映射存在但叶子缺失时可编辑，并在保存时创建键。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        source = tmp_path / 'empty-log.yaml'
+        source.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                          'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(source)
+        assert app.show_page('日志设置')
+        page = app.visible_pages['日志设置']
+        path = ('log', 'max_log_files')
+        widget = page.fields[path][1]
+        assert widget.cget('state') == 'normal'
+        widget.insert(0, '19')
+        assert app.model.get(path) == 19
+        assert app.controller.save()
+        assert read_document(source).tree['log']['max_log_files'] == 19
+    finally:
+        root.destroy()
+
+
+def test_model_creates_missing_mapping_but_rejects_non_mapping_parent():
+    """模型只为缺失中间映射建空映射，遇到 null 父节点仍拒绝写入。"""
+    document = new_document()
+    del document.tree['monitor']['common']
+    model = EditorModel(document)
+    model.set(('monitor', 'common', 'max_wait'), '5m')
+    assert model.get(('monitor', 'common', 'max_wait')) == '5m'
+    broken = new_document()
+    broken.tree['monitor'] = None
+    with pytest.raises(TypeError):
+        EditorModel(broken).set(('monitor', 'common', 'max_wait'), '5m')
+
+
 def test_null_sections_disable_editing_and_show_structure_hint(tmp_path):
     """节为 null 时禁用编辑控件，输入不写模型也不改磁盘。"""
     root = tk.Tk()
