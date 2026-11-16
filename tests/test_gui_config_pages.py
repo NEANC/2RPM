@@ -823,6 +823,61 @@ def test_existing_bare_name_is_preserved():
         root.destroy()
 
 
+def test_complete_invalid_gui_target_saves_to_disk_but_cannot_start(tmp_path, monkeypatch):
+    """页面输入的完整业务无效值经控制器保存后仍阻止启动。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document
+    from tests.test_gui_controller import make_controller
+
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, controller.model)
+    launch = Mock()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+    try:
+        page.set_field(('monitor', 'target'), 'new.exe')
+        assert not controller.model.input_errors
+        assert controller.save()
+        path = tmp_path / 'a.yaml'
+        assert read_document(path).tree['monitor']['target'] == 'new.exe'
+        assert controller.start_cli() is None
+        assert read_document(path).tree['monitor']['target'] == 'new.exe'
+        launch.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_open_old_bare_name_refreshes_page_and_still_starts(tmp_path, monkeypatch):
+    """旧裸名从磁盘打开并刷新页面后按原有规则启动。"""
+    from unittest.mock import Mock
+    from modules.config_document import save_document
+    from modules.gui.launcher import LaunchResult
+    from tests.test_gui_controller import make_controller
+
+    old = new_document()
+    old.tree['monitor']['mode'] = 'watch'
+    old.tree['monitor']['target'] = 'notepad.exe'
+    saved = save_document(old, tmp_path / 'old.yaml', expected_fingerprint=None)
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, controller.model)
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+    try:
+        assert controller.open(saved.path)
+        page.refresh()
+        assert page.file_entry.get() == 'notepad.exe'
+        assert controller.model.get(('monitor', 'target')) == 'notepad.exe'
+        assert not controller.model.dirty
+        assert not any(issue.severity == 'error'
+                       for issue in controller.model.validate(saved.path.parent).issues)
+        result = controller.start_cli()
+        assert result is not None and result.created
+        assert launch.call_args.args[1] == saved.path.resolve()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('value', ['new.exe', r'.\new.exe', r'C:\Apps\new.bat'])
 def test_watch_gui_file_requires_absolute_exe_but_saves_complete_draft(value):
     """GUI 新输入不接受裸名、相对路径或非 EXE，但原文仍可保存。"""
