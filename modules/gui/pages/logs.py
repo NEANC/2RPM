@@ -3,13 +3,14 @@
 
 """ctk-kit 日志位置与保留策略。"""
 
+from collections.abc import Mapping
 import tkinter as tk
 from tkinter import filedialog
 
 import ctk_kit
 
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.widgets import scroll_to_widget
+from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -26,6 +27,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkLabel(header, text='日志设置', font=FONT_TITLE).pack(side='left')
         ctk_kit.CTkButton(header, text='打开日志目录', font=FONT_BODY,
                           command=app.open_logs).pack(side='right')
+        self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('保存位置')
         row = ctk_kit.CTkFrame(card, fg_color='transparent')
         row.pack(fill='x', padx=16, pady=8)
@@ -65,7 +68,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _changed(self, path, variable, numeric):
         """只响应主动编辑而不响应刷新。"""
-        if not self._refreshing:
+        if not self._refreshing and path_writable(self.model, path):
             if numeric:
                 self.model.set_input(path, variable.get(), kind='int')
             else:
@@ -73,6 +76,8 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _step(self, path, delta):
         """步进已解析的数值，未完成原文不被覆盖。"""
+        if not path_writable(self.model, path):
+            return
         raw = self.model.get_input(path)
         if raw.lstrip('+-').isdigit():
             self.fields[path][0].set(str(int(raw) + delta))
@@ -96,11 +101,16 @@ class Page(ctk_kit.CTkScrollableFrame):
             return ''
 
     def refresh(self):
-        """从当前文档同步所有可见字段。"""
+        """从当前文档同步所有可见字段，结构异常时禁用编辑。"""
         self._refreshing = True
         try:
-            for path, (variable, _entry, kind) in self.fields.items():
+            for path, (variable, entry, kind) in self.fields.items():
                 variable.set(self._safe_value(path, kind))
+                entry.configure(
+                    state='normal' if path_writable(self.model, path) else 'disabled')
+            log = self.model.snapshot().get('log')
+            self.structure_hint.configure(
+                text='' if isinstance(log, Mapping) else STRUCTURE_HINT)
         finally:
             self._refreshing = False
 

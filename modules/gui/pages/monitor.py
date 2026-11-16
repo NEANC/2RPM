@@ -12,7 +12,7 @@ import ctk_kit
 
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
-from modules.gui.widgets import scroll_to_widget
+from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 from modules.monitor_target import resolve_monitor_target
 
 
@@ -27,6 +27,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._refreshing = False
         self._target_type = 'file'
         ctk_kit.CTkLabel(self, text='监视设置', font=FONT_TITLE).pack(anchor='w', pady=(0, 12))
+        self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('运行方式')
         self.mode = ctk_kit.CTkSegmentedButton(
             card, values=['等待目标运行', '主动启动并监视'],
@@ -110,7 +112,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _changed(self, path, entry, optional, numeric):
         """将已修改的用户原文交给模型。"""
-        if self._refreshing:
+        if self._refreshing or not path_writable(self.model, path):
             return
         value = entry.get()
         if numeric:
@@ -125,7 +127,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _target_changed(self, entry):
         """对启动文件目标的主动编辑同步工作目录。"""
-        if self._refreshing:
+        if self._refreshing or not path_writable(self.model, ('monitor', 'target')):
             return
         value = entry.get()
         self.model.set(('monitor', 'target'), value)
@@ -150,6 +152,8 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _switch(self, value):
         """切换运行方式只变更模式分支，不触碰 cwd。"""
+        if not path_writable(self.model, ('monitor', 'mode')):
+            return
         mode = {'等待目标运行': 'watch', '主动启动并监视': 'launch'}.get(value, value)
         self.model.switch_mode(mode)
         self.refresh()
@@ -157,7 +161,8 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _select_type(self, value):
         """用户选择任务目标时清空启动参数，不碰工作目录。"""
         self._target_type = 'task' if value in ('task', '计划任务') else 'file'
-        if self._target_type == 'task' and self._monitor().get('mode') == 'launch':
+        if (self._target_type == 'task' and self._monitor().get('mode') == 'launch'
+                and path_writable(self.model, ('monitor', 'launch', 'args'))):
             self.model.set(('monitor', 'launch', 'args'), None)
         self.fields[('monitor', 'target')] = (
             self.task_variable if self._target_type == 'task' else self.file_variable,
@@ -243,6 +248,17 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.section_for_issue.button.configure(
                 text='高级字段请在 YAML 中编辑' +
                      ('（已配置）' if self._configured_advanced() else ''))
+            writable = {path: path_writable(self.model, path) for path in self.fields}
+            for path, (_variable, entry, _kind) in self.fields.items():
+                entry.configure(state='normal' if writable[path] else 'disabled')
+            target_state = 'normal' if writable.get(('monitor', 'target'), False) else 'disabled'
+            self.file_entry.configure(state=target_state)
+            self.task_entry.configure(state=target_state)
+            self.mode.configure(
+                state='normal' if path_writable(self.model, ('monitor', 'mode')) else 'disabled')
+            self.target_type.configure(state=target_state)
+            self.structure_hint.configure(
+                text='' if all(writable.values()) else STRUCTURE_HINT)
         finally:
             self._refreshing = False
 

@@ -9,7 +9,7 @@ from tkinter import filedialog
 import ctk_kit
 
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.widgets import scroll_to_widget
+from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 
 
 EVENTS = (
@@ -32,6 +32,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.generation = self.model.document_generation
         self._refreshing = False
         ctk_kit.CTkLabel(self, text='外部程序设置', font=FONT_TITLE).pack(anchor='w', pady=(0, 12))
+        self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.structure_hint.pack(fill='x', pady=(0, 8))
         for event, title, hint in EVENTS:
             card = ctk_kit.CTkFrame(self, corner_radius=12)
             card.pack(fill='x', pady=8)
@@ -70,8 +72,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields[path] = (variable, entry, 'int' if numeric else 'text')
 
     def _changed(self, path, variable, numeric):
-        """刷新不写回草稿。"""
-        if not self._refreshing:
+        """刷新或结构异常时不写回草稿。"""
+        if not self._refreshing and path_writable(self.model, path):
             if numeric:
                 self.model.set_input(path, variable.get(), kind='int')
             else:
@@ -80,6 +82,8 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _step(self, delta):
         """仅在现值为整数时步进。"""
         path = ('monitor', 'common', 'timeout_threshold')
+        if not path_writable(self.model, path):
+            return
         raw = self.model.get_input(path)
         if raw.lstrip('+-').isdigit():
             self.fields[path][0].set(str(int(raw) + delta))
@@ -126,8 +130,13 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.generation = self.model.document_generation
         self._refreshing = True
         try:
-            for path, (variable, _entry, kind) in self.fields.items():
+            invalid = False
+            for path, (variable, entry, kind) in self.fields.items():
                 variable.set(self._safe_value(path, kind))
+                writable = path_writable(self.model, path)
+                entry.configure(state='normal' if writable else 'disabled')
+                invalid = invalid or not writable
+            self.structure_hint.configure(text=STRUCTURE_HINT if invalid else '')
         finally:
             self._refreshing = False
         for event in self.restore_buttons:

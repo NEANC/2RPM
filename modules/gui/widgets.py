@@ -3,8 +3,30 @@
 
 """GUI 可滚动表单和独立折叠区域。"""
 
+from collections.abc import Mapping
 import tkinter as tk
 from tkinter import ttk
+
+
+STRUCTURE_HINT = '配置结构异常，请在 YAML 中修复'
+
+
+def path_writable(model, path) -> bool:
+    """判断字段路径的中间节点是否均为映射，可直接写入模型。
+
+    Args:
+        model: `EditorModel` 实例。
+        path: 字段路径元组。
+
+    Returns:
+        中间节点均可写入时返回 True。
+    """
+    node = model.snapshot()
+    for key in path[:-1]:
+        if not isinstance(node, Mapping) or key not in node:
+            return False
+        node = node[key]
+    return isinstance(node, Mapping)
 
 
 def scroll_to_widget(container, widget) -> None:

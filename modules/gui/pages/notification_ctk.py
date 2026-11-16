@@ -11,7 +11,7 @@ import ctk_kit
 
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.forms import event_variables, preview_template, provider_fields, screenshot_conditions
-from modules.gui.widgets import scroll_to_widget
+from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 from modules.notification import _configured_screenshot_names
 
 
@@ -60,9 +60,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.notify_button = ctk_kit.CTkButton(header, text='通知测试', font=FONT_BODY,
                                                command=app.notify)
         self.notify_button.pack(side='right')
+        self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('推送通道')
-        ctk_kit.CTkButton(card, text='添加通道', font=FONT_BODY,
-                          command=self.open_add_dialog).pack(anchor='e', padx=16)
+        self.add_channel_button = ctk_kit.CTkButton(
+            card, text='添加通道', font=FONT_BODY, command=self.open_add_dialog)
+        self.add_channel_button.pack(anchor='e', padx=16)
         self.channel_body = ctk_kit.CTkFrame(card, fg_color='transparent')
         self.channel_body.pack(fill='x', padx=16, pady=(4, 8))
         self.channel_hint = ctk_kit.CTkLabel(card, text='', font=FONT_SMALL, anchor='w')
@@ -113,8 +116,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         return widget
 
     def _changed(self, path, variable, numeric):
-        """模型刷新期间不写回旧值。"""
-        if not self._refreshing:
+        """模型刷新期间或结构异常时不写回旧值。"""
+        if not self._refreshing and path_writable(self.model, path):
             if numeric:
                 self.model.set_input(path, variable.get(), kind='int')
             else:
@@ -122,7 +125,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _text_changed(self, path, widget):
         """同步正文编辑器的当前文本。"""
-        if not self._refreshing:
+        if not self._refreshing and path_writable(self.model, path):
             self.model.set(path, widget.get('1.0', 'end-1c'))
 
     def _source_index(self, display_index):
@@ -353,6 +356,8 @@ class Page(ctk_kit.CTkScrollableFrame):
                               self.model.set(('push', 'templates', key, 'enable'), bool(widget.get())))
             enabled.pack(side='right')
             self._event_switches[event] = enabled
+            if not path_writable(self.model, (*path, 'enable')):
+                enabled.configure(state='disabled')
             if isinstance(templates, dict) and isinstance(templates.get(event), dict) and templates[event].get('enable'):
                 enabled.select()
             ctk_kit.CTkButton(row, text='编辑消息 ' + ('⌄' if event in self._expanded_events else '›'),
@@ -395,6 +400,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         """只在当前正文光标位置插入事件合法的占位符。"""
         if variable not in self._variable_names(event):
             raise ValueError('未知通知变量')
+        if not path_writable(self.model, ('push', 'templates', event, 'content')):
+            return
         if event not in self._expanded_events:
             self.expand_event(event)
         text = self.fields[('push', 'templates', event, 'content')][1]
@@ -448,6 +455,13 @@ class Page(ctk_kit.CTkScrollableFrame):
                              str(self._safe_get(path) or ''))
             self._render_channels()
             self._render_events()
+            push = self.model.snapshot().get('push')
+            push_valid = isinstance(push, Mapping)
+            self.structure_hint.configure(text='' if push_valid else STRUCTURE_HINT)
+            self.add_channel_button.configure(state='normal' if push_valid else 'disabled')
+            for path, (_variable, widget, _kind) in self.fields.items():
+                widget.configure(
+                    state='normal' if path_writable(self.model, path) else 'disabled')
         finally:
             self._refreshing = False
 

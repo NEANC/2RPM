@@ -1528,6 +1528,39 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_null_sections_disable_editing_and_show_structure_hint(tmp_path):
+    """节为 null 时禁用编辑控件，输入不写模型也不改磁盘。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monitor = ('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n')
+        cases = [
+            ('monitor: null\npush: {}\nlog: {}\nexternal: {}\n',
+             '监视设置', ('monitor', 'target'), 'monitor'),
+            (monitor + 'push: null\nlog: {}\nexternal: {}\n',
+             '消息推送设置', ('push', 'retry', 'interval'), 'push'),
+            (monitor + 'push: {}\nlog: null\nexternal: {}\n',
+             '日志设置', ('log', 'retention_days'), 'log'),
+            (monitor + 'push: {}\nlog: {}\nexternal: null\n',
+             '外部程序设置', ('external', 'on_end'), 'external'),
+        ]
+        for index, (text, page_name, path, section) in enumerate(cases):
+            source = tmp_path / f'null-section-{index}.yaml'
+            source.write_text(text, encoding='utf-8')
+            assert app.controller.open(source)
+            assert app.show_page(page_name)
+            page = app.visible_pages[page_name]
+            assert '配置结构异常，请在 YAML 中修复' in page.structure_hint.cget('text')
+            widget = page.fields[path][1]
+            assert widget.cget('state') == 'disabled'
+            before = app.model.snapshot()[section]
+            widget.insert(0, '9')
+            assert app.model.snapshot()[section] == before
+            assert read_document(source).tree[section] == before
+    finally:
+        root.destroy()
+
+
 def test_invalid_channel_item_keeps_visible_row_actions(tmp_path, monkeypatch):
     """坏通道项在首位时，编辑、切换与删除仍作用于用户所见行。"""
     root = tk.Tk()
