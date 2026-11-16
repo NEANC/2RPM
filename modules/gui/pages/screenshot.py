@@ -346,15 +346,19 @@ class Page(ctk_kit.CTkScrollableFrame):
             address, port = self._split_adb(item.get('target', ''))
             self._entry(row, address, lambda value: self._set_adb(
                 index, value, self._split_adb(self._item_at(TARGETS, index).get('target', ''))[1]))
+            port_frame = ctk_kit.CTkFrame(row, fg_color='transparent')
+            port_frame.pack(side='left', padx=4)
             port_value = tk.StringVar(master=self, value='' if port is None else str(port))
-            port_entry = ctk_kit.CTkEntry(row, textvariable=port_value,
+            port_entry = ctk_kit.CTkEntry(port_frame, textvariable=port_value,
                                           width=74, font=FONT_BODY, placeholder_text='端口')
-            port_entry.pack(side='left', padx=4)
+            port_entry.pack(side='left')
             port_value.trace_add('write', lambda *_: self._edit_port(index, port_value.get()))
-            ctk_kit.CTkButton(row, text='▲', width=24,
-                              command=lambda: self._change_port(index, 1)).pack(side='left')
-            ctk_kit.CTkButton(row, text='▼', width=24,
-                              command=lambda: self._change_port(index, -1)).pack(side='left')
+            arrows = ctk_kit.CTkFrame(port_frame, fg_color='transparent')
+            arrows.pack(side='left')
+            ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
+                              command=lambda: self._change_port(index, 1)).pack()
+            ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
+                              command=lambda: self._change_port(index, -1)).pack()
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_target(index)).pack(side='right')
         self.target_rows.append({'number': stepper.number, 'entry': entry,

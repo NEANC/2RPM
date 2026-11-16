@@ -271,6 +271,38 @@ def test_adb_port_entry_supports_new_address_and_edit():
         root.destroy()
 
 
+def test_adb_port_stepper_stacks_arrows_and_updates_target():
+    """端口输入与右侧竖排箭头组成窄步进控件，箭头按方向修改目标。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        port = page.target_rows[0]['port']
+        frame = port.master
+        arrows = [child for child in frame.winfo_children()
+                  if isinstance(child, ctk_kit.CTkFrame)
+                  and all(isinstance(button, ctk_kit.CTkButton)
+                          for button in child.winfo_children())]
+        assert port.cget('width') == 74
+        assert len(arrows) == 1
+        up, down = arrows[0].winfo_children()
+        assert up.cget('text') == '▲'
+        assert down.cget('text') == '▼'
+        assert up.pack_info()['side'] == 'top'
+        assert down.pack_info()['side'] == 'top'
+        up._command()
+        assert model.get(('push', 'screenshot', 'targets'))[0]['target'] == '127.0.0.1:16385'
+        down._command()
+        assert model.get(('push', 'screenshot', 'targets'))[0]['target'] == '127.0.0.1:16384'
+    finally:
+        root.destroy()
+
+
 def test_screenshot_page_presave_failure_keeps_targets():
     """补存失败不会修改列表或模板。"""
     from unittest.mock import Mock
