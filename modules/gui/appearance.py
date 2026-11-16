@@ -96,6 +96,8 @@ def apply_appearance(root, preferences: AppearancePreferences) -> str:
     for material in materials[preferences.material]:
         if material == 'none':
             root.set_backdrop('none')
+            if win10 and root.glass_options()['wca'] == 19:
+                root.set_glass_options(wca=30)
         else:
             if material == 'Mica' and win10:
                 continue
@@ -112,6 +114,8 @@ def apply_appearance(root, preferences: AppearancePreferences) -> str:
                         attribute=19 if win10 else options['wca'],
                         extend=options['extend']):
                     continue
+                if win10:
+                    root.set_glass_options(wca=19)
             except (OSError, RuntimeError, ValueError):
                 continue
         dark = preferences.dark if preferences.dark is not None else darkdetect.isDark()

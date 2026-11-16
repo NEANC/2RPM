@@ -92,6 +92,45 @@ def test_win10_mica_falls_back_to_working_acrylic(tmp_path):
     assert load_preferences(path) == preferences
 
 
+def test_win10_acrylic_refresh_keeps_native_wca():
+    """真实窗口映射后的 ctk-kit 刷新仍使用已生效的 Win10 属性。"""
+    import ctk_kit
+
+    root = ctk_kit.App(title='外观测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        with patch('modules.gui.appearance.enable_acrylic', return_value=True) as native:
+            with patch('ctk_kit.window.enable_acrylic') as refresh:
+                assert apply_appearance(root, AppearancePreferences(
+                    dark=False, material='Acrylic')) == 'Acrylic'
+                root._refresh_backdrop()
+        assert native.call_args.kwargs['attribute'] == 19
+        assert refresh.call_args.kwargs['attribute'] == 19
+        assert root.glass_options()['wca'] == 19
+    finally:
+        root.destroy()
+
+
+def test_win10_failed_acrylic_does_not_pollute_solid_window():
+    """原生调用失败回退纯色时不保留 Win10 专用 WCA。"""
+    import ctk_kit
+
+    root = ctk_kit.App(title='外观测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        with patch('modules.gui.appearance.enable_acrylic', side_effect=[True, False]):
+            with patch('ctk_kit.window.enable_acrylic'):
+                assert apply_appearance(root, AppearancePreferences(
+                    dark=False, material='Acrylic')) == 'Acrylic'
+                assert apply_appearance(root, AppearancePreferences(
+                    dark=False, material='Acrylic')) == 'none'
+        assert root.glass_options()['wca'] == 30
+    finally:
+        root.destroy()
+
+
 def test_win11_mica_theme_without_native_effect_falls_back_to_acrylic(monkeypatch):
     """主题设置没有抛错但 Mica 未生效时，仍检查 Acrylic 的原生结果。"""
     monkeypatch.setattr('modules.gui.appearance.sys.getwindowsversion',
@@ -138,6 +177,7 @@ def test_failed_preference_write_keeps_session_choice(monkeypatch, tmp_path):
 def test_palette_composites_alpha_and_uses_yahei():
     """半透明设计色在不支持 alpha 的控件上与底色合成。"""
     root = Mock()
+    root.glass_options.return_value = {'wca': 30}
     apply_appearance(root, AppearancePreferences(dark=False, material='none'))
     palette = root.apply_palette.call_args.args[0]
     assert palette['COLOR_CARD'] == '#FCFCFC'
