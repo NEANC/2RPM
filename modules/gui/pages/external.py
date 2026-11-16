@@ -8,6 +8,7 @@ from tkinter import filedialog
 
 import ctk_kit
 
+from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 
@@ -90,7 +91,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         path = ('monitor', 'common', 'timeout_threshold')
         if not path_writable(self.model, path):
             return
-        raw = self.model.get_input(path)
+        try:
+            raw = self.model.get_input(path)
+        except (KeyError, IndexError, TypeError):
+            raw = self.fields[path][0].get()
+        if not raw.strip():
+            raw = str(DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
         if raw.lstrip('+-').isdigit():
             self.fields[path][0].set(str(int(raw) + delta))
 

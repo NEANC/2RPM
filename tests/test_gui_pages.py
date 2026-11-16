@@ -1528,6 +1528,75 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_step_creates_missing_middle_sections(tmp_path):
+    """common/log 缺失时步进从默认值起步并创建缺失节。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        source = tmp_path / 'step-missing.yaml'
+        source.write_text('monitor:\n  mode: watch\n  target: demo.exe\n'
+                          'push: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(source)
+        assert app.show_page('外部程序设置')
+        external_page = app.visible_pages['外部程序设置']
+        external_page._step(1)
+        threshold = ('monitor', 'common', 'timeout_threshold')
+        assert app.model.get(threshold) == 4
+        external_page._step(-1)
+        assert app.model.get(threshold) == 3
+        assert app.show_page('日志设置')
+        logs_page = app.visible_pages['日志设置']
+        files = ('log', 'max_log_files')
+        logs_page._step(files, 1)
+        assert app.model.get(files) == 16
+        logs_page._step(files, -1)
+        assert app.model.get(files) == 15
+    finally:
+        root.destroy()
+
+
+def test_missing_sections_clear_hint_and_keep_controls_enabled(tmp_path):
+    """整节缺失与存在但为 null 的提示和控件状态必须区分。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monitor = 'monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+        cases = [
+            (monitor + 'push: {}\nexternal: {}\n', '日志设置', 'missing_log'),
+            (monitor + 'log: {}\nexternal: {}\n', '消息推送设置', 'missing_push'),
+            ('monitor:\n  mode: watch\n  target: demo.exe\n'
+             'push: {}\nlog: {}\nexternal: {}\n', '监视设置', 'missing_common'),
+            (monitor + 'push: {}\nlog: null\nexternal: {}\n', '日志设置', 'null_log'),
+            (monitor + 'push: null\nlog: {}\nexternal: {}\n', '消息推送设置', 'null_push'),
+        ]
+        for index, (text, page_name, name) in enumerate(cases):
+            source = tmp_path / f'{name}-{index}.yaml'
+            source.write_text(text, encoding='utf-8')
+            assert app.controller.open(source)
+            assert app.show_page(page_name)
+            page = app.visible_pages[page_name]
+            if name in ('missing_log', 'missing_push', 'missing_common'):
+                assert page.structure_hint.cget('text') == ''
+            else:
+                assert page.structure_hint.cget('text') == '配置结构异常，请在 YAML 中修复'
+            if name == 'missing_log':
+                assert page.fields[('log', 'max_log_files')][1].cget('state') == 'normal'
+                assert page.browse_button.cget('state') == 'normal'
+            elif name == 'missing_push':
+                assert page.fields[('push', 'retry', 'interval')][1].cget('state') == 'normal'
+                assert page.add_channel_button.cget('state') == 'normal'
+            elif name == 'missing_common':
+                assert page.fields[('monitor', 'common', 'loop_interval')][1].cget('state') == 'normal'
+            elif name == 'null_log':
+                assert page.fields[('log', 'max_log_files')][1].cget('state') == 'disabled'
+                assert page.browse_button.cget('state') == 'disabled'
+            else:
+                assert page.fields[('push', 'retry', 'interval')][1].cget('state') == 'disabled'
+                assert page.add_channel_button.cget('state') == 'disabled'
+    finally:
+        root.destroy()
+
+
 def test_structure_invalid_auxiliary_buttons_disable_and_keep_display(tmp_path,
                                                                       monkeypatch):
     """结构异常时辅助按钮禁用，禁用字段刷新仍能正确显示或清空。"""

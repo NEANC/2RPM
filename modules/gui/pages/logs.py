@@ -9,6 +9,7 @@ from tkinter import filedialog
 
 import ctk_kit
 
+from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 
@@ -82,7 +83,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         """步进已解析的数值，未完成原文不被覆盖。"""
         if not path_writable(self.model, path):
             return
-        raw = self.model.get_input(path)
+        try:
+            raw = self.model.get_input(path)
+        except (KeyError, IndexError, TypeError):
+            raw = self.fields[path][0].get()
+        if not raw.strip():
+            raw = str(DEFAULT_VALUES['log'][path[1]])
         if raw.lstrip('+-').isdigit():
             self.fields[path][0].set(str(int(raw) + delta))
 
@@ -118,9 +124,10 @@ class Page(ctk_kit.CTkScrollableFrame):
                 variable.set(self._safe_value(path, kind))
                 entry.configure(
                     state='normal' if path_writable(self.model, path) else 'disabled')
-            log = self.model.snapshot().get('log')
-            self.structure_hint.configure(
-                text='' if isinstance(log, Mapping) else STRUCTURE_HINT)
+            snapshot = self.model.snapshot()
+            log = snapshot.get('log')
+            invalid = 'log' in snapshot and not isinstance(log, Mapping)
+            self.structure_hint.configure(text=STRUCTURE_HINT if invalid else '')
             directory_state = ('normal' if path_writable(
                 self.model, ('log', 'log_directory')) else 'disabled')
             self.browse_button.configure(state=directory_state)

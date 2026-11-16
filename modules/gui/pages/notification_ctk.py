@@ -455,10 +455,12 @@ class Page(ctk_kit.CTkScrollableFrame):
                              str(self._safe_get(path) or ''))
             self._render_channels()
             self._render_events()
-            push = self.model.snapshot().get('push')
-            push_valid = isinstance(push, Mapping)
-            self.structure_hint.configure(text='' if push_valid else STRUCTURE_HINT)
-            self.add_channel_button.configure(state='normal' if push_valid else 'disabled')
+            snapshot = self.model.snapshot()
+            push = snapshot.get('push')
+            push_invalid = 'push' in snapshot and not isinstance(push, Mapping)
+            self.structure_hint.configure(text=STRUCTURE_HINT if push_invalid else '')
+            self.add_channel_button.configure(
+                state='disabled' if push_invalid else 'normal')
             for path, (_variable, widget, _kind) in self.fields.items():
                 widget.configure(
                     state='normal' if path_writable(self.model, path) else 'disabled')
