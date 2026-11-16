@@ -203,6 +203,53 @@ def test_channel_status_badge_updates_immediately():
         root.destroy()
 
 
+def test_add_channel_dialog_centers_on_parent():
+    """添加通道窗在主窗口的几何中心。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    root.geometry('900x680+120+100')
+    page = Page(root, Mock(model=EditorModel(new_document()), notify=Mock()))
+    page.pack(fill='both', expand=True)
+    root.update_idletasks()
+    try:
+        page.open_add_dialog()
+        dialog = next(item for item in page.winfo_children() if isinstance(item, ctk_kit.CTkToplevel))
+        dialog.update_idletasks()
+        assert abs(dialog.winfo_rootx() + dialog.winfo_width() / 2
+                   - (root.winfo_rootx() + root.winfo_width() / 2)) <= 2
+        assert abs(dialog.winfo_rooty() + dialog.winfo_height() / 2
+                   - (root.winfo_rooty() + root.winfo_height() / 2)) <= 2
+    finally:
+        root.destroy()
+
+
+def test_preview_button_tracks_open_and_closed_state():
+    """预览按钮与内容开合状态一致且刷新后仍一致。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    root.withdraw()
+    app = Mock(model=EditorModel(new_document()), notify=Mock())
+    page = Page(root, app)
+    try:
+        page.expand_event('on_end')
+        assert page.preview_buttons['on_end'].cget('text') == '预览消息'
+        page.preview_buttons['on_end'].invoke()
+        assert page.preview_buttons['on_end'].cget('text') == '收起预览'
+        assert 'on_end' in page._preview_events
+        page.refresh()
+        assert page.preview_buttons['on_end'].cget('text') == '收起预览'
+        page.preview_buttons['on_end'].invoke()
+        assert page.preview_buttons['on_end'].cget('text') == '预览消息'
+        assert 'on_end' not in page._preview_events
+        app.notify.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def descendants(widget):
     """递归检查可见控件类别。"""
     for child in widget.winfo_children():

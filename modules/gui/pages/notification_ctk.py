@@ -46,6 +46,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.channel_rows = []
         self.event_bodies = {}
         self.preview_labels = {}
+        self.preview_buttons = {}
         self.variables = {}
         self._event_switches = {}
         self._refreshing = False
@@ -252,6 +253,17 @@ class Page(ctk_kit.CTkScrollableFrame):
         add.pack(side='left')
         selected.configure(command=lambda value: add.configure(
             state='normal' if value in PROVIDERS else 'disabled'))
+        dialog.update_idletasks()
+        parent = self.winfo_toplevel()
+        x = parent.winfo_rootx() + (parent.winfo_width() - dialog.winfo_width()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f'+{x}+{y}')
+        dialog.update_idletasks()
+        x += parent.winfo_rootx() + parent.winfo_width() // 2 - (
+            dialog.winfo_rootx() + dialog.winfo_width() // 2)
+        y += parent.winfo_rooty() + parent.winfo_height() // 2 - (
+            dialog.winfo_rooty() + dialog.winfo_height() // 2)
+        dialog.geometry(f'+{x}+{y}')
         dialog.grab_set()
 
     def expand_channel(self, index):
@@ -364,6 +376,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         for child in self.events_body.winfo_children():
             child.destroy()
         self.preview_labels = {}
+        self.preview_buttons = {}
         self.variables = {}
         self._event_switches = {}
         raw = self._safe_get(('push', 'templates'), None)
@@ -414,8 +427,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             ctk_kit.CTkButton(controls, text='插入正文', font=FONT_BODY,
                               command=lambda key=event: self.insert_variable(
                                   key, self.variables[key][1][self.variables[key][0].get()])).pack(side='left')
-            ctk_kit.CTkButton(controls, text='预览消息', font=FONT_BODY,
-                              command=lambda key=event: self.preview_event(key)).pack(side='left')
+            button = ctk_kit.CTkButton(
+                controls, text='收起预览' if event in self._preview_events else '预览消息',
+                font=FONT_BODY, command=lambda key=event: self.preview_event(key))
+            button.pack(side='left')
+            self.preview_buttons[event] = button
             preview = ctk_kit.CTkLabel(card, text=self._preview_text.get(event, ''), font=FONT_BODY,
                                        justify='left', anchor='w')
             self.preview_labels[event] = preview
@@ -441,9 +457,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         preview = self.preview_labels[event]
         if event in self._preview_events:
             self._preview_events.remove(event)
+            self.preview_buttons[event].configure(text='预览消息')
             preview.pack_forget()
             return
         self._preview_events.add(event)
+        self.preview_buttons[event].configure(text='收起预览')
         snapshot = self.model.snapshot()
         try:
             title, content = preview_template(snapshot, event)
