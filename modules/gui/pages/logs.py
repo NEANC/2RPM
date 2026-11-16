@@ -33,8 +33,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         row = ctk_kit.CTkFrame(card, fg_color='transparent')
         row.pack(fill='x', padx=16, pady=8)
         self._entry(row, ('log', 'log_directory'))
-        ctk_kit.CTkButton(row, text='⌕', width=32, command=self.choose_directory).pack(side='left')
-        ctk_kit.CTkButton(row, text='×', width=32, command=self.clear_directory).pack(side='left')
+        self.browse_button = ctk_kit.CTkButton(
+            row, text='⌕', width=32, command=self.choose_directory)
+        self.browse_button.pack(side='left')
+        self.clear_button = ctk_kit.CTkButton(
+            row, text='×', width=32, command=self.clear_directory)
+        self.clear_button.pack(side='left')
         ctk_kit.CTkLabel(card, text='相对路径以程序目录为起点。',
                          font=FONT_SMALL).pack(anchor='w', padx=16, pady=(0, 16))
         card = self._card('保留策略')
@@ -83,14 +87,20 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.fields[path][0].set(str(int(raw) + delta))
 
     def choose_directory(self):
-        """选择目录只更新草稿。"""
+        """选择目录只更新草稿，结构异常时不修改显示。"""
+        path = ('log', 'log_directory')
+        if not path_writable(self.model, path):
+            return
         selected = filedialog.askdirectory(parent=self)
         if selected:
-            self.fields[('log', 'log_directory')][0].set(selected)
+            self.fields[path][0].set(selected)
 
     def clear_directory(self):
-        """仅清空草稿目录路径。"""
-        self.fields[('log', 'log_directory')][0].set('')
+        """仅清空草稿目录路径，结构异常时不修改显示。"""
+        path = ('log', 'log_directory')
+        if not path_writable(self.model, path):
+            return
+        self.fields[path][0].set('')
 
     def _safe_value(self, path, kind):
         """读取可能缺失的字段，结构异常时显示空文本。"""
@@ -111,6 +121,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             log = self.model.snapshot().get('log')
             self.structure_hint.configure(
                 text='' if isinstance(log, Mapping) else STRUCTURE_HINT)
+            directory_state = ('normal' if path_writable(
+                self.model, ('log', 'log_directory')) else 'disabled')
+            self.browse_button.configure(state=directory_state)
+            self.clear_button.configure(state=directory_state)
         finally:
             self._refreshing = False
 

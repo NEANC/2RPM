@@ -217,6 +217,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         """同步模型值，打开已有任务不触发用户切换逻辑。"""
         self._refreshing = True
         try:
+            self.file_entry.configure(state='normal')
+            self.task_entry.configure(state='normal')
+            for _path, (_variable, entry, _kind) in self.fields.items():
+                entry.configure(state='normal')
             monitor = self._monitor()
             mode = monitor.get('mode')
             self.mode.set('主动启动并监视' if mode == 'launch' else '等待目标运行')

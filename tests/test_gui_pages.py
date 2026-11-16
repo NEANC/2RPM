@@ -1528,6 +1528,66 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_structure_invalid_auxiliary_buttons_disable_and_keep_display(tmp_path,
+                                                                      monkeypatch):
+    """结构异常时辅助按钮禁用，禁用字段刷新仍能正确显示或清空。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        logs_path = tmp_path / 'null-log.yaml'
+        logs_path.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                             'push: {}\nlog: null\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(logs_path)
+        assert app.show_page('日志设置')
+        logs_page = app.visible_pages['日志设置']
+        assert logs_page.browse_button.cget('state') == 'disabled'
+        assert logs_page.clear_button.cget('state') == 'disabled'
+        monkeypatch.setattr('modules.gui.pages.logs.filedialog.askdirectory',
+                            lambda **_: str(tmp_path / 'chosen'))
+        logs_page.choose_directory()
+        assert logs_page.fields[('log', 'log_directory')][1].get() == ''
+        assert app.model.snapshot()['log'] is None
+        external_path = tmp_path / 'null-external.yaml'
+        external_path.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                                 'push: {}\nlog: {}\nexternal: null\n', encoding='utf-8')
+        assert app.controller.open(external_path)
+        assert app.show_page('外部程序设置')
+        external_page = app.visible_pages['外部程序设置']
+        assert external_page.browse_buttons['on_end'].cget('state') == 'disabled'
+        assert external_page.clear_buttons['on_end'].cget('state') == 'disabled'
+        assert external_page.restore_buttons['on_end'].cget('state') == 'disabled'
+        monkeypatch.setattr('modules.gui.pages.external.filedialog.askopenfilename',
+                            lambda **_: r'C:\chosen.bat')
+        external_page.choose_file('on_end')
+        external_page.clear_file('on_end')
+        assert external_page.fields[('external', 'on_end')][1].get() == ''
+        assert app.model.snapshot()['external'] is None
+        null_monitor = tmp_path / 'null-monitor.yaml'
+        null_monitor.write_text('monitor: null\npush: {}\nlog: {}\nexternal: {}\n',
+                                encoding='utf-8')
+        assert app.controller.open(null_monitor)
+        assert app.show_page('监视设置')
+        monitor_page = app.visible_pages['监视设置']
+        target = monitor_page.fields[('monitor', 'target')][1]
+        assert target.cget('state') == 'disabled'
+        valid_monitor = tmp_path / 'valid-monitor.yaml'
+        valid_monitor.write_text('monitor:\n  mode: watch\n  target: demo.exe\n'
+                                 '  common: {}\npush: {}\nlog: {}\nexternal: {}\n',
+                                 encoding='utf-8')
+        assert app.controller.open(valid_monitor)
+        assert app.show_page('监视设置')
+        target = monitor_page.fields[('monitor', 'target')][1]
+        assert target.cget('state') == 'normal'
+        assert target.get() == 'demo.exe'
+        assert app.controller.open(null_monitor)
+        assert app.show_page('监视设置')
+        target = monitor_page.fields[('monitor', 'target')][1]
+        assert target.cget('state') == 'disabled'
+        assert target.get() == ''
+    finally:
+        root.destroy()
+
+
 def test_empty_push_page_enables_retry_and_creates_channel_section(tmp_path):
     """push 为空映射时重试字段可写，添加通道会创建缺失子节。"""
     root = tk.Tk()

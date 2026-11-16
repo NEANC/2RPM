@@ -28,6 +28,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.model = app.model
         self.fields = {}
         self.action_drafts = {}
+        self.browse_buttons = {}
+        self.clear_buttons = {}
         self.restore_buttons = {}
         self.generation = self.model.document_generation
         self._refreshing = False
@@ -43,10 +45,14 @@ class Page(ctk_kit.CTkScrollableFrame):
             row.pack(fill='x', padx=16, pady=12)
             ctk_kit.CTkLabel(row, text='外部程序／BAT 路径', font=FONT_BODY).pack(side='left')
             self._entry(row, ('external', event))
-            ctk_kit.CTkButton(row, text='⌕', width=32,
-                              command=lambda key=event: self.choose_file(key)).pack(side='left')
-            ctk_kit.CTkButton(row, text='×', width=32,
-                              command=lambda key=event: self.clear_file(key)).pack(side='left')
+            browse = ctk_kit.CTkButton(
+                row, text='⌕', width=32, command=lambda key=event: self.choose_file(key))
+            browse.pack(side='left')
+            clear = ctk_kit.CTkButton(
+                row, text='×', width=32, command=lambda key=event: self.clear_file(key))
+            clear.pack(side='left')
+            self.browse_buttons[event] = browse
+            self.clear_buttons[event] = clear
             restore = ctk_kit.CTkButton(row, text='恢复', width=55, state='disabled',
                                         command=lambda key=event: self.restore_file(key))
             restore.pack(side='left')
@@ -89,31 +95,42 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.fields[path][0].set(str(int(raw) + delta))
 
     def choose_file(self, event):
-        """系统选择器取消时保持原输入。"""
+        """系统选择器取消时保持原输入，结构异常时不修改显示。"""
+        path = ('external', event)
+        if not path_writable(self.model, path):
+            return
         selected = filedialog.askopenfilename(parent=self, filetypes=[('程序或脚本', '*.exe *.bat *.cmd'), ('所有文件', '*.*')])
         if selected:
-            self.fields[('external', event)][0].set(selected)
+            self.fields[path][0].set(selected)
 
     def clear_file(self, event):
         """清空指定动作而不执行它，仅在本模型内存中保留可恢复路径。"""
-        value = self.fields[('external', event)][0].get()
+        path = ('external', event)
+        if not path_writable(self.model, path):
+            return
+        value = self.fields[path][0].get()
         if value:
             self.action_drafts[event] = value
-        self.fields[('external', event)][0].set('')
+        self.fields[path][0].set('')
         self._update_restore(event)
 
     def restore_file(self, event):
         """只恢复当前文档曾清空的动作，不写入其它文档。"""
+        path = ('external', event)
+        if not path_writable(self.model, path):
+            return
         value = self.action_drafts.pop(event, None)
         if value is not None and self.generation == self.model.document_generation:
-            self.fields[('external', event)][0].set(value)
+            self.fields[path][0].set(value)
         self._update_restore(event)
 
     def _update_restore(self, event):
-        """按是否存在内存草稿启用或禁用恢复入口。"""
+        """按草稿存在且字段可写启用恢复入口。"""
         button = self.restore_buttons.get(event)
         if button is not None:
-            button.configure(state='normal' if event in self.action_drafts else 'disabled')
+            writable = path_writable(self.model, ('external', event))
+            button.configure(
+                state='normal' if event in self.action_drafts and writable else 'disabled')
 
     def _safe_value(self, path, kind):
         """读取可能缺失的字段，结构异常时显示空文本。"""
@@ -137,6 +154,11 @@ class Page(ctk_kit.CTkScrollableFrame):
                 entry.configure(state='normal' if writable else 'disabled')
                 invalid = invalid or not writable
             self.structure_hint.configure(text=STRUCTURE_HINT if invalid else '')
+            for event in self.browse_buttons:
+                state = ('normal' if path_writable(
+                    self.model, ('external', event)) else 'disabled')
+                self.browse_buttons[event].configure(state=state)
+                self.clear_buttons[event].configure(state=state)
         finally:
             self._refreshing = False
         for event in self.restore_buttons:
