@@ -800,7 +800,14 @@ def test_host_options_credentials_are_masked(tmp_path):
         hosts[0]['options'] = {'api_key': 'demo'}
         app.model.set(path, hosts)
         page.refresh()
-        assert page.host_rows[0]['options'].cget('show') == '●'
+        options = page.host_rows[0]['options']
+        assert options.cget('show') == '●'
+        toggle = page.host_rows[0]['options_toggle']
+        toggle._command()
+        assert options.cget('show') == ''
+        assert 'api_key' in options.get()
+        toggle._command()
+        assert options.cget('show') == '●'
     finally:
         root.destroy()
 

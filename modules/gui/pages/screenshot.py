@@ -341,13 +341,19 @@ class Page(ctk_kit.CTkScrollableFrame):
             value = stream.getvalue().strip()
         options = self._entry(advanced, self.invalid_options.get(index, str(value)),
                               lambda raw: self._set_item(HOSTS, index, 'options', raw), secret=True)
+        options_toggle = ctk_kit.CTkButton(
+            advanced, text='显示', width=55,
+            command=lambda widget=options: widget.configure(
+                show='' if widget.cget('show') else '●'))
+        options_toggle.pack(side='left', padx=4)
         error = ctk_kit.CTkLabel(self.hosts_body,
                                  text='options 必须是有效 YAML 映射' if index in self.invalid_options else '',
                                  font=FONT_SMALL)
         error.pack(anchor='w')
         self.host_rows.append({'number': stepper.number, 'provider': provider,
                                'token': token, 'expiration': expiration,
-                               'options': options, 'error': error})
+                               'options': options, 'options_toggle': options_toggle,
+                               'error': error})
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_host(index)).pack(side='right')
 
