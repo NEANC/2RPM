@@ -3,7 +3,7 @@
 
 """GUI 外观偏好与材质降级测试。"""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import darkdetect
 
@@ -18,7 +18,11 @@ def test_first_run_uses_system_theme(tmp_path):
     assert preferences.dark is None
     assert preferences.material == 'Mica'
     root = Mock()
-    apply_appearance(root, preferences)
+    root._glass_tint.return_value = 0xE61A1A1A
+    root.glass_options.return_value = {'dark': False, 'frame': False,
+                                       'state': 4, 'wca': 30, 'extend': True}
+    with patch('modules.gui.appearance.enable_acrylic', return_value=False):
+        apply_appearance(root, preferences)
     root.set_appearance_mode.assert_called_once_with('dark' if darkdetect.isDark() else 'light')
 
 
@@ -28,7 +32,11 @@ def test_manual_theme_persists(tmp_path):
     save_preferences(path, AppearancePreferences(dark=True, material='Acrylic'))
     assert load_preferences(path) == AppearancePreferences(dark=True, material='Acrylic')
     root = Mock()
-    apply_appearance(root, load_preferences(path))
+    root._glass_tint.return_value = 0xE61A1A1A
+    root.glass_options.return_value = {'dark': True, 'frame': False,
+                                       'state': 4, 'wca': 30, 'extend': True}
+    with patch('modules.gui.appearance.enable_acrylic', return_value=False):
+        apply_appearance(root, load_preferences(path))
     root.set_appearance_mode.assert_called_once_with('dark')
 
 
@@ -50,12 +58,54 @@ def test_mica_falls_back_without_changing_preference(tmp_path, monkeypatch):
 
 
 def test_win10_does_not_report_unsupported_material():
-    """Windows 10 不把设置主题返回成功误认为原生材质真正可用。"""
+    """Windows 10 的 Acrylic 原生调用失败时回退纯色。"""
     root = Mock()
-    assert apply_appearance(root, AppearancePreferences()) == 'none'
-    assert apply_appearance(root, AppearancePreferences(material='Acrylic')) == 'none'
-    root.set_theme.assert_not_called()
+    root._glass_tint.return_value = 0xE61A1A1A
+    root.glass_options.return_value = {'kind': 'acrylic', 'backdrop': 0, 'dark': False,
+                                       'frame': False, 'state': 4, 'wca': 30,
+                                       'extend': True}
+    with patch('modules.gui.appearance.enable_acrylic', return_value=False) as native:
+        assert apply_appearance(root, AppearancePreferences()) == 'none'
+        assert apply_appearance(root, AppearancePreferences(material='Acrylic')) == 'none'
+    assert [call.args for call in root.set_theme.call_args_list] == [
+        ('Acrylic',), ('Acrylic',)]
+    assert native.call_count == 2
+    assert all(call.kwargs['attribute'] == 19 for call in native.call_args_list)
     assert root.set_backdrop.call_count == 2
+
+
+def test_win10_mica_falls_back_to_working_acrylic(tmp_path):
+    """Win10 真正启用 Acrylic 后返回实际材质，保留磁盘上的 Mica 偏好。"""
+    path = tmp_path / 'gui.ini'
+    preferences = AppearancePreferences(dark=False, material='Mica')
+    save_preferences(path, preferences)
+    root = Mock()
+    root._glass_tint.return_value = 0xE61A1A1A
+    root.glass_options.return_value = {'kind': 'acrylic', 'backdrop': 0, 'dark': False,
+                                       'frame': False, 'state': 4, 'wca': 30,
+                                       'extend': True}
+    with patch('modules.gui.appearance.enable_acrylic', return_value=True) as native:
+        assert apply_appearance(root, preferences) == 'Acrylic'
+    root.set_theme.assert_called_once_with('Acrylic')
+    native.assert_called_once()
+    assert native.call_args.kwargs['attribute'] == 19
+    assert load_preferences(path) == preferences
+
+
+def test_win11_mica_theme_without_native_effect_falls_back_to_acrylic(monkeypatch):
+    """主题设置没有抛错但 Mica 未生效时，仍检查 Acrylic 的原生结果。"""
+    monkeypatch.setattr('modules.gui.appearance.sys.getwindowsversion',
+                        lambda: Mock(build=22621))
+    root = Mock()
+    root._glass_tint.return_value = 0xE61A1A1A
+    root.glass_options.return_value = {'kind': 'acrylic', 'backdrop': 0, 'dark': True,
+                                       'frame': False, 'state': 4, 'wca': 30,
+                                       'extend': True}
+    with patch('modules.gui.appearance.enable_acrylic', side_effect=[False, True]) as native:
+        assert apply_appearance(root, AppearancePreferences(material='Mica')) == 'Acrylic'
+    assert [call.args for call in root.set_theme.call_args_list] == [
+        ('Mica',), ('Acrylic',)]
+    assert native.call_count == 2
 
 
 def test_failed_preference_write_keeps_session_choice(monkeypatch, tmp_path):
@@ -112,8 +162,9 @@ def test_ctk_appearance_does_not_override_light_mode():
                        remember_theme=False, notifier=False, backdrop='none')
     root.withdraw()
     try:
-        assert apply_appearance(root, AppearancePreferences(dark=False,
-                                                             material='Acrylic')) == 'none'
+        with patch('modules.gui.appearance.enable_acrylic', return_value=False):
+            assert apply_appearance(root, AppearancePreferences(dark=False,
+                                                                 material='Acrylic')) == 'none'
         assert ctk_kit.get_appearance_mode() == 'Light'
     finally:
         root.destroy()

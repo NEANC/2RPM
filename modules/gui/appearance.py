@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ctk_kit.core.win32 import enable_acrylic
 import darkdetect
 
 
@@ -91,14 +92,26 @@ def apply_appearance(root, preferences: AppearancePreferences) -> str:
     """先尝试期望材质，失败时降级，不修改持久化的偏好。"""
     materials = {'Mica': ('Mica', 'Acrylic', 'none'),
                  'Acrylic': ('Acrylic', 'none'), 'none': ('none',)}
+    win10 = sys.platform == 'win32' and sys.getwindowsversion().build < 22000
     for material in materials[preferences.material]:
         if material == 'none':
             root.set_backdrop('none')
         else:
-            if sys.platform == 'win32' and sys.getwindowsversion().build < 22000:
+            if material == 'Mica' and win10:
                 continue
             try:
                 root.set_theme(material)
+                options = root.glass_options()
+                if not enable_acrylic(
+                        root,
+                        tint=None if material == 'Mica' else root._glass_tint(),
+                        dark=options['dark'],
+                        system_backdrop=2 if material == 'Mica' else 0,
+                        frame=options['frame'],
+                        accent=options['state'],
+                        attribute=19 if win10 else options['wca'],
+                        extend=options['extend']):
+                    continue
             except (OSError, RuntimeError, ValueError):
                 continue
         dark = preferences.dark if preferences.dark is not None else darkdetect.isDark()
