@@ -1653,6 +1653,33 @@ def test_invalid_host_item_keeps_visible_row_actions(tmp_path):
         root.destroy()
 
 
+def test_target_move_across_invalid_item_roundtrips(tmp_path):
+    """跨越坏项移动与连续反向移动只交换有效项并还原引用。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        path = ('push', 'screenshot', 'targets')
+        content_path = ('push', 'templates', 'on_end', 'content')
+        app.model.set(path, [{'provider': 'window', 'target': 'X'}, 'bad',
+                             {'provider': 'window', 'target': 'Y'}])
+        app.model.set(content_path, '{screenshot_1}/{screenshot_3}')
+        page.refresh()
+        assert len(page.target_rows) == 2
+        page.move_target(0, 1)
+        targets = app.model.get(path)
+        assert targets[0]['target'] == 'Y'
+        assert targets[1] == 'bad'
+        assert targets[2]['target'] == 'X'
+        assert app.model.get(content_path) == '{screenshot_3}/{screenshot_1}'
+        page.move_target(1, -1)
+        assert app.model.get(path) == [{'provider': 'window', 'target': 'X'}, 'bad',
+                                       {'provider': 'window', 'target': 'Y'}]
+        assert app.model.get(content_path) == '{screenshot_1}/{screenshot_3}'
+    finally:
+        root.destroy()
+
+
 def test_invalid_target_item_keeps_adb_port_editing(tmp_path):
     """坏目标项在首位时，ADB 端口仍写入所见目标。"""
     root = tk.Tk()

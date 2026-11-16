@@ -7,7 +7,8 @@ import copy
 
 import pytest
 
-from modules.gui.target_order import delete_screenshot_target, move_screenshot_target
+from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
+                                      swap_screenshot_targets)
 
 
 def _config(targets=None, content='{screenshot_1} / {screenshot_2}'):
@@ -101,6 +102,35 @@ def test_non_mapping_structure_raises_value_error(mutate):
         move_screenshot_target(config, 0, 1)
     with pytest.raises(ValueError, match='消息模板结构无效'):
         delete_screenshot_target(config, 0)
+
+
+def test_swap_non_adjacent_targets_moves_only_two_items():
+    """跨越多个位置交换只交换两项，其他顺序保持不动。"""
+    config = _config([{'provider': 'window', 'target': 'A'},
+                      {'provider': 'window', 'target': 'B'},
+                      {'provider': 'window', 'target': 'C'}],
+                     '{screenshot_1}/{screenshot_2}/{screenshot_3}')
+    original = copy.deepcopy(config)
+    updated = swap_screenshot_targets(config, 0, 2)
+    assert [item['target'] for item in updated['push']['screenshot']['targets']] == [
+        'C', 'B', 'A']
+    assert updated['push']['templates']['on_end']['content'] == (
+        '{screenshot_3}/{screenshot_2}/{screenshot_1}')
+    assert config == original
+
+
+def test_swap_with_invalid_item_keeps_bad_item_in_place():
+    """坏项夹在中间时交换两端有效项，坏项位置与内容不变。"""
+    config = _config([{'provider': 'window', 'target': 'X'}, 'bad',
+                      {'provider': 'window', 'target': 'Y'}],
+                     '{screenshot_1}/{screenshot_3}')
+    updated = swap_screenshot_targets(config, 0, 2)
+    targets = updated['push']['screenshot']['targets']
+    assert targets[0]['target'] == 'Y'
+    assert targets[1] == 'bad'
+    assert targets[2]['target'] == 'X'
+    assert updated['push']['templates']['on_end']['content'] == (
+        '{screenshot_3}/{screenshot_1}')
 
 
 def test_missing_templates_allows_target_reorder():

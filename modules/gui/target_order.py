@@ -56,8 +56,8 @@ def _rewrite(text, replacements):
     return result
 
 
-def _transform(config, index, destination=None):
-    """深复制配置，先验证双向映射再更新目标和模板。"""
+def _validated_copy(config):
+    """验证配置结构并返回可修改的深复制、目标列表和模板。"""
     if not isinstance(config, Mapping):
         raise ValueError('消息模板结构无效，无法安全更新引用')
     push = config.get('push')
@@ -71,7 +71,21 @@ def _transform(config, index, destination=None):
             isinstance(template, Mapping) for template in templates.values()):
         raise ValueError('消息模板结构无效，无法安全更新引用')
     updated = copy.deepcopy(config)
-    targets = updated['push']['screenshot']['targets']
+    return (updated, updated['push']['screenshot']['targets'],
+            updated['push'].get('templates', {}))
+
+
+def _apply_templates(templates, replacements):
+    """按原字段身份重写所有模板标题与正文。"""
+    for template in templates.values():
+        for key in ('title', 'content'):
+            if key in template:
+                template[key] = _rewrite(template[key], replacements)
+
+
+def _transform(config, index, destination=None):
+    """深复制配置，先验证双向映射再更新目标和模板。"""
+    updated, targets, templates = _validated_copy(config)
     if not isinstance(index, int) or not 0 <= index < len(targets):
         raise ValueError('截图目标序号超出范围')
     if destination is not None and not 0 <= destination < len(targets):
@@ -87,12 +101,7 @@ def _transform(config, index, destination=None):
     replacements = {name: None for name in before}
     for identity, new_name in zip(identities, after):
         replacements[before[identity]] = new_name
-    templates = updated['push'].get('templates', {})
-    for template in templates.values():
-
-        for key in ('title', 'content'):
-            if key in template:
-                template[key] = _rewrite(template[key], replacements)
+    _apply_templates(templates, replacements)
     return updated
 
 
@@ -104,10 +113,20 @@ def move_screenshot_target(config: dict, index: int, offset: int) -> dict:
 
 
 def swap_screenshot_targets(config: dict, first: int, second: int) -> dict:
-    """交换两个原始位置的目标并维护模板引用身份。"""
+    """真正交换两个原始位置的目标并维护模板引用身份。"""
     if not isinstance(first, int) or not isinstance(second, int) or first == second:
         raise ValueError('截图目标位置无效')
-    return _transform(config, first, second)
+    updated, targets, templates = _validated_copy(config)
+    if not 0 <= first < len(targets) or not 0 <= second < len(targets):
+        raise ValueError('截图目标序号超出范围')
+    before = _names(targets)
+    targets[first], targets[second] = targets[second], targets[first]
+    after = _names(targets)
+    replacements = {before[index]: after[index] for index in range(len(targets))}
+    replacements[before[first]] = after[second]
+    replacements[before[second]] = after[first]
+    _apply_templates(templates, replacements)
+    return updated
 
 
 def delete_screenshot_target(config: dict, index: int) -> dict:
