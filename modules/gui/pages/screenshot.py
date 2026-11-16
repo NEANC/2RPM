@@ -25,6 +25,7 @@ TARGETS = ('push', 'screenshot', 'targets')
 HOSTS = ('push', 'screenshot', 'image_host')
 RETENTION = ('push', 'screenshot', 'retention')
 PROVIDERS = ('wmimg', 'beeimg', 'beeimg_cn', 'superbed', 'boltp')
+DEFAULT_RETENTION_DAYS = 14
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -86,10 +87,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         frame.number.pack(side='left')
         arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
         arrows.pack(side='left')
-        ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
-                          command=lambda: action(-1)).pack()
-        ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
-                          command=lambda: action(1)).pack()
+        frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
+                                     command=lambda: action(-1))
+        frame.up.pack()
+        frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
+                                       command=lambda: action(1))
+        frame.down.pack()
         return frame
 
     def _before(self):
@@ -412,14 +415,31 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_host(index)).pack(side='right')
 
+    def _retention(self):
+        """返回保留节及是否可编辑；缺失允许创建，非映射禁用。"""
+        retention = self._screenshot_section().get('retention')
+        if retention is None:
+            return {}, True
+        if isinstance(retention, Mapping):
+            return retention, True
+        return None, False
+
     def _change_cleanup(self):
         """将本地清理开关写入既有保留字段。"""
+        _retention, editable = self._retention()
+        if not editable:
+            return
         self.model.set((*RETENTION, 'enabled'), bool(self.cleanup.get()))
 
     def _change_days(self, delta):
-        """以相同窄步进控件更改保留天数。"""
-        days = self.model.get((*RETENTION, 'max_days'))
-        if isinstance(days, int) and days + delta > 0:
+        """以相同窄步进控件更改保留天数，缺失时从默认值开始。"""
+        retention, editable = self._retention()
+        if not editable:
+            return
+        days = retention.get('max_days')
+        if not isinstance(days, int):
+            days = DEFAULT_RETENTION_DAYS
+        if days + delta > 0:
             self.model.set((*RETENTION, 'max_days'), days + delta)
             self.days.number.configure(text=str(days + delta))
 
@@ -463,13 +483,19 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._show_target(index, target, source_index)
         for index, (source_index, host) in enumerate(hosts):
             self._show_host(index, host, source_index)
-        retention = section.get('retention')
-        if isinstance(retention, Mapping) and retention.get('enabled'):
+        retention, editable = self._retention()
+        if editable and retention.get('enabled'):
             self.cleanup.select()
         else:
             self.cleanup.deselect()
-        days = retention.get('max_days') if isinstance(retention, Mapping) else None
-        self.days.number.configure(text=str(days) if isinstance(days, int) else '--')
+        state = 'normal' if editable else 'disabled'
+        self.cleanup.configure(state=state)
+        self.days.up.configure(state=state)
+        self.days.down.configure(state=state)
+        days = retention.get('max_days') if editable else None
+        self.days.number.configure(
+            text=str(days) if isinstance(days, int) else
+            (str(DEFAULT_RETENTION_DAYS) if editable else '--'))
 
     def focus_issue(self, path):
         """聚焦当前截图目标或图床行。"""

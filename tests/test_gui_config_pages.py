@@ -93,6 +93,33 @@ def test_screenshot_page_retention_and_credentials():
         root.destroy()
 
 
+def test_retention_missing_or_scalar_is_safe():
+    """保留节缺失时默认 14 天，标量时禁用开关与箭头且不写入。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    del document.tree['push']['screenshot']['retention']
+    model = EditorModel(document)
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        assert page.days.number.cget('text') == '14'
+        page._change_days(1)
+        assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 15
+        model.set(('push', 'screenshot', 'retention'), 'broken')
+        page.refresh()
+        assert page.days.number.cget('text') == '--'
+        assert page.cleanup.cget('state') == 'disabled'
+        assert page.days.up.cget('state') == 'disabled'
+        assert page.days.down.cget('state') == 'disabled'
+        page._change_cleanup()
+        page._change_days(1)
+        assert model.get(('push', 'screenshot', 'retention')) == 'broken'
+    finally:
+        root.destroy()
+
+
 def test_window_target_selection_keeps_custom_out(monkeypatch):
     """窗口枚举使用现有 Win32 枚举，空列表和取消不破坏输入。"""
     from unittest.mock import Mock
