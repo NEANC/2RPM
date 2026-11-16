@@ -118,6 +118,52 @@ def test_config_group_starts_open_and_keeps_five_pages_in_order(tmp_path, monkey
         root.destroy()
 
 
+def test_sidebar_navigation_buttons_use_project_font(tmp_path, monkeypatch):
+    """主页、五个配置入口与底部设置均使用项目指定字体。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        buttons = [app.sidebar._buttons[name] for name in NAMES[:-1]]
+        buttons.append(app.sidebar._bottom_buttons['设置'])
+        assert all((font[0] if isinstance(font := button.cget('font'), tuple)
+                    else font.cget('family')) == 'Microsoft YaHei UI'
+                   for button in buttons)
+    finally:
+        root.destroy()
+
+
+def test_collapsed_config_group_highlights_current_page(tmp_path, monkeypatch):
+    """隐藏选中配置入口时由组标题提示，切页后恢复普通状态。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        group = app.config_group_button
+        assert group.cget('fg_color') == 'transparent'
+        assert app.show_page('监视设置')
+        selected_color = app.sidebar._buttons['监视设置'].cget('fg_color')
+        group.invoke()
+        assert app.current_page == '监视设置'
+        assert app.sidebar.rebuilder.current == '监视设置'
+        assert group.cget('fg_color') == selected_color
+        assert app.show_page('主页')
+        assert group.cget('fg_color') == 'transparent'
+        assert app.show_page('截图设置')
+        assert group.cget('fg_color') == selected_color
+        group.invoke()
+        assert group.cget('fg_color') == 'transparent'
+        assert app.show_page('设置')
+        group.invoke()
+        assert group.cget('fg_color') == 'transparent'
+    finally:
+        root.destroy()
+
+
 def test_failed_flush_preserves_page_inputs(tmp_path, monkeypatch):
     """数字草稿未完成时可回主页并再次回原页。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

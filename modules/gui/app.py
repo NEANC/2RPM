@@ -15,6 +15,7 @@ from tkinter import filedialog, messagebox
 
 from PIL import Image, ImageTk
 import ctk_kit
+from ctk_kit.styles import style_of
 
 from modules.gui.appearance import (AppearancePreferences, apply_appearance,
                                     FONT_BODY, load_preferences, preferences_path,
@@ -93,6 +94,9 @@ class App:
                                            pages=builders,
                                            bottom_pages={'设置': build('设置', settings)},
                                            initial='主页', on_change=self._page_changed)
+        for button in (*self.sidebar._buttons.values(),
+                       *self.sidebar._bottom_buttons.values()):
+            button.configure(font=FONT_BODY)
         self.config_group_button = ctk_kit.CTkButton(
             self.sidebar.nav_scroll, text='配置  ▾', height=38, anchor='w',
             fg_color='transparent', font=FONT_BODY,
@@ -119,12 +123,21 @@ class App:
             for name in names:
                 buttons[name].pack_forget()
             self.config_group_button.configure(text='配置  ▸')
+            self._paint_config_group()
             return
         previous = self.config_group_button
         for name in names:
             buttons[name].pack(fill='x', padx=10, pady=3, after=previous)
             previous = buttons[name]
         self.config_group_button.configure(text='配置  ▾')
+        self._paint_config_group()
+
+    def _paint_config_group(self):
+        """收起时以组标题表示当前配置页，展开或离开时恢复普通样式。"""
+        collapsed = not self.sidebar._buttons[self.page_names[1]].winfo_manager()
+        active = collapsed and self.current_page in self.page_names[1:-1]
+        state = 'nav_active' if active else 'nav_normal'
+        self.config_group_button.configure(**style_of('sidebar', state))
 
     def _page_changed(self, name):
         """侧栏切换时更新当前页，配置页离开时尝试补存。"""
@@ -132,6 +145,8 @@ class App:
             if not self.save_coordinator.flush():
                 self.status.configure(text='配置未保存，已保留草稿')
         self.current_page = name
+        if hasattr(self, 'config_group_button'):
+            self._paint_config_group()
 
     def show_page(self, name: str) -> bool:
         """按业务名称切页；返回主页不因未完成草稿而拒绝。"""
@@ -176,6 +191,8 @@ class App:
             messagebox.showerror('外观设置', '无法保存外观偏好', parent=self.root)
         self.appearance = preferences
         apply_appearance(self.root, preferences)
+        if hasattr(self, 'config_group_button'):
+            self._paint_config_group()
         if '设置' in getattr(self, 'visible_pages', {}):
             self.visible_pages['设置'].refresh()
 
