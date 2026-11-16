@@ -3,6 +3,7 @@
 
 """通知字段元数据与无副作用的模拟预览。"""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from onepush import get_notifier
@@ -65,12 +66,26 @@ def event_variables(template_key: str) -> dict[str, object]:
     return {**_BASE_VALUES, **_EVENT_VALUES[template_key]}
 
 
+def _mapping_section(value, message: str) -> dict:
+    """缺失节返回空映射，非映射节按结构异常拒绝。"""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(message)
+    return value
+
+
 def _template_context(config: dict, template_key: str):
     """按发送流程的分配规则得到模板与截图输出名。"""
-    push = config.get('push', {})
-    template = push.get('templates', {}).get(template_key, {})
+    if not isinstance(config, Mapping):
+        raise ValueError('通知模板结构无效')
+    push = _mapping_section(config.get('push'), '通知模板结构无效')
+    templates = _mapping_section(push.get('templates'), '通知模板结构无效')
+    template = _mapping_section(templates.get(template_key), '通知模板结构无效')
+    screenshot = push.get('screenshot')
+    section = screenshot if isinstance(screenshot, Mapping) else {}
     values = event_variables(template_key)
-    names = _configured_screenshot_names(push.get('screenshot', {}), set(values))
+    names = _configured_screenshot_names(section, set(values))
     return push, template, values, names
 
 
@@ -94,15 +109,19 @@ def screenshot_conditions(config: dict, template_key: str) -> dict[str, bool]:
     push, template, values, names = _template_context(config, template_key)
     title, content = template.get('title', ''), template.get('content', '')
     fields = _collect_template_fields(values, names, title, content)
-    section = push.get('screenshot', {})
+    section = push.get('screenshot')
+    if section is not None and not isinstance(section, Mapping):
+        raise ValueError('截图配置结构无效')
+    section = section or {}
     targets, _ = allocate_targets(section.get('targets'), set(values))
+    settings = push.get('push_channel_settings')
+    channels = settings.get('channels') if isinstance(settings, Mapping) else None
     return {
         'enabled': template.get('enable', True) is True and
                    template.get('capture_screenshot', True) is True,
         'channels': any(
             channel.get('provider') in KNOWN_PROVIDERS
-            for channel in parse_push_channels(
-                push.get('push_channel_settings', {}).get('channels'))),
+            for channel in parse_push_channels(channels)),
         'references': fields is not None and not validate_template_fields(
             title, content, values, names) and any(
                 name == 'screenshot' or name in names

@@ -144,3 +144,28 @@ def test_template_diagnostics_do_not_echo_secrets():
                                       {'token': 'secret-98765'}, set())
     assert issues
     assert 'secret-98765' not in repr(issues)
+
+
+@pytest.mark.parametrize('push', ['broken', ['push'], 3])
+def test_preview_rejects_non_mapping_push(push):
+    """push 为标量或列表时按结构异常拒绝，不抛 AttributeError。"""
+    with pytest.raises(ValueError):
+        preview_template({'push': push}, 'on_end')
+
+
+@pytest.mark.parametrize('template', ['broken', ['template'], 3])
+def test_preview_rejects_non_mapping_event_template(template):
+    """事件模板为标量或列表时按结构异常拒绝，不抛 AttributeError。"""
+    config = _config()
+    config['push']['templates']['on_end'] = template
+    with pytest.raises(ValueError):
+        preview_template(config, 'on_end')
+
+
+@pytest.mark.parametrize('section', ['broken', ['screenshot'], 3])
+def test_screenshot_conditions_reject_non_mapping_screenshot(section):
+    """截图节为标量或列表时返回可捕获的结构异常。"""
+    config = _config()
+    config['push']['screenshot'] = section
+    with pytest.raises(ValueError):
+        screenshot_conditions(config, 'on_end')

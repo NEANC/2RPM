@@ -40,6 +40,25 @@ def test_all_unmet_conditions_are_shown():
     assert len(end[2]) >= 2
 
 
+def test_summary_tolerates_non_mapping_push():
+    """push 为标量时所有事件按待校验展示而不崩溃。"""
+    config = new_document().tree
+    config['push'] = 'broken'
+    text, details = summary(config)
+    assert '通知通道：待校验' in text
+    assert details
+    assert all(item[1] == '待校验' for item in details)
+
+
+def test_summary_tolerates_non_mapping_screenshot():
+    """截图节为标量时事件条件按待校验展示而不崩溃。"""
+    config = new_document().tree
+    config['push']['screenshot'] = 'broken'
+    _, details = summary(config)
+    end = next(item for item in details if item[0] == '目标结束')
+    assert end[1] == '待校验'
+
+
 def test_sidebar_order_and_home(tmp_path, monkeypatch):
     """七页侧栏必须保持业务编辑入口可达，不把隐藏旧表单当作迁移。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

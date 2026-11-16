@@ -119,3 +119,43 @@ def descendants(widget):
     for child in widget.winfo_children():
         yield child
         yield from descendants(child)
+
+
+def test_preview_tolerates_non_mapping_screenshot_section():
+    """截图节为标量时预览仍可渲染，并提示截图条件待校验。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot'), 'broken')
+    page = Page(root, Mock(model=model, notify=Mock()))
+    try:
+        page.expand_event('on_end')
+        page.preview_event('on_end')
+        text = page.preview_labels['on_end'].cget('text')
+        assert text.startswith('示例预览')
+        assert '截图条件：待校验' in text
+    finally:
+        root.destroy()
+
+
+def test_preview_tolerates_non_mapping_template_and_push():
+    """事件模板或 push 为标量时预览给出无效提示而不崩溃。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    for path, value in ((('push', 'templates', 'on_end'), 'broken'),
+                        (('push',), 'broken')):
+        model = EditorModel(new_document())
+        model.set(path, value)
+        page = Page(root, Mock(model=model, notify=Mock()))
+        try:
+            page.expand_event('on_end')
+            page.preview_event('on_end')
+            assert '通知模板变量或格式无效' in page.preview_labels['on_end'].cget('text')
+            page.insert_variable('on_end', 'process_pid')
+        finally:
+            page.destroy()
+    root.destroy()
