@@ -25,6 +25,7 @@ from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
+from modules.gui.window import MainWindow
 
 
 class App:
@@ -61,6 +62,7 @@ class App:
         if isinstance(root, ctk_kit.App):
             apply_appearance(root, self.appearance)
         self.actions = {}
+        self.window = MainWindow(root, self.close) if isinstance(root, ctk_kit.App) else None
         self.path_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
         self.status = ctk_kit.CTkLabel(root, text='新建配置或打开现有 YAML', font=FONT_BODY)
         self.preview_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
