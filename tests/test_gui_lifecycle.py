@@ -222,6 +222,59 @@ def test_stale_host_selection_requires_reselect(tmp_path):
         root.destroy()
 
 
+def test_upload_confirmation_rejects_changed_host_selection(tmp_path, monkeypatch):
+    """外发确认期间重排图床后，旧序号不得提交给 worker。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.open_upload = Mock()
+        app.upload()
+        _, submit = app.test_dialogs.open_upload.call_args.args
+
+        def confirm(*args, **kwargs):
+            """模拟确认弹窗期间配置被更新。"""
+            path = ('push', 'screenshot', 'image_host')
+            hosts = app.model.get(path)
+            hosts.insert(0, {'provider': 'beeimg', 'token': 'placeholder'})
+            app.model.set(path, hosts)
+            return True
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
+        assert not submit(0, str(tmp_path / 'image.png'))
+        app.controller.runner.start.assert_not_called()
+        assert app.test_dialogs.open_upload.call_count == 2
+    finally:
+        root.destroy()
+
+
+def test_notification_confirmation_rejects_changed_document(tmp_path, monkeypatch):
+    """外发确认期间切换文档后，不发送旧身份通知。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        channels = ('push', 'push_channel_settings', 'channels')
+        app.model.set(channels, [{'provider': 'bark', 'key': 'placeholder'}])
+
+        def confirm(*args, **kwargs):
+            """模拟确认弹窗期间打开另一份文档。"""
+            app.model.replace_document(new_document())
+            return True
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
+        app.notify()
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_result_and_conflict_actions_bypass_flush(tmp_path):
     """查看与隐藏结果不强制补存尚不能表示的草稿。"""
     from tests.test_gui_pages import make_app

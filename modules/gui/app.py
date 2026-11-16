@@ -386,9 +386,13 @@ class App:
 
     def _request(self, action, *, target_index=None, host_index=None,
                  image_path=None, template_key=None, capture_provider=None,
-                 capture_target=None):
+                 capture_target=None, expected_identity=None):
         """主线程冻结草稿与绝对路径，后台只接收不可变请求。"""
         if not self._require_saved():
+            return False
+        identity = (self.model.document_generation, self.model.revision)
+        if expected_identity is not None and identity != expected_identity:
+            self.status.configure(text='配置已更新，请重新选择测试参数')
             return False
         if self.test_session.active_request is not None or self.controller.runner.active:
             self.status.configure(text='已有测试正在运行')
@@ -396,6 +400,9 @@ class App:
         if action in ('upload', 'notify') and not messagebox.askyesno(
                 '真实测试', ('固定测试消息将发往全部配置通道，继续吗？' if action == 'notify'
                            else '图片将真实上传到选定图床，继续吗？'), parent=self.root):
+            return False
+        if identity != (self.model.document_generation, self.model.revision):
+            self.status.configure(text='配置已更新，请重新选择测试参数')
             return False
         path = self.model.document.path
         request = TestRequest(uuid.uuid4().hex, self.model.document_generation,
@@ -506,7 +513,12 @@ class App:
                 self.status.configure(text='配置已更新，请重新选择图床')
                 self.open_upload_selection()
                 return False
-            return self._request('upload', host_index=index, image_path=image)
+            started = self._request('upload', host_index=index, image_path=image,
+                                    expected_identity=identity[:2])
+            if not started and identity[:2] != (self.model.document_generation,
+                                                self.model.revision):
+                self.open_upload_selection()
+            return started
 
         self.test_dialogs.open_upload(names, submit)
 
@@ -526,7 +538,8 @@ class App:
         if not channels:
             self.status.configure(text='请先添加推送通道')
             return
-        self._request('notify', template_key='on_end')
+        self._request('notify', template_key='on_end', expected_identity=(
+            self.model.document_generation, self.model.revision))
 
     def cancel_test(self):
         """取消仅针对截图或上传 worker，不影响 CLI。"""
