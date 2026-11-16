@@ -161,12 +161,49 @@ def test_non_string_target_fields_are_shown_safely():
     model.set(('push', 'screenshot', 'targets'), [
         {'provider': 'adb', 'target': 123},
         {'provider': [], 'target': 'demo'}])
+    model.set(('push', 'screenshot', 'image_host'), [
+        {'provider': [], 'token': 'secret'}])
     try:
         page = ScreenshotPage(root, Mock(model=model))
         assert len(page.target_rows) == 2
+        menus = [child for row in page.targets_body.winfo_children()
+                 for child in row.winfo_children()
+                 if isinstance(child, ctk_kit.CTkOptionMenu)]
+        assert menus[1].get() == '未知'
+        assert page.host_rows[0]['provider'].get() == '未知'
         assert model.get(('push', 'screenshot', 'targets')) == [
             {'provider': 'adb', 'target': 123},
             {'provider': [], 'target': 'demo'}]
+    finally:
+        root.destroy()
+
+
+def test_scalar_screenshot_section_disables_controls_and_keeps_model(tmp_path):
+    """截图节为标量时提示结构异常，目标/图床/保留控件禁用且点击不写模型。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot'] = 'bad'
+    path = tmp_path / 'scalar-screenshot.yaml'
+    model = EditorModel(save_document(document, path, expected_fingerprint=None))
+    page = ScreenshotPage(root, Mock(model=model))
+    before = model.snapshot()
+    try:
+        assert '结构无效' in page.targets_hint.cget('text')
+        assert '结构无效' in page.hosts_hint.cget('text')
+        assert page.add_target_button.cget('state') == 'disabled'
+        assert page.add_host_button.cget('state') == 'disabled'
+        assert page.cleanup.cget('state') == 'disabled'
+        assert page.days.up.cget('state') == 'disabled'
+        assert page.days.down.cget('state') == 'disabled'
+        page.cleanup.toggle()
+        page.days.up._command()
+        page.days.down._command()
+        assert model.snapshot() == before
+        assert read_document(path).tree['push']['screenshot'] == 'bad'
     finally:
         root.destroy()
 

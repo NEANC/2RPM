@@ -125,7 +125,7 @@ def test_non_string_channel_provider_is_unknown():
               [{'provider': [], 'token': 'secret'}])
     page = Page(root, Mock(model=model, notify=Mock()))
     try:
-        assert 'unknown' in page.channel_rows[0]['toggle'].cget('text')
+        assert '未知' in page.channel_rows[0]['toggle'].cget('text')
         assert page.channel_rows[0]['status'].cget('text') == '需要填写参数'
         assert model.get(('push', 'push_channel_settings', 'channels')) == [
             {'provider': [], 'token': 'secret'}]

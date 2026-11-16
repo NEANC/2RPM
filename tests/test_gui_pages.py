@@ -197,6 +197,7 @@ def test_list_entry_reselects_after_clean_draft_external_reload(tmp_path, operat
 
         action()
 
+        assert '配置已更新，请重新选择列表项' in app.status.cget('text')
         assert app.model.document_generation == generation + 1
         assert app.model.get(list_path) == expected
         persisted = read_document(path).tree

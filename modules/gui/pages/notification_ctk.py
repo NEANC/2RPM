@@ -177,7 +177,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         identity = (self.model.document_generation, self.model.revision)
         writable = self.model.before_list_edit()
         if not writable:
-            self.app.status.configure(text=PRESAVE_HINT)
+            if identity == (self.model.document_generation, self.model.revision):
+                self.app.status.configure(text=PRESAVE_HINT)
             return
         if identity != (self.model.document_generation, self.model.revision):
             return
@@ -201,7 +202,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         identity = (self.model.document_generation, self.model.revision)
         writable = self.model.before_list_edit()
         if not writable:
-            self.app.status.configure(text=PRESAVE_HINT)
+            if identity == (self.model.document_generation, self.model.revision):
+                self.app.status.configure(text=PRESAVE_HINT)
             return
         if identity != (self.model.document_generation, self.model.revision):
             return
@@ -269,7 +271,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
             top.pack(fill='x', padx=8, pady=6)
             provider = channel.get('provider')
-            provider = provider if isinstance(provider, str) else 'unknown'
+            provider = provider if isinstance(provider, str) else '未知'
             status_text = self._status(channel)
             toggle = ctk_kit.CTkButton(top, text=f'{index + 1}. {provider}  '
                                           + ('⌄' if self._expanded_channel == index else '›'),
