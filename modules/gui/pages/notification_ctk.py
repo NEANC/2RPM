@@ -172,7 +172,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def add_channel(self, provider):
         """新增选择的通道并立即触发既有列表保存边界。"""
-        if provider not in PROVIDERS.values():
+        if provider not in PROVIDERS.values() or not path_writable(self.model, CHANNELS):
             return
         identity = (self.model.document_generation, self.model.revision)
         if not self.model.before_list_edit() or identity != (

@@ -1528,6 +1528,35 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         root.destroy()
 
 
+def test_empty_push_page_enables_retry_and_creates_channel_section(tmp_path):
+    """push 为空映射时重试字段可写，添加通道会创建缺失子节。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        source = tmp_path / 'empty-push.yaml'
+        source.write_text('monitor:\n  mode: watch\n  target: demo.exe\n  common: {}\n'
+                          'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(source)
+        assert app.show_page('消息推送设置')
+        page = app.visible_pages['消息推送设置']
+        assert page.structure_hint.cget('text') == ''
+        retry = ('push', 'retry', 'interval')
+        widget = page.fields[retry][1]
+        assert widget.cget('state') == 'normal'
+        widget.insert(0, '9s')
+        assert app.model.get(retry) == '9s'
+        assert page.add_channel_button.cget('state') == 'normal'
+        page.add_channel('telegram')
+        channels = app.model.get(page.channels_path)
+        assert channels[-1]['provider'] == 'telegram'
+        assert app.controller.save()
+        disk = read_document(source).tree
+        assert disk['push']['retry']['interval'] == '9s'
+        assert disk['push']['push_channel_settings']['channels'][-1]['provider'] == 'telegram'
+    finally:
+        root.destroy()
+
+
 def test_missing_common_mapping_is_editable_and_created_on_save(tmp_path):
     """monitor.common 缺失属于可自动创建的映射，不应禁用字段。"""
     root = tk.Tk()
