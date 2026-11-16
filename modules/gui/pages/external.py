@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+# -_- coding: utf-8 -_-
+
+"""ctk-kit 外部动作路径和触发次数设置。"""
+
+import tkinter as tk
+from tkinter import filedialog
+
+import ctk_kit
+
+from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
+from modules.gui.widgets import scroll_to_widget
+
+
+EVENTS = (
+    ('on_end', '目标结束', '监视中的目标进程结束后触发。'),
+    ('on_timeout', '运行超时', '同一进程的运行超时告警次数达到阈值的整数倍时触发。'),
+    ('on_wait_timeout', '等待启动超时', '超过最长等待时间仍未找到目标进程时触发。'),
+)
+
+
+class Page(ctk_kit.CTkScrollableFrame):
+    """仅编辑已有 external 字段和 monitor 超时阈值。"""
+
+    def __init__(self, parent, app):
+        """绘制三个事件卡片。"""
+        super().__init__(parent, corner_radius=0)
+        self.model = app.model
+        self.fields = {}
+        self.action_drafts = {}
+        self.restore_buttons = {}
+        self.generation = self.model.document_generation
+        self._refreshing = False
+        ctk_kit.CTkLabel(self, text='外部程序设置', font=FONT_TITLE).pack(anchor='w', pady=(0, 12))
+        for event, title, hint in EVENTS:
+            card = ctk_kit.CTkFrame(self, corner_radius=12)
+            card.pack(fill='x', pady=8)
+            ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
+            ctk_kit.CTkLabel(card, text=hint, font=FONT_SMALL).pack(anchor='w', padx=16)
+            row = ctk_kit.CTkFrame(card, fg_color='transparent')
+            row.pack(fill='x', padx=16, pady=12)
+            ctk_kit.CTkLabel(row, text='外部程序／BAT 路径', font=FONT_BODY).pack(side='left')
+            self._entry(row, ('external', event))
+            ctk_kit.CTkButton(row, text='⌕', width=32,
+                              command=lambda key=event: self.choose_file(key)).pack(side='left')
+            ctk_kit.CTkButton(row, text='×', width=32,
+                              command=lambda key=event: self.clear_file(key)).pack(side='left')
+            restore = ctk_kit.CTkButton(row, text='恢复', width=55, state='disabled',
+                                        command=lambda key=event: self.restore_file(key))
+            restore.pack(side='left')
+            self.restore_buttons[event] = restore
+            if event == 'on_timeout':
+                row = ctk_kit.CTkFrame(card, fg_color='transparent')
+                row.pack(fill='x', padx=16, pady=(0, 12))
+                ctk_kit.CTkLabel(row, text='触发次数阈值', font=FONT_BODY).pack(side='left')
+                path = ('monitor', 'common', 'timeout_threshold')
+                self._entry(row, path, numeric=True)
+                for delta, text in ((1, '▲'), (-1, '▼')):
+                    ctk_kit.CTkButton(row, text=text, width=28,
+                                      command=lambda step=delta: self._step(step)).pack(side='left')
+        self.refresh()
+
+    def _entry(self, parent, path, *, numeric=False):
+        """追踪粘贴与键盘输入，数字原文交由模型保存。"""
+        variable = tk.StringVar(master=self)
+        entry = ctk_kit.CTkEntry(parent, textvariable=variable, font=FONT_BODY,
+                                 width=75 if numeric else 250)
+        entry.pack(side='left', fill='x', expand=not numeric, padx=8)
+        variable.trace_add('write', lambda *_: self._changed(path, variable, numeric))
+        self.fields[path] = (variable, entry, 'int' if numeric else 'text')
+
+    def _changed(self, path, variable, numeric):
+        """刷新不写回草稿。"""
+        if not self._refreshing:
+            if numeric:
+                self.model.set_input(path, variable.get(), kind='int')
+            else:
+                self.model.set(path, variable.get())
+
+    def _step(self, delta):
+        """仅在现值为整数时步进。"""
+        path = ('monitor', 'common', 'timeout_threshold')
+        raw = self.model.get_input(path)
+        if raw.lstrip('+-').isdigit():
+            self.fields[path][0].set(str(int(raw) + delta))
+
+    def choose_file(self, event):
+        """系统选择器取消时保持原输入。"""
+        selected = filedialog.askopenfilename(parent=self, filetypes=[('程序或脚本', '*.exe *.bat *.cmd'), ('所有文件', '*.*')])
+        if selected:
+            self.fields[('external', event)][0].set(selected)
+
+    def clear_file(self, event):
+        """清空指定动作而不执行它，仅在本模型内存中保留可恢复路径。"""
+        value = self.fields[('external', event)][0].get()
+        if value:
+            self.action_drafts[event] = value
+        self.fields[('external', event)][0].set('')
+        self._update_restore(event)
+
+    def restore_file(self, event):
+        """只恢复当前文档曾清空的动作，不写入其它文档。"""
+        value = self.action_drafts.pop(event, None)
+        if value is not None and self.generation == self.model.document_generation:
+            self.fields[('external', event)][0].set(value)
+        self._update_restore(event)
+
+    def _update_restore(self, event):
+        """按是否存在内存草稿启用或禁用恢复入口。"""
+        button = self.restore_buttons.get(event)
+        if button is not None:
+            button.configure(state='normal' if event in self.action_drafts else 'disabled')
+
+    def refresh(self):
+        """显示已有路径与未完成的数字输入，文档替换后丢弃旧恢复草稿。"""
+        if self.generation != self.model.document_generation:
+            self.action_drafts.clear()
+            self.generation = self.model.document_generation
+        self._refreshing = True
+        try:
+            for path, (variable, _entry, kind) in self.fields.items():
+                variable.set(self.model.get_input(path) if kind == 'int' else
+                             str(self.model.get(path) or ''))
+        finally:
+            self._refreshing = False
+        for event in self.restore_buttons:
+            self._update_restore(event)
+
+    def focus_issue(self, path):
+        """导航到与诊断路径相符的输入。"""
+        field = self.fields.get(tuple(path))
+        if field:
+            scroll_to_widget(self, field[1])
+            field[1].focus_force()
