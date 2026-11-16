@@ -140,6 +140,25 @@ def test_recreated_ctk_root_keeps_font_resources(tmp_path, monkeypatch):
             root.destroy()
 
 
+def test_validation_result_invalidated_after_edit(tmp_path, monkeypatch):
+    """编辑后旧校验结果失效，回到主页显示尚未校验。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False, remember_theme=False,
+                       notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.validate()
+        home = app.visible_pages['主页']
+        assert home.check.cget('text') != '尚未校验'
+        app.model.set(('monitor', 'target'), 'edited.exe')
+        app.refresh()
+        assert home.check.cget('text') == '尚未校验'
+        assert home.issue_hint.cget('text') == ''
+    finally:
+        root.destroy()
+
+
 def test_close_cancel_keeps_root(tmp_path, monkeypatch):
     """拒绝退出时窗口和草稿仍存在。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

@@ -44,6 +44,7 @@ class App:
         self.test_dialogs = TestDialogs(root, self.test_session)
         self.generation = self.model.document_generation
         self.document_path = self.model.document.path
+        self._validated = None
         self.result_text = ''
         self.preview_image = None
         self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
@@ -126,6 +127,7 @@ class App:
         """按业务名称切页；返回主页不因未完成草稿而拒绝。"""
         if name not in self.page_names:
             return False
+        self._invalidate_validation_if_stale()
         self.sidebar.show(name)
         page = self.visible_pages[name]
         if hasattr(page, 'refresh'):
@@ -181,8 +183,17 @@ class App:
             return [App._plain_value(item) for item in value]
         return value
 
+    def _invalidate_validation_if_stale(self):
+        """草稿或文档变化后撤销旧校验结果。"""
+        if self._validated is None:
+            return
+        if self._validated != (self.model.document_generation, self.model.revision):
+            self._validated = None
+            self.visible_pages['主页'].invalidate_validation()
+
     def refresh(self):
         """保存或替换文档后同步全部页面与标题。"""
+        self._invalidate_validation_if_stale()
         if self.generation != self.model.document_generation:
             if self.document_path != self.model.document.path:
                 self.test_session.clear()
@@ -204,6 +215,7 @@ class App:
 
     def _refresh_save_status(self):
         """编辑时仅刷新保存标记，不重建正在输入的控件。"""
+        self._invalidate_validation_if_stale()
         path = self.model.document.path
         pending = self.model.dirty or bool(self.model.input_errors)
         suffix = '（外部冲突）' if self.controller.conflicted else '（未保存）' if pending else ''
@@ -364,6 +376,7 @@ class App:
                 self.visible_pages[name].focus_issue(issue.path)
             else:
                 self.status.configure(text=f'{name}：请在 YAML 中检查对应字段')
+        self._validated = (self.model.document_generation, self.model.revision)
         return candidate
 
     def start_cli(self):

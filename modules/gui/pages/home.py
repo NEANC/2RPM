@@ -73,6 +73,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             f'{name}：{state}' + (f'（{"；".join(reasons)}）' if reasons else '')
             for name, state, reasons in conditions))
 
+    def invalidate_validation(self):
+        """草稿已变化时清空旧校验结果与诊断落点。"""
+        self.check.configure(text='尚未校验')
+        self.issue_hint.configure(text='')
+
     def show_issue(self, code):
         """结构问题只显示类别，不显示未知诊断原文。"""
         self.issue_hint.configure(text='配置结构与兼容性问题，请检查 YAML 文件')
