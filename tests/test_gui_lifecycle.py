@@ -17,6 +17,8 @@ from unittest.mock import patch
 import pytest
 
 from modules.config_document import new_document
+from modules.config_document import read_document
+from modules.config_document import save_document
 from modules.gui.controller import Controller
 from modules.gui.model import EditorModel
 from modules.gui.protocol import TestRequest as GuiRequest
@@ -271,6 +273,67 @@ def test_notification_confirmation_rejects_changed_document(tmp_path, monkeypatc
         monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
         app.notify()
         app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_upload_confirmation_reloads_disk_and_requires_reselect(tmp_path, monkeypatch):
+    """确认期间磁盘图床变动时刷新列表而不按旧序号上传。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.open_upload = Mock()
+        app.upload()
+        _, submit = app.test_dialogs.open_upload.call_args.args
+        path = app.model.document.path
+
+        def confirm(*args, **kwargs):
+            """在真实外发确认期间写入另一版配置。"""
+            document = read_document(path)
+            document.tree['push']['screenshot']['image_host'].insert(
+                0, {'provider': 'beeimg', 'token': 'replacement'})
+            save_document(document, path, expected_fingerprint=document.fingerprint)
+            return True
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
+        assert not submit(0, str(tmp_path / 'image.png'))
+        app.controller.runner.start.assert_not_called()
+        assert app.test_dialogs.open_upload.call_count == 2
+        assert app.model.document.fingerprint == read_document(path).fingerprint
+        assert '重新选择图床' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_notification_confirmation_rejects_disk_change(tmp_path, monkeypatch):
+    """确认期间外部编辑磁盘配置时拒绝发送旧通道快照。"""
+    from tests.test_gui_pages import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        channels = ('push', 'push_channel_settings', 'channels')
+        app.model.set(channels, [{'provider': 'bark', 'key': 'placeholder'}])
+        path = app.model.document.path
+
+        def confirm(*args, **kwargs):
+            """在确认期间更换磁盘通道而不通知内存模型。"""
+            document = read_document(path)
+            document.tree['push']['push_channel_settings']['channels'] = []
+            save_document(document, path, expected_fingerprint=document.fingerprint)
+            return True
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
+        app.notify()
+        app.controller.runner.start.assert_not_called()
+        assert app.model.document.fingerprint == read_document(path).fingerprint
+        assert '配置已更新' in app.status.cget('text')
     finally:
         root.destroy()
 

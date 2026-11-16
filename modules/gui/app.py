@@ -401,6 +401,9 @@ class App:
                 '真实测试', ('固定测试消息将发往全部配置通道，继续吗？' if action == 'notify'
                            else '图片将真实上传到选定图床，继续吗？'), parent=self.root):
             return False
+        if action in ('upload', 'notify') and self.controller.check_external():
+            self.status.configure(text='磁盘配置已更新，请先处理冲突')
+            return False
         if identity != (self.model.document_generation, self.model.revision):
             self.status.configure(text='配置已更新，请重新选择测试参数')
             return False
@@ -518,6 +521,7 @@ class App:
             if not started and identity[:2] != (self.model.document_generation,
                                                 self.model.revision):
                 self.open_upload_selection()
+                self.status.configure(text='配置已更新，请重新选择图床')
             return started
 
         self.test_dialogs.open_upload(names, submit)
