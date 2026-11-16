@@ -128,12 +128,14 @@ class EditorModel:
         """保存成功后接受磁盘基线并清空旧分支草稿。"""
         changed_path = document.path != self.document.path
         changed_tree = document.tree != self._tree
+        raw_inputs = self.raw_inputs if not changed_tree else {}
         if changed_path:
             self.document_generation += 1
             self.revision = 0
         elif changed_tree:
             self.revision += 1
         self._adopt(document)
+        self.raw_inputs = raw_inputs
 
     def replace_document(self, document: ConfigDocument) -> None:
         """新建或打开成功后替换同一模型实例的文档。"""

@@ -85,6 +85,17 @@ def test_partial_number_keeps_raw_draft(tmp_path):
     assert controller.model.document.path.read_bytes() == before
 
 
+def test_saved_number_restores_edit_text(tmp_path):
+    """成功保存数值后，输入框仍保留用户输入的原文。"""
+    controller, coordinator, _ = setup(tmp_path)
+    path = ('monitor', 'common', 'timeout_threshold')
+    controller.model.set_input(path, '007', kind='int')
+    assert coordinator.flush()
+    assert read_document(controller.model.document.path).tree['monitor']['common']['timeout_threshold'] == 7
+    assert controller.model.get_input(path) == '007'
+    assert not controller.model.dirty
+
+
 def test_old_generation_callback_cannot_save(tmp_path):
     """旧文件的延迟回调即使被调用也不能写入新文件。"""
     controller, coordinator, clock = setup(tmp_path)
