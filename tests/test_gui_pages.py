@@ -470,7 +470,7 @@ def test_error_expands_and_focuses(tmp_path):
         page.focus_issue(path)
         root.update()
         assert page.section_for_issue.expanded is True
-        assert root.focus_get() is page.widget_for_issue
+        assert root.focus_get() is page.fields[path][1]._entry
     finally:
         root.destroy()
 
@@ -1042,6 +1042,20 @@ def test_validate_shows_issue_count_and_navigates_to_field(tmp_path):
         assert any(issue.severity == 'error' for issue in candidate.issues)
         assert '1 个问题' in app.visible_pages['主页'].check.cget('text')
         assert app.current_page == '监视设置'
+    finally:
+        root.destroy()
+
+
+def test_validation_navigation_focuses_monitor_target_entry(tmp_path):
+    """从主页问题跳转后真实监视目标输入框获得焦点。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['监视设置']
+        app.focus_validation_issue('监视设置', SimpleNamespace(path=('monitor', 'target')))
+        root.update_idletasks()
+        assert app.current_page == '监视设置'
+        assert root.focus_get() is page.fields[('monitor', 'target')][1]._entry
     finally:
         root.destroy()
 
@@ -1619,7 +1633,7 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
             app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
                 SimpleNamespace(path=field, severity='error')])
             app.validate()
-            root.update()
+            root.update_idletasks()
             if path == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
                 destination = '外部程序设置'
             elif path[:2] == ('push', 'screenshot'):
