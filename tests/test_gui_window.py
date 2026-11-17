@@ -3,6 +3,7 @@
 
 """主窗边框、标题栏交互及关闭确认回归。"""
 
+import ctypes
 import tkinter as tk
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -160,7 +161,8 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         app = make_app(root, tmp_path)
         root.geometry('420x680+100+100')
         root.update()
-        assert (root._min_width, root._min_height) == (900, 680)
+        assert root._min_width == 900
+        assert root._min_height < 680
         minimum_width, minimum_height = root.tk.call('wm', 'minsize', root._w)
         assert root.winfo_width() >= minimum_width
         assert root.winfo_height() >= minimum_height
@@ -176,6 +178,60 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
             y = button.winfo_rooty() + button.winfo_height() // 2
             target = root.winfo_containing(x, y)
             assert target is button or str(target).startswith(str(button) + '.')
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_initial_height_respects_work_area_and_four_pages_scroll(tmp_path, monkeypatch):
+    """低工作区启动不越界，四个主要页面在缩矮后仍可滚动。"""
+    monkeypatch.setattr('modules.gui.app.work_area_height', lambda _root: 520)
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        assert root.geometry().startswith('900x520')
+        root.geometry('900x420+100+100')
+        root.update()
+        assert root.geometry().startswith('900x420')
+        for name in ('主页', '监视设置', '截图设置', '消息推送设置'):
+            assert app.show_page(name)
+            root.update()
+            page = app.visible_pages[name]
+            assert isinstance(page, ctk_kit.CTkScrollableFrame)
+            assert page._parent_canvas.yview()[1] < 1, name
+        app.window.minimize.invoke()
+        root.update()
+        root.deiconify()
+        root.update()
+        assert root.overrideredirect()
+        assert int(root.geometry().split('x')[1].split('+')[0]) <= 520
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_work_area_height_uses_logical_window_units(monkeypatch):
+    """Win32 物理像素转成 ctk-kit geometry 使用的逻辑像素。"""
+    from modules.gui import app as gui_app
+
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        expected = 520
+        physical = round(expected * root._get_window_scaling())
+
+        def monitor_info(_monitor, pointer):
+            """模拟低工作区的 Win32 返回值。"""
+            info = ctypes.cast(pointer, ctypes.POINTER(gui_app._MonitorInfo)).contents
+            info.work.bottom = physical
+            return True
+
+        monkeypatch.setattr(gui_app.ctypes.windll.user32, 'GetMonitorInfoW', monitor_info)
+        assert gui_app.work_area_height(root) == expected
     finally:
         root.destroy()
         tk._default_root = None

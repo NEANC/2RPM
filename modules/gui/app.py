@@ -4,6 +4,8 @@
 """Tk 主线程窗口、侧栏导航及隔离测试结果消费。"""
 
 from collections.abc import Mapping
+import ctypes
+from ctypes import wintypes
 import queue
 import shutil
 import tempfile
@@ -27,6 +29,24 @@ from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
 from modules.gui.window import MainWindow
+
+
+class _MonitorInfo(ctypes.Structure):
+    """Win32 显示器工作区结构。"""
+
+    _fields_ = [('size', wintypes.DWORD), ('monitor', wintypes.RECT),
+                ('work', wintypes.RECT), ('flags', wintypes.DWORD)]
+
+
+def work_area_height(root):
+    """读取窗口所在显示器可用工作区的高度。"""
+    info = _MonitorInfo()
+    info.size = ctypes.sizeof(info)
+    monitor = ctypes.windll.user32.MonitorFromWindow(root.winfo_id(), 2)
+    scaling = root._get_window_scaling() if isinstance(root, ctk_kit.App) else 1
+    if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return int((info.work.bottom - info.work.top) / scaling)
+    return int(root.winfo_screenheight() / scaling)
 
 
 class App:
@@ -57,8 +77,8 @@ class App:
         self.current_page = '主页'
         root._gui_program_dir = controller.program_dir
         root.title('2RPM 配置')
-        root.minsize(900, 680)
-        root.geometry('900x680')
+        root.minsize(900, 300)
+        root.geometry(f'900x{min(680, work_area_height(root))}')
         self.appearance_path = preferences_path()
         self.appearance = load_preferences(self.appearance_path)
         if isinstance(root, ctk_kit.App):
