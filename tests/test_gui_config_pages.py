@@ -94,6 +94,61 @@ def test_screenshot_page_retention_and_credentials():
         root.destroy()
 
 
+def test_screenshot_order_arrows_respect_visible_boundaries():
+    """目标与图床排序箭头仅在有相邻可见行时启用。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'window', 'target': 'A'},
+        {'provider': 'window', 'target': 'B'}])
+    model.set(('push', 'screenshot', 'image_host'), [
+        {'provider': 'beeimg', 'token': 'a'},
+        {'provider': 'beeimg', 'token': 'b'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        for rows in (page.target_rows, page.host_rows):
+            first, last = (row['number'].master for row in rows)
+            first_buttons = [child for child in first.winfo_children()
+                             if isinstance(child, ctk_kit.CTkFrame)][0].winfo_children()
+            last_buttons = [child for child in last.winfo_children()
+                            if isinstance(child, ctk_kit.CTkFrame)][0].winfo_children()
+            assert [button.cget('state') for button in first_buttons] == ['disabled', 'normal']
+            assert [button.cget('state') for button in last_buttons] == ['normal', 'disabled']
+            assert all(button.cget('font') == page.target_rows[0]['number'].cget('font')
+                       for button in first_buttons)
+            assert all(button.cget('text_color') == page.target_rows[0]['number'].cget('text_color')
+                       for button in first_buttons)
+    finally:
+        root.destroy()
+
+
+def test_screenshot_delete_buttons_have_red_surface_and_border():
+    """目标和图床删除入口都具有独立的红色系底色与边框。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'window', 'target': 'A'}])
+    model.set(('push', 'screenshot', 'image_host'), [
+        {'provider': 'beeimg', 'token': 'a'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        for body in (page.targets_body, page.hosts_body):
+            row = body.winfo_children()[0]
+            delete = next(child for child in row.winfo_children()
+                          if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '删除')
+            assert delete.cget('border_width') == 1
+            assert delete.cget('fg_color') != 'transparent'
+            assert delete.cget('hover_color') != 'transparent'
+    finally:
+        root.destroy()
+
+
 def test_host_rows_show_only_provider_and_credentials_and_preserve_legacy_fields(tmp_path):
     """旧 catbox 与高级字段留在模型和磁盘，但不展示高级编辑行。"""
     from unittest.mock import Mock
@@ -311,6 +366,32 @@ def test_window_target_selection_keeps_custom_out(monkeypatch):
         page._choose_window(0)
         assert model.get(('push', 'screenshot', 'targets'))[0] == {
             'provider': 'window', 'target': 'manual', 'out': 'custom'}
+    finally:
+        root.destroy()
+
+
+def test_window_target_search_and_clear_are_inside_one_field():
+    """窗口目标的放大镜、输入与清除入口位于同一个搜索框内。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'window', 'target': '原窗口'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    try:
+        row = page.targets_body.winfo_children()[0]
+        entry = page.target_rows[0]['entry']
+        field = entry.master
+        buttons = [child for child in field.winfo_children()
+                   if isinstance(child, ctk_kit.CTkButton)]
+        assert field.master is row
+        assert [button.cget('text') for button in buttons] == ['⌕', '×']
+        assert entry.get() == '原窗口'
+        buttons[1]._command()
+        assert entry.get() == ''
+        assert model.get(('push', 'screenshot', 'targets', 0, 'target')) == ''
     finally:
         root.destroy()
 

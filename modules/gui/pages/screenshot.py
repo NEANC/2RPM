@@ -80,7 +80,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             anchor='w', padx=16, pady=(12, 4))
         return card
 
-    def _stepper(self, parent, action, number):
+    def _stepper(self, parent, action, number, total):
         """绘制窄编号与上下箭头。"""
         frame = ctk_kit.CTkFrame(parent, fg_color='transparent')
         frame.number = ctk_kit.CTkLabel(frame, text=f'{number:02d}', font=FONT_SMALL,
@@ -89,9 +89,13 @@ class Page(ctk_kit.CTkScrollableFrame):
         arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
         arrows.pack(side='left')
         frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
+                                     font=FONT_SMALL, text_color=COLORS['text_secondary'],
+                                     state='disabled' if number == 1 else 'normal',
                                      command=lambda: action(-1))
         frame.up.pack()
         frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
+                                       font=FONT_SMALL, text_color=COLORS['text_secondary'],
+                                       state='disabled' if number == total else 'normal',
                                        command=lambda: action(1))
         frame.down.pack()
         return frame
@@ -339,11 +343,12 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._set_item(TARGETS, index, 'target', selected.get()),
             dialog.destroy(), self.refresh())).pack(pady=(0, 16))
 
-    def _show_target(self, index, item, source_index=None):
+    def _show_target(self, index, item, source_index=None, total=1):
         """显示窗口搜索框或可编辑的 ADB 地址和数字端口。"""
         row = ctk_kit.CTkFrame(self.targets_body, fg_color='transparent')
         row.pack(fill='x', pady=4)
-        stepper = self._stepper(row, lambda delta: self.move_target(index, delta), index + 1)
+        stepper = self._stepper(row, lambda delta: self.move_target(index, delta),
+                                index + 1, total)
         stepper.pack(side='left')
         provider = item.get('provider', 'window')
         provider = provider if isinstance(provider, str) else '未知'
@@ -357,11 +362,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         entry = None
         port_entry = None
         if provider == 'window':
-            ctk_kit.CTkButton(row, text='⌕', width=32,
+            field = ctk_kit.CTkFrame(row)
+            field.pack(side='left', fill='x', expand=True, padx=4)
+            ctk_kit.CTkButton(field, text='⌕', width=32, fg_color='transparent',
                               command=lambda: self._choose_window(index)).pack(side='left')
-            entry = self._entry(row, item.get('target', ''),
+            entry = self._entry(field, item.get('target', ''),
                                 lambda value: self._set_item(TARGETS, index, 'target', value))
-            ctk_kit.CTkButton(row, text='×', width=32,
+            entry.configure(fg_color=field.cget('fg_color'), border_width=0)
+            ctk_kit.CTkButton(field, text='×', width=32, fg_color='transparent',
                               command=lambda: entry.delete(0, 'end')).pack(side='left')
         else:
             address, port = self._split_adb(item.get('target', ''))
@@ -383,6 +391,9 @@ class Page(ctk_kit.CTkScrollableFrame):
             ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
                               command=lambda: self._change_port(index, -1)).pack()
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
+                          fg_color=('#FDECEB', '#462426'),
+                          hover_color=('#F9D6D3', '#603034'),
+                          border_color=('#E8A49D', '#B74C50'), border_width=1,
                           command=lambda: self.remove_target(index)).pack(side='right')
         self.target_rows.append({'number': stepper.number, 'entry': entry,
                                  'port': port_entry,
@@ -433,12 +444,13 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.model.raw_inputs[path] = str(port + delta)
             self.refresh()
 
-    def _show_host(self, index, item, source_index=None):
+    def _show_host(self, index, item, source_index=None, total=1):
         """图床行展示当前 provider 与遮挡凭证。"""
         source_index = index if source_index is None else source_index
         row = ctk_kit.CTkFrame(self.hosts_body, fg_color='transparent')
         row.pack(fill='x', pady=4)
-        stepper = self._stepper(row, lambda delta: self.move_host(index, delta), index + 1)
+        stepper = self._stepper(row, lambda delta: self.move_host(index, delta),
+                                index + 1, total)
         stepper.pack(side='left')
         current = item.get('provider', 'beeimg')
         current = current if isinstance(current, str) else '未知'
@@ -455,6 +467,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.host_rows.append({'number': stepper.number, 'provider': provider,
                                'token': token, 'source_index': source_index})
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
+                          fg_color=('#FDECEB', '#462426'),
+                          hover_color=('#F9D6D3', '#603034'),
+                          border_color=('#E8A49D', '#B74C50'), border_width=1,
                           command=lambda: self.remove_host(index)).pack(side='right')
 
     def _retention(self):
@@ -545,9 +560,9 @@ class Page(ctk_kit.CTkScrollableFrame):
                 ('图床配置缺失或结构无效，请在 YAML 中检查'
                  if raw_hosts is not None else ''))
             for index, (source_index, target) in enumerate(targets):
-                self._show_target(index, target, source_index)
+                self._show_target(index, target, source_index, len(targets))
             for index, (source_index, host) in enumerate(hosts):
-                self._show_host(index, host, source_index)
+                self._show_host(index, host, source_index, len(hosts))
         buttons = 'disabled' if broken else 'normal'
         self.add_target_button.configure(state=buttons)
         self.add_host_button.configure(state=buttons)
