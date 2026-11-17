@@ -1625,7 +1625,7 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
 
 
 def test_validation_focus_survives_window_deactivation(tmp_path):
-    """真实主页校验定位后，失活窗口仍记录目标输入焦点。"""
+    """主页校验定位后，主窗重新激活时恢复目标输入焦点并接收键盘输入。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -1646,7 +1646,13 @@ def test_validation_focus_survives_window_deactivation(tmp_path):
         other.focus_force()
         root.update()
         assert root.focus_get() is other
-        assert root.nametowidget(root.tk.call('focus', '-lastfor', root._w)) is target
+        other.destroy()
+        root.update()
+        assert root.focus_get() is target
+        before = target.get()
+        target.event_generate('<KeyPress-a>')
+        root.update()
+        assert target.get() == before + 'a'
     finally:
         root.destroy()
 
@@ -1669,6 +1675,7 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
                       and child.cget('text') == '校验配置')
         for index, path in cases:
             app.show_page('主页')
+            root.focus_force()
             app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
                 SimpleNamespace(path=field, severity='error')])
             button.invoke()
@@ -1686,9 +1693,8 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
             if destination == '监视设置' and path[:2] == ('monitor', 'launch'):
                 assert focused.widget_for_issue.winfo_exists()
             else:
-                assert root.nametowidget(root.tk.call('focus', '-lastfor', root._w)) is (
-                    widget._textbox if isinstance(widget, ctk_kit.CTkTextbox)
-                    else widget._entry), path
+                assert root.focus_get() is (widget._textbox if isinstance(widget, ctk_kit.CTkTextbox)
+                                            else widget._entry), path
     finally:
         root.destroy()
 
