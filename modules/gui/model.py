@@ -158,11 +158,12 @@ class EditorModel:
         return copy.deepcopy(self._tree)
 
     def accept_saved(self, document: ConfigDocument) -> None:
-        """保存成功后接受磁盘基线并清空旧分支草稿。"""
+        """保存成功后接受磁盘基线并保留另一模式的目标草稿。"""
         changed_path = document.path != self.document.path
         changed_tree = document.tree != self._tree
         raw_inputs = self.raw_inputs if not changed_tree else {}
         gui_target_types = self._gui_target_types
+        targets = self._targets.copy()
         if changed_path:
             self.document_generation += 1
             self.revision = 0
@@ -171,6 +172,9 @@ class EditorModel:
         self._adopt(document)
         self.raw_inputs = raw_inputs
         self._gui_target_types = gui_target_types
+        if isinstance(self._tree.get('monitor'), Mapping):
+            mode = self._tree['monitor'].get('mode')
+            self._targets.update({key: value for key, value in targets.items() if key != mode})
 
     def replace_document(self, document: ConfigDocument) -> None:
         """新建或打开成功后替换同一模型实例的文档。"""

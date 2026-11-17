@@ -89,6 +89,26 @@ def test_accept_saved_updates_baseline(tmp_path):
     assert model.revision == 1
 
 
+@pytest.mark.parametrize('saved_mode, draft_mode', [
+    ('watch', 'launch'),
+    ('launch', 'watch'),
+])
+def test_accept_saved_preserves_other_mode_target_draft(tmp_path, saved_mode, draft_mode):
+    """保存当前模式后仍可恢复另一模式尚未写盘的目标草稿。"""
+    model = EditorModel(new_document())
+    model.switch_mode(draft_mode)
+    model.set(('monitor', 'target'), 'draft.exe')
+    model.switch_mode(saved_mode)
+    model.set(('monitor', 'target'), 'saved.exe')
+    saved = ConfigDocument(tmp_path / 'config.yaml', model.materialize().tree, 'saved')
+
+    model.accept_saved(saved)
+    model.switch_mode(draft_mode)
+
+    assert model.get(('monitor', 'target')) == 'draft.exe'
+    assert saved.tree['monitor']['target'] == 'saved.exe'
+
+
 def test_replace_document_keeps_model_identity(tmp_path):
     """打开另一份文档抛弃旧草稿但保留模型实例。"""
     model = EditorModel(new_document())
