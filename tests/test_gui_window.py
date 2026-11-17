@@ -7,6 +7,7 @@ import ctypes
 import tkinter as tk
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import call
 
 import ctk_kit
 import customtkinter
@@ -37,9 +38,23 @@ def window():
 def _expose_for_pointer(root):
     """真实屏幕命中前将受测窗口置于其他普通窗口之上。"""
     root.attributes('-topmost', True)
-    root.lift()
-    root.update()
-    root.attributes('-topmost', False)
+    try:
+        root.lift()
+        root.update()
+    finally:
+        root.attributes('-topmost', False)
+
+
+def test_expose_for_pointer_restores_topmost_after_update_error():
+    """窗口更新抛错时不让临时置顶状态遗留。"""
+    root = Mock()
+    root.update.side_effect = RuntimeError('update failed')
+    with pytest.raises(RuntimeError, match='update failed'):
+        _expose_for_pointer(root)
+    assert root.attributes.call_args_list == [
+        call('-topmost', True), call('-topmost', False)]
+    root.lift.assert_called_once_with()
+    root.update.assert_called_once_with()
 
 
 def test_window_has_square_borderless_shell_and_embedded_controls(window):
@@ -80,8 +95,10 @@ def test_pointer_hit_survives_another_window_covering_controls(window):
         assert root.winfo_ismapped() and button.winfo_ismapped()
         assert root.winfo_containing(x, y) is None
         _expose_for_pointer(root)
+        assert not root.attributes('-topmost')
         target = root.winfo_containing(x, y)
-        assert target is button or str(target).startswith(str(button) + '.')
+        assert target is button or str(target).startswith(str(button) + '.'), (
+            button.cget('text'), x, y, target)
     finally:
         blocker.destroy()
 
@@ -111,6 +128,7 @@ def test_real_app_window_controls_receive_pointer_clicks(tmp_path):
         app = make_app(root, tmp_path)
         root.update()
         _expose_for_pointer(root)
+        assert not root.attributes('-topmost')
         for button in (app.window.minimize, app.window.maximize,
                        app.window.close_button):
             callback = Mock()
@@ -119,7 +137,7 @@ def test_real_app_window_controls_receive_pointer_clicks(tmp_path):
             y = button.winfo_rooty() + button.winfo_height() // 2
             target = root.winfo_containing(x, y)
             assert target is button or str(target).startswith(str(button) + '.'), (
-                button.cget('text'), target)
+                button.cget('text'), x, y, target)
             target.event_generate('<Enter>', x=x - target.winfo_rootx(),
                                   y=y - target.winfo_rooty())
             target.event_generate('<ButtonPress-1>', x=x - target.winfo_rootx(),
