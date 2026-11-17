@@ -30,8 +30,9 @@ def summary(config):
     push = config.get('push')
     push = push if isinstance(push, Mapping) else {}
     templates = push.get('templates')
+    mode_value = monitor.get('mode')
     mode = {'watch': '等待目标运行', 'launch': '主动启动并监视'}.get(
-        monitor.get('mode'), '待校验')
+        mode_value, '待校验') if isinstance(mode_value, str) else '待校验'
     target = monitor.get('target')
     target_state = ('已配置' if isinstance(target, str) and target.strip()
                     else '未配置' if isinstance(target, str) else '待校验')

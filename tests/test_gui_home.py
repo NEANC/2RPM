@@ -59,6 +59,15 @@ def test_summary_tolerates_non_mapping_screenshot():
     assert end[1] == '待校验'
 
 
+def test_summary_tolerates_unhashable_monitor_mode():
+    """模式值为列表或映射时摘要只显示待校验。"""
+    for mode in (['watch'], {'mode': 'watch'}):
+        config = new_document().tree
+        config['monitor']['mode'] = mode
+        text, _ = summary(config)
+        assert '运行方式：待校验' in text
+
+
 def test_sidebar_order_and_home(tmp_path, monkeypatch):
     """七页侧栏必须保持业务编辑入口可达，不把隐藏旧表单当作迁移。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

@@ -1953,6 +1953,21 @@ def test_open_monitor_null_refreshes_without_crash(tmp_path):
         root.destroy()
 
 
+def test_open_monitor_mode_list_refreshes_home_without_crash(tmp_path):
+    """打开模式为列表的配置后主页显示待校验。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = tmp_path / 'monitor-mode-list.yaml'
+        path.write_text('monitor:\n  mode: [watch]\n  target: demo.exe\n'
+                        'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
+        assert app.controller.open(path)
+        assert app.show_page('主页')
+        assert '运行方式：待校验' in app.summary_text
+    finally:
+        root.destroy()
+
+
 def test_open_missing_push_and_log_sections_refreshes_empty_state(tmp_path):
     """缺少 push/log 节时页面按空状态刷新，不抛 KeyError。"""
     root = tk.Tk()
