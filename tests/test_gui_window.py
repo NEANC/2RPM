@@ -102,6 +102,25 @@ def test_home_header_actions_are_hittable_below_window_controls(tmp_path):
         tk._default_root = None
 
 
+def test_home_header_starts_at_top_and_reserves_only_right_control_area(tmp_path):
+    """主页标题不下移，右侧动作区仅为窗口按钮预留 132 像素。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        home = app.visible_pages['主页']
+        header = home.winfo_children()[0]
+        bar = app.window.titlebar
+        assert header.pack_info()['pady'][0] == 0
+        assert header.pack_info()['padx'] == (0, bar.winfo_width())
+        assert header.winfo_rootx() + header.winfo_width() <= bar.winfo_rootx()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_close_button_has_red_hover_in_both_themes(window):
     """关闭按钮两种主题的悬停态都是红色而非默认强调色。"""
     _root, shell, _close = window
