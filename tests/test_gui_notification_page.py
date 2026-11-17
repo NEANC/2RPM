@@ -116,6 +116,35 @@ def test_channel_remove_refuses_stale_index_after_reload(monkeypatch):
         root.destroy()
 
 
+def test_channel_delete_confirmation_rejects_document_switch(monkeypatch):
+    """真实确认窗口停留期间切换配置后，不删除新文档同序号通道。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    model = EditorModel(new_document())
+    model.before_list_edit = Mock(return_value=True)
+    model.on_list_edit = Mock()
+    page = Page(root, Mock(model=model, notify=Mock()))
+    replacement = new_document()
+    replacement.tree['push']['push_channel_settings']['channels'] = [
+        {'provider': 'bark', 'key': 'external'}]
+
+    def confirm(*_args, **_kwargs):
+        """模拟用户确认删除前，另一路径已切换当前文档。"""
+        model.replace_document(replacement)
+        page.refresh()
+        return True
+
+    monkeypatch.setattr('modules.gui.pages.notification_ctk.messagebox.askyesno', confirm)
+    try:
+        page.channel_rows[0]['delete'].invoke()
+        assert model.get(page.channels_path) == [{'provider': 'bark', 'key': 'external'}]
+        model.on_list_edit.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_non_string_channel_provider_is_unknown():
     """通道 provider 非字符串时按未知通道展示且不崩溃。"""
     from modules.gui.pages.notification_ctk import Page

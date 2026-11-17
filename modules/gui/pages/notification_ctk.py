@@ -219,6 +219,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         if not messagebox.askyesno('删除通道', '删除该推送通道？', parent=self):
             return
+        if identity != (self.model.document_generation, self.model.revision):
+            return
         channels = self._safe_get(CHANNELS, [])
         channels.pop(source_index)
         self.model.set(CHANNELS, channels)
