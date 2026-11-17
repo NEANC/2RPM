@@ -34,6 +34,14 @@ def window():
         tk._default_root = None
 
 
+def _expose_for_pointer(root):
+    """真实屏幕命中前将受测窗口置于其他普通窗口之上。"""
+    root.attributes('-topmost', True)
+    root.lift()
+    root.update()
+    root.attributes('-topmost', False)
+
+
 def test_window_has_square_borderless_shell_and_embedded_controls(window):
     """方角主窗仅保留应用内的三个系统操作按钮。"""
     root, shell, _ = window
@@ -56,6 +64,26 @@ def test_drag_moves_window_by_pointer_delta(window):
     shell.drag(SimpleNamespace(x_root=165, y_root=185))
     root.update()
     assert (root.winfo_x(), root.winfo_y()) == (start[0] + 25, start[1] + 35)
+
+
+def test_pointer_hit_survives_another_window_covering_controls(window):
+    """其他窗口遮住已映射按钮时，命中测试先暴露受测窗口。"""
+    root, shell, _ = window
+    button = shell.minimize
+    x = button.winfo_rootx() + button.winfo_width() // 2
+    y = button.winfo_rooty() + button.winfo_height() // 2
+    blocker = tk.Toplevel(root)
+    try:
+        blocker.geometry(f'150x100+{x - 40}+{y - 30}')
+        blocker.lift()
+        blocker.update()
+        assert root.winfo_ismapped() and button.winfo_ismapped()
+        assert root.winfo_containing(x, y) is None
+        _expose_for_pointer(root)
+        target = root.winfo_containing(x, y)
+        assert target is button or str(target).startswith(str(button) + '.')
+    finally:
+        blocker.destroy()
 
 
 def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
@@ -82,6 +110,7 @@ def test_real_app_window_controls_receive_pointer_clicks(tmp_path):
     try:
         app = make_app(root, tmp_path)
         root.update()
+        _expose_for_pointer(root)
         for button in (app.window.minimize, app.window.maximize,
                        app.window.close_button):
             callback = Mock()
@@ -112,6 +141,7 @@ def test_home_header_actions_are_hittable_below_window_controls(tmp_path):
     try:
         app = make_app(root, tmp_path)
         root.update()
+        _expose_for_pointer(root)
         home = app.visible_pages['主页']
         buttons = [widget for frame in home.winfo_children()
                    for widget in frame.winfo_children()
@@ -162,6 +192,7 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         app = make_app(root, tmp_path)
         root.geometry('420x680+100+100')
         root.update()
+        _expose_for_pointer(root)
         assert root._min_width == 600
         assert root._min_height < 680
         minimum_width, minimum_height = root.tk.call('wm', 'minsize', root._w)
@@ -319,6 +350,7 @@ def test_narrow_work_area_keeps_headers_clickable_scrollable_and_restores(tmp_pa
             ):
                 assert app.show_page(name)
                 root.update()
+                _expose_for_pointer(root)
                 page = app.visible_pages[name]
                 assert page._parent_canvas.yview()[1] < 1, name
                 header = page.winfo_children()[0]
@@ -383,6 +415,7 @@ def test_config_header_actions_receive_real_pointer_clicks(tmp_path, page_name, 
         app = make_app(root, tmp_path)
         assert app.show_page(page_name)
         root.update()
+        _expose_for_pointer(root)
         page = app.visible_pages[page_name]
         header = page.winfo_children()[0]
         bar = app.window.titlebar
