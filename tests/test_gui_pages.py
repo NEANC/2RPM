@@ -73,6 +73,43 @@ def test_screenshot_autosave_keeps_editing_widget_and_cursor(tmp_path):
         root.destroy()
 
 
+def test_same_document_save_updates_home_without_rebuilding_screenshot(tmp_path):
+    """真实 Tk 纯保存同步主页，同时保持截图输入和校验状态。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        home = app.visible_pages['主页']
+        page.add_target()
+        app.show_page('截图设置')
+        entry = page.target_rows[-1]['entry']
+        root.update()
+        app.validate()
+        assert home.check.cget('text') != '尚未校验'
+        assert '目标位置：已配置' in app.summary_text
+
+        app.model.set(('monitor', 'target'), '')
+        entry.insert(0, '窗口标题')
+        entry._entry.icursor(2)
+        entry._entry.focus_force()
+        root.update_idletasks()
+        assert '（未保存）' in app.path_label.cget('text')
+        assert home.check.cget('text') == '尚未校验'
+
+        assert app.save_coordinator.flush()
+
+        assert '目标位置：未配置' in app.summary_text
+        assert home.check.cget('text') == '尚未校验'
+        assert '（未保存）' not in app.path_label.cget('text')
+        assert not app.model.dirty
+        assert page.target_rows[-1]['entry'] is entry
+        assert entry.winfo_exists()
+        assert root.focus_get() == entry._entry
+        assert entry._entry.index('insert') == 2
+    finally:
+        root.destroy()
+
+
 def test_screenshot_save_with_normalized_tree_refreshes_rows(tmp_path, monkeypatch):
     """保存结果发生规范化时仍用真实 Tk 刷新目标行。"""
     from modules.config_document import ConfigDocument

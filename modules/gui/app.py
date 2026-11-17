@@ -146,6 +146,7 @@ class App:
         self.actions['处理冲突'].pack_forget()
         self.controller.on_change = self.refresh
         self.controller.on_edit = self._refresh_save_status
+        self.controller.on_saved = self._refresh_saved_home
         self.controller.on_conflict = self._show_conflict
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
@@ -282,6 +283,11 @@ class App:
         for page in self.visible_pages.values():
             if hasattr(page, 'refresh'):
                 page.refresh()
+        self._refresh_save_status()
+
+    def _refresh_saved_home(self):
+        """同文档纯保存时仅刷新主页和保存标记，保留输入控件。"""
+        self.visible_pages['主页'].refresh()
         self._refresh_save_status()
 
     def _refresh_save_status(self):

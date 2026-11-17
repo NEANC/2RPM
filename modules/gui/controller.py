@@ -36,6 +36,7 @@ class Controller:
         self.launch_count = 0
         self.on_change = lambda: None
         self.on_edit = lambda: None
+        self.on_saved = lambda: None
         self.on_conflict = lambda: None
         self.coordinator = None
         self.conflicted = False
@@ -263,7 +264,7 @@ class Controller:
             self.model._targets = {draft['monitor']['mode']: copy.deepcopy(draft['monitor']['target'])}
         self.conflicted = False
         if same and not changed_tree:
-            self.on_edit()
+            self.on_saved()
         else:
             self.on_change()
         return True
