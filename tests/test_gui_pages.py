@@ -1489,12 +1489,20 @@ def test_normal_close_cancels_pending_poll(tmp_path):
 
 
 def test_screenshot_conditions_update_on_tab_switch(tmp_path):
-    """隐藏的截图开关由模型保存，预览和主页条件同步反映该值。"""
+    """切页后主页新增截图禁用原因，且可见文本不泄露配置值。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         event = 'on_timeout'
         path = ('push', 'templates', event, 'capture_screenshot')
+        secret = 'private-target-secret'
+        app.model.set(('monitor', 'target'), secret)
+        app.show_page('主页')
+        home = app.visible_pages['主页']
+        before = tuple(label.cget('text') for label in
+                       home.screenshot_rows['运行超时']['reasons'].body.winfo_children())
+        assert before
+        assert '事件或事件截图未启用' not in ''.join(before)
         app.show_page('消息推送设置')
         page = app.visible_pages['消息推送设置']
         page.expand_event(event)
@@ -1505,8 +1513,12 @@ def test_screenshot_conditions_update_on_tab_switch(tmp_path):
         assert '截图被阻止' in page.preview_labels[event].cget('text')
         app.show_page('截图设置')
         root.update()
-        home = app.visible_pages['主页']
-        home.refresh()
+        app.show_page('主页')
+        after = tuple(label.cget('text') for label in
+                      home.screenshot_rows['运行超时']['reasons'].body.winfo_children())
+        assert set(after) == set(before) | {'· 事件或事件截图未启用'}
+        assert secret not in ''.join(after)
+        assert secret not in home.groups['事件截图'].detail
         assert home.screenshot_rows['运行超时']['reasons'].detail == '条件未满足'
         assert home.groups['事件截图'].detail == '0/4 条件满足'
         assert app.model.get(path) is False
