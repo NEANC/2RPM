@@ -94,6 +94,8 @@ class App:
                                            pages=builders,
                                            bottom_pages={'设置': build('设置', settings)},
                                            initial='主页', on_change=self._page_changed)
+        if self.window is not None:
+            self.window.bind_brand(self.sidebar)
         for button in (*self.sidebar._buttons.values(),
                        *self.sidebar._bottom_buttons.values()):
             button.configure(font=FONT_BODY)

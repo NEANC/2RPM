@@ -18,9 +18,8 @@ class MainWindow:
         root.overrideredirect(True)
         root.set_window_corners(1)
         self.titlebar = ctk_kit.CTkFrame(
-            root, corner_radius=0, height=38, fg_color='transparent')
-        self.titlebar.pack(fill='x')
-        self.titlebar.pack_propagate(False)
+            root, corner_radius=0, width=132, height=38, fg_color='transparent')
+        self.titlebar.place(relx=1, x=0, y=0, anchor='ne')
         self.close_button = ctk_kit.CTkButton(
             self.titlebar, text='×', width=44, height=38, corner_radius=0,
             fg_color='transparent',
@@ -36,8 +35,13 @@ class MainWindow:
             fg_color='transparent',
             command=self.iconify, font=FONT_BODY)
         self.minimize.pack(side='right')
-        self.titlebar.bind('<ButtonPress-1>', self.start_drag)
-        self.titlebar.bind('<B1-Motion>', self.drag)
+
+    def bind_brand(self, sidebar):
+        """将侧栏品牌背景和文字作为窗口拖动区域。"""
+        for widget in (sidebar._head, sidebar._title_box,
+                       sidebar.title_label, sidebar.subtitle_label):
+            widget.bind('<ButtonPress-1>', self.start_drag)
+            widget.bind('<B1-Motion>', self.drag)
 
     def start_drag(self, event):
         """记录透明区域按下时的指针及窗口屏幕坐标。"""

@@ -36,7 +36,11 @@ def test_window_has_square_borderless_shell_and_embedded_controls(window):
     """方角主窗仅保留应用内的三个系统操作按钮。"""
     root, shell, _ = window
     assert root.overrideredirect()
-    assert shell.titlebar.winfo_manager() == 'pack'
+    assert shell.titlebar.winfo_manager() == 'place'
+    assert shell.titlebar.winfo_width() == sum(
+        button.winfo_width() for button in (shell.minimize, shell.maximize,
+                                           shell.close_button))
+    assert shell.titlebar.winfo_x() + shell.titlebar.winfo_width() == root.winfo_width()
     assert shell.minimize.master is shell.titlebar
     assert shell.maximize.master is shell.titlebar
     assert shell.close_button.master is shell.titlebar
@@ -50,6 +54,43 @@ def test_drag_moves_window_by_pointer_delta(window):
     shell.drag(SimpleNamespace(x_root=165, y_root=185))
     root.update()
     assert (root.winfo_x(), root.winfo_y()) == (start[0] + 25, start[1] + 35)
+
+
+def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
+    """右上操作区叠加在布局上，侧栏从主窗顶部开始。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        assert app.sidebar.winfo_y() == 0
+        assert app.window.titlebar.winfo_manager() == 'place'
+        assert app.window.titlebar.winfo_x() >= app.sidebar.sidebar.winfo_width()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_real_app_brand_area_drags_window(tmp_path):
+    """侧栏品牌背景与标题上的真实 Tk 事件都能移动窗口。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        for widget in (app.sidebar._head, app.sidebar.title_label):
+            start = (root.winfo_x(), root.winfo_y())
+            target = widget._canvas
+            target.event_generate('<ButtonPress-1>', x=5, y=5, warp=True)
+            root.update()
+            target.event_generate('<B1-Motion>', x=25, y=35, warp=True)
+            root.update()
+            assert (root.winfo_x(), root.winfo_y()) == (start[0] + 20, start[1] + 30)
+    finally:
+        root.destroy()
+        tk._default_root = None
 
 
 def test_maximize_toggles_and_minimize_restores_borderless(window):
