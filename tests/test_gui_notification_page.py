@@ -7,6 +7,7 @@ import tkinter as tk
 from unittest.mock import Mock
 
 import ctk_kit
+import pytest
 
 from modules.config_document import new_document
 from modules.gui.forms import provider_fields
@@ -162,6 +163,59 @@ def test_channel_whole_header_toggles_except_delete(monkeypatch):
         page.channel_rows[0]['delete'].invoke()
         assert len(model.get(page.channels_path)) == before - 1
         assert page._expanded_channel is None
+    finally:
+        root.destroy()
+
+
+def test_channel_outer_margin_click_toggles_real_row():
+    """点击通道外层边距时折叠，再点击时展开。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    root.geometry('900x680+100+100')
+    page = Page(root, Mock(model=EditorModel(new_document()), notify=Mock()))
+    page.pack(fill='both', expand=True)
+    try:
+        page.expand_channel(0)
+        root.update()
+        row = page.channel_rows[0]['header'].master
+        assert isinstance(row, ctk_kit.CTkFrame)
+        assert row.winfo_width() > row.winfo_children()[0].winfo_width()
+        row._canvas.event_generate('<Button-1>', x=2, y=2)
+        assert page._expanded_channel is None
+        root.update()
+        page.channel_rows[0]['header'].master._canvas.event_generate('<Button-1>', x=2, y=2)
+        assert page._expanded_channel == 0
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('removed', 'expected'), [(0, 0), (1, None), (2, 1)])
+def test_channel_remove_preserves_other_expanded_row(monkeypatch, removed, expected):
+    """删除其他通道保持当前展开，删除前方通道时同步可见索引。"""
+    from modules.gui.pages.notification_ctk import Page
+
+    root = tk.Tk()
+    tk._default_root = root
+    model = EditorModel(new_document())
+    model.set(('push', 'push_channel_settings', 'channels'), [
+        {'provider': 'serverchan', 'sckey': key} for key in ('first', 'middle', 'last')])
+    model.before_list_edit = Mock(return_value=True)
+    model.on_list_edit = Mock()
+    page = Page(root, Mock(model=model, notify=Mock()))
+    monkeypatch.setattr('modules.gui.pages.notification_ctk.messagebox.askyesno',
+                        lambda *args, **kwargs: True)
+    try:
+        page.expand_channel(1)
+        page.channel_rows[removed]['delete'].invoke()
+        assert page._expanded_channel == expected
+        assert [item['sckey'] for item in model.get(page.channels_path)] == [
+            key for index, key in enumerate(('first', 'middle', 'last')) if index != removed]
+        if expected is not None:
+            assert page.channel_rows[expected]['provider'] is not None
+            assert model.get(page.channels_path)[expected]['sckey'] == 'middle'
+        model.on_list_edit.assert_called_once()
     finally:
         root.destroy()
 

@@ -222,7 +222,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         channels = self._safe_get(CHANNELS, [])
         channels.pop(source_index)
         self.model.set(CHANNELS, channels)
-        self._expanded_channel = None
+        if self._expanded_channel == index:
+            self._expanded_channel = None
+        elif self._expanded_channel is not None and index < self._expanded_channel:
+            self._expanded_channel -= 1
         self.refresh()
         self.model.on_list_edit()
 
@@ -289,6 +292,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         for index, (source_index, channel) in enumerate(channels):
             line = ctk_kit.CTkFrame(self.channel_body, corner_radius=8)
             line.pack(fill='x', pady=4)
+            line.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
+            line._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
             top = ctk_kit.CTkFrame(line, fg_color='transparent')
             top.pack(fill='x', padx=8, pady=6)
             top.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
