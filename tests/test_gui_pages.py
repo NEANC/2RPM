@@ -1624,6 +1624,33 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
         root.destroy()
 
 
+def test_validation_focus_survives_window_deactivation(tmp_path):
+    """真实主页校验定位后，失活窗口仍记录目标输入焦点。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        home = app.visible_pages['主页']
+        button = next(child for card in home.winfo_children()
+                      for child in card.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton)
+                      and child.cget('text') == '校验配置')
+        path = ('monitor', 'target')
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, severity='error')])
+        button.invoke()
+        root.update()
+        target = app.visible_pages['监视设置'].fields[path][1]._entry
+        other = tk.Toplevel(root)
+        root.update()
+        other.focus_force()
+        root.update()
+        assert root.focus_get() is other
+        assert root.nametowidget(root.tk.call('focus', '-lastfor', root._w)) is target
+    finally:
+        root.destroy()
+
+
 def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
     """全部静态诊断路径均在校验入口导航到实际字段。"""
     root = tk.Tk()
@@ -1642,7 +1669,6 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
                       and child.cget('text') == '校验配置')
         for index, path in cases:
             app.show_page('主页')
-            root.focus_force()
             app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
                 SimpleNamespace(path=field, severity='error')])
             button.invoke()
@@ -1660,8 +1686,9 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
             if destination == '监视设置' and path[:2] == ('monitor', 'launch'):
                 assert focused.widget_for_issue.winfo_exists()
             else:
-                assert root.focus_get() is (widget._textbox if isinstance(widget, ctk_kit.CTkTextbox)
-                                            else widget._entry), path
+                assert root.nametowidget(root.tk.call('focus', '-lastfor', root._w)) is (
+                    widget._textbox if isinstance(widget, ctk_kit.CTkTextbox)
+                    else widget._entry), path
     finally:
         root.destroy()
 
