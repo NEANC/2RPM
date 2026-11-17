@@ -1279,22 +1279,42 @@ def test_review_summary_covers_events_actions_without_values(tmp_path):
         root.destroy()
 
 
-@pytest.mark.parametrize('path', [('external',), ('push', 'templates')])
-def test_review_invalid_section_refresh_and_real_issue_navigation(tmp_path, path):
-    """非映射动作或模板全局刷新安全，真实诊断可进入检查页。"""
+@pytest.mark.parametrize('path,group,category', [
+    (('external',), '外部程序', '外部程序配置'),
+    (('push', 'templates'), '通知事件', '通知事件'),
+])
+def test_review_invalid_section_refresh_and_real_issue_navigation(tmp_path, path,
+                                                                  group, category):
+    """非映射动作或模板在对应分组待校验，诊断安全且可导航。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         app.model.set(('monitor', 'target'), 'demo.exe')
         app.model.set(path, 'private-structure-secret')
         app.refresh()
-        assert '待校验' in app.summary_text
-        assert 'private-structure-secret' not in app.summary_text
+        home = app.visible_pages['主页']
+        states = [tuple(label.cget('text') for label in row.winfo_children())
+                  for row in home.groups[group].body.winfo_children()]
+        assert any(state == '待校验' for _, state in states)
+        assert 'private-structure-secret' not in (
+            app.summary_text + str(states) + home.groups[group].detail)
         candidate = app.validate()
         assert any(issue.path == path and issue.code == 'mapping'
                    for issue in candidate.issues)
         assert app.current_page == '主页'
-        assert '配置结构' in app.visible_pages['主页'].issue_hint.cget('text')
+        assert '配置结构' in home.issue_hint.cget('text')
+        row = home.validation_rows['主页']
+        assert any(category in item['label'].cget('text') for item in row['issues'])
+        displayed = (row['label'].cget('text') + home.check.cget('text')
+                     + home.issue_hint.cget('text')
+                     + str([item['label'].cget('text') for item in row['issues']]))
+        assert 'private-structure-secret' not in displayed
+        entry = next(item for item in row['issues']
+                     if category in item['label'].cget('text'))
+        app.show_page('监视设置')
+        entry['button'].invoke()
+        assert app.current_page == '主页'
+        assert '配置结构' in home.issue_hint.cget('text')
     finally:
         root.destroy()
 
