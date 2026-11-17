@@ -589,13 +589,17 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
                                              str(tmp_path / 'demo.exe'))
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
-        hosts[0]['custom'] = 'first'
-        hosts.append({'provider': 'boltp', 'token': 'secret', 'custom': 'second'})
+        hosts[0].update({'custom': 'first', 'options': {'group': 'primary'},
+                         'expiration': 7})
+        hosts.append({'provider': 'boltp', 'token': 'secret',
+                      'options': {'group': 'backup'}, 'expiration': 30,
+                      'custom': 'second'})
+        expected = [dict(host) for host in reversed(hosts)]
         app.model.set(path, hosts)
         page.refresh()
         assert app.controller.save(tmp_path / 'reordered.yaml')
         page.move_host(0, 1)
-        assert app.model.get(path)[1]['custom'] == 'first'
+        assert app.model.get(path) == expected
         assert app.controller.save()
         confirmations = []
 
@@ -614,7 +618,7 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
                                         app.model.document.tree == read_document(tmp_path / 'reordered.yaml').tree)
         assert launch.call_args.args[1] == (tmp_path / 'reordered.yaml').resolve()
         disk = read_document(tmp_path / 'reordered.yaml').tree['push']['screenshot']['image_host']
-        assert [item['custom'] for item in disk] == ['second', 'first']
+        assert disk == expected
         assert app.model.validate(tmp_path).changes == ()
     finally:
         root.destroy()
@@ -668,7 +672,9 @@ def test_cli_launch_keeps_forms_editable(tmp_path, monkeypatch):
         assert not any(name in app.actions for name in ('停止 CLI', '查看日志', '复制日志'))
         app.visible_pages['监视设置'].set_field(('monitor', 'target'), '继续编辑.exe')
         assert app.controller.model.dirty
-        assert 'SCTxxxx' not in app.summary_text
+        home = app.visible_pages['主页']
+        assert 'SCTxxxx' not in home.summary.cget('text')
+        assert all('SCTxxxx' not in group.detail for group in home.groups.values())
     finally:
         root.destroy()
 

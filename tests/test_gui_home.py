@@ -176,7 +176,10 @@ def test_failed_flush_preserves_page_inputs(tmp_path, monkeypatch):
         assert app.show_page('监视设置')
         assert app.show_page('主页')
         assert app.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
-        assert '未保存' in app.path_label.cget('text')
+        home = app.visible_pages['主页']
+        assert home.path_value.cget('text') == app.model.document.path.name
+        assert home.path_tip.text == str(app.model.document.path)
+        assert app.model.input_errors
     finally:
         root.destroy()
 
