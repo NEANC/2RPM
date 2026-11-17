@@ -1126,7 +1126,7 @@ def test_review_summary_handles_invalid_common_during_global_refresh(tmp_path):
 
 
 def test_review_summary_covers_events_actions_without_values(tmp_path):
-    """检查摘要包含事件与动作状态，但不回显用户输入或凭证。"""
+    """主页分组显示事件与动作状态，但不回显用户输入或凭证。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -1139,14 +1139,21 @@ def test_review_summary_covers_events_actions_without_values(tmp_path):
         app.model.set(('external', 'on_timeout'), '')
         app.refresh()
         summary = app.summary_text
+        home = app.visible_pages['主页']
+        events = [tuple(label.cget('text') for label in row.winfo_children())
+                  for row in home.groups['通知事件'].body.winfo_children()]
+        actions = [tuple(label.cget('text') for label in row.winfo_children())
+                   for row in home.groups['外部程序'].body.winfo_children()]
         assert '运行方式：主动启动并监视' in summary
-        assert '目标结束：关闭' in summary
-        assert '外部程序执行通知：启用' in summary
-        assert '事件截图' in app.visible_pages['主页'].conditions.cget('text')
-        assert '目标结束外部程序：已配置' in summary
-        assert '运行超时外部程序：未配置' in summary
-        assert 'private-' not in summary
-        assert 'SCTxxxx' not in summary
+        assert ('目标结束', '关闭') in events
+        assert ('外部程序执行通知', '启用') in events
+        assert '事件截图' in home.groups
+        assert ('目标结束外部程序', '已配置') in actions
+        assert ('运行超时外部程序', '未配置') in actions
+        displayed = summary + str(events) + str(actions) + str(
+            [group.detail for group in home.groups.values()])
+        assert 'private-' not in displayed
+        assert 'SCTxxxx' not in displayed
     finally:
         root.destroy()
 
@@ -1195,9 +1202,11 @@ def test_review_screenshot_requires_all_effective_conditions(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        home = app.visible_pages['主页']
         event = 'on_end'
         assert not all(screenshot_conditions(app.model.snapshot(), event).values())
-        assert '目标结束：条件未满足' in app.visible_pages['主页'].conditions.cget('text')
+        before = home.groups['事件截图'].detail
+        assert home.screenshot_rows['目标结束']['reasons'].detail == '条件未满足'
         app.model.set(('monitor', 'target'), 'demo.exe')
         app.model.set(('push', 'templates', event, 'content'), '{screenshot}')
         app.model.set(('push', 'push_channel_settings', 'channels'),
@@ -1206,8 +1215,13 @@ def test_review_screenshot_requires_all_effective_conditions(tmp_path):
         app.visible_pages['截图设置']._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
         app.refresh()
         assert all(screenshot_conditions(app.model.snapshot(), event).values())
-        assert '目标结束：条件满足' in app.visible_pages['主页'].conditions.cget('text')
+        assert home.screenshot_rows['目标结束']['reasons'] is None
+        assert home.groups['事件截图'].detail != before
+        row = home.groups['事件截图'].body.winfo_children()[0]
+        assert [label.cget('text') for label in row.winfo_children()] == ['目标结束', '条件满足']
         assert 'private-key' not in app.summary_text
+        assert 'private-key' not in home.groups['事件截图'].detail
+        assert 'private-key' not in str([label.cget('text') for label in row.winfo_children()])
     finally:
         root.destroy()
 
