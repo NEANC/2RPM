@@ -24,7 +24,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields = {}
         self._refreshing = False
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', pady=(0, 12))
+        header.pack(fill='x', padx=(0, 132) if app.window else 0, pady=(0, 12))
         ctk_kit.CTkLabel(header, text='日志设置', font=FONT_TITLE).pack(side='left')
         ctk_kit.CTkButton(header, text='打开日志目录', font=FONT_BODY,
                           command=app.open_logs).pack(side='right')

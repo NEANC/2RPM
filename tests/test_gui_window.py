@@ -151,6 +151,55 @@ def test_home_header_starts_at_top_and_reserves_only_right_control_area(tmp_path
         tk._default_root = None
 
 
+@pytest.mark.parametrize('page_name, labels', (
+    ('消息推送设置', ('通知测试',)),
+    ('截图设置', ('截图测试', '上传测试')),
+    ('日志设置', ('打开日志目录',)),
+))
+def test_config_header_actions_receive_real_pointer_clicks(tmp_path, page_name, labels):
+    """配置页顶栏贴顶，右侧避让窗口控制栏且按钮真实命中回调。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        assert app.show_page(page_name)
+        root.update()
+        page = app.visible_pages[page_name]
+        header = page.winfo_children()[0]
+        bar = app.window.titlebar
+        assert header.pack_info()['pady'][0] == 0
+        assert header.pack_info()['padx'] == (0, bar.winfo_width())
+        assert header.winfo_rootx() + header.winfo_width() <= bar.winfo_rootx()
+        buttons = [widget for widget in header.winfo_children()
+                   if isinstance(widget, ctk_kit.CTkButton)]
+        assert {button.cget('text') for button in buttons} == set(labels)
+        for button in buttons:
+            callback = Mock()
+            button.configure(command=callback)
+            for x in (button.winfo_rootx() + 2,
+                      button.winfo_rootx() + button.winfo_width() - 2):
+                for y in (button.winfo_rooty() + 2,
+                          button.winfo_rooty() + button.winfo_height() // 2):
+                    target = root.winfo_containing(x, y)
+                    assert target is button or str(target).startswith(str(button) + '.'), (
+                        page_name, button.cget('text'), x, y, target)
+            x = button.winfo_rootx() + button.winfo_width() // 2
+            y = button.winfo_rooty() + button.winfo_height() // 2
+            target = root.winfo_containing(x, y)
+            target.event_generate('<Enter>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty())
+            target.event_generate('<ButtonPress-1>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty(), warp=True)
+            target.event_generate('<ButtonRelease-1>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty(), warp=True)
+            root.update()
+            callback.assert_called_once_with()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_close_button_has_red_hover_in_both_themes(window):
     """关闭按钮两种主题的悬停态都是红色而非默认强调色。"""
     _root, shell, _close = window

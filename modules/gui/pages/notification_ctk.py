@@ -56,7 +56,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._preview_text = {}
         self.generation = self.model.document_generation
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', pady=(0, 12))
+        header.pack(fill='x', padx=(0, 132) if app.window else 0, pady=(0, 12))
         ctk_kit.CTkLabel(header, text='消息推送设置', font=FONT_TITLE).pack(side='left')
         self.notify_button = ctk_kit.CTkButton(header, text='通知测试', font=FONT_BODY,
                                                command=app.notify)
