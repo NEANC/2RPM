@@ -497,6 +497,32 @@ def test_adb_port_out_of_range_has_business_diagnostic(tmp_path):
         root.destroy()
 
 
+def test_adb_oversized_port_keeps_raw_and_validates_safely(tmp_path):
+    """超长数字端口保留原文，模型校验返回不泄漏输入的错误。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    path = ('push', 'screenshot', 'targets', 0, 'target')
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    raw = '9' * 4400
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, raw)
+        assert model.get_input(path) == raw
+        assert model.get(path) == '127.0.0.1:16384'
+        candidate = model.validate(tmp_path)
+        assert any(issue.path == path and issue.code == 'invalid_port'
+                   and issue.severity == 'error' for issue in candidate.issues)
+        assert raw not in repr(candidate.issues)
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('operation, expected_index', [('move', 1), ('remove', 0)])
 def test_adb_port_draft_follows_target_on_list_edit(monkeypatch, operation, expected_index):
     """重排或删除前一项时，端口原文与错误跟随仍在的目标。"""

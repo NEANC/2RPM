@@ -144,7 +144,7 @@ class EditorModel:
                 path = ('push', 'screenshot', 'targets', index, 'target')
                 raw = self.raw_inputs.get(path)
                 if (isinstance(item, Mapping) and item.get('provider') == 'adb'
-                        and raw is not None and raw.isdecimal()
+                        and path not in self.input_errors and raw is not None and raw.isdecimal()
                         and not 1 <= int(raw) <= 65535):
                     issues.append(Issue(path, 'port_range', 'error', 'ADB 端口必须在 1 至 65535 之间'))
         for index, channel in enumerate(parse_push_channels(channels)):
