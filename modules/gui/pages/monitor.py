@@ -161,7 +161,10 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _select_type(self, value):
         """用户选择任务目标时清空启动参数，不碰工作目录。"""
+        if not path_writable(self.model, ('monitor', 'target')):
+            return
         self._target_type = 'task' if value in ('task', '计划任务') else 'file'
+        self.model._gui_target_types[self._monitor().get('mode')] = self._target_type
         if (self._target_type == 'task' and self._monitor().get('mode') == 'launch'
                 and path_writable(self.model, ('monitor', 'launch', 'args'))):
             self.model.set(('monitor', 'launch', 'args'), None)

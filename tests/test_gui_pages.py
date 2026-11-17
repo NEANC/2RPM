@@ -46,6 +46,30 @@ def make_app(root, tmp_path):
     return app
 
 
+def test_real_app_target_type_switch_validates_without_replacing_target(tmp_path):
+    """真实 App 切换目标类型后按新类型校验，同时保留原目标。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['监视设置']
+        page.set_field(('monitor', 'target'), r'C:\Apps\demo.exe')
+        target = app.model.get(('monitor', 'target'))
+        assert not any(issue.code == 'gui_file_path'
+                       for issue in app.model.validate(tmp_path).issues)
+
+        page._select_type('计划任务')
+        assert app.model.get(('monitor', 'target')) == target
+        assert any(issue.code == 'gui_task_path'
+                   for issue in app.model.validate(tmp_path).issues)
+
+        page._select_type('程序文件')
+        assert app.model.get(('monitor', 'target')) == target
+        assert not any(issue.code in ('gui_task_path', 'gui_file_path')
+                       for issue in app.model.validate(tmp_path).issues)
+    finally:
+        root.destroy()
+
+
 def test_conflict_can_be_reopened_after_later(tmp_path, monkeypatch):
     """暂不处理后可再次进入冲突处理并重新加载。"""
     root = tk.Tk()
