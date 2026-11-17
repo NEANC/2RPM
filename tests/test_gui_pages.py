@@ -1279,12 +1279,14 @@ def test_review_summary_covers_events_actions_without_values(tmp_path):
         root.destroy()
 
 
-@pytest.mark.parametrize('path,group,category', [
-    (('external',), '外部程序', '外部程序配置'),
-    (('push', 'templates'), '通知事件', '通知事件'),
+@pytest.mark.parametrize('path,group,category,names', [
+    (('external',), '外部程序', '外部程序配置',
+     ('目标结束外部程序', '运行超时外部程序', '等待启动超时外部程序')),
+    (('push', 'templates'), '通知事件', '通知事件',
+     ('目标结束', '运行超时', '等待启动超时', '外部程序执行通知')),
 ])
 def test_review_invalid_section_refresh_and_real_issue_navigation(tmp_path, path,
-                                                                  group, category):
+                                                                  group, category, names):
     """非映射动作或模板在对应分组待校验，诊断安全且可导航。"""
     root = tk.Tk()
     try:
@@ -1295,7 +1297,7 @@ def test_review_invalid_section_refresh_and_real_issue_navigation(tmp_path, path
         home = app.visible_pages['主页']
         states = [tuple(label.cget('text') for label in row.winfo_children())
                   for row in home.groups[group].body.winfo_children()]
-        assert any(state == '待校验' for _, state in states)
+        assert states == [(name, '待校验') for name in names]
         assert 'private-structure-secret' not in (
             app.summary_text + str(states) + home.groups[group].detail)
         candidate = app.validate()
