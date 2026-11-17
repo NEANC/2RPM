@@ -298,6 +298,27 @@ def test_validation_groups_issues_by_page_and_navigates(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_validation_group_button_prioritizes_error_in_real_window(tmp_path, monkeypatch):
+    """同组先出现警告时，分组入口仍定位首个错误。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        issues = [SimpleNamespace(path=('monitor', 'target'), severity='warning'),
+                  SimpleNamespace(path=('monitor', 'common', 'max_wait'), severity='error')]
+        app.model.validate = lambda _: SimpleNamespace(issues=issues)
+        app.validate()
+        assert app.show_page('主页')
+        app.visible_pages['主页'].validation_rows['监视设置']['button'].invoke()
+        monitor = app.visible_pages['监视设置']
+        assert app.current_page == '监视设置'
+        assert monitor.widget_for_issue is monitor.fields[issues[1].path][1]._entry
+    finally:
+        root.destroy()
+
+
 def test_home_summary_groups_and_nested_reasons_follow_draft(tmp_path, monkeypatch):
     """三级摘要默认收起，失败原因逐条显示并随草稿更新。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

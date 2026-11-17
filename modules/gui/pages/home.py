@@ -175,9 +175,10 @@ class Page(ctk_kit.CTkScrollableFrame):
                           f'（错误 {error_count}，其他 {other_count}）',
                 font=FONT_BODY, anchor='w')
             label.pack(fill='x')
+            first_issue = next((issue for issue in issues if issue.severity == 'error'), issues[0])
             button = ctk_kit.CTkButton(
                 row, text='前往设置', width=80, font=FONT_BODY,
-                command=lambda target=name, issue=issues[0]: self.app.focus_validation_issue(target, issue))
+                command=lambda target=name, issue=first_issue: self.app.focus_validation_issue(target, issue))
             button.pack(anchor='e')
             entries = []
             for issue in issues:
