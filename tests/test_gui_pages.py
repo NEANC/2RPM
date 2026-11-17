@@ -1505,8 +1505,10 @@ def test_screenshot_conditions_update_on_tab_switch(tmp_path):
         assert '截图被阻止' in page.preview_labels[event].cget('text')
         app.show_page('截图设置')
         root.update()
-        app.visible_pages['主页'].refresh()
-        assert '运行超时：条件未满足' in app.visible_pages['主页'].conditions.cget('text')
+        home = app.visible_pages['主页']
+        home.refresh()
+        assert home.screenshot_rows['运行超时']['reasons'].detail == '条件未满足'
+        assert home.groups['事件截图'].detail == '0/4 条件满足'
         assert app.model.get(path) is False
     finally:
         root.destroy()
