@@ -43,8 +43,10 @@ class MainWindow:
         """为现有窗口添加透明拖动区域并复用关闭确认回调。"""
         self.root = root
         self._drag_origin = None
+        self._restore_geometry = None
         root.overrideredirect(True)
         root.set_window_corners(1)
+        root.bind('<Map>', self._restore_borderless, add='+')
         self.titlebar = ctk_kit.CTkFrame(
             root, corner_radius=0, width=132, height=38, fg_color='transparent')
         self.titlebar.place(relx=1, x=0, y=0, anchor='ne')
@@ -89,16 +91,23 @@ class MainWindow:
 
     def iconify(self):
         """暂时撤去无边框标志以允许 Tk 最小化，恢复后重设标志。"""
+        self._restore_geometry = self.root.geometry()
         self.root.overrideredirect(False)
         self.root.iconify()
-        self.root.bind('<Map>', self._restore_borderless, add='+')
 
-    def _restore_borderless(self, _event):
+    def _restore_borderless(self, event):
         """从任务栏恢复时重新隐藏系统标题栏。"""
+        if event.widget is not self.root or self._restore_geometry is None:
+            return
         self.root.overrideredirect(True)
-        if self.root.state() == 'normal' and hasattr(self.root, '_gui_work_size'):
-            width, height = self.root.geometry().split('+')[0].split('x')
+        if self.root.state() != 'normal':
+            return
+        geometry = self._restore_geometry
+        self._restore_geometry = None
+        if hasattr(self.root, '_gui_work_size'):
+            size, position = geometry.split('+', 1)
+            width, height = map(int, size.split('x'))
             available_width, available_height = self.root._gui_work_size
-            if int(width) > available_width or int(height) > available_height:
-                self.root.geometry(f'{min(int(width), available_width)}x'
-                                   f'{min(int(height), available_height)}')
+            geometry = (f'{min(width, available_width)}x'
+                        f'{min(height, available_height)}+{position}')
+        self.root.geometry(geometry)

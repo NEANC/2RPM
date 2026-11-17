@@ -419,6 +419,23 @@ def test_maximize_toggles_and_minimize_restores_borderless(window):
     assert root.overrideredirect()
 
 
+def test_repeated_minimize_restore_preserves_window_size(window):
+    """多轮最小化恢复保持原始窗口尺寸且不叠加恢复回调。"""
+    root, shell, _ = window
+    root._gui_work_size = (760, 520)
+    root.geometry('500x400+100+100')
+    root.update()
+    expected = root.geometry()
+    for _ in range(3):
+        shell.iconify()
+        root.update()
+        root.deiconify()
+        root.update()
+        assert root.geometry() == expected
+        assert root.overrideredirect()
+    assert len(root.bind('<Map>').splitlines()) == 1
+
+
 def test_close_button_uses_existing_confirmation_callback(window):
     """关闭按钮只请求既有确认入口，不直接销毁窗口。"""
     root, shell, close = window
