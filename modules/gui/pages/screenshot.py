@@ -431,8 +431,17 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not re.fullmatch(r'\d+', raw):
             self.model.set_input(path, raw, kind='int')
             return
+        try:
+            port = int(raw)
+        except ValueError:
+            self.model.raw_inputs[path] = raw
+            self.model.input_errors[path] = Issue(path, 'invalid_port', 'error', 'ADB 端口输入无效')
+            self.model.revision += 1
+            self.model.dirty = True
+            self.model.on_edit()
+            return
         address, _port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
-        self._set_adb(index, address, int(raw))
+        self._set_adb(index, address, port)
         self.model.raw_inputs[path] = raw
         if self.model.input_errors.pop(path, None) is not None:
             self.model.revision += 1

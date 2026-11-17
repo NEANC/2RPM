@@ -684,6 +684,51 @@ def test_screenshot_numeric_drafts_survive_refresh_and_block_save_and_test(
         root.destroy()
 
 
+def test_adb_oversized_numeric_port_stays_draft_and_blocks_save(tmp_path):
+    """真实端口控件收到 4301 位数字时保留原文并阻断落盘。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    page = ScreenshotPage(root, Mock(model=controller.model))
+    path = ('push', 'screenshot', 'targets', 0, 'target')
+    raw = '9' * 4301
+    callback_errors = []
+    root.report_callback_exception = lambda *args: callback_errors.append(args)
+    try:
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, raw)
+        assert port.get() == raw
+        assert controller.model.get_input(path) == raw
+        assert controller.model.get(path) == '127.0.0.1:16384'
+        issue = controller.model.input_errors[path]
+        assert issue.severity == 'error'
+        assert issue.code == 'invalid_port'
+        assert '端口' in issue.message
+        page.refresh()
+        assert page.target_rows[0]['port'].get() == raw
+        assert not controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16384'
+        assert not callback_errors
+        page.target_rows[0]['port'].delete(0, 'end')
+        page.target_rows[0]['port'].insert(0, '16385')
+        assert path not in controller.model.input_errors
+        assert controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16385'
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize(('field', 'valid', 'expected'), [
     ('port', '00081', '127.0.0.1:81'),
     ('days', '007', 7),
