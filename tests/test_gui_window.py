@@ -72,6 +72,36 @@ def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
         tk._default_root = None
 
 
+def test_real_app_window_controls_receive_pointer_clicks(tmp_path):
+    """侧栏装入后，三个窗口按钮中心都能命中并触达对应回调。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        for button in (app.window.minimize, app.window.maximize,
+                       app.window.close_button):
+            callback = Mock()
+            button.configure(command=callback)
+            x = button.winfo_rootx() + button.winfo_width() // 2
+            y = button.winfo_rooty() + button.winfo_height() // 2
+            target = root.winfo_containing(x, y)
+            assert target is button or str(target).startswith(str(button) + '.'), (
+                button.cget('text'), target)
+            target.event_generate('<Enter>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty())
+            target.event_generate('<ButtonPress-1>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty(), warp=True)
+            target.event_generate('<ButtonRelease-1>', x=x - target.winfo_rootx(),
+                                  y=y - target.winfo_rooty(), warp=True)
+            root.update()
+            callback.assert_called_once_with()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_home_header_actions_are_hittable_below_window_controls(tmp_path):
     """主页顶栏按钮在真实窗口里避开操作栏并能接收鼠标命中。"""
     tk._default_root = None

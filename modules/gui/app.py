@@ -106,6 +106,8 @@ class App:
         self.config_group_button.pack(fill='x', padx=10, pady=3,
                                       before=self.sidebar._buttons['监视设置'])
         self.sidebar.pack(fill='both', expand=True)
+        if self.window is not None:
+            self.window.titlebar.lift()
         self.sidebar._warm_enabled = False
         self.status.pack(fill='x', padx=12)
         self.path_label.pack(fill='x', padx=12)
