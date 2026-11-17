@@ -419,7 +419,7 @@ def test_adb_port_entry_supports_new_address_and_edit():
 
 
 def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path):
-    """切到窗口时清理当前端口错误，保留另一目标草稿并允许保存。"""
+    """切换首个目标仅清理其端口错误，第二目标修正前不得保存。"""
     from unittest.mock import Mock
     from modules.config_document import read_document, save_document
     from modules.gui.controller import Controller
@@ -441,24 +441,36 @@ def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path
     try:
         other_port = page.target_rows[1]['port']
         other_port.delete(0, 'end')
-        other_port.insert(0, '02000')
+        other_port.insert(0, '-')
         port = page.target_rows[0]['port']
         port.delete(0, 'end')
         port.insert(0, '-')
         assert model.raw_inputs[first] == '-'
         assert first in model.input_errors
+        assert model.raw_inputs[second] == '-'
+        assert second in model.input_errors
 
         page._change_provider(0, 'window')
 
         assert page.target_rows[0]['port'] is None
         assert first not in model.raw_inputs
         assert first not in model.input_errors
-        assert model.raw_inputs[second] == '02000'
-        assert page.target_rows[1]['port'].get() == '02000'
+        assert model.raw_inputs[second] == '-'
+        assert model.input_errors[second].path == second
+        assert page.target_rows[1]['port'].get() == '-'
+        assert not controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'] == [
+            {'provider': 'adb', 'target': 'A:1000'},
+            {'provider': 'adb', 'target': 'B:2000'}]
+
+        other_port = page.target_rows[1]['port']
+        other_port.delete(0, 'end')
+        other_port.insert(0, '2001')
+        assert second not in model.input_errors
         assert controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'] == [
             {'provider': 'window', 'target': 'A:1000'},
-            {'provider': 'adb', 'target': 'B:2000'}]
+            {'provider': 'adb', 'target': 'B:2001'}]
     finally:
         root.destroy()
 
