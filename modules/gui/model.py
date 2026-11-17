@@ -96,7 +96,8 @@ class EditorModel:
         current = monitor.get('mode')
         if mode == current:
             return
-        self._targets[current] = monitor.get('target')
+        if current in ('watch', 'launch'):
+            self._targets[current] = monitor.get('target')
         self._tree['monitor']['mode'] = mode
         self._tree['monitor']['target'] = self._targets.get(mode, self._original_target)
         self.revision += 1
@@ -122,7 +123,7 @@ class EditorModel:
         monitor = self._tree.get('monitor')
         if isinstance(monitor, Mapping):
             mode = monitor.get('mode')
-            target_type = self._gui_target_types.get(mode)
+            target_type = self._gui_target_types.get(mode) if mode in ('watch', 'launch') else None
             target = monitor.get('target')
             if target_type and isinstance(target, str) and target.strip():
                 try:

@@ -38,6 +38,22 @@ def test_mode_branch_settings_stay_separate():
     assert model.get(('monitor', 'watch', 'lookback_minutes')) == 25
 
 
+@pytest.mark.parametrize('invalid_mode', [['watch'], {'mode': 'watch'}])
+def test_invalid_mode_can_be_validated_and_switched_without_losing_target(tmp_path, invalid_mode):
+    """异常模式可报告问题，并在切换后保留原目标。"""
+    document = new_document()
+    document.tree['monitor']['mode'] = invalid_mode
+    document.tree['monitor']['target'] = 'original.exe'
+    model = EditorModel(document)
+
+    issues = model.validate(tmp_path).issues
+    assert any(issue.severity == 'error' for issue in issues)
+    model.switch_mode('launch')
+
+    assert model.get(('monitor', 'mode')) == 'launch'
+    assert model.get(('monitor', 'target')) == 'original.exe'
+
+
 def test_fold_does_not_reset():
     """读取和页面折叠不改变编辑代次或内容。"""
     model = EditorModel(new_document())
