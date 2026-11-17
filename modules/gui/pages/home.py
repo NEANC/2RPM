@@ -9,6 +9,7 @@ import ctk_kit
 
 from modules.gui.appearance import COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
 from modules.gui.home_summary import summary
+from modules.gui.window import wrap_header
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -23,6 +24,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkLabel(header, text='主页', font=FONT_TITLE).pack(side='left')
         for label, action in (('打开配置', app.open), ('新建配置', app.new)):
             ctk_kit.CTkButton(header, text=label, command=action, font=FONT_BODY).pack(side='right', padx=4)
+        if app.window:
+            wrap_header(app.root, header)
         card = self._card('配置摘要', header=True)
         self.save_as_button = ctk_kit.CTkButton(
             self.summary_header, text='另存为', command=app.save_as, font=FONT_BODY)

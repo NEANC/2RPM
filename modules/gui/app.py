@@ -38,15 +38,22 @@ class _MonitorInfo(ctypes.Structure):
                 ('work', wintypes.RECT), ('flags', wintypes.DWORD)]
 
 
-def work_area_height(root):
-    """读取窗口所在显示器可用工作区的高度。"""
+def work_area_size(root):
+    """读取窗口所在显示器可用工作区的逻辑宽高。"""
     info = _MonitorInfo()
     info.size = ctypes.sizeof(info)
     monitor = ctypes.windll.user32.MonitorFromWindow(root.winfo_id(), 2)
     scaling = root._get_window_scaling() if isinstance(root, ctk_kit.App) else 1
     if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-        return int((info.work.bottom - info.work.top) / scaling)
-    return int(root.winfo_screenheight() / scaling)
+        return (int((info.work.right - info.work.left) / scaling),
+                int((info.work.bottom - info.work.top) / scaling))
+    return (int(root.winfo_screenwidth() / scaling),
+            int(root.winfo_screenheight() / scaling))
+
+
+def work_area_height(root):
+    """返回窗口所在显示器可用工作区的逻辑高度。"""
+    return work_area_size(root)[1]
 
 
 class App:
@@ -77,8 +84,11 @@ class App:
         self.current_page = '主页'
         root._gui_program_dir = controller.program_dir
         root.title('2RPM 配置')
-        root.minsize(900, 300)
-        root.geometry(f'900x{min(680, work_area_height(root))}')
+        available_width, available_height = work_area_size(root)
+        width = min(900, available_width)
+        root._gui_work_size = (width, min(680, work_area_height(root)))
+        root.minsize(min(600, width), 300)
+        root.geometry(f'{width}x{root._gui_work_size[1]}')
         self.appearance_path = preferences_path()
         self.appearance = load_preferences(self.appearance_path)
         if isinstance(root, ctk_kit.App):
@@ -127,6 +137,7 @@ class App:
         self.config_group_button.pack(fill='x', padx=10, pady=3,
                                       before=self.sidebar._buttons['监视设置'])
         self.sidebar.pack(fill='both', expand=True)
+        self.sidebar.pack_propagate(False)
         if self.window is not None:
             self.window.titlebar.lift()
         self.sidebar._warm_enabled = False

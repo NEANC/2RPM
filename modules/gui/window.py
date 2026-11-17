@@ -8,6 +8,34 @@ import ctk_kit
 from modules.gui.appearance import FONT_BODY
 
 
+def wrap_header(root, header):
+    """窄窗将顶栏按钮移至标题下一行，宽窗保持原有单行布局。"""
+    label, *buttons = header.winfo_children()
+    compact = False
+
+    def resize(event):
+        """仅在跨越布局阈值时重排顶栏。"""
+        nonlocal compact
+        if event.widget is not root:
+            return
+        narrow = event.width / root._get_window_scaling() < 700
+        if narrow == compact:
+            return
+        compact = narrow
+        header.pack_configure(padx=0 if narrow else (0, 132))
+        label.pack_forget()
+        for button in buttons:
+            button.pack_forget()
+        if narrow:
+            label.pack(side='top', anchor='w', pady=(0, 4))
+        else:
+            label.pack(side='left')
+        for button in buttons:
+            button.pack(side='right', padx=4 if len(buttons) > 1 else 0)
+
+    root.bind('<Configure>', resize, add='+')
+
+
 class MainWindow:
     """仅负责主窗边框、拖动和窗口控制。"""
 
@@ -68,3 +96,9 @@ class MainWindow:
     def _restore_borderless(self, _event):
         """从任务栏恢复时重新隐藏系统标题栏。"""
         self.root.overrideredirect(True)
+        if self.root.state() == 'normal' and hasattr(self.root, '_gui_work_size'):
+            width, height = self.root.geometry().split('+')[0].split('x')
+            available_width, available_height = self.root._gui_work_size
+            if int(width) > available_width or int(height) > available_height:
+                self.root.geometry(f'{min(int(width), available_width)}x'
+                                   f'{min(int(height), available_height)}')

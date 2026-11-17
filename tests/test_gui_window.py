@@ -161,7 +161,7 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         app = make_app(root, tmp_path)
         root.geometry('420x680+100+100')
         root.update()
-        assert root._min_width == 900
+        assert root._min_width == 600
         assert root._min_height < 680
         minimum_width, minimum_height = root.tk.call('wm', 'minsize', root._w)
         assert root.winfo_width() >= minimum_width
@@ -173,7 +173,9 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         assert len(buttons) == 2
         for button in buttons:
             assert button.winfo_rootx() >= root.winfo_rootx()
-            assert button.winfo_rootx() + button.winfo_width() <= app.window.titlebar.winfo_rootx()
+            assert (button.winfo_rootx() + button.winfo_width() <= app.window.titlebar.winfo_rootx()
+                    or button.winfo_rooty() >= app.window.titlebar.winfo_rooty()
+                    + app.window.titlebar.winfo_height())
             x = button.winfo_rootx() + button.winfo_width() // 2
             y = button.winfo_rooty() + button.winfo_height() // 2
             target = root.winfo_containing(x, y)
@@ -207,6 +209,68 @@ def test_initial_height_respects_work_area_and_four_pages_scroll(tmp_path, monke
         root.deiconify()
         root.update()
         assert root.overrideredirect()
+        assert int(root.geometry().split('x')[1].split('+')[0]) <= 520
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_narrow_work_area_keeps_headers_clickable_scrollable_and_restores(tmp_path, monkeypatch):
+    """760×520 工作区内四页顶栏可命中，缩矮滚动后恢复仍不越界。"""
+    from modules.gui import app as gui_app
+
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        scaling = root._get_window_scaling()
+
+        def monitor_info(_monitor, pointer):
+            """模拟物理像素表示的 760×520 工作区。"""
+            info = ctypes.cast(pointer, ctypes.POINTER(gui_app._MonitorInfo)).contents
+            info.work.right = round(760 * scaling)
+            info.work.bottom = round(520 * scaling)
+            return True
+
+        monkeypatch.setattr(gui_app.ctypes.windll.user32, 'GetMonitorInfoW', monitor_info)
+        app = make_app(root, tmp_path)
+        root.update()
+        assert int(root.geometry().split('x')[0]) <= 760
+        assert int(root.geometry().split('x')[1].split('+')[0]) <= 520
+        assert root._min_width <= 760
+        root.geometry('760x420+100+100')
+        root.update()
+        for width in (760, 600):
+            root.geometry(f'{width}x420+100+100')
+            root.update()
+            for name, labels in (
+                ('主页', ('打开配置', '新建配置')),
+                ('截图设置', ('截图测试', '上传测试')),
+                ('消息推送设置', ('通知测试',)),
+                ('日志设置', ('打开日志目录',)),
+            ):
+                assert app.show_page(name)
+                root.update()
+                page = app.visible_pages[name]
+                assert page._parent_canvas.yview()[1] < 1, name
+                header = page.winfo_children()[0]
+                buttons = [child for child in header.winfo_children()
+                           if isinstance(child, ctk_kit.CTkButton)]
+                assert {button.cget('text') for button in buttons} == set(labels)
+                for button in buttons:
+                    x = button.winfo_rootx() + button.winfo_width() // 2
+                    y = button.winfo_rooty() + button.winfo_height() // 2
+                    assert root.winfo_rootx() <= x < root.winfo_rootx() + root.winfo_width()
+                    assert root.winfo_rooty() <= y < root.winfo_rooty() + root.winfo_height()
+                    target = root.winfo_containing(x, y)
+                    assert target is button or str(target).startswith(str(button) + '.'), (
+                        width, name, button.cget('text'), target)
+        app.window.minimize.invoke()
+        root.update()
+        root.deiconify()
+        root.update()
+        assert root.overrideredirect()
+        assert int(root.geometry().split('x')[0]) <= 760
         assert int(root.geometry().split('x')[1].split('+')[0]) <= 520
     finally:
         root.destroy()
