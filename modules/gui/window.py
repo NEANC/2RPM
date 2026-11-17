@@ -12,34 +12,35 @@ class MainWindow:
     """仅负责主窗边框、拖动和窗口控制。"""
 
     def __init__(self, root, close):
-        """为现有窗口添加方角标题栏并复用关闭确认回调。"""
+        """为现有窗口添加透明拖动区域并复用关闭确认回调。"""
         self.root = root
         self._drag_origin = None
         root.overrideredirect(True)
         root.set_window_corners(1)
-        self.titlebar = ctk_kit.CTkFrame(root, corner_radius=0, height=38)
+        self.titlebar = ctk_kit.CTkFrame(
+            root, corner_radius=0, height=38, fg_color='transparent')
         self.titlebar.pack(fill='x')
         self.titlebar.pack_propagate(False)
-        title = ctk_kit.CTkLabel(self.titlebar, text='2RPM 配置', font=FONT_BODY)
-        title.pack(side='left', padx=12)
         self.close_button = ctk_kit.CTkButton(
-            self.titlebar, text='×', width=44, height=32, corner_radius=0,
+            self.titlebar, text='×', width=44, height=38, corner_radius=0,
+            fg_color='transparent',
             command=close, font=FONT_BODY)
         self.close_button.pack(side='right')
         self.maximize = ctk_kit.CTkButton(
-            self.titlebar, text='□', width=44, height=32, corner_radius=0,
+            self.titlebar, text='□', width=44, height=38, corner_radius=0,
+            fg_color='transparent',
             command=self.toggle_maximize, font=FONT_BODY)
         self.maximize.pack(side='right')
         self.minimize = ctk_kit.CTkButton(
-            self.titlebar, text='—', width=44, height=32, corner_radius=0,
+            self.titlebar, text='—', width=44, height=38, corner_radius=0,
+            fg_color='transparent',
             command=self.iconify, font=FONT_BODY)
         self.minimize.pack(side='right')
-        for widget in (self.titlebar, title):
-            widget.bind('<ButtonPress-1>', self.start_drag)
-            widget.bind('<B1-Motion>', self.drag)
+        self.titlebar.bind('<ButtonPress-1>', self.start_drag)
+        self.titlebar.bind('<B1-Motion>', self.drag)
 
     def start_drag(self, event):
-        """记录标题栏按下时的指针及窗口屏幕坐标。"""
+        """记录透明区域按下时的指针及窗口屏幕坐标。"""
         self._drag_origin = (event.x_root, event.y_root,
                              self.root.winfo_x(), self.root.winfo_y())
 
