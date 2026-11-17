@@ -94,6 +94,41 @@ def test_screenshot_page_retention_and_credentials():
         root.destroy()
 
 
+def test_host_rows_show_only_provider_and_credentials_and_preserve_legacy_fields(tmp_path):
+    """旧 catbox 与高级字段留在模型和磁盘，但不展示高级编辑行。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    document = new_document()
+    original = [
+        {'provider': 'catbox', 'token': 'legacy', 'expiration': 20,
+         'options': {'max': 1}, 'custom': 'keep'},
+        {'provider': 'beeimg', 'token': 'next', 'expiration': '1d',
+         'options': {'album_id': 12}}]
+    document.tree['push']['screenshot']['image_host'] = original
+    path = tmp_path / 'hosts.yaml'
+    root = tk.Tk()
+    try:
+        model = EditorModel(save_document(document, path, expected_fingerprint=None))
+        page = ScreenshotPage(root, Mock(model=model))
+        assert page.host_rows[0]['provider'].get() == 'catbox'
+        assert page.host_rows[0]['token'].get() == 'legacy'
+        assert all(set(row) == {'number', 'provider', 'token', 'source_index'}
+                   for row in page.host_rows)
+        assert len(page.hosts_body.winfo_children()) == 2
+        page.host_rows[0]['token'].delete(0, 'end')
+        page.host_rows[0]['token'].insert(0, 'updated')
+        page.refresh()
+        saved = save_document(model.materialize(), path,
+                              expected_fingerprint=model.document.fingerprint)
+        assert read_document(path).tree['push']['screenshot']['image_host'] == [
+            {**original[0], 'token': 'updated'}, original[1]]
+        assert saved.tree['push']['screenshot']['image_host'][0]['provider'] == 'catbox'
+    finally:
+        root.destroy()
+
+
 def test_retention_missing_or_scalar_is_safe():
     """保留节缺失时默认 14 天，标量时禁用开关与箭头且不写入。"""
     from unittest.mock import Mock

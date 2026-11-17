@@ -484,53 +484,94 @@ def test_test_request_uses_document_directory(tmp_path):
         root.destroy()
 
 
-def test_host_options_edit_stays_mapping(tmp_path):
-    """可见图床高级选项输入应解析为映射，不写入原始字符串。"""
+def test_hidden_host_options_roundtrip_after_visible_edit(tmp_path):
+    """旧图床高级字段从磁盘打开、编辑基础字段并重开后保持原值。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        path = ('push', 'screenshot', 'image_host')
+        hosts = app.model.get(path)
+        hosts[0].update({'options': {'api_key': 'hidden', 'enabled': False},
+                         'expiration': '7d', 'custom': {'nested': 12}})
+        app.model.set(path, hosts)
+        assert app.controller.save()
+        app.model.replace_document(read_document(app.model.document.path))
         page = app.visible_pages['截图设置']
-        options = page.host_rows[0]['options']
-        options.delete(0, 'end')
-        options.insert(0, '{album_id: 12}')
-        assert app.model.get(('push', 'screenshot', 'image_host'))[0]['options'] == {'album_id': 12}
+        page.refresh()
+        assert len(page.hosts_body.winfo_children()) == len(page.host_rows)
+        assert 'options' not in page.host_rows[0]
+        page.host_rows[0]['token'].insert('end', 'updated')
+        assert app.controller.save()
+        assert read_document(app.model.document.path).tree['push']['screenshot']['image_host'][0] == {
+            **hosts[0], 'token': 'updated'}
     finally:
         root.destroy()
 
 
-def test_host_options_display_roundtrips_and_invalid_input_blocks_save(tmp_path):
-    """真实输入框显示可解析映射，非法值显示错误且不能被保存吞掉。"""
-    from modules.config_document import read_document
-
+def test_hidden_host_options_do_not_block_reorder(tmp_path):
+    """磁盘中的高级选项随整条图床移动，不需要恢复旧选项输入框。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         page = app.visible_pages['截图设置']
         path = ('push', 'screenshot', 'image_host')
         hosts = app.model.get(path)
-        hosts[0]['options'] = {'album_id': 12, 'enabled': False}
+        hosts[0]['options'] = {'album_id': 12}
+        hosts.append({'provider': 'boltp', 'token': '', 'options': {'storage_id': 3}})
         app.model.set(path, hosts)
         page.refresh()
-        entry = page.host_rows[0]['options']
-        assert entry.get() == '{album_id: 12, enabled: false}'
-        entry.delete(0, 'end')
-        entry.insert(0, '{album_id: 13}')
-        assert app.model.get(path)[0]['options'] == {'album_id': 13}
-        entry.delete(0, 'end')
-        entry.insert(0, '{album_id: [}')
-        assert app.model.get(path)[0]['options'] == {}
-        assert 'options' in page.host_rows[0]['error'].cget('text')
-        assert any(issue.path == (*path, 0, 'options')
-                   for issue in app.model.validate(tmp_path).issues)
-        assert not app.controller.save(tmp_path / 'invalid.yaml')
-        assert not (tmp_path / 'invalid.yaml').exists()
-        page.refresh()
-        assert page.host_rows[0]['options'].get() == '{album_id: [}'
-        page.host_rows[0]['options'].delete(0, 'end')
-        page.host_rows[0]['options'].insert(0, '{album_id: 14}')
-        assert not page.host_rows[0]['error'].cget('text')
-        assert app.controller.save(tmp_path / 'valid.yaml')
-        assert read_document(tmp_path / 'valid.yaml').tree['push']['screenshot']['image_host'][0]['options'] == {'album_id': 14}
+        page.move_host(0, 1)
+        assert app.model.get(path) == [hosts[1], hosts[0]]
+        assert read_document(app.model.document.path).tree['push']['screenshot']['image_host'] == [
+            hosts[1], hosts[0]]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'close'])
+def test_incomplete_visible_input_requires_discard_confirmation(tmp_path, action):
+    """基础页面未完成输入未改变配置值时，切换文档仍询问是否放弃。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        destination = tmp_path / 'another.yaml'
+        if action == 'open':
+            save_document(new_document(), destination, expected_fingerprint=None)
+        original_days = app.model.get(('push', 'screenshot', 'retention', 'max_days'))
+        page.days.number.delete(0, 'end')
+        page.days.number.insert(0, '-')
+        assert app.model.get(('push', 'screenshot', 'retention', 'max_days')) == original_days
+        generation = app.model.document_generation
+        confirm = Mock(return_value='cancel')
+        app.controller.confirm = confirm
+        result = app.controller.open(destination) if action == 'open' else getattr(app.controller, action)()
+        assert result is False
+        confirm.assert_called_once_with('unsaved', app.model.document.path)
+        assert app.model.document_generation == generation
+        assert page.days.number.get() == '-'
+        if action == 'close':
+            app.controller.runner.close.assert_not_called()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('answer, expected', [('save', False), ('discard', True)])
+def test_incomplete_visible_input_save_or_discard(tmp_path, answer, expected):
+    """未完成的可见输入不能假装保存成功；放弃后仍经最终退出确认。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        page.days.number.delete(0, 'end')
+        page.days.number.insert(0, '-')
+        app.controller.confirm = Mock(side_effect=lambda kind, _: 'confirm' if kind == 'exit' else answer)
+        assert app.controller.close() is expected
+        if expected:
+            app.controller.runner.close.assert_called_once()
+        else:
+            app.controller.runner.close.assert_not_called()
+            assert page.days.number.get() == '-'
     finally:
         root.destroy()
 
@@ -575,78 +616,6 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
         disk = read_document(tmp_path / 'reordered.yaml').tree['push']['screenshot']['image_host']
         assert [item['custom'] for item in disk] == ['second', 'first']
         assert app.model.validate(tmp_path).changes == ()
-    finally:
-        root.destroy()
-
-
-def test_invalid_options_block_host_reorder(tmp_path):
-    """图床选项有非法草稿时不移动条目，也不改变错误归属。"""
-    root = tk.Tk()
-    try:
-        app = make_app(root, tmp_path)
-        page = app.visible_pages['截图设置']
-        page.add_host()
-        entry = page.host_rows[0]['options']
-        entry.delete(0, 'end')
-        entry.insert(0, '{broken: [}')
-        before = app.model.get(('push', 'screenshot', 'image_host'))
-        page.move_host(0, 1)
-        assert page.host_rows[0]['options'].get() == '{broken: [}'
-        assert app.model.get(('push', 'screenshot', 'image_host')) == before
-        assert any(issue.path == ('push', 'screenshot', 'image_host', 0, 'options')
-                   for issue in app.model.validate(tmp_path).issues)
-        assert not app.controller.save(tmp_path / 'invalid.yaml')
-    finally:
-        root.destroy()
-
-
-@pytest.mark.parametrize('action', ['new', 'open', 'close'])
-def test_invalid_options_on_clean_model_requires_discard_confirmation(tmp_path, action):
-    """真实 Tk 非法输入未改变模型时，离开文档仍要求确认。"""
-    from modules.config_document import save_document
-
-    root = tk.Tk()
-    try:
-        app = make_app(root, tmp_path)
-        page = app.visible_pages['截图设置']
-        destination = tmp_path / 'another.yaml'
-        if action == 'open':
-            save_document(new_document(), destination, expected_fingerprint=None)
-        page.host_rows[0]['options'].insert('end', '{broken: [}')
-        assert not app.model.dirty
-        assert page.host_rows[0]['options'].get() == '{}{broken: [}'
-        generation = app.model.document_generation
-        confirm = Mock(return_value='cancel')
-        app.controller.confirm = confirm
-
-        result = app.controller.open(destination) if action == 'open' else getattr(app.controller, action)()
-
-        assert result is False
-        confirm.assert_called_once_with('unsaved', app.model.document.path)
-        assert app.model.document_generation == generation
-        assert page.host_rows[0]['options'].get() == '{}{broken: [}'
-        if action == 'close':
-            app.controller.runner.close.assert_not_called()
-    finally:
-        root.destroy()
-
-
-@pytest.mark.parametrize('answer, expected', [('save', False), ('discard', True)])
-def test_invalid_options_on_clean_model_save_or_discard(tmp_path, answer, expected):
-    """非法控件值不能假装保存成功，放弃后仍需最终退出确认。"""
-    root = tk.Tk()
-    try:
-        app = make_app(root, tmp_path)
-        page = app.visible_pages['截图设置']
-        page.host_rows[0]['options'].delete(0, 'end')
-        page.host_rows[0]['options'].insert(0, '{broken: [}')
-        app.controller.confirm = Mock(side_effect=lambda kind, _: 'confirm' if kind == 'exit' else answer)
-        assert app.controller.close() is expected
-        if expected:
-            app.controller.runner.close.assert_called_once()
-        else:
-            app.controller.runner.close.assert_not_called()
-            assert page.host_rows[0]['options'].get() == '{broken: [}'
     finally:
         root.destroy()
 
@@ -819,8 +788,8 @@ def test_host_edit_refresh_keeps_selected_upload_host(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_host_options_credentials_are_masked(tmp_path):
-    """图床 options 中的凭证不在输入框默认状态下明文显示。"""
+def test_host_advanced_credentials_are_not_rendered(tmp_path):
+    """高级选项中的凭证不出现在基础行，普通凭证仍被遮挡。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -830,14 +799,10 @@ def test_host_options_credentials_are_masked(tmp_path):
         hosts[0]['options'] = {'api_key': 'demo'}
         app.model.set(path, hosts)
         page.refresh()
-        options = page.host_rows[0]['options']
-        assert options.cget('show') == '●'
-        toggle = page.host_rows[0]['options_toggle']
-        toggle._command()
-        assert options.cget('show') == ''
-        assert 'api_key' in options.get()
-        toggle._command()
-        assert options.cget('show') == '●'
+        assert len(page.hosts_body.winfo_children()) == len(page.host_rows)
+        assert page.host_rows[0]['token'].cget('show') == '●'
+        assert 'options' not in page.host_rows[0]
+        assert app.model.get(path)[0]['options'] == {'api_key': 'demo'}
     finally:
         root.destroy()
 
@@ -955,7 +920,7 @@ def test_validate_shows_issue_count_and_navigates_to_field(tmp_path):
 
 
 def test_six_image_hosts_edit_and_reorder(tmp_path):
-    """六个已支持图床的字段输入及上下移动保持完整槽位。"""
+    """六个图床编辑基础字段并重排时保留隐藏的高级字段。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -969,9 +934,11 @@ def test_six_image_hosts_edit_and_reorder(tmp_path):
             'catbox', 'wmimg', 'beeimg', 'beeimg_cn', 'boltp', 'superbed']
         row = page.host_rows[3]
         row['token'].insert(0, 'private-token')
-        row['expiration'].insert(0, '7d')
-        row['options'].delete(0, 'end')
-        row['options'].insert(0, '{storage_id: 12}')
+        hosts = app.model.get(path)
+        hosts[3]['expiration'] = '7d'
+        hosts[3]['options'] = {'storage_id': 12}
+        app.model.set(path, hosts)
+        page.refresh()
         page.move_host(3, -1)
         assert app.model.get(path)[2] == {
             'provider': 'beeimg_cn', 'token': 'private-token',
@@ -1522,7 +1489,7 @@ def test_validation_routes_dynamic_diagnostic_path(
             assert page._expanded_channel == 1
             assert page.channel_entries['sckey'].winfo_exists()
         elif path[2] == 'image_host':
-            assert page.host_rows[1]['options'].winfo_exists()
+            assert page.host_rows[1]['number'].winfo_exists()
         else:
             assert page.target_rows[1]['entry'].winfo_exists()
     finally:

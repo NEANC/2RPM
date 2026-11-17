@@ -5,12 +5,10 @@
 
 from collections.abc import Mapping
 import re
-from io import StringIO
 import tkinter as tk
 from tkinter import messagebox
 
 import ctk_kit
-from ruamel.yaml import YAML
 import win32gui
 
 from modules.config_rules import Issue
@@ -295,22 +293,6 @@ class Page(ctk_kit.CTkScrollableFrame):
         if (not isinstance(items, list) or not 0 <= source_index < len(items)
                 or not isinstance(items[source_index], Mapping)):
             return
-        if key == 'options':
-            try:
-                parsed = YAML(typ='safe').load(value) if value.strip() else {}
-            except Exception:
-                parsed = None
-            issue_path = (*path, source_index, key)
-            if not isinstance(parsed, dict):
-                self.invalid_options[source_index] = value
-                self.model.input_errors[issue_path] = Issue(
-                    issue_path, 'invalid_options', 'error', 'options 必须是有效 YAML 映射')
-                self.host_rows[index]['error'].configure(text='options 必须是有效 YAML 映射')
-                return
-            self.invalid_options.pop(source_index, None)
-            self.model.input_errors.pop(issue_path, None)
-            self.host_rows[index]['error'].configure(text='')
-            value = parsed
         if items[source_index].get(key) == value:
             return
         items[source_index][key] = value
@@ -470,35 +452,8 @@ class Page(ctk_kit.CTkScrollableFrame):
                          font=FONT_BODY).pack(side='left')
         token = self._entry(row, item.get('token', ''),
                             lambda value: self._set_item(HOSTS, index, 'token', value), secret=True)
-        advanced = ctk_kit.CTkFrame(self.hosts_body, fg_color='transparent')
-        advanced.pack(fill='x', pady=(0, 6))
-        ctk_kit.CTkLabel(advanced, text='期限', font=FONT_BODY).pack(side='left')
-        expiration = self._entry(advanced, str(item.get('expiration', '')),
-                                 lambda value: self._set_item(HOSTS, index, 'expiration', value))
-        ctk_kit.CTkLabel(advanced, text='选项', font=FONT_BODY).pack(side='left')
-        value = item.get('options', {})
-        if isinstance(value, dict):
-            stream = StringIO()
-            yaml = YAML()
-            yaml.default_flow_style = True
-            yaml.dump(value, stream)
-            value = stream.getvalue().strip()
-        options = self._entry(advanced, self.invalid_options.get(source_index, str(value)),
-                              lambda raw: self._set_item(HOSTS, index, 'options', raw), secret=True)
-        options_toggle = ctk_kit.CTkButton(
-            advanced, text='显示', width=55,
-            command=lambda widget=options: widget.configure(
-                show='' if widget.cget('show') else '●'))
-        options_toggle.pack(side='left', padx=4)
-        error = ctk_kit.CTkLabel(
-            self.hosts_body,
-            text='options 必须是有效 YAML 映射' if source_index in self.invalid_options else '',
-            font=FONT_SMALL)
-        error.pack(anchor='w')
         self.host_rows.append({'number': stepper.number, 'provider': provider,
-                               'token': token, 'expiration': expiration,
-                               'options': options, 'options_toggle': options_toggle,
-                               'error': error, 'source_index': source_index})
+                               'token': token, 'source_index': source_index})
         ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
                           command=lambda: self.remove_host(index)).pack(side='right')
 
