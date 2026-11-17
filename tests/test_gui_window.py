@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import ctk_kit
+import customtkinter
 import pytest
 
 from tests.test_gui_pages import make_app
@@ -200,13 +201,55 @@ def test_dpi_narrow_then_wide_restores_home_header_layout(tmp_path):
         root.geometry('760x420+100+100')
         root.update()
         assert label.pack_info()['side'] == 'left'
-        assert header.pack_info()['padx'] == (0, 132)
+        assert header.pack_info()['padx'] == (0, app.window.titlebar.winfo_width())
         root.event_generate('<Configure>', width=760, height=420)
         root.update()
         assert label.pack_info()['side'] == 'left'
-        assert header.pack_info()['padx'] == (0, 132)
+        assert header.pack_info()['padx'] == (0, app.window.titlebar.winfo_width())
     finally:
         root.destroy()
+        tk._default_root = None
+
+
+def test_dpi_wide_header_buttons_do_not_intersect_window_controls(tmp_path, monkeypatch):
+    """1.75 倍缩放下由窄转宽时四页按钮不与窗口控制栏相交。"""
+    monkeypatch.setattr(customtkinter.ScalingTracker, 'get_window_dpi_scaling',
+                        lambda _window: 1)
+    monkeypatch.setattr(customtkinter.ScalingTracker, 'widget_scaling', 1.75)
+    monkeypatch.setattr(customtkinter.ScalingTracker, 'window_scaling', 1.75)
+    tk._default_root = None
+    root = None
+    try:
+        root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                           remember_theme=False, notifier=False, backdrop='none')
+        assert root._get_window_scaling() == 1.75
+        app = make_app(root, tmp_path)
+        root.geometry('600x420+100+100')
+        root.update()
+        root.geometry('760x420+100+100')
+        root.update()
+        bar = app.window.titlebar
+        for name in ('主页', '截图设置', '消息推送设置', '日志设置'):
+            assert app.show_page(name)
+            root.update()
+            header = app.visible_pages[name].winfo_children()[0]
+            assert header.winfo_children()[0].pack_info()['side'] == 'left'
+            buttons = [child for child in header.winfo_children()
+                       if isinstance(child, ctk_kit.CTkButton)]
+            assert buttons, name
+            for button in buttons:
+                assert (button.winfo_rootx() + button.winfo_width() <= bar.winfo_rootx()
+                        or button.winfo_rootx() >= bar.winfo_rootx() + bar.winfo_width()
+                        or button.winfo_rooty() + button.winfo_height() <= bar.winfo_rooty()
+                        or button.winfo_rooty() >= bar.winfo_rooty() + bar.winfo_height()), (
+                            name, button.cget('text'),
+                            (button.winfo_rootx(), button.winfo_rooty(),
+                             button.winfo_width(), button.winfo_height()),
+                            (bar.winfo_rootx(), bar.winfo_rooty(),
+                             bar.winfo_width(), bar.winfo_height()))
+    finally:
+        if root is not None:
+            root.destroy()
         tk._default_root = None
 
 

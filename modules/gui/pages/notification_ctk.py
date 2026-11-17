@@ -63,7 +63,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                                                command=app.notify)
         self.notify_button.pack(side='right')
         if app.window:
-            wrap_header(app.root, header)
+            wrap_header(app.root, header, app.window.titlebar)
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('推送通道')

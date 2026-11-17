@@ -25,7 +25,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         for label, action in (('打开配置', app.open), ('新建配置', app.new)):
             ctk_kit.CTkButton(header, text=label, command=action, font=FONT_BODY).pack(side='right', padx=4)
         if app.window:
-            wrap_header(app.root, header)
+            wrap_header(app.root, header, app.window.titlebar)
         card = self._card('配置摘要', header=True)
         self.save_as_button = ctk_kit.CTkButton(
             self.summary_header, text='另存为', command=app.save_as, font=FONT_BODY)

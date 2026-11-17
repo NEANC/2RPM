@@ -8,7 +8,7 @@ import ctk_kit
 from modules.gui.appearance import FONT_BODY
 
 
-def wrap_header(root, header):
+def wrap_header(root, header, titlebar):
     """窄窗将顶栏按钮移至标题下一行，宽窗保持原有单行布局。"""
     label, *buttons = header.winfo_children()
     compact = False
@@ -22,7 +22,7 @@ def wrap_header(root, header):
         if narrow == compact:
             return
         compact = narrow
-        header.pack_configure(padx=0 if narrow else (0, 132))
+        header.pack_configure(padx=0 if narrow else (0, titlebar.winfo_width()))
         label.pack_forget()
         for button in buttons:
             button.pack_forget()

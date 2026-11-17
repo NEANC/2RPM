@@ -30,7 +30,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(header, text='打开日志目录', font=FONT_BODY,
                           command=app.open_logs).pack(side='right')
         if app.window:
-            wrap_header(app.root, header)
+            wrap_header(app.root, header, app.window.titlebar)
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('保存位置')

@@ -48,7 +48,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkButton(header, text='截图测试', command=app.capture, font=FONT_BODY).pack(
             side='right', padx=4)
         if app.window:
-            wrap_header(app.root, header)
+            wrap_header(app.root, header, app.window.titlebar)
         targets_card = self._card('截图目标')
         self.add_target_button = ctk_kit.CTkButton(
             targets_card, text='添加目标', font=FONT_BODY, command=self.add_target)
