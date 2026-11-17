@@ -18,7 +18,7 @@ def wrap_header(root, header):
         nonlocal compact
         if event.widget is not root:
             return
-        narrow = event.width / root._get_window_scaling() < 700
+        narrow = root.winfo_width() / root._get_window_scaling() < 700
         if narrow == compact:
             return
         compact = narrow

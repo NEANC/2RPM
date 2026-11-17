@@ -185,6 +185,31 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         tk._default_root = None
 
 
+def test_dpi_narrow_then_wide_restores_home_header_layout(tmp_path):
+    """高 DPI 窄窗转宽后主页顶栏恢复单行及右侧避让。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        header = app.visible_pages['主页'].winfo_children()[0]
+        label = header.winfo_children()[0]
+        root.geometry('600x420+100+100')
+        root.update()
+        assert label.pack_info()['side'] == 'top'
+        root.geometry('760x420+100+100')
+        root.update()
+        assert label.pack_info()['side'] == 'left'
+        assert header.pack_info()['padx'] == (0, 132)
+        root.event_generate('<Configure>', width=760, height=420)
+        root.update()
+        assert label.pack_info()['side'] == 'left'
+        assert header.pack_info()['padx'] == (0, 132)
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_initial_height_respects_work_area_and_four_pages_scroll(tmp_path, monkeypatch):
     """低工作区启动不越界，四个主要页面在缩矮后仍可滚动。"""
     monkeypatch.setattr('modules.gui.app.work_area_height', lambda _root: 520)
