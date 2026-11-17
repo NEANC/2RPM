@@ -46,6 +46,66 @@ def make_app(root, tmp_path):
     return app
 
 
+def test_screenshot_autosave_keeps_editing_widget_and_cursor(tmp_path):
+    """真实 Tk 自动保存同一文档时保留正在编辑的目标行及光标。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        page.add_target()
+        app.show_page('截图设置')
+        entry = page.target_rows[-1]['entry']
+        root.update()
+        entry.insert(0, '窗口标题')
+        entry._entry.icursor(2)
+        entry._entry.focus_force()
+        root.update_idletasks()
+        assert root.focus_get() == entry._entry
+
+        assert app.save_coordinator.flush()
+
+        assert read_document(app.model.document.path).tree['push']['screenshot']['targets'][-1]['target'] == '窗口标题'
+        assert entry.winfo_exists()
+        assert page.target_rows[-1]['entry'] is entry
+        assert root.focus_get() == entry._entry
+        assert entry._entry.index('insert') == 2
+    finally:
+        root.destroy()
+
+
+def test_screenshot_save_with_normalized_tree_refreshes_rows(tmp_path, monkeypatch):
+    """保存结果发生规范化时仍用真实 Tk 刷新目标行。"""
+    from modules.config_document import ConfigDocument
+    import modules.gui.controller as controller_module
+
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        page.add_target()
+        entry = page.target_rows[-1]['entry']
+        original_save = controller_module.save_document
+
+        def normalized_save(document, destination, *, expected_fingerprint):
+            """模拟持久化层返回经过规范化的文档树。"""
+            tree = document.tree.copy()
+            tree['push'] = tree['push'].copy()
+            tree['push']['screenshot'] = tree['push']['screenshot'].copy()
+            tree['push']['screenshot']['targets'] = [
+                *tree['push']['screenshot']['targets'][:-1],
+                {'provider': 'window', 'target': '规范化窗口'}]
+            return original_save(ConfigDocument(document.path, tree, document.fingerprint),
+                                 destination, expected_fingerprint=expected_fingerprint)
+
+        monkeypatch.setattr(controller_module, 'save_document', normalized_save)
+        app.model.set(('monitor', 'target'), '变更.exe')
+        assert app.save_coordinator.flush()
+        assert not entry.winfo_exists()
+        assert page.target_rows[-1]['entry'].get() == '规范化窗口'
+    finally:
+        root.destroy()
+
+
 def test_real_app_target_type_switch_validates_without_replacing_target(tmp_path):
     """真实 App 切换目标类型后按新类型校验，同时保留原目标。"""
     root = tk.Tk()

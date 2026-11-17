@@ -248,6 +248,7 @@ class Controller:
         except ConfigSaveError:
             return False
         newer = self.model.revision != revision
+        changed_tree = saved.tree != document.tree
         if newer:
             draft = self.model.snapshot()
             raw_inputs = copy.deepcopy(self.model.raw_inputs)
@@ -261,7 +262,10 @@ class Controller:
             self.model.revision += 1
             self.model._targets = {draft['monitor']['mode']: copy.deepcopy(draft['monitor']['target'])}
         self.conflicted = False
-        self.on_change()
+        if same and not changed_tree:
+            self.on_edit()
+        else:
+            self.on_change()
         return True
 
     def start_cli(self) -> LaunchResult | None:
