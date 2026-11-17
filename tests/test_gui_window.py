@@ -72,6 +72,42 @@ def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
         tk._default_root = None
 
 
+def test_home_header_actions_are_hittable_below_window_controls(tmp_path):
+    """主页顶栏按钮在真实窗口里避开操作栏并能接收鼠标命中。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        home = app.visible_pages['主页']
+        buttons = [widget for frame in home.winfo_children()
+                   for widget in frame.winfo_children()
+                   if isinstance(widget, ctk_kit.CTkButton)
+                   and widget.cget('text') in ('打开配置', '新建配置')]
+        assert len(buttons) == 2
+        bar = app.window.titlebar
+        for button in buttons:
+            assert (button.winfo_rooty() >= bar.winfo_rooty() + bar.winfo_height()
+                    or button.winfo_rootx() + button.winfo_width() <= bar.winfo_rootx())
+            for x in (button.winfo_rootx() + 2,
+                      button.winfo_rootx() + button.winfo_width() - 2):
+                for y in (button.winfo_rooty() + 2,
+                          button.winfo_rooty() + button.winfo_height() // 2):
+                    target = root.winfo_containing(x, y)
+                    assert target is button or str(target).startswith(str(button) + '.'), (
+                        button.cget('text'), x, y, target)
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_close_button_has_red_hover_in_both_themes(window):
+    """关闭按钮两种主题的悬停态都是红色而非默认强调色。"""
+    _root, shell, _close = window
+    assert shell.close_button.cget('hover_color') == ('#C42B1C', '#C42B1C')
+
+
 def test_real_app_brand_area_drags_window(tmp_path):
     """侧栏品牌背景与标题上的真实 Tk 事件都能移动窗口。"""
     tk._default_root = None

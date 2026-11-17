@@ -22,7 +22,7 @@ class MainWindow:
         self.titlebar.place(relx=1, x=0, y=0, anchor='ne')
         self.close_button = ctk_kit.CTkButton(
             self.titlebar, text='×', width=44, height=38, corner_radius=0,
-            fg_color='transparent',
+            fg_color='transparent', hover_color=('#C42B1C', '#C42B1C'),
             command=close, font=FONT_BODY)
         self.close_button.pack(side='right')
         self.maximize = ctk_kit.CTkButton(

@@ -19,7 +19,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         super().__init__(parent, corner_radius=0)
         self.app = app
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', pady=(0, 12))
+        header.pack(fill='x', pady=(38 if app.window else 0, 12))
         ctk_kit.CTkLabel(header, text='主页', font=FONT_TITLE).pack(side='left')
         for label, action in (('打开配置', app.open), ('新建配置', app.new)):
             ctk_kit.CTkButton(header, text=label, command=action, font=FONT_BODY).pack(side='right', padx=4)
