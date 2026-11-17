@@ -1635,10 +1635,17 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
         cases = [(index, path) for index, page in enumerate(pages)
                  for path in getattr(page, 'fields', {})]
         assert cases
+        home = app.visible_pages['主页']
+        button = next(child for card in home.winfo_children()
+                      for child in card.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton)
+                      and child.cget('text') == '校验配置')
         for index, path in cases:
+            app.show_page('主页')
+            root.focus_force()
             app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
                 SimpleNamespace(path=field, severity='error')])
-            app.validate()
+            button.invoke()
             root.update()
             if path == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
                 destination = '外部程序设置'
