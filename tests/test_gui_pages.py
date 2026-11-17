@@ -1047,13 +1047,21 @@ def test_validate_shows_issue_count_and_navigates_to_field(tmp_path):
 
 
 def test_validation_navigation_focuses_monitor_target_entry(tmp_path):
-    """从主页问题跳转后真实监视目标输入框获得焦点。"""
+    """点击主页真实校验按钮并处理完整事件后目标输入框获得焦点。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        root.update()
         page = app.visible_pages['监视设置']
-        app.focus_validation_issue('监视设置', SimpleNamespace(path=('monitor', 'target')))
-        root.update_idletasks()
+        home = app.visible_pages['主页']
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=('monitor', 'target'), severity='error')])
+        button = next(child for card in home.winfo_children()
+                      for child in card.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton)
+                      and child.cget('text') == '校验配置')
+        button.invoke()
+        root.update()
         assert app.current_page == '监视设置'
         assert root.focus_get() is page.fields[('monitor', 'target')][1]._entry
     finally:
@@ -1618,12 +1626,10 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
 
 def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
     """全部静态诊断路径均在校验入口导航到实际字段。"""
-    root = ctk_kit.App(title='测试', remember_geometry=False,
-                       remember_theme=False, notifier=False, backdrop='none')
-    root.withdraw()
+    root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
-        root.deiconify()
+        root.update()
         pages = [app.visible_pages[name] for name in
                  ('监视设置', '消息推送设置', '截图设置', '日志设置')]
         cases = [(index, path) for index, page in enumerate(pages)
@@ -1633,7 +1639,7 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
             app.model.validate = lambda _, field=path: SimpleNamespace(issues=[
                 SimpleNamespace(path=field, severity='error')])
             app.validate()
-            root.update_idletasks()
+            root.update()
             if path == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
                 destination = '外部程序设置'
             elif path[:2] == ('push', 'screenshot'):
