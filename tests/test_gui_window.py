@@ -151,6 +151,36 @@ def test_home_header_starts_at_top_and_reserves_only_right_control_area(tmp_path
         tk._default_root = None
 
 
+def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
+    """主窗缩窄时主页动作按钮仍位于窗口内且可命中。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.geometry('420x680+100+100')
+        root.update()
+        assert (root._min_width, root._min_height) == (900, 680)
+        minimum_width, minimum_height = root.tk.call('wm', 'minsize', root._w)
+        assert root.winfo_width() >= minimum_width
+        assert root.winfo_height() >= minimum_height
+        home = app.visible_pages['主页']
+        header = home.winfo_children()[0]
+        buttons = [widget for widget in header.winfo_children()
+                   if isinstance(widget, ctk_kit.CTkButton)]
+        assert len(buttons) == 2
+        for button in buttons:
+            assert button.winfo_rootx() >= root.winfo_rootx()
+            assert button.winfo_rootx() + button.winfo_width() <= app.window.titlebar.winfo_rootx()
+            x = button.winfo_rootx() + button.winfo_width() // 2
+            y = button.winfo_rooty() + button.winfo_height() // 2
+            target = root.winfo_containing(x, y)
+            assert target is button or str(target).startswith(str(button) + '.')
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 @pytest.mark.parametrize('page_name, labels', (
     ('消息推送设置', ('通知测试',)),
     ('截图设置', ('截图测试', '上传测试')),

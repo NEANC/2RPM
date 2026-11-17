@@ -57,6 +57,7 @@ class App:
         self.current_page = '主页'
         root._gui_program_dir = controller.program_dir
         root.title('2RPM 配置')
+        root.minsize(900, 680)
         root.geometry('900x680')
         self.appearance_path = preferences_path()
         self.appearance = load_preferences(self.appearance_path)
