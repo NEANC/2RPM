@@ -418,6 +418,51 @@ def test_adb_port_entry_supports_new_address_and_edit():
         root.destroy()
 
 
+def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path):
+    """切到窗口时清理当前端口错误，保留另一目标草稿并允许保存。"""
+    from unittest.mock import Mock
+    from modules.config_document import read_document, save_document
+    from modules.gui.controller import Controller
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    document = new_document()
+    document.tree['push']['screenshot']['targets'] = [
+        {'provider': 'adb', 'target': 'A:1000'},
+        {'provider': 'adb', 'target': 'B:2000'}]
+    saved = save_document(document, tmp_path / 'config.yaml', expected_fingerprint=None)
+    controller = Controller(EditorModel(saved), confirm=lambda *_: 'confirm',
+                            choose_path=lambda: None, cli_command=(),
+                            runner=Mock(), program_dir=tmp_path)
+    model = controller.model
+    page = ScreenshotPage(root, Mock(model=model))
+    first = ('push', 'screenshot', 'targets', 0, 'target')
+    second = ('push', 'screenshot', 'targets', 1, 'target')
+    try:
+        other_port = page.target_rows[1]['port']
+        other_port.delete(0, 'end')
+        other_port.insert(0, '02000')
+        port = page.target_rows[0]['port']
+        port.delete(0, 'end')
+        port.insert(0, '-')
+        assert model.raw_inputs[first] == '-'
+        assert first in model.input_errors
+
+        page._change_provider(0, 'window')
+
+        assert page.target_rows[0]['port'] is None
+        assert first not in model.raw_inputs
+        assert first not in model.input_errors
+        assert model.raw_inputs[second] == '02000'
+        assert page.target_rows[1]['port'].get() == '02000'
+        assert controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'] == [
+            {'provider': 'window', 'target': 'A:1000'},
+            {'provider': 'adb', 'target': 'B:2000'}]
+    finally:
+        root.destroy()
+
+
 def test_adb_port_out_of_range_has_business_diagnostic(tmp_path):
     """数值端口越界时显示业务诊断，但不收紧 CLI 的 serial 规则。"""
     from unittest.mock import Mock

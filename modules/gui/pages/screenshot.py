@@ -401,6 +401,10 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _change_provider(self, index, value):
         """主动修改来源时保留可编辑的原始目标。"""
+        if self._item_at(TARGETS, index).get('provider') == 'adb' and value != 'adb':
+            path = (*TARGETS, self._source_index(TARGETS, index), 'target')
+            self.model.raw_inputs.pop(path, None)
+            self.model.input_errors.pop(path, None)
         self._set_item(TARGETS, index, 'provider', value)
         self.refresh()
 
