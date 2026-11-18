@@ -66,18 +66,24 @@ def main(argv: list[str] | None = None) -> int:
     worker_command = ((str(Path(sys.executable).resolve()), '--internal-gui-worker')
                       if getattr(sys, 'frozen', False) else
                       (str(Path(sys.executable).resolve()), str(Path(__file__).resolve()), '--internal-gui-worker'))
-    runner = TestRunner(worker_command, queue.Queue(), worker_cwd=program_dir)
-    controller = Controller(EditorModel(new_document()), confirm=confirm,
-                            choose_path=lambda: Path(name) if (name := filedialog.asksaveasfilename(parent=root)) else None,
-                            cli_command=command, runner=runner, program_dir=program_dir)
-    App(root, controller)
-    if options.config is not None:
-        path = normalize_config_path(options.config, program_dir=program_dir)
-        if not controller.open(path):
-            messagebox.showerror('配置读取失败', '无法读取指定配置文档', parent=root)
-    root.mainloop()
-    runner.close()
-    return 0
+    runner = None
+    try:
+        runner = TestRunner(worker_command, queue.Queue(), worker_cwd=program_dir)
+        controller = Controller(EditorModel(new_document()), confirm=confirm,
+                                choose_path=lambda: Path(name) if (name := filedialog.asksaveasfilename(parent=root)) else None,
+                                cli_command=command, runner=runner, program_dir=program_dir)
+        App(root, controller)
+        if options.config is not None:
+            path = normalize_config_path(options.config, program_dir=program_dir)
+            if not controller.open(path):
+                messagebox.showerror('配置读取失败', '无法读取指定配置文档', parent=root)
+        root.mainloop()
+        return 0
+    finally:
+        if runner is not None:
+            runner.close()
+        if root.winfo_exists():
+            root.destroy()
 
 
 if __name__ == '__main__':

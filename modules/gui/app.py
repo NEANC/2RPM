@@ -61,6 +61,15 @@ class App:
 
     def __init__(self, root, controller):
         """建立侧栏导航和主线程结果泵。"""
+        try:
+            self._initialize(root, controller)
+        except Exception:
+            if hasattr(self, 'save_coordinator'):
+                self.save_coordinator.close()
+            raise
+
+    def _initialize(self, root, controller):
+        """初始化窗口组件及会话目录。"""
         # ctk-kit 字体和 CustomTkinter 内部字体依赖 Tk 默认根，不能沿用已销毁解释器。
         if tk._default_root is not root:
             tk._default_root = root

@@ -46,6 +46,41 @@ def test_gui_entry_uses_ctk_window_without_geometry_persistence(monkeypatch):
                                        'backdrop': 'none'}
 
 
+@pytest.mark.parametrize('failure', ['app', 'mainloop'])
+def test_gui_entry_failure_closes_runner_and_destroys_root(monkeypatch, failure):
+    """窗口构建或事件循环异常时入口自行释放真实根窗口及运行器。"""
+    from modules.gui.test_runner import TestRunner
+
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_cleanup', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = tk.Tk()
+    runners = []
+
+    def make_runner(*args, **kwargs):
+        """创建真实运行器并记录实例用于检查关闭状态。"""
+        runner = TestRunner(*args, **kwargs)
+        runners.append(runner)
+        return runner
+
+    def fail(*args):
+        """从指定入口阶段抛出异常。"""
+        raise RuntimeError('启动失败')
+
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('modules.gui.test_runner.TestRunner', make_runner)
+    monkeypatch.setattr('modules.gui.app.App', fail if failure == 'app' else Mock())
+    if failure == 'mainloop':
+        monkeypatch.setattr(root, 'mainloop', fail)
+    with pytest.raises(RuntimeError, match='启动失败'):
+        module.main([])
+    assert len(runners) == 1
+    assert runners[0]._closed
+    with pytest.raises(tk.TclError):
+        root.winfo_exists()
+
+
 @pytest.mark.parametrize(('kind', 'detail'), [
     ('relocate', {'from': '旧目录', 'to': '新目录'}),
     ('overwrite', '配置.yaml'),
@@ -59,29 +94,28 @@ def test_non_normalize_confirmation_uses_real_tk(tmp_path, monkeypatch, kind, de
     spec.loader.exec_module(module)
     root = tk.Tk()
     seen = []
-    try:
-        monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
-        monkeypatch.setattr('tkinter.Tk', Mock(side_effect=AssertionError('应使用 ctk-kit 窗口')))
-        monkeypatch.setattr('modules.gui.app.App', Mock())
-        monkeypatch.setattr('tkinter.messagebox.askyesno',
-                            lambda title, text, **kwargs: seen.append((text, kwargs['parent'])) or True)
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('tkinter.Tk', Mock(side_effect=AssertionError('应使用 ctk-kit 窗口')))
+    monkeypatch.setattr('modules.gui.app.App', Mock())
+    monkeypatch.setattr('tkinter.messagebox.askyesno',
+                        lambda title, text, **kwargs: seen.append((text, kwargs['parent'])) or True)
 
-        def exercise_confirmation():
-            """在入口建好控制器后走一次原生确认回调。"""
-            assert controller_holder[0].confirm(kind, detail) == 'confirm'
+    def exercise_confirmation():
+        """在入口建好控制器后走一次原生确认回调。"""
+        assert controller_holder[0].confirm(kind, detail) == 'confirm'
 
-        from modules.gui.controller import Controller
-        controller_holder = []
+    from modules.gui.controller import Controller
+    controller_holder = []
 
-        def capture_controller(*args, **kwargs):
-            """保留真实控制器并暴露给主循环验证。"""
-            controller = Controller(*args, **kwargs)
-            controller_holder.append(controller)
-            return controller
+    def capture_controller(*args, **kwargs):
+        """保留真实控制器并暴露给主循环验证。"""
+        controller = Controller(*args, **kwargs)
+        controller_holder.append(controller)
+        return controller
 
-        monkeypatch.setattr('modules.gui.controller.Controller', capture_controller)
-        monkeypatch.setattr(root, 'mainloop', exercise_confirmation)
-        assert module.main([]) == 0
-        assert seen and seen[0][1] is root
-    finally:
-        root.destroy()
+    monkeypatch.setattr('modules.gui.controller.Controller', capture_controller)
+    monkeypatch.setattr(root, 'mainloop', exercise_confirmation)
+    assert module.main([]) == 0
+    assert seen and seen[0][1] is root
+    with pytest.raises(tk.TclError):
+        root.winfo_exists()

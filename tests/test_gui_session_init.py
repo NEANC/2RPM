@@ -59,6 +59,45 @@ def test_session_resolve_failure_removes_created_directory(tmp_path, monkeypatch
         root.destroy()
 
 
+@pytest.mark.parametrize('failure', ['early', 'session'])
+def test_failed_app_constructor_cancels_coordinator_poll(tmp_path, monkeypatch, failure):
+    """构造任一阶段失败都撤销协调器真实注册的轮询。"""
+    root = tk.Tk()
+    original_after = root.after
+    polls = []
+
+    def record_after(delay, callback=None, *args):
+        """保留协调器真实 Tk 定时器标识。"""
+        after_id = original_after(delay, callback, *args)
+        if delay == 1000 and callback is not None:
+            polls.append(after_id)
+        return after_id
+
+    monkeypatch.setattr(root, 'after', record_after)
+    monkeypatch.setattr(app_module.tempfile, 'tempdir', str(tmp_path))
+    if failure == 'early':
+        monkeypatch.setattr(app_module, 'work_area_size',
+                            Mock(side_effect=RuntimeError('构造失败')))
+    else:
+        original_resolve = app_module.Path.resolve
+
+        def fail_session_resolve(path, *args, **kwargs):
+            """仅让已创建的会话目录解析失败。"""
+            if path.name.startswith('2rpm-gui-'):
+                raise RuntimeError('解析失败')
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(app_module.Path, 'resolve', fail_session_resolve)
+    try:
+        with pytest.raises(RuntimeError):
+            make_app(root, tmp_path)
+        assert polls
+        assert not set(polls) & set(root.tk.call('after', 'info'))
+        assert not list(tmp_path.glob('2rpm-gui-*'))
+    finally:
+        root.destroy()
+
+
 def test_session_creation_registers_poll_and_keeps_directory(tmp_path, monkeypatch):
     """正常构造保留轮询回调和会话目录供后续测试使用。"""
     root = tk.Tk()
