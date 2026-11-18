@@ -44,11 +44,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields = {}
         self.path_fields = {}
         self.spinners = {}
-        self.action_drafts = {}
         self.browse_buttons = {}
-        self.clear_buttons = {}
-        self.restore_buttons = {}
-        self.generation = self.model.document_generation
         self._refreshing = False
         self._focus_request = 0
         ctk_kit.CTkLabel(self, text='外部程序设置', font=FONT_TITLE).pack(
@@ -91,33 +87,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         return card
 
     def _path_field(self, card, event):
-        """建立原生路径框：放大镜在左，输入框与清除/恢复在右。"""
+        """原生路径框：输入框 + 自带浏览按钮，不做二次拆装。"""
         path = ('external', event)
         field = ctk_kit.PathField(
-            card, mode='file', placeholder='留空则不执行',
+            card, mode='file', title='选择外部程序或 BAT',
+            placeholder='留空则不执行',
             on_change=lambda value, key=event: self._path_changed(
                 ('external', key), value))
         field.pack(fill='x', padx=CARD_PAD, pady=(4, 0))
-        # 复用 PathField 自带的浏览按钮，但换成本页带文件过滤的选择入口。
-        field.button.configure(text='⌕', width=32,
-                               command=lambda key=event: self.choose_file(key))
-        field.button.pack_forget()
-        field.entry.pack_forget()
-        clear = ctk_kit.CTkButton(
-            field, text='×', width=32, height=38, font=FONT_BODY,
-            command=lambda key=event: self.clear_file(key))
-        restore = ctk_kit.CTkButton(
-            field, text='恢复', width=55, height=38, state='disabled',
-            font=FONT_BODY, command=lambda key=event: self.restore_file(key))
-        # 先给右侧固定控件分空间，输入框最后吃掉剩余宽度，窄窗口下不会被挤出。
-        field.button.pack(side='left', padx=(0, 8))
-        restore.pack(side='right')
-        clear.pack(side='right', padx=(0, 8))
-        field.entry.pack(side='left', fill='x', expand=True)
         self.path_fields[path] = field
         self.browse_buttons[event] = field.button
-        self.clear_buttons[event] = clear
-        self.restore_buttons[event] = restore
         self.fields[path] = (field, field.entry, 'text')
         return field
 
@@ -125,7 +104,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         """建立整数值步进框并跟踪写回。"""
         spinner = ctk_kit.Spinner(
             parent, from_=limits[0], to=limits[1], as_int=True,
-            value=default, width=110, height=38,
+            value=default,
             command=lambda value, field=path: self._number_changed(field, value))
         self.spinners[path] = spinner
         self.fields[path] = (spinner, spinner.entry, 'int')
@@ -168,33 +147,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.path_fields[path].set(selected)
 
     def clear_file(self, event):
-        """清空指定动作而不执行它，仅在本模型内存中保留可恢复路径。"""
+        """清空指定动作而不执行它。"""
         path = ('external', event)
         if not path_writable(self.model, path):
             return
-        value = self.path_fields[path].get()
-        if value:
-            self.action_drafts[event] = value
         self.path_fields[path].clear()
-        self._update_restore(event)
-
-    def restore_file(self, event):
-        """只恢复当前文档曾清空的动作，不写入其它文档。"""
-        path = ('external', event)
-        if not path_writable(self.model, path):
-            return
-        value = self.action_drafts.pop(event, None)
-        if value is not None and self.generation == self.model.document_generation:
-            self.path_fields[path].set(value)
-        self._update_restore(event)
-
-    def _update_restore(self, event):
-        """按草稿存在且字段可写启用恢复入口。"""
-        button = self.restore_buttons.get(event)
-        if button is not None:
-            writable = path_writable(self.model, ('external', event))
-            button.configure(
-                state='normal' if event in self.action_drafts and writable else 'disabled')
 
     def _safe_value(self, path, kind):
         """读取可能缺失的字段，结构异常时显示空文本。"""
@@ -205,10 +162,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             return ''
 
     def refresh(self):
-        """显示已有路径与未完成的数字输入，文档替换后丢弃旧恢复草稿。"""
-        if self.generation != self.model.document_generation:
-            self.action_drafts.clear()
-            self.generation = self.model.document_generation
+        """显示已有路径与未完成的数字输入。"""
         self._refreshing = True
         try:
             invalid = False
@@ -223,11 +177,8 @@ class Page(ctk_kit.CTkScrollableFrame):
                 state = ('normal' if path_writable(
                     self.model, ('external', event)) else 'disabled')
                 self.browse_buttons[event].configure(state=state)
-                self.clear_buttons[event].configure(state=state)
         finally:
             self._refreshing = False
-        for event in self.restore_buttons:
-            self._update_restore(event)
 
     def focus_issue(self, path):
         """导航到与诊断路径相符的输入。"""

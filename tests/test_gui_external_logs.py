@@ -48,8 +48,8 @@ def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
         root.destroy()
 
 
-def test_external_path_label_above_input_and_browse_before_input():
-    """三个事件的路径标签置于输入上方，浏览入口位于输入左侧。"""
+def test_external_path_label_above_native_path_field():
+    """三个事件的路径标签置于原生 PathField 上方，浏览按钮由控件自带。"""
     from modules.gui.pages.external import EVENTS, Page
 
     root = tk.Tk()
@@ -59,16 +59,17 @@ def test_external_path_label_above_input_and_browse_before_input():
         root.geometry('900x700')
         root.update()
         for event, _title, _hint in EVENTS:
-            entry = page.fields[('external', event)][1]
-            browse = page.browse_buttons[event]
-            card = entry.master.master
+            field = page.path_fields[('external', event)]
+            assert isinstance(field, ctk_kit.PathField)
+            card = field.master
             labels = [child for child in card.winfo_children()
                       if isinstance(child, ctk_kit.CTkLabel)
                       and child.cget('text') == '外部程序／BAT 路径']
             assert len(labels) == 1
             label = labels[0]
-            assert label.winfo_rooty() + label.winfo_height() <= entry.winfo_rooty()
-            assert browse.winfo_rootx() < entry.winfo_rootx()
+            assert label.winfo_rooty() + label.winfo_height() <= field.winfo_rooty()
+            assert field.button.winfo_manager()
+            assert field.button.winfo_rootx() > field.entry.winfo_rootx()
     finally:
         root.destroy()
 
@@ -141,17 +142,17 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
             assert abs(app.sidebar.sidebar.winfo_width() /
                        root._get_window_scaling() - 246) <= 5
             for event, _title, _hint in EVENTS:
-                entry = page.fields[('external', event)][1]
+                field = page.path_fields[('external', event)]
+                entry = field.entry
                 page.update_idletasks()
-                offset = entry.master.master.winfo_y()
+                offset = field.master.winfo_y()
                 canvas.yview_moveto(max(0.0, (offset - 12) / page.winfo_height()))
                 root.update()
                 root.attributes('-topmost', True)
                 root.lift()
                 root.update()
                 root.attributes('-topmost', False)
-                controls = (page.browse_buttons[event], entry,
-                            page.clear_buttons[event], page.restore_buttons[event])
+                controls = (field.button, entry)
                 left = canvas.winfo_rootx()
                 right = left + canvas.winfo_width()
                 top = canvas.winfo_rooty()
@@ -169,15 +170,11 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
                             and (target is control or str(target).startswith(str(control) + '.'))), (
                                 scaling, width, event, control, target)
                 selected = f'C:/chosen/{event}.bat'
-                monkeypatch.setattr('modules.gui.pages.external.filedialog.askopenfilename',
-                                    lambda **_: selected)
-                page.browse_buttons[event].invoke()
+                field.set(selected)
                 assert app.model.get(('external', event)) == selected
-                page.clear_buttons[event].invoke()
+                field.clear()
                 assert app.model.get(('external', event)) == ''
-                assert page.restore_buttons[event].cget('state') == 'normal'
-                page.restore_buttons[event].invoke()
-                assert app.model.get(('external', event)) == selected
+                field.set(selected)
                 expected[event] = selected
                 assert all(app.model.get(('external', other)) == value
                            for other, value in expected.items())
