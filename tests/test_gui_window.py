@@ -217,13 +217,23 @@ def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path):
         assert (FONT_BODY[1], FONT_CARD_TITLE[1], FONT_TITLE[1]) == (18, 22, 36)
         assert FONT_CARD_TITLE[2] == FONT_TITLE[2] == 'bold'
         header = home.winfo_children()[0]
+        heading = next(child for child in header.winfo_children()
+                       if isinstance(child, ctk_kit.CTkLabel))
+        assert heading.cget('font')[1] == 24
         actions = [child for child in header.winfo_children()
                    if isinstance(child, ctk_kit.CTkButton)]
         assert {child.cget('text') for child in actions} == {'新建配置', '打开配置'}
         assert all(child.cget('fg_color') == '#0067C0'
                    for child in actions)
-        assert all(child.cget('width') == 124 and child.cget('height') == 56
+        assert all(child.cget('width') == 108 and child.cget('height') == 38
                    for child in actions)
+        assert all(child.cget('font')[1] == 14 for child in actions)
+        assert home.summary.cget('font')[1] == 14
+        assert home.save_button.cget('height') == 34
+        assert home.save_as_button.cget('height') == 34
+        assert home.groups['通知事件'].button.cget('font')[1] == 14
+        assert all(round(int(card.pack_info()['pady']) / card._get_widget_scaling()) == 5
+                   for card in cards)
     finally:
         root.destroy()
         tk._default_root = None
