@@ -1636,9 +1636,18 @@ def test_real_tk_scaling_keeps_long_form_scrollable_and_keyboard_reachable(
         root.update()
         widget = page.fields[path][1]
         assert widget.winfo_ismapped()
+        assert widget._textbox.winfo_ismapped()
         assert page._parent_canvas.yview() != (0.0, 1.0)
         assert widget.tk_focusNext() is not widget
         assert str(widget.cget('takefocus')) != '0'
+        assert root.focus_get() is widget._textbox
+        text = ('缩放后编辑的中文正文。' * 20) + '\n第二段'
+        widget.delete('1.0', 'end')
+        widget.insert('1.0', text)
+        widget._textbox.event_generate('<KeyRelease>')
+        root.update()
+        assert app.model.get(path) == text
+        assert page.fields[path][1] is widget
         assert root.focus_get() is widget._textbox
     finally:
         root.tk.call('tk', 'scaling', previous)
@@ -1771,6 +1780,7 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        root.deiconify()
         page = app.visible_pages['消息推送设置']
         path = ('push', 'templates', 'on_end', 'content')
         app.show_page('消息推送设置')
@@ -1779,10 +1789,12 @@ def test_chinese_long_template_is_multiline_and_keyboard_reachable(tmp_path):
         root.update()
         widget = page.fields[path][1]
         assert isinstance(widget, ctk_kit.CTkTextbox)
+        assert root.winfo_ismapped()
+        assert widget.winfo_ismapped() and widget._textbox.winfo_ismapped()
         text = ('这是一段用于通知显示的中文长正文。' * 20) + '\n第二段中文内容'
         widget.delete('1.0', 'end')
         widget.insert('1.0', text)
-        widget.event_generate('<KeyRelease>')
+        widget._textbox.event_generate('<KeyRelease>')
         root.update()
         assert app.model.get(path) == text
         assert root.focus_get() is widget._textbox
