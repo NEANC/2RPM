@@ -67,6 +67,121 @@ def test_lookback_spinner_writes_int_and_keeps_incomplete_draft():
         root.destroy()
 
 
+@pytest.mark.parametrize('event', ['<Return>', '<FocusOut>'])
+@pytest.mark.parametrize('raw', ['', '-', '12x', '007', '1000', '-1'])
+def test_lookback_native_event_keeps_raw_input(event, raw):
+    """真实内部输入事件不让原生步进器钳制或替换用户原文。"""
+    root, model, page = _page()
+    path = ('monitor', 'watch', 'lookback_minutes')
+    try:
+        entry = page.lookback.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        entry.event_generate(event)
+        root.update()
+        assert page.lookback.entry.get() == raw
+        assert model.get_input(path) == raw
+        assert model.get(path) == (int(raw) if raw.lstrip('-').isdigit() else before)
+        assert (path in model.input_errors) == (raw in ('', '-', '12x'))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('raw', 'y', 'expected'), [
+    ('007', 1, '8'), ('7', 30, '6'), ('999', 1, '999'),
+    ('0', 30, '0'), ('', 1, ''), ('-', 1, ''), ('12x', 1, ''),
+])
+def test_lookback_arrow_steps_only_parseable_input(raw, y, expected):
+    """真实箭头仅对可解析数字按一步移动，非法草稿不被覆盖。"""
+    root, model, page = _page()
+    path = ('monitor', 'watch', 'lookback_minutes')
+    try:
+        page.lookback.entry._entry.delete(0, 'end')
+        page.lookback.entry._entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        page.lookback._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert page.lookback.entry.get() == (raw if raw in ('', '-', '12x') else expected)
+        assert model.get(path) == (before if raw in ('', '-', '12x') else int(expected))
+        assert model.get_input(path) == (raw if raw in ('', '-', '12x') else expected)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('raw', 'saved'), [('', False), ('-', False),
+                                               ('12x', False), ('007', True),
+                                               ('1000', True), ('-1', True)])
+def test_lookback_native_input_save_rules(tmp_path, raw, saved):
+    """未完成草稿不能落盘，完整越界值不经控件钳制即可落盘。"""
+    from modules.config_document import read_document
+    from tests.test_gui_controller import make_controller
+
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, controller.model)
+    path = ('monitor', 'watch', 'lookback_minutes')
+    try:
+        entry = page.lookback.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        entry.event_generate('<Return>')
+        root.update()
+        assert controller.save() is saved
+        assert (tmp_path / 'a.yaml').exists() is saved
+        if saved:
+            assert read_document(tmp_path / 'a.yaml').tree['monitor']['watch']['lookback_minutes'] == int(raw)
+            assert not controller.model.input_errors
+        else:
+            assert controller.model.get_input(path) == raw
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('raw', ['', '-', '12x'])
+def test_lookback_incomplete_native_input_blocks_cli(tmp_path, monkeypatch, raw):
+    """回车后的未完成数字禁止用磁盘旧值启动独立 CLI。"""
+    from unittest.mock import Mock
+    from tests.test_gui_controller import make_controller
+
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, controller.model)
+    launch = Mock()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+    try:
+        entry = page.lookback.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        entry.event_generate('<Return>')
+        root.update()
+        assert controller.start_cli() is None
+        launch.assert_not_called()
+        assert controller.model.get_input(('monitor', 'watch', 'lookback_minutes')) == raw
+    finally:
+        root.destroy()
+
+
+def test_lookback_refresh_preserves_draft_and_active_entry():
+    """刷新不会重建输入框或吞掉未完成草稿与插入光标。"""
+    root, model, page = _page()
+    try:
+        entry = page.lookback.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, '12x')
+        entry.icursor(1)
+        root.update()
+        page.refresh()
+        assert page.lookback.entry._entry is entry
+        assert entry.get() == '12x'
+        assert entry.index('insert') == 1
+        assert model.get_input(('monitor', 'watch', 'lookback_minutes')) == '12x'
+    finally:
+        root.destroy()
+
+
 def test_custom_cwd_survives_open():
     """刷新、模式切换与打开配置均不覆盖已有工作目录。"""
     root, model, page = _page()

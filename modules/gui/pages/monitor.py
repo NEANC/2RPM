@@ -4,6 +4,7 @@
 """按已批准原型重绘监视设置：运行方式、目标与时间三张卡片。"""
 
 import ntpath
+import re
 from collections.abc import Mapping
 import tkinter as tk
 from tkinter import filedialog
@@ -167,7 +168,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.lookback = ctk_kit.Spinner(
             row, from_=0, to=999, as_int=True,
             command=lambda _value: self._lookback_changed())
-        self.lookback.entry.configure(font=FONT_BODY)
+        self.lookback.entry._entry.unbind('<Return>')
+        self.lookback.entry._entry.unbind('<FocusOut>')
+        self.lookback.entry.configure(font=FONT_BODY,
+                                      textvariable=self.lookback_variable)
+        self.lookback_variable.trace_add('write', lambda *_: self._lookback_changed())
+        self.lookback._arrows.bind('<Button-1>', self._step_lookback)
         self.lookback.pack(side='left')
         self.fields[path] = (self.lookback_variable, self.lookback, 'int')
 
@@ -360,6 +366,18 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.lookback_variable.set(raw)
         self.model.set_input(path, raw, kind='int')
 
+    def _step_lookback(self, event):
+        """只有完整整数才允许箭头在既有范围内前进一步。"""
+        if self.lookback.is_readonly():
+            return
+        raw = self.lookback.entry.get()
+        if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            return
+        middle = max(1, self.lookback._arrows.winfo_height()) / 2
+        delta = 1 if event.y < middle else -1
+        value = max(0, min(999, int(raw) + delta))
+        self.lookback.set(value)
+
     def _set_advanced(self, expanded):
         """保持旧页面问题定位接口且不显示 ttk 控件。"""
         self.section_for_issue.expanded = expanded
@@ -397,7 +415,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                     value = ''
                 raw = '' if value is None else str(value)
                 variable.set(raw)
-                if widget is self.lookback:
+                if widget is self.lookback and widget.entry.get() != raw:
                     self.lookback.set(raw)
             self._show_target()
             self._update_preview()
