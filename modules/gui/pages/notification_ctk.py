@@ -9,6 +9,7 @@ from tkinter import messagebox
 
 import ctk_kit
 
+from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.forms import (event_variables, preview_template,
@@ -161,15 +162,22 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.events_hint.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
 
     def _build_retry_card(self):
-        """错误处理卡：只编辑既有重试字段。"""
+        """错误处理卡：重试间隔为文本，最大重试次数使用原生 Spinner。"""
         card, _head = self._card('错误处理')
         for label, name in (('重试间隔', 'interval'), ('最大重试次数', 'max_count')):
             row = ctk_kit.CTkFrame(card, fg_color='transparent')
             row.pack(fill='x', padx=CARD_PAD, pady=ROW_PAD_Y)
             self._text(row, label).pack(side='left')
             path = ('push', 'retry', name)
-            self._entry(row, path, numeric=name == 'max_count',
-                        side='right', expand=False, width=140)
+            if name == 'max_count':
+                self.retry_spinner = ctk_kit.Spinner(
+                    row, from_=0, to=99, as_int=True, width=140,
+                    value=self._retry_count(),
+                    command=lambda value, field=path: self._max_retry_changed(
+                        field, value))
+                self.retry_spinner.pack(side='right')
+            else:
+                self._entry(row, path, side='right', expand=False, width=140)
         ctk_kit.CTkFrame(card, fg_color='transparent', height=(
             CARD_PAD - 2 * ROW_PAD_Y)).pack(fill='x')
 
@@ -200,6 +208,19 @@ class Page(ctk_kit.CTkScrollableFrame):
         variable.trace_add('write', lambda *_: self._changed(path, variable, numeric))
         self.fields[path] = (variable, widget, 'int' if numeric else 'text')
         return widget
+
+    def _retry_count(self):
+        """读取最大重试次数；空串或非法原文回退默认值。"""
+        raw = str(self._safe_input(('push', 'retry', 'max_count')) or '').strip()
+        try:
+            return max(0, min(99, int(raw)))
+        except (TypeError, ValueError):
+            return int(DEFAULT_VALUES['push']['retry']['max_count'])
+
+    def _max_retry_changed(self, path, value):
+        """Spinner 提交后写回已钳制的整数。"""
+        if not self._refreshing and path_writable(self.model, path):
+            self.model.set_input(path, str(value), kind='int')
 
     def _changed(self, path, variable, numeric):
         """模型刷新期间或结构异常时不写回旧值。"""
@@ -717,6 +738,9 @@ class Page(ctk_kit.CTkScrollableFrame):
             for path, (variable, _widget, kind) in self.fields.items():
                 variable.set(self._safe_input(path) if kind == 'int' else
                              str(self._safe_get(path) or ''))
+            self.retry_spinner.set(str(self._retry_count()))
+            self.retry_spinner.set_readonly(
+                not path_writable(self.model, ('push', 'retry', 'max_count')))
             self._render_channels()
             self._render_events()
             snapshot = self.model.snapshot()

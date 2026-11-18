@@ -283,3 +283,19 @@ def test_malformed_screenshot_and_channel_sections_hint_without_overwrite(tmp_pa
         assert app.model.get(('push', 'push_channel_settings')) == 'broken'
     finally:
         root.destroy()
+
+
+def test_retry_max_count_uses_native_spinner(tmp_path):
+    """最大重试次数使用原生 Spinner 并写回整数。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        assert app.show_page('消息推送设置')
+        page = app.visible_pages['消息推送设置']
+        assert isinstance(page.retry_spinner, ctk_kit.Spinner)
+        path = ('push', 'retry', 'max_count')
+        page.retry_spinner.set('5')
+        page.retry_spinner._notify()
+        assert app.model.get(path) == 5
+    finally:
+        root.destroy()
