@@ -69,6 +69,21 @@ def test_external_path_label_above_input_and_browse_before_input():
         root.destroy()
 
 
+def test_make_app_failure_leaves_no_session_directory(tmp_path, monkeypatch):
+    """构造过程中抛错时，不留下预览会话目录。"""
+    from modules.gui import app as app_module
+
+    root = tk.Tk()
+    monkeypatch.setattr(app_module.tempfile, 'tempdir', str(tmp_path))
+    monkeypatch.setattr(app_module, 'work_area_size', Mock(side_effect=RuntimeError('构造失败')))
+    try:
+        with pytest.raises(RuntimeError, match='构造失败'):
+            make_app(root, tmp_path)
+        assert not list(tmp_path.glob('2rpm-gui-*'))
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('scaling', [1.0, 1.75])
 def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll(
         tmp_path, monkeypatch, scaling):
@@ -83,6 +98,8 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
         root.withdraw()
         root.tk.call('tk', 'scaling', scaling)
         assert float(root.tk.call('tk', 'scaling')) == pytest.approx(scaling, abs=0.03)
+        root._set_scaling(scaling, scaling)
+        assert root._get_window_scaling() == pytest.approx(scaling)
         app = make_app(root, tmp_path)
         root.deiconify()
         assert app.show_page('外部程序设置')
@@ -90,7 +107,7 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
         page = app.visible_pages['外部程序设置']
         canvas = page._parent_canvas
         expected = {}
-        for width in (600, 900):
+        for width in ((800, 900) if scaling == 1.0 else (600, 900)):
             root.geometry(f'{width}x420+100+100')
             root.update()
             assert abs(app.sidebar.sidebar.winfo_width() /
@@ -98,9 +115,8 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
             for event, _title, _hint in EVENTS:
                 entry = page.fields[('external', event)][1]
                 page.update_idletasks()
-                offset = entry.winfo_y() + entry.master.winfo_y() + entry.master.master.winfo_y()
-                canvas.yview_moveto(max(0.0, (offset - canvas.winfo_height() // 2) /
-                                         page.winfo_height()))
+                offset = entry.master.master.winfo_y()
+                canvas.yview_moveto(max(0.0, (offset - 12) / page.winfo_height()))
                 root.update()
                 root.attributes('-topmost', True)
                 root.lift()

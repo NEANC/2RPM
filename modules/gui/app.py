@@ -78,7 +78,6 @@ class App:
         self._validated = None
         self.result_text = ''
         self.preview_image = None
-        self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
         self.page_names = ('主页', '监视设置', '截图设置', '消息推送设置',
                            '外部程序设置', '日志设置', '设置')
         self.current_page = '主页'
@@ -151,6 +150,7 @@ class App:
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
         self._after_id = root.after(50, self._poll)
+        self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
 
     def _toggle_config_group(self):
         """切换五个配置导航入口的可见性，保持原有页面顺序。"""
