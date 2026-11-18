@@ -53,22 +53,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         card = self._card()
         ctk_kit.CTkLabel(card, text='保存位置', font=FONT_CARD_TITLE).pack(
             anchor='w', padx=CARD_PAD, pady=(CARD_PAD, 4))
+        # 原生 PathField：输入框 + 自带浏览按钮，不做二次拆装。
         self.path_field = ctk_kit.PathField(
-            card, mode='folder',
+            card, mode='folder', title='选择日志目录',
+            placeholder='相对路径以程序目录为起点',
             on_change=lambda value: self._path_changed(DIRECTORY, value))
         self.path_field.pack(fill='x', padx=CARD_PAD, pady=(18, 8))
-        # 复用 PathField 自带的浏览按钮，但换成本页的目录选择入口。
-        self.path_field.button.configure(text='⌕', width=32,
-                                         command=self.choose_directory)
-        self.path_field.button.pack_forget()
-        self.path_field.entry.pack_forget()
-        self.clear_button = ctk_kit.CTkButton(
-            self.path_field, text='×', width=32, height=38, font=FONT_BODY,
-            command=self.clear_directory)
-        # 先给右侧固定控件分空间，输入框最后吃掉剩余宽度，窄窗口下不会被挤出。
-        self.path_field.button.pack(side='left', padx=(0, 8))
-        self.clear_button.pack(side='right')
-        self.path_field.entry.pack(side='left', fill='x', expand=True)
         ctk_kit.CTkLabel(
             card, text='相对路径以程序目录为起点。', font=FONT_SMALL,
             text_color=COLORS['text_secondary'][self._dark]).pack(
@@ -89,7 +79,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             limits = NUMBER_RANGES[path]
             spinner = ctk_kit.Spinner(
                 row, from_=limits[0], to=limits[1], as_int=True,
-                value=DEFAULT_VALUES['log'][key], width=110, height=38,
+                value=DEFAULT_VALUES['log'][key],
                 command=lambda value, field=path: self._number_changed(field, value))
             spinner.pack(side='right')
             self.spinners[path] = spinner
@@ -167,10 +157,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             log = snapshot.get('log')
             invalid = 'log' in snapshot and not isinstance(log, Mapping)
             self.structure_hint.configure(text=STRUCTURE_HINT if invalid else '')
-            directory_state = ('normal' if path_writable(
-                self.model, DIRECTORY) else 'disabled')
-            self.browse_button.configure(state=directory_state)
-            self.clear_button.configure(state=directory_state)
+            self.path_field.set_readonly(
+                not path_writable(self.model, DIRECTORY))
         finally:
             self._refreshing = False
 
