@@ -3,6 +3,7 @@
 
 """外部动作与日志页可见字段回写验证。"""
 
+import shutil
 import tkinter as tk
 from unittest.mock import Mock
 
@@ -71,7 +72,7 @@ def test_external_path_label_above_input_and_browse_before_input():
 @pytest.mark.parametrize('scaling', [1.0, 1.75])
 def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll(
         tmp_path, monkeypatch, scaling):
-    """缩放和调整窗口后，三事件四控件可命中且只操作当前模型。"""
+    """验证 Tk 缩放下两种窗宽的三事件控件布局、滚动及模型操作。"""
     from modules.gui.pages.external import EVENTS
 
     tk._default_root = None
@@ -81,6 +82,7 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
     try:
         root.withdraw()
         root.tk.call('tk', 'scaling', scaling)
+        assert float(root.tk.call('tk', 'scaling')) == pytest.approx(scaling, abs=0.03)
         app = make_app(root, tmp_path)
         root.deiconify()
         assert app.show_page('外部程序设置')
@@ -142,6 +144,9 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
             root.after_cancel(app._after_id)
         root.destroy()
         tk._default_root = None
+        if 'app' in locals():
+            shutil.rmtree(app.session_dir)
+            assert not app.session_dir.exists()
 
 
 def test_logs_page_edits_policy_and_does_not_create_directory(tmp_path, monkeypatch):
