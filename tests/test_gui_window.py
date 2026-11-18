@@ -13,6 +13,7 @@ import ctk_kit
 import customtkinter
 import pytest
 
+from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
 from tests.test_gui_pages import make_app
 
 
@@ -71,6 +72,19 @@ def test_window_has_square_borderless_shell_and_embedded_controls(window):
     assert shell.close_button.master is shell.titlebar
 
 
+def test_window_controls_match_preview_dimensions_and_hover(window):
+    """右上三个透明按钮采用主页预览的等宽和高度。"""
+    root, shell, _ = window
+    scale = shell.minimize._get_widget_scaling()
+    for button in (shell.minimize, shell.maximize, shell.close_button):
+        assert round(button.winfo_width() / scale) == 37
+        assert button.cget('height') == 34
+        assert button.winfo_height() == shell.titlebar.winfo_height()
+        assert button.cget('fg_color') == 'transparent'
+    assert shell.close_button.cget('hover_color') == ('#C42B1C', '#C42B1C')
+    assert root.overrideredirect()
+
+
 def test_drag_moves_window_by_pointer_delta(window):
     """标题栏拖动按屏幕坐标差平移窗口。"""
     root, shell, _ = window
@@ -114,6 +128,56 @@ def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
         assert app.sidebar.winfo_y() == 0
         assert app.window.titlebar.winfo_manager() == 'place'
         assert app.window.titlebar.winfo_x() >= app.sidebar.sidebar.winfo_width()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
+    """配置组和底部设置不随切页或拉宽改变侧栏宽度。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        scale = app.sidebar.sidebar._get_widget_scaling()
+        for width in (900, 600, 900):
+            root.geometry(f'{width}x680+100+100')
+            for name in ('主页', '监视设置', '日志设置', '设置'):
+                assert app.show_page(name)
+                root.update()
+                assert round(app.sidebar.sidebar.winfo_width() / scale) == 160
+                assert app.sidebar._bottom_buttons['设置'].winfo_manager()
+                assert app.config_group_button.winfo_manager()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path):
+    """主页卡片保留内圆角，标题与按钮遵循统一字体和强调色。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        home = app.visible_pages['主页']
+        root.update()
+        cards = [child for child in home.winfo_children()
+                 if isinstance(child, ctk_kit.CTkFrame)
+                 and child.cget('corner_radius') == 10]
+        assert len(cards) == 3
+        for card in cards:
+            assert card.cget('border_width') == 1
+            assert card.cget('border_color') == ('#DADADA', '#333333')
+        assert FONT_BODY[0] == FONT_CARD_TITLE[0] == FONT_TITLE[0] == 'Microsoft YaHei UI'
+        assert FONT_CARD_TITLE[2] == FONT_TITLE[2] == 'bold'
+        header = home.winfo_children()[0]
+        actions = [child for child in header.winfo_children()
+                   if isinstance(child, ctk_kit.CTkButton)]
+        assert {child.cget('text') for child in actions} == {'新建配置', '打开配置'}
+        assert all(child.cget('fg_color') == '#0067C0'
+                   for child in actions)
     finally:
         root.destroy()
         tk._default_root = None

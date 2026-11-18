@@ -11,7 +11,7 @@ from modules.gui.appearance import FONT_BODY
 def wrap_header(root, header, titlebar):
     """窄窗将顶栏按钮移至标题下一行，宽窗保持原有单行布局。"""
     label, *buttons = header.winfo_children()
-    compact = False
+    compact = None
 
     def resize(event):
         """仅在跨越布局阈值时重排顶栏。"""
@@ -19,7 +19,8 @@ def wrap_header(root, header, titlebar):
         if event.widget is not root:
             return
         narrow = root.winfo_width() / root._get_window_scaling() < 700
-        if narrow == compact:
+        if (narrow == compact and (narrow or
+                                  header.pack_info()['padx'] == (0, titlebar.winfo_width()))):
             return
         compact = narrow
         header.pack_configure(padx=0 if narrow else (0, titlebar.winfo_width()))
@@ -48,20 +49,20 @@ class MainWindow:
         root.set_window_corners(1)
         root.bind('<Map>', self._restore_borderless, add='+')
         self.titlebar = ctk_kit.CTkFrame(
-            root, corner_radius=0, width=132, height=38, fg_color='transparent')
+            root, corner_radius=0, width=111, height=34, fg_color='transparent')
         self.titlebar.place(relx=1, x=0, y=0, anchor='ne')
         self.close_button = ctk_kit.CTkButton(
-            self.titlebar, text='×', width=44, height=38, corner_radius=0,
+            self.titlebar, text='×', width=37, height=34, corner_radius=0,
             fg_color='transparent', hover_color=('#C42B1C', '#C42B1C'),
             command=close, font=FONT_BODY)
         self.close_button.pack(side='right')
         self.maximize = ctk_kit.CTkButton(
-            self.titlebar, text='□', width=44, height=38, corner_radius=0,
+            self.titlebar, text='□', width=37, height=34, corner_radius=0,
             fg_color='transparent',
             command=self.toggle_maximize, font=FONT_BODY)
         self.maximize.pack(side='right')
         self.minimize = ctk_kit.CTkButton(
-            self.titlebar, text='—', width=44, height=38, corner_radius=0,
+            self.titlebar, text='—', width=37, height=34, corner_radius=0,
             fg_color='transparent',
             command=self.iconify, font=FONT_BODY)
         self.minimize.pack(side='right')
