@@ -4,6 +4,9 @@
 """主窗边框、标题栏交互及关闭确认回归。"""
 
 import ctypes
+import os
+import subprocess
+import sys
 import tkinter as tk
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -356,6 +359,14 @@ def test_dpi_narrow_then_wide_restores_home_header_layout(tmp_path):
 
 def test_dpi_wide_header_buttons_do_not_intersect_window_controls(tmp_path, monkeypatch):
     """1.75 倍缩放下由窄转宽时四页按钮不与窗口控制栏相交。"""
+    if os.environ.get('RPM_GUI_DPI_CHILD') != '1':
+        result = subprocess.run(
+            [sys.executable, '-m', 'pytest', '-q',
+             'tests/test_gui_window.py::test_dpi_wide_header_buttons_do_not_intersect_window_controls'],
+            env={**os.environ, 'RPM_GUI_DPI_CHILD': '1'},
+            capture_output=True, text=True, timeout=120, check=False)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return
     monkeypatch.setattr(customtkinter.ScalingTracker, 'get_window_dpi_scaling',
                         lambda _window: 1)
     monkeypatch.setattr(customtkinter.ScalingTracker, 'widget_scaling', 1.75)
