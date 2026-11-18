@@ -88,6 +88,45 @@ def test_window_controls_match_preview_dimensions_and_hover(window):
     assert root.overrideredirect()
 
 
+def test_window_controls_remain_legible_in_both_themes(window):
+    """透明窗口按钮在浅色与深色背景上均有可辨的文字。"""
+    _root, shell, _ = window
+    for button in (shell.minimize, shell.maximize, shell.close_button):
+        assert button.cget('text_color') == ('#1A1A1A', '#F3F3F3')
+        if button is not shell.close_button:
+            assert button.cget('hover_color') == ('#E5E5E5', '#414141')
+        else:
+            assert button.cget('hover_color') == ('#C42B1C', '#C42B1C')
+
+
+def test_light_sidebar_uses_light_surface_and_readable_navigation(tmp_path, monkeypatch):
+    """浅色真实外壳不沿用库中玻璃侧栏的深色键色。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    (tmp_path / 'gui.ini').write_text('[appearance]\ndark = false\nmaterial = none\n', encoding='utf-8')
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        assert app.sidebar.sidebar.cget('fg_color') == '#F3F3F3'
+        assert app.sidebar.title_label.cget('text_color') == '#1A1A1A'
+        assert app.sidebar._buttons['监视设置'].cget('text_color') == '#5F5F5F'
+        assert app.sidebar._bottom_buttons['设置'].cget('text_color') == '#1A1A1A'
+        assert app.config_group_button.cget('text_color') == '#5F5F5F'
+        assert app.show_page('监视设置')
+        assert app.sidebar._buttons['主页'].cget('text_color') == '#5F5F5F'
+        app.choose_theme('深色')
+        assert app.sidebar.sidebar.cget('fg_color') == '#1C1C1C'
+        assert app.sidebar.title_label.cget('text_color') == '#F3F3F3'
+        app.choose_theme('浅色')
+        assert app.sidebar.sidebar.cget('fg_color') == '#F3F3F3'
+        assert app.sidebar._buttons['主页'].cget('text_color') == '#5F5F5F'
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_drag_moves_window_by_pointer_delta(window):
     """标题栏拖动按屏幕坐标差平移窗口。"""
     root, shell, _ = window

@@ -19,7 +19,7 @@ from PIL import Image, ImageTk
 import ctk_kit
 from ctk_kit.styles import style_of
 
-from modules.gui.appearance import (AppearancePreferences, apply_appearance,
+from modules.gui.appearance import (AppearancePreferences, COLORS, apply_appearance,
                                     FONT_BODY, load_preferences, preferences_path,
                                     save_preferences)
 from modules.gui.pages import (external, home, logs, monitor, notification_ctk,
@@ -144,6 +144,7 @@ class App:
             command=self._toggle_config_group)
         self.config_group_button.pack(fill='x', padx=10, pady=3,
                                       before=self.sidebar._buttons['监视设置'])
+        self._paint_sidebar()
         self.sidebar.pack(fill='both', expand=True)
         self.sidebar.pack_propagate(False)
         if self.window is not None:
@@ -189,6 +190,27 @@ class App:
         active = collapsed and self.current_page in self.page_names[1:-1]
         state = 'nav_active' if active else 'nav_normal'
         self.config_group_button.configure(**style_of('sidebar', state))
+        if not active:
+            self.config_group_button.configure(text_color=COLORS['text_secondary'])
+
+    def _paint_sidebar(self):
+        """按当前明暗主题刷新侧栏表面与导航对比度。"""
+        dark = ctk_kit.get_appearance_mode() == 'Dark'
+        side = '#1C1C1C' if dark else '#F3F3F3'
+        text = COLORS['text_primary'][int(dark)]
+        muted = COLORS['text_secondary'][int(dark)]
+        self.sidebar.sidebar.configure(fg_color=side, bg_color=side)
+        for frame in (self.sidebar._head, self.sidebar._title_box,
+                      self.sidebar.nav_scroll, self.sidebar.bottom):
+            frame.configure(bg_color=side)
+        self.sidebar.title_label.configure(text_color=text, bg_color=side)
+        self.sidebar.subtitle_label.configure(text_color=muted, bg_color=side)
+        for name, button in self.sidebar._buttons.items():
+            button.configure(bg_color=side, text_color=(COLORS['accent_text'][int(dark)]
+                             if name == self.current_page else muted))
+        for button in self.sidebar._bottom_buttons.values():
+            button.configure(bg_color=side, text_color=text)
+        self.config_group_button.configure(bg_color=side, text_color=muted)
 
     def _page_changed(self, name):
         """侧栏切换时更新当前页，配置页离开时尝试补存。"""
@@ -198,6 +220,7 @@ class App:
         self.current_page = name
         if hasattr(self, 'config_group_button'):
             self._paint_config_group()
+            self._paint_sidebar()
 
     def show_page(self, name: str) -> bool:
         """按业务名称切页；返回主页不因未完成草稿而拒绝。"""
@@ -244,6 +267,7 @@ class App:
         apply_appearance(self.root, preferences)
         if hasattr(self, 'config_group_button'):
             self._paint_config_group()
+            self._paint_sidebar()
         if '设置' in getattr(self, 'visible_pages', {}):
             self.visible_pages['设置'].refresh()
 

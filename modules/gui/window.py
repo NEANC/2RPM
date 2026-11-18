@@ -54,16 +54,18 @@ class MainWindow:
         self.close_button = ctk_kit.CTkButton(
             self.titlebar, text='×', width=37, height=34, corner_radius=0,
             fg_color='transparent', hover_color=('#C42B1C', '#C42B1C'),
-            command=close, font=FONT_SMALL)
+            text_color=('#1A1A1A', '#F3F3F3'), command=close, font=FONT_SMALL)
         self.close_button.pack(side='right')
         self.maximize = ctk_kit.CTkButton(
             self.titlebar, text='□', width=37, height=34, corner_radius=0,
-            fg_color='transparent',
+            fg_color='transparent', hover_color=('#E5E5E5', '#414141'),
+            text_color=('#1A1A1A', '#F3F3F3'),
             command=self.toggle_maximize, font=FONT_SMALL)
         self.maximize.pack(side='right')
         self.minimize = ctk_kit.CTkButton(
             self.titlebar, text='—', width=37, height=34, corner_radius=0,
-            fg_color='transparent',
+            fg_color='transparent', hover_color=('#E5E5E5', '#414141'),
+            text_color=('#1A1A1A', '#F3F3F3'),
             command=self.iconify, font=FONT_SMALL)
         self.minimize.pack(side='right')
 
