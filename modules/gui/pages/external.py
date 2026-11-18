@@ -42,13 +42,14 @@ class Page(ctk_kit.CTkScrollableFrame):
             card.pack(fill='x', pady=8)
             ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
             ctk_kit.CTkLabel(card, text=hint, font=FONT_SMALL).pack(anchor='w', padx=16)
+            ctk_kit.CTkLabel(card, text='外部程序／BAT 路径', font=FONT_BODY).pack(
+                anchor='w', padx=16, pady=(10, 0))
             row = ctk_kit.CTkFrame(card, fg_color='transparent')
-            row.pack(fill='x', padx=16, pady=12)
-            ctk_kit.CTkLabel(row, text='外部程序／BAT 路径', font=FONT_BODY).pack(side='left')
-            self._entry(row, ('external', event))
+            row.pack(fill='x', padx=16, pady=(4, 12))
             browse = ctk_kit.CTkButton(
                 row, text='⌕', width=32, command=lambda key=event: self.choose_file(key))
             browse.pack(side='left')
+            self._entry(row, ('external', event))
             clear = ctk_kit.CTkButton(
                 row, text='×', width=32, command=lambda key=event: self.clear_file(key))
             clear.pack(side='left')

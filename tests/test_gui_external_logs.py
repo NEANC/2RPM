@@ -41,6 +41,31 @@ def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
         root.destroy()
 
 
+def test_external_path_label_above_input_and_browse_before_input():
+    """三个事件的路径标签置于输入上方，浏览入口位于输入左侧。"""
+    from modules.gui.pages.external import EVENTS, Page
+
+    root = tk.Tk()
+    try:
+        page = Page(root, Mock(model=EditorModel(new_document())))
+        page.pack(fill='both', expand=True)
+        root.geometry('900x700')
+        root.update()
+        for event, _title, _hint in EVENTS:
+            entry = page.fields[('external', event)][1]
+            browse = page.browse_buttons[event]
+            card = entry.master.master
+            labels = [child for child in card.winfo_children()
+                      if isinstance(child, ctk_kit.CTkLabel)
+                      and child.cget('text') == '外部程序／BAT 路径']
+            assert len(labels) == 1
+            label = labels[0]
+            assert label.winfo_rooty() + label.winfo_height() <= entry.winfo_rooty()
+            assert browse.winfo_rootx() < entry.winfo_rootx()
+    finally:
+        root.destroy()
+
+
 def test_logs_page_edits_policy_and_does_not_create_directory(tmp_path, monkeypatch):
     """路径按原值显示并保存，目录选择不读取日志。"""
     from modules.gui.pages.logs import Page
