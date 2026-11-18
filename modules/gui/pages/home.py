@@ -13,11 +13,6 @@ from modules.gui.home_summary import summary
 from modules.gui.window import wrap_header
 
 
-HOME_TITLE = (FONT_TITLE[0], 24, 'bold')
-HOME_BODY = (FONT_BODY[0], 14)
-HOME_CARD_TITLE = (FONT_CARD_TITLE[0], 18, 'bold')
-
-
 class Page(ctk_kit.CTkScrollableFrame):
     """同一窗口内常驻的配置主页。"""
 
@@ -27,62 +22,62 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.app = app
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
         header.pack(fill='x', padx=(0, 111) if app.window else 0, pady=(0, 6))
-        ctk_kit.CTkLabel(header, text='主页', font=HOME_TITLE).pack(side='left')
+        ctk_kit.CTkLabel(header, text='主页', font=FONT_TITLE).pack(side='left')
         for label, action in (('打开配置', app.open), ('新建配置', app.new)):
             ctk_kit.PrimaryButton(header, text=label, command=action,
-                                  font=HOME_BODY, width=108, height=38).pack(side='right', padx=4)
+                                  font=FONT_BODY, width=108, height=38).pack(side='right', padx=4)
         if app.window:
             wrap_header(app.root, header, app.window.titlebar)
         card = self._card('配置摘要', header=True)
         self.save_as_button = ctk_kit.CTkButton(
             self.summary_header, text='另存为', command=app.save_as,
-            font=HOME_BODY, height=34)
+            font=FONT_BODY, height=34)
         self.save_as_button.pack(side='right', padx=4)
         self.save_button = ctk_kit.CTkButton(
             self.summary_header, text='保存', command=app.save,
-            font=HOME_BODY, height=34)
+            font=FONT_BODY, height=34)
         self.save_button.pack(side='right', padx=4)
         path_row = ctk_kit.CTkFrame(card, fg_color='transparent')
         path_row.pack(fill='x', padx=14)
-        ctk_kit.CTkLabel(path_row, text='配置路径：', font=HOME_BODY).pack(side='left')
+        ctk_kit.CTkLabel(path_row, text='配置路径：', font=FONT_BODY).pack(side='left')
         self.path_value = ctk_kit.CTkLabel(
-            path_row, text='', font=HOME_BODY, anchor='w',
+            path_row, text='', font=FONT_BODY, anchor='w',
             text_color=COLORS['accent'])
         self.path_value.pack(side='left', fill='x', expand=True)
         self.path_tip = ctk_kit.Tooltip(self.path_value, lambda: self._full_path)
-        self.summary = ctk_kit.CTkLabel(card, text='', font=HOME_BODY, anchor='w', justify='left')
+        self.summary = ctk_kit.CTkLabel(card, text='', font=FONT_BODY, anchor='w', justify='left')
         self.summary.pack(fill='x', padx=14)
         self.groups = {}
         self.screenshot_rows = {}
         for title in ('通知事件', '事件截图', '外部程序'):
             group = ctk_kit.Collapsible(card, collapsed_text=title, expanded_text=title)
-            group.button.configure(font=HOME_BODY, text_color=COLORS['text_primary'], anchor='w')
-            group.detail_label.configure(font=HOME_BODY, text_color=COLORS['text_primary'])
+            group.button.configure(font=FONT_BODY, text_color=COLORS['text_primary'], anchor='w')
+            group.detail_label.configure(font=FONT_BODY, text_color=COLORS['text_primary'])
             group.body.configure(fg_color='transparent')
             group.pack(fill='x', padx=14)
             self.groups[title] = group
         card = self._card('配置检查')
         ctk_kit.CTkButton(card, text='校验配置', command=app.validate,
-                          font=HOME_BODY, height=34).pack(anchor='e')
-        self.check = ctk_kit.CTkLabel(card, text='尚未校验', font=HOME_BODY, anchor='w')
+                          font=FONT_BODY, height=34).pack(anchor='e')
+        self.check = ctk_kit.CTkLabel(card, text='尚未校验', font=FONT_BODY, anchor='w')
         self.check.pack(fill='x')
         self.check_body = ctk_kit.CTkFrame(card, fg_color='transparent')
         self.check_body.pack(fill='x')
         self.validation_rows = {}
-        self.issue_hint = ctk_kit.CTkLabel(card, text='', font=HOME_BODY, anchor='w')
+        self.issue_hint = ctk_kit.CTkLabel(card, text='', font=FONT_BODY, anchor='w')
         self.issue_hint.pack(fill='x')
         card = self._card('运行配置')
         ctk_kit.CTkLabel(card, text='启动独立 CLI 进程运行本配置，关闭 GUI 不影响其运行。',
-                         font=HOME_BODY, anchor='w').pack(fill='x')
+                         font=FONT_BODY, anchor='w').pack(fill='x')
         filename_row = ctk_kit.CTkFrame(card, fg_color='transparent')
         filename_row.pack(fill='x', padx=14)
-        ctk_kit.CTkLabel(filename_row, text='当前配置：', font=HOME_BODY).pack(side='left')
+        ctk_kit.CTkLabel(filename_row, text='当前配置：', font=FONT_BODY).pack(side='left')
         self.filename_value = ctk_kit.CTkLabel(
-            filename_row, text='', font=HOME_BODY, anchor='w', text_color=COLORS['accent'])
+            filename_row, text='', font=FONT_BODY, anchor='w', text_color=COLORS['accent'])
         self.filename_value.pack(side='left', fill='x', expand=True)
         self.filename_tip = ctk_kit.Tooltip(self.filename_value, lambda: self._full_path)
         ctk_kit.CTkButton(card, text='启动 CLI', command=app.start_cli,
-                          font=HOME_BODY, height=34).pack(anchor='e')
+                          font=FONT_BODY, height=34).pack(anchor='e')
         self.refresh()
 
     def _card(self, title, *, header=False):
@@ -93,7 +88,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         if header:
             title_parent.pack(fill='x', padx=14, pady=(8, 2))
             self.summary_header = title_parent
-        ctk_kit.CTkLabel(title_parent, text=title, font=HOME_CARD_TITLE, anchor='w').pack(
+        ctk_kit.CTkLabel(title_parent, text=title, font=FONT_CARD_TITLE, anchor='w').pack(
             side='left' if header else 'top', fill='x', expand=header,
             padx=0 if header else 14, pady=0 if header else (8, 2))
         return card
@@ -105,9 +100,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         for name, state in items:
             row = ctk_kit.CTkFrame(group.body, fg_color='transparent')
             row.pack(fill='x', padx=12)
-            ctk_kit.CTkLabel(row, text=name, font=HOME_BODY, anchor='w').pack(
+            ctk_kit.CTkLabel(row, text=name, font=FONT_BODY, anchor='w').pack(
                 side='left', fill='x', expand=True)
-            ctk_kit.CTkLabel(row, text=state, font=HOME_BODY, anchor='e').pack(side='right')
+            ctk_kit.CTkLabel(row, text=state, font=FONT_BODY, anchor='e').pack(side='right')
 
     def refresh(self):
         """由当前草稿计算状态，路径只描述配置文件。"""
@@ -147,18 +142,18 @@ class Page(ctk_kit.CTkScrollableFrame):
             if reasons and state == '条件未满足':
                 detail = ctk_kit.Collapsible(row, collapsed_text=name, expanded_text=name,
                                              expanded=name in expanded, detail=state)
-                detail.button.configure(font=HOME_BODY, text_color=COLORS['text_primary'], anchor='w')
-                detail.detail_label.configure(font=HOME_BODY, text_color=COLORS['text_primary'])
+                detail.button.configure(font=FONT_BODY, text_color=COLORS['text_primary'], anchor='w')
+                detail.detail_label.configure(font=FONT_BODY, text_color=COLORS['text_primary'])
                 detail.body.configure(fg_color='transparent')
                 detail.pack(fill='x')
                 for reason in reasons:
-                    ctk_kit.CTkLabel(detail.body, text='· ' + reason, font=HOME_BODY,
+                    ctk_kit.CTkLabel(detail.body, text='· ' + reason, font=FONT_BODY,
                                      anchor='w').pack(fill='x', padx=20)
             else:
                 detail = None
-                ctk_kit.CTkLabel(row, text=name, font=HOME_BODY, anchor='w').pack(
+                ctk_kit.CTkLabel(row, text=name, font=FONT_BODY, anchor='w').pack(
                     side='left', fill='x', expand=True)
-                ctk_kit.CTkLabel(row, text=state, font=HOME_BODY, anchor='e').pack(side='right')
+                ctk_kit.CTkLabel(row, text=state, font=FONT_BODY, anchor='e').pack(side='right')
             self.screenshot_rows[name] = {'reasons': detail}
 
     def invalidate_validation(self):
@@ -187,11 +182,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             label = ctk_kit.CTkLabel(
                 row, text=f'{name}：{error_count + other_count} 个问题'
                           f'（错误 {error_count}，其他 {other_count}）',
-                font=HOME_BODY, anchor='w')
+                font=FONT_BODY, anchor='w')
             label.pack(fill='x')
             first_issue = next((issue for issue in issues if issue.severity == 'error'), issues[0])
             button = ctk_kit.CTkButton(
-                row, text='前往设置', width=80, font=HOME_BODY,
+                row, text='前往设置', width=80, font=FONT_BODY,
                 command=lambda target=name, issue=first_issue: self.app.focus_validation_issue(target, issue))
             button.pack(anchor='e')
             entries = []
@@ -201,10 +196,10 @@ class Page(ctk_kit.CTkScrollableFrame):
                 category = '错误' if issue.severity == 'error' else '其他'
                 issue_label = ctk_kit.CTkLabel(
                     item, text=f'{category} · {self._issue_category(issue.path)}',
-                    font=HOME_BODY, anchor='w')
+                    font=FONT_BODY, anchor='w')
                 issue_label.pack(side='left', fill='x', expand=True)
                 link = ctk_kit.CTkButton(
-                    item, text='前往设置', width=80, font=HOME_BODY,
+                    item, text='前往设置', width=80, font=FONT_BODY,
                     command=lambda target=name, current=issue: self.app.focus_validation_issue(target, current))
                 link.pack(side='right')
                 entries.append({'button': link, 'label': issue_label})
