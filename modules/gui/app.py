@@ -103,8 +103,9 @@ class App:
             apply_appearance(root, self.appearance)
         self.actions = {}
         self.window = MainWindow(root, self.close) if isinstance(root, ctk_kit.App) else None
-        self.path_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
-        self.status = ctk_kit.CTkLabel(root, text='新建配置或打开现有 YAML', font=FONT_BODY)
+        self.footer = ctk_kit.CTkFrame(root, corner_radius=0, fg_color=COLORS['side'])
+        self.path_label = ctk_kit.CTkLabel(self.footer, text='', font=FONT_BODY)
+        self.status = ctk_kit.CTkLabel(self.footer, text='新建配置或打开现有 YAML', font=FONT_BODY)
         self.preview_label = ctk_kit.CTkLabel(root, text='', font=FONT_BODY)
         self.actions['处理冲突'] = ctk_kit.CTkButton(root, text='处理冲突', command=self._show_conflict, font=FONT_BODY)
         self.actions['测试通知'] = ctk_kit.CTkButton(root, text='通知测试', command=self.notify, font=FONT_BODY)
@@ -150,6 +151,7 @@ class App:
         if self.window is not None:
             self.window.titlebar.lift()
         self.sidebar._warm_enabled = False
+        self.footer.pack(fill='x', side='bottom')
         self.status.pack(fill='x', padx=12)
         self.path_label.pack(fill='x', padx=12)
         self.actions['处理冲突'].pack_forget()

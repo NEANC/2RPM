@@ -99,6 +99,24 @@ def test_window_controls_remain_legible_in_both_themes(window):
             assert button.cget('hover_color') == ('#C42B1C', '#C42B1C')
 
 
+def test_window_control_and_status_strips_match_sidebar_surface():
+    """右上控制区与底部状态区使用与侧栏一致的面板底色。"""
+    from modules.gui.appearance import COLORS
+
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        from modules.gui.window import MainWindow
+
+        shell = MainWindow(root, Mock())
+        root.update()
+        assert shell.titlebar.cget('fg_color') == COLORS['side']
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_light_sidebar_uses_light_surface_and_readable_navigation(tmp_path, monkeypatch):
     """浅色真实外壳不沿用库中玻璃侧栏的深色键色。"""
     monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')

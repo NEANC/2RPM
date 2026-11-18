@@ -5,7 +5,7 @@
 
 import ctk_kit
 
-from modules.gui.appearance import FONT_SMALL
+from modules.gui.appearance import COLORS, FONT_SMALL
 
 
 def wrap_header(root, header, titlebar):
@@ -49,7 +49,7 @@ class MainWindow:
         root.set_window_corners(1)
         root.bind('<Map>', self._restore_borderless, add='+')
         self.titlebar = ctk_kit.CTkFrame(
-            root, corner_radius=0, width=111, height=34, fg_color='transparent')
+            root, corner_radius=0, width=111, height=34, fg_color=COLORS['side'])
         self.titlebar.place(relx=1, x=0, y=0, anchor='ne')
         self.close_button = ctk_kit.CTkButton(
             self.titlebar, text='×', width=37, height=34, corner_radius=0,
