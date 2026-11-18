@@ -8,13 +8,90 @@ from types import SimpleNamespace
 
 import ctk_kit
 
+from modules.config_document import new_document, read_document
 from modules.gui.home_summary import summary
-from modules.config_document import new_document
 from tests.test_gui_pages import make_app
 
 
 NAMES = ('主页', '监视设置', '截图设置', '消息推送设置',
          '外部程序设置', '日志设置', '设置')
+
+
+def test_home_buttons_restore_all_fields_through_mainloop(tmp_path, monkeypatch):
+    """真实主页回调经完整事件循环保存、新建、重开后恢复所有配置字段。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+        home = app.visible_pages['主页']
+        buttons = {child.cget('text'): child
+                   for child in home.winfo_children()[0].winfo_children()
+                   if isinstance(child, ctk_kit.CTkButton)}
+        buttons.update({button.cget('text'): button
+                        for button in (home.save_button, home.save_as_button)})
+        destinations = iter((tmp_path / 'new.yaml', tmp_path / 'copy.yaml'))
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                            lambda **_: str(next(destinations)))
+        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
+                            lambda **_: str(tmp_path / 'a.yaml'))
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror',
+                            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError(args)))
+        original = app.model.snapshot()
+        original['monitor']['target'] = r'C:\Apps\original.exe'
+        original['push']['retry']['interval'] = '17s'
+        original['push']['screenshot']['retention']['max_days'] = 23
+        original['external']['on_end'] = 'original-command'
+        original['log']['log_directory'] = 'original-logs'
+        for path, value in ((('monitor', 'target'), original['monitor']['target']),
+                            (('push', 'retry', 'interval'), original['push']['retry']['interval']),
+                            (('push', 'screenshot', 'retention', 'max_days'), 23),
+                            (('external', 'on_end'), original['external']['on_end']),
+                            (('log', 'log_directory'), original['log']['log_directory'])):
+            app.model.set(path, value)
+        errors = []
+
+        def exercise():
+            """在真实 Tk 消息泵内触发主页操作并核对磁盘与控件。"""
+            try:
+                buttons['保存'].invoke()
+                assert read_document(tmp_path / 'a.yaml').tree == original
+                buttons['新建配置'].invoke()
+                assert app.model.document.path == tmp_path / 'new.yaml'
+                assert app.model.snapshot() != original
+                buttons['打开配置'].invoke()
+                assert app.model.snapshot() == original
+                for name in ('监视设置', '消息推送设置', '截图设置',
+                             '外部程序设置', '日志设置'):
+                    assert app.show_page(name)
+                    page = app.visible_pages[name]
+                    for path, (_variable, widget, kind) in getattr(page, 'fields', {}).items():
+                        if kind == 'multiline':
+                            assert widget.get('1.0', 'end-1c') == str(app.model.get(path))
+                        elif kind == 'bool':
+                            assert _variable.get() == app.model.get(path)
+                        else:
+                            expected = app.model.get_input(path) if kind == 'int' else app.model.get(path)
+                            assert widget.get() == ('' if expected is None else str(expected))
+                assert app.visible_pages['截图设置'].days.number.get() == '23'
+                assert app.show_page('主页')
+                buttons['另存为'].invoke()
+                assert app.model.document.path == tmp_path / 'copy.yaml'
+                assert read_document(tmp_path / 'copy.yaml').tree == original
+            except Exception as error:
+                errors.append(error)
+            finally:
+                root.quit()
+
+        root.after(100, exercise)
+        root.update()
+        root.after(5000, root.quit)
+        root.mainloop()
+        assert not errors, errors
+    finally:
+        root.destroy()
 
 
 def test_summary_uses_draft_and_redacts():
