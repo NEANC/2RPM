@@ -175,5 +175,15 @@ class Page(ctk_kit.CTkScrollableFrame):
         """导航到与诊断路径相符的输入。"""
         field = self.fields.get(tuple(path))
         if field:
-            scroll_to_widget(self, field[1])
-            field[1].focus_force()
+            widget = field[1]
+            scroll_to_widget(self, widget)
+            if self.winfo_toplevel().winfo_viewable():
+                widget.focus_force()
+            else:
+                def focus_on_map(event):
+                    """窗口实际映射后再将焦点交给诊断字段。"""
+                    if event.widget is self.winfo_toplevel():
+                        self.winfo_toplevel().unbind('<Map>', binding)
+                        self.after_idle(widget.focus_force)
+
+                binding = self.winfo_toplevel().bind('<Map>', focus_on_map, add='+')

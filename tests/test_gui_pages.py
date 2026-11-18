@@ -1192,9 +1192,29 @@ def test_validation_routes_external_error_to_action_field(tmp_path):
     try:
         app = make_app(root, tmp_path)
         path = ('external', 'on_timeout')
+        root.update()
         app.model.validate = lambda _: SimpleNamespace(issues=[
             SimpleNamespace(path=path, severity='error')])
         app.validate()
+        root.update()
+        assert app.current_page == '外部程序设置'
+        assert root.focus_get() is app.visible_pages['外部程序设置'].fields[path][1]._entry
+    finally:
+        root.destroy()
+
+
+def test_external_diagnostic_focus_survives_unmapped_window(tmp_path):
+    """窗口暂不可见时导航外部动作，显示后真实输入框取得焦点。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        root.withdraw()
+        path = ('external', 'on_timeout')
+        app.model.validate = lambda _: SimpleNamespace(issues=[
+            SimpleNamespace(path=path, severity='error')])
+        app.validate()
+        root.deiconify()
         root.update()
         assert app.current_page == '外部程序设置'
         assert root.focus_get() is app.visible_pages['外部程序设置'].fields[path][1]._entry
