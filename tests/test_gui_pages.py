@@ -1224,8 +1224,8 @@ def test_external_diagnostic_focus_survives_unmapped_window(tmp_path):
         root.destroy()
 
 
-def test_external_diagnostic_focus_after_ctk_app_restore(tmp_path):
-    """真实 ctk-kit 窗口恢复后诊断字段保持最终焦点。"""
+def test_external_diagnostic_focus_after_ctk_app_restore(tmp_path, monkeypatch):
+    """根窗口 Map 后才排程 120 ms，恢复后真实诊断字段取得焦点。"""
     root = ctk_kit.App(title='焦点测试', remember_geometry=False,
                        remember_theme=False, notifier=False, backdrop='none')
     try:
@@ -1233,12 +1233,33 @@ def test_external_diagnostic_focus_after_ctk_app_restore(tmp_path):
         root.update()
         root.withdraw()
         path = ('external', 'on_timeout')
+        from modules.gui.pages.external import Page
+
+        scheduled = []
+        maps = []
+        original_after = Page.after
+
+        def record_after(self, delay, callback=None, *args):
+            """记录诊断焦点排程，保留真实 Tk 计时器。"""
+            if delay == 120:
+                scheduled.append((len(maps), callback))
+            return original_after(self, delay, callback, *args)
+
+        monkeypatch.setattr(Page, 'after', record_after)
+        root.bind('<Map>', lambda event: maps.append(event.widget)
+                  if event.widget is root else None, add='+')
         app.focus_validation_issue('外部程序设置', SimpleNamespace(path=path))
+        page = app.visible_pages['外部程序设置']
+        assert scheduled == []
         root.deiconify()
         root.update()
+        assert maps == [root]
+        assert len(scheduled) == 1
+        assert scheduled[0][0] == 1
+        assert callable(scheduled[0][1])
         root.after(250, root.quit)
         root.mainloop()
-        assert root.focus_get() is app.visible_pages['外部程序设置'].fields[path][1]._entry
+        assert root.focus_get() is page.fields[path][1]._entry
     finally:
         root.destroy()
 
@@ -1304,6 +1325,45 @@ def test_external_pending_focus_does_not_steal_after_navigation_or_remap(
         focus.assert_not_called()
         if destination != '隐藏':
             assert app.current_page == destination
+    finally:
+        root.destroy()
+
+
+def test_external_pending_focus_schedules_once_across_repeated_maps(tmp_path, monkeypatch):
+    """重复映射不重新注册旧诊断焦点排程。"""
+    root = ctk_kit.App(title='焦点测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('外部程序设置')
+        root.update()
+        root.withdraw()
+        page = app.visible_pages['外部程序设置']
+        scheduled = []
+        original_after = page.after
+
+        def record_after(delay, callback=None, *args):
+            """统计真实 Map 后的诊断排程次数。"""
+            if delay == 120:
+                scheduled.append(callback)
+            return original_after(delay, callback, *args)
+
+        monkeypatch.setattr(page, 'after', record_after)
+        app.focus_validation_issue('外部程序设置',
+                                   SimpleNamespace(path=('external', 'on_timeout')))
+        assert scheduled == []
+        root.deiconify()
+        root.update_idletasks()
+        root.update()
+        assert len(scheduled) == 1
+        root.withdraw()
+        root.update()
+        root.deiconify()
+        root.update()
+        assert len(scheduled) == 1
+        root.after(250, root.quit)
+        root.mainloop()
+        assert len(scheduled) == 1
     finally:
         root.destroy()
 
