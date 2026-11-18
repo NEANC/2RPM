@@ -165,7 +165,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             'write', lambda *_: self._edit_days(self.days_value.get()))
         # 与旧接口兼容：本页以 ``days.number`` 暴露内部输入框。
         self.days.number = self.days.entry
-        self.days.pack(side='left', padx=(12, 0))
+        self.days.pack(side='right')
 
     def _stepper(self, parent, action, number, total):
         """用原生 Spinner 显示两位序号，步进即移动整条配置。"""

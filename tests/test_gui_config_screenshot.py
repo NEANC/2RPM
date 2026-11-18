@@ -307,6 +307,7 @@ def test_retention_days_matches_port_stepper_and_edits_value():
         port = page.target_rows[0]['port']
         days = page.days
         assert isinstance(days, ctk_kit.Spinner)
+        assert days.pack_info()['side'] == 'right'
         assert isinstance(port, ctk_kit.Spinner)
         assert days.cget('width') == port.cget('width')
         assert days.cget('height') == port.cget('height')
