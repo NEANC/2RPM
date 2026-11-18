@@ -114,6 +114,7 @@ def test_light_sidebar_uses_light_surface_and_readable_navigation(tmp_path, monk
         assert app.sidebar._buttons['监视设置'].cget('text_color') == '#5F5F5F'
         assert app.sidebar._bottom_buttons['设置'].cget('text_color') == '#1A1A1A'
         assert app.config_group_button.cget('text_color') == '#5F5F5F'
+        assert app.visible_pages['主页'].save_button.cget('fg_color') == '#EBEBEB'
         assert app.show_page('监视设置')
         assert app.sidebar._buttons['主页'].cget('text_color') == '#5F5F5F'
         app.choose_theme('深色')
@@ -196,8 +197,10 @@ def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
         tk._default_root = None
 
 
-def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path):
+def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path, monkeypatch):
     """主页卡片保留内圆角，标题与按钮遵循统一字体和强调色。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    (tmp_path / 'gui.ini').write_text('[appearance]\ndark = false\nmaterial = none\n', encoding='utf-8')
     tk._default_root = None
     root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
                        remember_theme=False, notifier=False, backdrop='none')

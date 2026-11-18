@@ -29,6 +29,12 @@ COLORS = {
     'accent': ('#0067C0', '#60CDFF'),
     'accent_hover': ('#005A9E', '#87D9FF'),
     'accent_text': ('#FFFFFF', '#000000'),
+    'side': ('#F3F3F3', '#1C1C1C'),
+    'soft': ('#EBEBEB', '#2A2A2A'),
+    'soft_hover': ('#E0E0E0', '#363636'),
+    'input_bg': ('#FFFFFF', '#242424'),
+    'titlebar': ('#F3F3F3', '#1C1C1C'),
+    'border_strong': ('#C9C9C9', '#4A4A4A'),
 }
 CARD_STYLE = {
     'corner_radius': 10,
@@ -41,7 +47,10 @@ PALETTE_KEYS = {
     'card_hover': 'COLOR_HOVER_FAINT', 'border': 'COLOR_BORDER',
     'text_primary': 'COLOR_TEXT', 'text_secondary': 'COLOR_MUTED',
     'accent': 'COLOR_ACCENT', 'accent_hover': 'COLOR_ACCENT_HOVER',
-    'accent_text': 'COLOR_ACCENT_TEXT',
+    'accent_text': 'COLOR_ACCENT_TEXT', 'side': 'COLOR_SIDE',
+    'soft': 'COLOR_SOFT', 'soft_hover': 'COLOR_SOFT_HOVER',
+    'input_bg': 'COLOR_INPUT', 'titlebar': 'COLOR_TITLEBAR',
+    'border_strong': 'COLOR_BORDER_STRONG',
 }
 
 

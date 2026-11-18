@@ -183,6 +183,10 @@ def test_palette_composites_alpha_and_uses_yahei():
     assert palette['COLOR_CARD'] == '#FCFCFC'
     assert palette['COLOR_ACCENT'] == '#0067C0'
     assert palette['COLOR_TEXT'] == '#1A1A1A'
+    assert palette['COLOR_SIDE'] == '#F3F3F3'
+    assert palette['COLOR_SOFT'] == '#EBEBEB'
+    assert palette['COLOR_SOFT_HOVER'] == '#E0E0E0'
+    assert palette['COLOR_INPUT'] == '#FFFFFF'
     assert root.apply_palette.call_args.kwargs == {'save': False}
     assert FONT_BODY[0] == FONT_TITLE[0] == 'Microsoft YaHei UI'
     assert FONT_TITLE[2] == 'bold'

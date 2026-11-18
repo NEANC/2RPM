@@ -158,6 +158,7 @@ class App:
         self.controller.on_saved = self._refresh_saved_home
         self.controller.on_conflict = self._show_conflict
         root.protocol('WM_DELETE_WINDOW', self.close)
+        self._paint_sidebar()
         self.refresh()
         session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-'))
         try:
