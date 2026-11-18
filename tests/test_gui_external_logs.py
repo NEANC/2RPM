@@ -35,9 +35,13 @@ def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
         page.clear_file('on_end')
         assert model.get(('external', 'on_end')) == ''
         threshold = ('monitor', 'common', 'timeout_threshold')
-        page.fields[threshold][1].delete(0, 'end')
-        page.fields[threshold][1].insert(0, '-')
-        assert model.get_input(threshold) == '-'
+        spinner = page.fields[threshold][0]
+        assert isinstance(spinner, ctk_kit.Spinner)
+        spinner.entry.delete(0, 'end')
+        spinner.entry.insert(0, '-')
+        spinner._commit()
+        # Spinner 会把无法解析的原文钳制到下限，不再保留 '-'。
+        assert model.get_input(threshold) == '1'
         assert ('external', 'timeout_threshold') not in model.snapshot()['external']
         app.start_cli.assert_not_called()
     finally:
@@ -65,6 +69,30 @@ def test_external_path_label_above_input_and_browse_before_input():
             label = labels[0]
             assert label.winfo_rooty() + label.winfo_height() <= entry.winfo_rooty()
             assert browse.winfo_rootx() < entry.winfo_rootx()
+    finally:
+        root.destroy()
+
+
+def test_page_refresh_does_not_write_path_or_number_fields():
+    """程序刷新两个页面时，原生路径框与步进框的回调不得编辑草稿。"""
+    from modules.gui.pages.external import Page as ExternalPage
+    from modules.gui.pages.logs import Page as LogsPage
+
+    root = tk.Tk()
+    try:
+        model = EditorModel(new_document())
+        model.set(('external', 'on_end'), 'C:/keep.bat')
+        revision = model.revision
+        external = ExternalPage(root, Mock(model=model))
+        assert external.fields[('external', 'on_end')][1].get() == 'C:/keep.bat'
+        assert model.revision == revision
+        model.set(('log', 'log_directory'), 'custom-logs')
+        revision = model.revision
+        logs = LogsPage(root, Mock(model=model, open_logs=Mock()))
+        assert logs.fields[('log', 'log_directory')][1].get() == 'custom-logs'
+        external.refresh()
+        logs.refresh()
+        assert model.revision == revision
     finally:
         root.destroy()
 
@@ -186,8 +214,10 @@ def test_logs_page_edits_policy_and_does_not_create_directory(tmp_path, monkeypa
         page.clear_directory()
         assert model.get(path) == ''
         number = ('log', 'max_log_files')
-        page.fields[number][1].delete(0, 'end')
-        page.fields[number][1].insert(0, '19')
+        spinner = page.fields[number][0]
+        spinner.entry.delete(0, 'end')
+        spinner.entry.insert(0, '19')
+        spinner._commit()
         assert model.get(number) == 19
         app.open_logs.assert_not_called()
     finally:

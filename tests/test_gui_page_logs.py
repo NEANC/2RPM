@@ -35,9 +35,10 @@ def test_missing_log_leaf_is_editable_and_created_on_save(tmp_path):
         assert app.show_page('日志设置')
         page = app.visible_pages['日志设置']
         path = ('log', 'max_log_files')
-        widget = page.fields[path][1]
-        assert widget.cget('state') == 'normal'
-        widget.insert(0, '19')
+        spinner = page.fields[path][0]
+        assert spinner.entry.cget('state') == 'normal'
+        spinner.entry.insert(0, '19')
+        spinner._commit()
         assert app.model.get(path) == 19
         assert app.controller.save()
         assert read_document(source).tree['log']['max_log_files'] == 19
