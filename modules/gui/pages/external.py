@@ -26,6 +26,7 @@ class Page(ctk_kit.CTkScrollableFrame):
     def __init__(self, parent, app):
         """绘制三个事件卡片。"""
         super().__init__(parent, corner_radius=0)
+        self.app = app
         self.model = app.model
         self.fields = {}
         self.action_drafts = {}
@@ -185,7 +186,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             else:
                 def focus_latest():
                     """窗口恢复焦点稳定后只兑现最近一次导航。"""
-                    if request == self._focus_request:
+                    if (request == self._focus_request
+                            and self.app.current_page == '外部程序设置'
+                            and self.winfo_viewable()
+                            and widget.winfo_viewable()):
                         widget.focus_force()
 
                 def focus_on_map(event):

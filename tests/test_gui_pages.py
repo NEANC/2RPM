@@ -1271,6 +1271,43 @@ def test_external_hidden_navigation_only_focuses_latest_target(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('destination', ['主页', '监视设置', '隐藏'])
+def test_external_pending_focus_does_not_steal_after_navigation_or_remap(
+        tmp_path, destination, monkeypatch):
+    """真实窗口恢复后切页或再次隐藏时，旧诊断延迟回调不夺焦。"""
+    root = ctk_kit.App(title='焦点测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('外部程序设置')
+        root.update()
+        root.withdraw()
+        page = app.visible_pages['外部程序设置']
+        stale = page.fields[('external', 'on_timeout')][1]
+        focus = Mock(wraps=stale.focus_force)
+        monkeypatch.setattr(stale, 'focus_force', focus)
+        app.focus_validation_issue('外部程序设置',
+                                   SimpleNamespace(path=('external', 'on_timeout')))
+        root.deiconify()
+        root.update_idletasks()
+        assert root.winfo_viewable()
+
+        if destination == '隐藏':
+            root.after(30, root.withdraw)
+        else:
+            app.show_page(destination)
+            root.after(30, root.withdraw)
+            root.after(55, root.deiconify)
+
+        root.after(250, root.quit)
+        root.mainloop()
+        focus.assert_not_called()
+        if destination != '隐藏':
+            assert app.current_page == destination
+    finally:
+        root.destroy()
+
+
 def test_validation_counts_timeout_threshold_on_its_destination_page(tmp_path):
     """超时阈值诊断计数与定位均属于实际承载字段的附件页。"""
     root = tk.Tk()
