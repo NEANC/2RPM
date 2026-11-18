@@ -1510,7 +1510,7 @@ def test_normal_close_cancels_pending_poll(tmp_path):
     app.controller.runner.close.assert_called_once()
 
 
-def test_screenshot_conditions_update_on_tab_switch(tmp_path):
+def test_screenshot_conditions_update_on_tab_switch(tmp_path, monkeypatch):
     """切页后主页新增截图禁用原因，且可见文本不泄露配置值。"""
     root = tk.Tk()
     try:
@@ -1530,11 +1530,15 @@ def test_screenshot_conditions_update_on_tab_switch(tmp_path):
         page.expand_event(event)
         assert not hasattr(page, 'capture_switches')
         assert path not in page.fields
+        monkeypatch.setattr(app.controller, 'on_saved', lambda: None)
         app.model.set(path, False)
         page.preview_event(event)
         assert '截图被阻止' in page.preview_labels[event].cget('text')
         app.show_page('截图设置')
         root.update()
+        unchanged = tuple(label.cget('text') for label in
+                          home.screenshot_rows['运行超时']['reasons'].body.winfo_children())
+        assert unchanged == before
         app.show_page('主页')
         after = tuple(label.cget('text') for label in
                       home.screenshot_rows['运行超时']['reasons'].body.winfo_children())
