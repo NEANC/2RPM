@@ -18,14 +18,51 @@ from tests.gui_support import descendants as _descendants
 
 
 def test_monitor_uses_ctk_business_controls():
-    """监视业务字段不使用 ttk 可见控件。"""
+    """监视业务字段使用 ctk-kit 卡片、搜索框与步进控件。"""
     root, _, page = _page()
     try:
         assert isinstance(page, ctk_kit.CTkScrollableFrame)
         assert isinstance(page.mode, ctk_kit.CTkSegmentedButton)
-        assert isinstance(page.fields[('monitor', 'target')][1], ctk_kit.CTkEntry)
+        assert isinstance(page.file_entry, ctk_kit.SearchBox)
+        assert isinstance(page.task_entry, ctk_kit.CTkEntry)
+        assert isinstance(page.lookback, ctk_kit.Spinner)
+        assert isinstance(page.fields[('monitor', 'common', 'max_wait')][1],
+                          ctk_kit.CTkEntry)
+        cards = [widget for widget in page.winfo_children()
+                 if isinstance(widget, ctk_kit.Card)]
+        assert len(cards) == 3
         assert all(not widget.winfo_class().startswith('T')
                    for widget in _descendants(page))
+    finally:
+        root.destroy()
+
+
+def test_target_type_switches_editable_widget():
+    """切换目标类型后字段指向对应输入，搜索框清除写回空目标。"""
+    root, model, page = _page()
+    try:
+        page.set_field(('monitor', 'target'), r'C:\Apps\demo.exe')
+        page._select_type('task')
+        assert page.fields[('monitor', 'target')][1] is page.task_entry
+        page._select_type('file')
+        assert page.fields[('monitor', 'target')][1] is page.file_entry._entry
+        page.file_entry.clear()
+        root.update()
+        assert model.get(('monitor', 'target')) == ''
+    finally:
+        root.destroy()
+
+
+def test_lookback_spinner_writes_int_and_keeps_incomplete_draft():
+    """整数步进正常写回整数，无法表示的原文保留为草稿。"""
+    root, model, page = _page()
+    try:
+        path = ('monitor', 'watch', 'lookback_minutes')
+        page.set_field(path, '42')
+        assert model.get(path) == 42
+        page.set_field(path, '-')
+        assert model.get(path) == 42
+        assert model.get_input(path) == '-'
     finally:
         root.destroy()
 
@@ -72,11 +109,16 @@ def test_switch_to_task_clears_args_only_on_user_action():
 
 
 def test_pasted_target_updates_model_without_key_release():
-    """右键粘贴或程序内输入事件应写回草稿。"""
+    """右键菜单粘贴不产生按键事件，也应写回草稿。"""
     root, model, page = _page()
     try:
-        page.file_entry.delete(0, 'end')
-        page.file_entry.insert(0, r'C:\Apps\paste.exe')
+        root.clipboard_clear()
+        root.clipboard_append(r'C:\Apps\paste.exe')
+        root.update()
+        page.file_entry.set('')
+        entry = page.file_entry._entry._entry
+        entry.focus_force()
+        entry.event_generate('<<Paste>>')
         root.update()
         assert model.get(('monitor', 'target')) == r'C:\Apps\paste.exe'
     finally:
