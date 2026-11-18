@@ -538,8 +538,12 @@ def test_screenshot_numeric_entries_keep_raw_text_after_native_event(event, raw)
 
 
 @pytest.mark.parametrize('field, raw, expected', [
+    ('port', '', '127.0.0.1:16384'),
     ('port', '-', '127.0.0.1:16384'),
+    ('port', '12x', '127.0.0.1:16384'),
+    ('days', '', 14),
     ('days', '-', 14),
+    ('days', '12x', 14),
     ('port', '16384', '127.0.0.1:16385'),
     ('days', '7', 8),
 ])
@@ -567,13 +571,42 @@ def test_screenshot_numeric_arrow_keeps_draft_or_steps_valid_value(field, raw, e
         spinner._arrows.event_generate('<Button-1>', x=5, y=1)
         root.update()
         current = page.target_rows[0]['port'] if field == 'port' else page.days
-        assert current.entry.get() == ('-' if raw == '-' else
+        assert current.entry.get() == (raw if raw in ('', '-', '12x') else
                                        str(16385 if field == 'port' else 8))
         assert model.get(path) == expected
-        if raw == '-':
+        if raw in ('', '-', '12x'):
             assert model.revision == revision
-            assert model.get_input(path) == '-'
+            assert model.get_input(path) == raw
             assert path in model.input_errors
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('raw, y, expected', [
+    ('999999999', 1, '1000000000'),
+    ('1000000000', 1, '1000000000'),
+    ('1000000000', 30, '999999999'),
+    ('1', 30, '1'),
+])
+def test_retention_days_arrow_respects_spinner_bounds(raw, y, expected):
+    """真实箭头到达上下界后停住，不越过控件声明范围。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    root.geometry('1200x1200')
+    model = EditorModel(new_document())
+    page = ScreenshotPage(root, Mock(model=model))
+    page.pack(fill='both', expand=True)
+    try:
+        root.update()
+        page.days.entry._entry.delete(0, 'end')
+        page.days.entry._entry.insert(0, raw)
+        root.update()
+        page.days._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert page.days.entry.get() == expected
+        assert model.get(('push', 'screenshot', 'retention', 'max_days')) == int(expected)
     finally:
         root.destroy()
 

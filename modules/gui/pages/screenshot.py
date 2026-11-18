@@ -26,6 +26,7 @@ HOSTS = ('push', 'screenshot', 'image_host')
 RETENTION = ('push', 'screenshot', 'retention')
 PROVIDERS = ('wmimg', 'beeimg', 'beeimg_cn', 'superbed', 'boltp')
 DEFAULT_RETENTION_DAYS = 14
+MAX_RETENTION_DAYS = 10 ** 9
 # 与主页一致的页面、卡片比例；截图页三张卡片间距取 20，内容更紧凑。
 PAGE_PAD = 28
 CARD_GAP = 20
@@ -155,7 +156,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                                        value=str(DEFAULT_RETENTION_DAYS))
         self._refreshing_days = False
         self.days = ctk_kit.Spinner(
-            row, from_=1, to=10 ** 9, as_int=True, width=PORT_WIDTH,
+            row, from_=1, to=MAX_RETENTION_DAYS, as_int=True, width=PORT_WIDTH,
             height=CONTROL_HEIGHT,
             command=lambda _value: self._days_stepped())
         self._keep_spinner_text(self.days)
@@ -623,7 +624,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not re.fullmatch(r'\d+', raw):
             return
         days = int(raw)
-        if days + delta > 0:
+        if 1 <= days + delta <= MAX_RETENTION_DAYS:
             self.days_value.set(str(days + delta))
 
     def _step_days(self, event):
