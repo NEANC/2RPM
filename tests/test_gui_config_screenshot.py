@@ -537,6 +537,47 @@ def test_screenshot_numeric_entries_keep_raw_text_after_native_event(event, raw)
         root.destroy()
 
 
+@pytest.mark.parametrize('field, raw, expected', [
+    ('port', '-', '127.0.0.1:16384'),
+    ('days', '-', 14),
+    ('port', '16384', '127.0.0.1:16385'),
+    ('days', '7', 8),
+])
+def test_screenshot_numeric_arrow_keeps_draft_or_steps_valid_value(field, raw, expected):
+    """真实箭头不覆盖未解析草稿，完整数字仍可步进。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    root.geometry('1200x1200')
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    page.pack(fill='both', expand=True)
+    path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
+            else ('push', 'screenshot', 'retention', 'max_days'))
+    try:
+        root.update()
+        spinner = page.target_rows[0]['port'] if field == 'port' else page.days
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, raw)
+        root.update()
+        revision = model.revision
+        spinner._arrows.event_generate('<Button-1>', x=5, y=1)
+        root.update()
+        current = page.target_rows[0]['port'] if field == 'port' else page.days
+        assert current.entry.get() == ('-' if raw == '-' else
+                                       str(16385 if field == 'port' else 8))
+        assert model.get(path) == expected
+        if raw == '-':
+            assert model.revision == revision
+            assert model.get_input(path) == '-'
+            assert path in model.input_errors
+    finally:
+        root.destroy()
+
+
 def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path):
     """切换首个目标仅清理其端口错误，第二目标修正前不得保存。"""
     from unittest.mock import Mock
@@ -732,8 +773,8 @@ def test_adb_port_stepper_replaces_raw_input():
         root.destroy()
 
 
-def test_adb_port_stepper_after_incomplete_input_clears_error_and_saves(tmp_path):
-    """端口输入 '-' 后步进恢复有效值，并允许保存到磁盘。"""
+def test_adb_port_stepper_after_incomplete_input_keeps_error_and_blocks_save(tmp_path):
+    """端口输入 '-' 后步进不覆盖草稿，也不能保存旧目标。"""
     from unittest.mock import Mock
     from modules.config_document import read_document, save_document
     from modules.gui.controller import Controller
@@ -754,11 +795,11 @@ def test_adb_port_stepper_after_incomplete_input_clears_error_and_saves(tmp_path
         port.entry.set('-')
         assert path in controller.model.input_errors
         page._change_port(0, 1)
-        assert controller.model.get(path) == '127.0.0.1:16385'
-        assert controller.model.get_input(path) == '16385'
-        assert path not in controller.model.input_errors
-        assert controller.save()
-        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16385'
+        assert controller.model.get(path) == '127.0.0.1:16384'
+        assert controller.model.get_input(path) == '-'
+        assert path in controller.model.input_errors
+        assert not controller.save()
+        assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16384'
     finally:
         root.destroy()
 

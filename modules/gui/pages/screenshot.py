@@ -164,6 +164,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.days_value.set(str(DEFAULT_RETENTION_DAYS))
         self.days_value.trace_add(
             'write', lambda *_: self._edit_days(self.days_value.get()))
+        self.days._arrows.bind(
+            '<Button-1>', lambda event: self._step_days(event))
         # 与旧接口兼容：本页以 ``days.number`` 暴露内部输入框。
         self.days.number = self.days.entry
         self.days.pack(side='right')
@@ -555,12 +557,19 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _change_port(self, index, delta):
         """步进合法数字端口且保留地址。"""
+        raw = self.target_rows[index]['port'].entry.get()
+        if not re.fullmatch(r'\d+', raw):
+            return
+        try:
+            current = int(raw)
+        except ValueError:
+            return
         address, port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
-        if port is not None and 1 <= port + delta <= 65535:
+        if port is not None and 1 <= current + delta <= 65535:
             path = (*TARGETS, self._source_index(TARGETS, index), 'target')
             self.model.input_errors.pop(path, None)
-            self._set_adb(index, address, port + delta)
-            self.model.raw_inputs[path] = str(port + delta)
+            self._set_adb(index, address, current + delta)
+            self.model.raw_inputs[path] = str(current + delta)
             self.refresh()
 
     def _show_host(self, index, item, source_index=None, total=1):
@@ -610,11 +619,19 @@ class Page(ctk_kit.CTkScrollableFrame):
         retention, editable = self._retention()
         if not editable:
             return
-        days = retention.get('max_days')
-        if not isinstance(days, int):
-            days = DEFAULT_RETENTION_DAYS
+        raw = self.days_value.get()
+        if not re.fullmatch(r'\d+', raw):
+            return
+        days = int(raw)
         if days + delta > 0:
             self.days_value.set(str(days + delta))
+
+    def _step_days(self, event):
+        """以当前可见天数处理上下箭头，保留未解析草稿。"""
+        if self.days.is_readonly():
+            return
+        middle = max(1, self.days._arrows.winfo_height()) / 2
+        self._change_days(1 if event.y < middle else -1)
 
     def _days_stepped(self):
         """Spinner 箭头或提交后由文本变量统一写回，无需重复处理。"""
