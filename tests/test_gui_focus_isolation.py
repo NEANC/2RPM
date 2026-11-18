@@ -9,9 +9,9 @@ import sys
 
 import pytest
 
-FOCUS_CASE = 'tests/test_gui_pages.py::test_validation_routes_external_error_to_action_field'
-SCALE_CASE = 'tests/test_gui_window.py::test_dpi_wide_header_buttons_do_not_intersect_window_controls'
-RESTORE_CASE = 'tests/test_gui_pages.py::test_external_diagnostic_focus_survives_unmapped_window'
+FOCUS_CASE = 'tests/test_gui_page_validation.py::test_validation_routes_external_error_to_action_field'
+SCALE_CASE = 'tests/test_gui_window.py::test_dpi_headers_keep_actions_on_one_row_after_wide_resize'
+RESTORE_CASE = 'tests/test_gui_page_focus.py::test_external_diagnostic_focus_survives_unmapped_window'
 
 
 @pytest.mark.parametrize('cases', [(FOCUS_CASE,), (SCALE_CASE, FOCUS_CASE),
