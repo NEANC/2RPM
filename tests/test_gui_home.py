@@ -74,7 +74,8 @@ def test_home_buttons_restore_all_fields_through_mainloop(tmp_path, monkeypatch)
                             assert _variable.get() == app.model.get(path)
                         else:
                             expected = app.model.get_input(path) if kind == 'int' else app.model.get(path)
-                            assert widget.get() == ('' if expected is None else str(expected))
+                            # 原生 Spinner 的 get() 返回数值，统一按显示文本比较。
+                            assert str(widget.get()) == ('' if expected is None else str(expected))
                 assert app.visible_pages['截图设置'].days.number.get() == '23'
                 assert app.show_page('主页')
                 buttons['另存为'].invoke()
@@ -282,7 +283,15 @@ def test_settings_persist_without_editing_business_revision(tmp_path, monkeypatc
         assert app.show_page('设置')
         app.choose_material('none')
         assert app.model.revision == revision
-        assert app.visible_pages['设置'].material.get() == '无材质'
+        settings = app.visible_pages['设置']
+        assert isinstance(settings.theme, ctk_kit.CTkSwitch)
+        assert isinstance(settings.material, ctk_kit.CTkOptionMenu)
+        # 行标签承载可见文字，开关本身只显示指示器。
+        assert settings.theme.cget('text') == ''
+        assert settings.material.get() == '无材质'
+        settings.theme.select()
+        settings._change_theme()
+        assert app.model.revision == revision
     finally:
         root.destroy()
 

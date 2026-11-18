@@ -20,7 +20,7 @@ from modules.gui.protocol import TestRequest as GuiTestRequest
 from modules.gui.protocol import TestResult as GuiTestResult
 
 
-from tests.gui_support import make_app
+from tests.gui_support import descendants, make_app
 
 
 def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
@@ -86,9 +86,12 @@ def test_notification_event_preview_and_variable_controls_are_visible(tmp_path):
         app = make_app(root, tmp_path)
         page = app.visible_pages['消息推送设置']
         page.expand_event('on_end')
-        texts = [child.cget('text') for card in page.events_body.winfo_children()
-                 for row in card.winfo_children() for child in row.winfo_children()
-                 if isinstance(child, ctk_kit.CTkButton)]
+        # 展开后的事件卡片是原生 Collapsible，按钮在其标题行和正文区里。
+        assert isinstance(page.event_bodies['on_end'], ctk_kit.Collapsible)
+        texts = [widget.cget('text') for widget in descendants(page.events_body)
+                 if isinstance(widget, ctk_kit.CTkButton)]
+        assert '收起消息 ▴' in texts
+        assert '编辑消息 ▾' in texts
         assert '预览消息' in texts
         assert '插入正文' in texts
     finally:

@@ -401,7 +401,7 @@ def test_screenshot_conditions_update_on_tab_switch(tmp_path, monkeypatch):
         monkeypatch.setattr(app.controller, 'on_saved', lambda: None)
         app.model.set(path, False)
         page.preview_event(event)
-        assert '截图被阻止' in page.preview_labels[event].cget('text')
+        assert '截图被阻止' in page.preview_text(event)
         app.show_page('截图设置')
         root.update()
         unchanged = tuple(label.cget('text') for label in

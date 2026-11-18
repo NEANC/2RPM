@@ -121,9 +121,10 @@ def test_config_page_headers_have_no_control_reserve(tmp_path):
             root.update()
             header = app.visible_pages[name].winfo_children()[0]
             scale = header._get_widget_scaling()
-            assert round(header.pack_info()['padx'] / scale) == 0, name
+            # 原型页边距为 28：左右对称，不再为窗口控制按钮留右侧空白。
+            assert round(header.pack_info()['padx'] / scale) == 28, name
             assert tuple(round(value / scale)
-                         for value in header.pack_info()['pady']) == (0, 12), name
+                         for value in header.pack_info()['pady']) == (28, 0), name
     finally:
         root.destroy()
         tk._default_root = None
@@ -232,19 +233,23 @@ def test_other_pages_share_home_card_surface(tmp_path):
     try:
         app = make_app(root, tmp_path)
         root.update()
+        index = int(ctk_kit.get_appearance_mode() == 'Dark')
         for name in ('监视设置', '截图设置', '消息推送设置',
                      '外部程序设置', '日志设置', '设置'):
             assert app.show_page(name)
             root.update()
             page = app.visible_pages[name]
             cards = [child for child in page.winfo_children()
-                     if isinstance(child, ctk_kit.CTkFrame)
-                     and child.cget('corner_radius') == 10]
+                     if isinstance(child, ctk_kit.Card)]
             assert cards, name
             for card in cards:
-                assert card.cget('border_width') == 1, name
-                assert card.cget('border_color') == ('#DADADA', '#333333'), name
-                assert card.cget('fg_color') == ('#FAFAFA', '#232323'), name
+                assert card.cget('corner_radius') == 20, name
+                assert card.cget('border_width') == 2, name
+                # 页面可以存深浅色对或当前模式单色，二者都必须是本模式的同色。
+                assert card.cget('border_color') in (
+                    ('#E1E1E1', '#3A3A3A'), ('#E1E1E1', '#3A3A3A')[index]), name
+                assert card.cget('fg_color') in (
+                    ('#FAFAFA', '#232323'), ('#FAFAFA', '#232323')[index]), name
     finally:
         root.destroy()
         tk._default_root = None
@@ -418,8 +423,9 @@ def test_config_header_actions_receive_real_pointer_clicks(tmp_path, page_name, 
         _expose_for_pointer(root)
         page = app.visible_pages[page_name]
         header = page.winfo_children()[0]
-        assert header.pack_info()['pady'][0] == 0
-        assert header.pack_info()['padx'] == 0
+        scale = header._get_widget_scaling()
+        assert round(header.pack_info()['pady'][0] / scale) == 28
+        assert round(header.pack_info()['padx'] / scale) == 28
         buttons = [widget for widget in header.winfo_children()
                    if isinstance(widget, ctk_kit.CTkButton)]
         assert {button.cget('text') for button in buttons} == set(labels)

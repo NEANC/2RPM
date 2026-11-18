@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -_- coding: utf-8 -_-
 
-"""ctk-kit 通道列表、事件模板与无外发消息预览。"""
+"""按原型重绘的消息推送设置：通道、事件消息与错误处理。"""
 
 from collections.abc import Mapping
 import tkinter as tk
@@ -9,8 +9,10 @@ from tkinter import messagebox
 
 import ctk_kit
 
-from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.forms import event_variables, preview_template, provider_fields, screenshot_conditions
+from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
+                                    FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
+from modules.gui.forms import (event_variables, preview_template,
+                               provider_fields, screenshot_conditions)
 from modules.gui.widgets import (PRESAVE_HINT, STRUCTURE_HINT, activate_and_focus,
                                  path_writable, scroll_to_widget)
 from modules.notification import _configured_screenshot_names
@@ -32,6 +34,24 @@ VARIABLE_LABELS = {'host_name': '主机名', 'current_time': '当前时间',
                    'external_program_path': '调用的程序路径',
                    'screenshot': '截图结果聚合'}
 
+# 与主页保持同一套原型比例：圆角 20、2px 边框、28px 页边距与卡片内边距。
+PAGE_PAD = 28
+CARD_GAP = 20
+CARD_PAD = 28
+CARD_RADIUS = 20
+CARD_BORDER = 2
+CARD_SURFACE = ('#FAFAFA', '#232323')
+CARD_BORDER_COLOR = ('#E1E1E1', '#3A3A3A')
+ROW_SURFACE = ('#F1F1F1', '#2C2C2C')
+LABEL_WIDTH = 110
+ROW_PAD_Y = 4
+SWITCH_STYLE = {
+    'fg_color': ('#A0A0A0', '#5F5F5F'),
+    'progress_color': COLORS['accent'],
+    'button_color': ('#FFFFFF', '#000000'),
+    'button_hover_color': ('#FFFFFF', '#333333'),
+}
+
 
 class Page(ctk_kit.CTkScrollableFrame):
     """只编辑显示的字段，完整配置仍由模型保管。"""
@@ -47,6 +67,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.channel_rows = []
         self.event_bodies = {}
         self.preview_labels = {}
+        self.preview_frames = {}
+        self.preview_warning_labels = {}
         self.preview_buttons = {}
         self.variables = {}
         self._event_switches = {}
@@ -55,44 +77,103 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._expanded_events = set()
         self._preview_events = set()
         self._preview_text = {}
+        self._preview_warnings = {}
         self.generation = self.model.document_generation
-        header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', pady=(0, 12))
-        ctk_kit.CTkLabel(header, text='消息推送设置', font=FONT_TITLE).pack(side='left')
-        self.notify_button = ctk_kit.CTkButton(header, text='通知测试', font=FONT_BODY,
-                                               command=app.notify)
-        self.notify_button.pack(side='right')
-        self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
-        self.structure_hint.pack(fill='x', pady=(0, 8))
-        card = self._card('推送通道')
-        self.add_channel_button = ctk_kit.CTkButton(
-            card, text='添加通道', font=FONT_BODY, command=self.open_add_dialog)
-        self.add_channel_button.pack(anchor='e', padx=16)
-        self.channel_body = ctk_kit.CTkFrame(card, fg_color='transparent')
-        self.channel_body.pack(fill='x', padx=16, pady=(4, 8))
-        self.channel_hint = ctk_kit.CTkLabel(card, text='', font=FONT_SMALL, anchor='w')
-        self.channel_hint.pack(fill='x', padx=16, pady=(0, 8))
-        card = self._card('通知事件与消息')
-        self.events_body = ctk_kit.CTkFrame(card, fg_color='transparent')
-        self.events_body.pack(fill='x', padx=16, pady=(4, 8))
-        self.events_hint = ctk_kit.CTkLabel(card, text='', font=FONT_SMALL, anchor='w')
-        self.events_hint.pack(fill='x', padx=16, pady=(0, 8))
-        card = self._card('错误处理')
-        for label, name in (('重试间隔', 'interval'), ('最大重试次数', 'max_count')):
-            row = ctk_kit.CTkFrame(card, fg_color='transparent')
-            row.pack(fill='x', padx=16, pady=8)
-            ctk_kit.CTkLabel(row, text=label, font=FONT_BODY, width=130,
-                             anchor='w').pack(side='left')
-            self._entry(row, ('push', 'retry', name), numeric=name == 'max_count')
+        self._build()
         self.refresh()
 
-    def _card(self, title):
-        """绘制单组业务卡片。"""
-        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
-        card.pack(fill='x', pady=8)
-        ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
-        return card
+    # ---------------------------------------------------------------- 装配
+    def _build(self):
+        """页头之后按原型顺序放三张卡片。"""
+        header = ctk_kit.CTkFrame(self, fg_color='transparent')
+        header.pack(fill='x', padx=PAGE_PAD, pady=(PAGE_PAD, 0))
+        ctk_kit.CTkLabel(header, text='消息推送设置', font=FONT_TITLE,
+                         text_color=COLORS['text_primary']).pack(side='left')
+        self.notify_button = ctk_kit.PrimaryButton(
+            header, '通知测试', self.app.notify,
+            width=120, height=52, radius=12, font=FONT_BUTTON)
+        self.notify_button.pack(side='right')
+        self.structure_hint = ctk_kit.CTkLabel(
+            self, text='', font=FONT_BODY, anchor='w',
+            text_color=COLORS['text_secondary'])
+        self.structure_hint.pack(fill='x', padx=PAGE_PAD, pady=(6, 0))
+        self._build_channels_card()
+        self._build_events_card()
+        self._build_retry_card()
+        ctk_kit.CTkFrame(self, fg_color='transparent', height=CARD_GAP).pack(
+            fill='x')
 
+    def _card(self, title):
+        """按主页比例创建圆角内容卡，返回卡片和标题行。"""
+        card = ctk_kit.Card(self, corner_radius=CARD_RADIUS,
+                            border_width=CARD_BORDER,
+                            border_color=CARD_BORDER_COLOR,
+                            fg_color=CARD_SURFACE)
+        card.pack(fill='x', padx=PAGE_PAD, pady=(CARD_GAP, 0))
+        head = ctk_kit.CTkFrame(card, fg_color='transparent')
+        head.pack(fill='x', padx=CARD_PAD, pady=(CARD_PAD, 14))
+        ctk_kit.CTkLabel(head, text=title, font=FONT_CARD_TITLE,
+                         text_color=COLORS['text_primary']).pack(side='left')
+        return card, head
+
+    def _text(self, parent, text, *, muted=True, **kwargs):
+        """正文标签；默认使用次要色。"""
+        return ctk_kit.CTkLabel(
+            parent, text=text, font=FONT_BODY,
+            text_color=COLORS['text_secondary' if muted else 'text_primary'],
+            **kwargs)
+
+    def _option_menu(self, parent, values, *, command=None, width=140):
+        """下拉框统一输入框底色，避免 CustomTkinter 默认的蓝色实心块。"""
+        return ctk_kit.CTkOptionMenu(
+            parent, values=values, font=FONT_BODY, dropdown_font=FONT_BODY,
+            width=width, command=command,
+            fg_color=COLORS['input_bg'],
+            button_color=COLORS['input_bg'],
+            button_hover_color=COLORS['soft_hover'],
+            text_color=COLORS['text_primary'],
+            dropdown_fg_color=COLORS['input_bg'],
+            dropdown_hover_color=COLORS['soft'],
+            dropdown_text_color=COLORS['text_primary'])
+
+    def _build_channels_card(self):
+        """推送通道卡：标题右侧添加通道，通道行折叠展开参数。"""
+        card, head = self._card('推送通道')
+        self.add_channel_button = ctk_kit.PrimaryButton(
+            head, '＋ 添加通道', self.open_add_dialog,
+            width=140, height=40, radius=10, font=FONT_BUTTON)
+        self.add_channel_button.pack(side='right')
+        self.channel_body = ctk_kit.CTkFrame(card, fg_color='transparent')
+        self.channel_body.pack(fill='x', padx=CARD_PAD)
+        self.channel_hint = ctk_kit.CTkLabel(
+            card, text='', font=FONT_SMALL, anchor='w',
+            text_color=COLORS['text_secondary'])
+        self.channel_hint.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
+
+    def _build_events_card(self):
+        """通知事件与消息卡：四个事件各自独立展开。"""
+        card, _head = self._card('通知事件与消息')
+        self.events_body = ctk_kit.CTkFrame(card, fg_color='transparent')
+        self.events_body.pack(fill='x', padx=CARD_PAD)
+        self.events_hint = ctk_kit.CTkLabel(
+            card, text='', font=FONT_SMALL, anchor='w',
+            text_color=COLORS['text_secondary'])
+        self.events_hint.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
+
+    def _build_retry_card(self):
+        """错误处理卡：只编辑既有重试字段。"""
+        card, _head = self._card('错误处理')
+        for label, name in (('重试间隔', 'interval'), ('最大重试次数', 'max_count')):
+            row = ctk_kit.CTkFrame(card, fg_color='transparent')
+            row.pack(fill='x', padx=CARD_PAD, pady=ROW_PAD_Y)
+            self._text(row, label).pack(side='left')
+            path = ('push', 'retry', name)
+            self._entry(row, path, numeric=name == 'max_count',
+                        side='right', expand=False, width=140)
+        ctk_kit.CTkFrame(card, fg_color='transparent', height=(
+            CARD_PAD - 2 * ROW_PAD_Y)).pack(fill='x')
+
+    # ---------------------------------------------------------------- 字段
     def _safe_get(self, path, default=None):
         """读取可能缺失的节，缺失或中间节点类型异常时返回默认值。"""
         try:
@@ -107,12 +188,15 @@ class Page(ctk_kit.CTkScrollableFrame):
         except (KeyError, IndexError, TypeError):
             return ''
 
-    def _entry(self, parent, path, *, numeric=False):
+    def _entry(self, parent, path, *, numeric=False, side='left',
+               expand=True, width=140):
         """绑定固定字段，保留数字原始输入。"""
         variable = tk.StringVar(master=self, value=(self._safe_input(path) if numeric else
                                                    str(self._safe_get(path) or '')))
-        widget = ctk_kit.CTkEntry(parent, textvariable=variable, font=FONT_BODY)
-        widget.pack(side='left', fill='x', expand=True, padx=4)
+        widget = ctk_kit.CTkEntry(parent, textvariable=variable, font=FONT_BODY,
+                                  height=38, width=width)
+        widget.pack(side=side, fill='x' if expand else 'none', expand=expand,
+                    padx=(8, 0) if side == 'left' else (8, 0))
         variable.trace_add('write', lambda *_: self._changed(path, variable, numeric))
         self.fields[path] = (variable, widget, 'int' if numeric else 'text')
         return widget
@@ -130,6 +214,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not self._refreshing and path_writable(self.model, path):
             self.model.set(path, widget.get('1.0', 'end-1c'))
 
+    # ---------------------------------------------------------------- 通道
     def _source_index(self, display_index):
         """把可见行号转换为原始列表索引，结构异常项保持原位置。"""
         if 0 <= display_index < len(self.channel_rows):
@@ -236,20 +321,26 @@ class Page(ctk_kit.CTkScrollableFrame):
         """未选择 provider 时不能添加，关闭或取消均不修改配置。"""
         dialog = ctk_kit.CTkToplevel(self)
         dialog.title('添加通道')
-        dialog.geometry('400x220')
+        dialog.geometry('400x260')
         dialog.transient(self.winfo_toplevel())
         panel = ctk_kit.CTkFrame(dialog, corner_radius=12)
         panel.pack(fill='both', expand=True, padx=16, pady=16)
         ctk_kit.CTkButton(panel, text='×', width=32, command=dialog.destroy).pack(anchor='e')
         ctk_kit.CTkLabel(panel, text='选择通道', font=FONT_CARD_TITLE).pack(anchor='w', padx=12)
         names = ['请选择通道', *PROVIDERS]
-        selected = ctk_kit.CTkOptionMenu(panel, values=names, font=FONT_BODY)
+        selected = self._option_menu(panel, names)
         selected.set(names[0])
         selected.pack(fill='x', padx=12, pady=12)
+        self._text(panel, '选择后在推送通道列表中填写对应参数。',
+                   anchor='w').pack(fill='x', padx=12)
         row = ctk_kit.CTkFrame(panel, fg_color='transparent')
-        row.pack(anchor='e', padx=12)
-        ctk_kit.CTkButton(row, text='取消', command=dialog.destroy).pack(side='left', padx=4)
-        add = ctk_kit.CTkButton(row, text='添加', state='disabled')
+        row.pack(anchor='e', padx=12, pady=(12, 0))
+        ctk_kit.SecondaryButton(row, '取消', dialog.destroy,
+                                width=80, height=38, font=FONT_BODY,
+                                border=True).pack(side='left', padx=(0, 8))
+        add = ctk_kit.PrimaryButton(row, '添加', width=80, height=38, font=FONT_BODY)
+        add.configure(state='disabled')
+
         def submit():
             """确认当前选定通道并关闭弹窗。"""
             if selected.get() in PROVIDERS:
@@ -277,6 +368,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._expanded_channel = None if self._expanded_channel == index else index
         self.refresh()
 
+    def _bind_toggle(self, widget, index):
+        """让标题行的非操作区域点击后展开或收起。"""
+        handler = lambda _event=None, i=index: self.expand_channel(i)
+        widget.bind('<Button-1>', handler)
+        canvas = getattr(widget, '_canvas', None)
+        if canvas is not None:
+            canvas.bind('<Button-1>', handler)
+
     def _render_channels(self):
         """动态显示 provider 必填状态和遮挡的独立参数表单。"""
         for child in self.channel_body.winfo_children():
@@ -293,72 +392,102 @@ class Page(ctk_kit.CTkScrollableFrame):
             hint = ('部分通道项结构无效，已跳过显示' if len(channels) != len(raw) else '')
         self.channel_hint.configure(text=hint)
         for index, (source_index, channel) in enumerate(channels):
-            line = ctk_kit.CTkFrame(self.channel_body, corner_radius=8)
-            line.pack(fill='x', pady=4)
-            line.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
-            line._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
-            top = ctk_kit.CTkFrame(line, fg_color='transparent')
-            top.pack(fill='x', padx=8, pady=6)
-            top.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
-            top._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
             provider = channel.get('provider')
             provider = provider if isinstance(provider, str) else '未知'
             status_text = self._status(channel)
-            toggle = ctk_kit.CTkButton(top, text=f'{index + 1}. {provider}  '
-                                          + ('⌄' if self._expanded_channel == index else '›'),
-                                         font=FONT_BODY, fg_color='transparent',
-                                         command=lambda i=index: self.expand_channel(i))
-            toggle.pack(side='left', fill='x', expand=True)
-            status = ctk_kit.CTkLabel(top, text=status_text, font=FONT_SMALL,
-                                      corner_radius=6, border_width=1, padx=8)
+            expanded = self._expanded_channel == index
+            # Collapsible 的标题按钮只能显示纯文本；标题行需要同时放徽标、
+            # 删除和行尾箭头，因此保留折叠体、标题行改用自定义行容器。
+            panel = ctk_kit.Collapsible(
+                self.channel_body, collapsed_text='', expanded_text='',
+                expanded=expanded, button_height=56)
+            panel.pack(fill='x', pady=ROW_PAD_Y)
+            panel.button.pack_forget()
+            panel.detail_label.place_forget()
+            panel.body.configure(fg_color=COLORS['soft'])
+            if expanded:
+                # 折叠体与标题行保持同一左右内缩，展开后看起来是一整块。
+                panel.body.pack_configure(padx=8)
+            head = panel.header
+            line = ctk_kit.CTkFrame(head, fg_color=ROW_SURFACE,
+                                    corner_radius=8)
+            line.pack(fill='x', padx=8, pady=6)
+            arrow = ctk_kit.CTkLabel(
+                line, text='⌄' if expanded else '›', font=FONT_BODY, width=20,
+                text_color=COLORS['text_secondary'])
+            arrow.pack(side='right')
+            # ctk-kit 的 DangerButton 令牌只有深色一套，浅色下仍是深红底；
+            # 这里按原型给浅/深两套红色文字、底色与边框。
+            delete = ctk_kit.CTkButton(
+                line, text='删除', width=58, height=30, font=FONT_SMALL,
+                text_color=('#B42318', '#FF7575'),
+                fg_color=('#FDECEB', '#462426'),
+                hover_color=('#F9D6D3', '#603034'),
+                border_color=('#E8A49D', '#B74C50'), border_width=1,
+                command=lambda i=index: self.remove_channel(i))
+            delete.pack(side='right', padx=(8, 4))
+            status = ctk_kit.CTkLabel(
+                line, text=status_text, font=FONT_SMALL, corner_radius=6,
+                border_width=1, padx=8, height=24)
             self._update_channel_status(status, status_text)
-            status.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
-            status._canvas.bind('<Button-1>', lambda _, i=index: self.expand_channel(i))
-            status.pack(side='left', padx=8)
-            delete = ctk_kit.CTkButton(top, text='删除', width=60,
-                              text_color=('#B42318', '#FF7575'),
-                              fg_color=('#FDECEB', '#462426'),
-                              hover_color=('#F9D6D3', '#603034'),
-                              border_color=('#E8A49D', '#B74C50'), border_width=1,
-                              command=lambda i=index: self.remove_channel(i))
-            delete.pack(side='left')
-            self.channel_rows.append({'toggle': toggle, 'header': top, 'status': status,
-                                      'delete': delete,
+            status.pack(side='right', padx=8)
+            number = ctk_kit.CTkLabel(
+                line, text=f'{index + 1:02d}', font=FONT_SMALL, width=30, anchor='w',
+                text_color=COLORS['text_secondary'])
+            number.pack(side='left', padx=(4, 8))
+            name = ctk_kit.CTkLabel(
+                line, text=provider, font=FONT_BODY, anchor='w',
+                text_color=COLORS['text_primary'])
+            name.pack(side='left', fill='x', expand=True)
+            for widget in (head, line, number, name, status, arrow):
+                self._bind_toggle(widget, index)
+            self.channel_rows.append({'panel': panel, 'toggle': name, 'header': line,
+                                      'status': status, 'delete': delete,
                                       'provider': None, 'source_index': source_index})
-            if index != self._expanded_channel:
+            if not expanded:
                 continue
-            selector_row = ctk_kit.CTkFrame(line, fg_color='transparent')
-            selector_row.pack(fill='x', padx=12, pady=(6, 2))
-            ctk_kit.CTkLabel(selector_row, text='通道类型', font=FONT_BODY,
-                             width=130, anchor='w').pack(side='left')
-            values = list(PROVIDERS.values())
-            if provider not in values:
-                values.append(provider)
-            selector = ctk_kit.CTkOptionMenu(
-                selector_row, values=values, font=FONT_BODY,
-                command=lambda value, i=index: self.change_channel_provider(i, value))
-            selector.set(provider)
-            selector.pack(side='left', fill='x', expand=True, padx=4)
-            self.channel_rows[index]['provider'] = selector
-            self.channel_entries['provider'] = selector
-            fields = provider_fields(provider)
-            for field in fields:
-                row = ctk_kit.CTkFrame(line, fg_color='transparent')
-                row.pack(fill='x', padx=12, pady=3)
-                ctk_kit.CTkLabel(row, text=field.label + (' *' if field.required else ''),
-                                 font=FONT_BODY, width=130, anchor='w').pack(side='left')
-                value = tk.StringVar(master=self, value=str(channel.get(field.name, '')))
-                entry = ctk_kit.CTkEntry(row, textvariable=value, font=FONT_BODY,
-                                         show='●' if field.secret else '')
-                entry.pack(side='left', fill='x', expand=True)
-                value.trace_add('write', lambda *_, i=index, name=field.name, var=value:
-                                self._set_channel(i, name, var.get()))
-                self.channel_entries[field.name] = entry
-                if field.secret:
-                    ctk_kit.CTkButton(row, text='显示', width=55,
-                                      command=lambda widget=entry: widget.configure(
-                                          show='' if widget.cget('show') else '●')).pack(side='left')
+            self._render_channel_fields(panel.body, index, channel, provider)
 
+    def _render_channel_fields(self, parent, index, channel, provider):
+        """展开行内按当前 provider 显示选择器和真实凭证字段。"""
+        selector_row = ctk_kit.CTkFrame(parent, fg_color='transparent')
+        selector_row.pack(fill='x', padx=28, pady=(10, 4))
+        self._text(selector_row, '通道类型', width=LABEL_WIDTH, anchor='w').pack(
+            side='left')
+        values = list(PROVIDERS.values())
+        if provider not in values:
+            values.append(provider)
+        selector = self._option_menu(
+            selector_row, values,
+            command=lambda value, i=index: self.change_channel_provider(i, value))
+        selector.set(provider)
+        selector.pack(side='left', fill='x', expand=True)
+        self.channel_rows[index]['provider'] = selector
+        self.channel_entries['provider'] = selector
+        for field in provider_fields(provider):
+            row = ctk_kit.CTkFrame(parent, fg_color='transparent')
+            row.pack(fill='x', padx=28, pady=3)
+            self._text(row, field.label + (' *' if field.required else ''),
+                       width=LABEL_WIDTH, anchor='w').pack(side='left')
+            value = tk.StringVar(master=self, value=str(channel.get(field.name, '')))
+            entry = ctk_kit.CTkEntry(row, textvariable=value, font=FONT_BODY,
+                                     show='●' if field.secret else '')
+            entry.pack(side='left', fill='x', expand=True)
+            value.trace_add('write', lambda *_, i=index, name=field.name, var=value:
+                            self._set_channel(i, name, var.get()))
+            self.channel_entries[field.name] = entry
+            if field.secret:
+                ctk_kit.CTkButton(
+                    row, text='显示', width=56, height=32,
+                    command=lambda widget=entry: widget.configure(
+                        show='' if widget.cget('show') else '●'),
+                    fg_color='transparent',
+                    hover_color=COLORS['card_hover'],
+                    text_color=COLORS['accent'],
+                    font=FONT_SMALL).pack(side='left', padx=(8, 0))
+        ctk_kit.CTkFrame(parent, fg_color='transparent', height=10).pack(fill='x')
+
+    # ---------------------------------------------------------------- 事件
     def _variable_names(self, event):
         """组合事件合法变量与已配置截图输出名。"""
         snapshot = self.model.snapshot()
@@ -377,13 +506,17 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._expanded_events.add(event)
         self._preview_events.discard(event)
         self._preview_text.pop(event, None)
+        self._preview_warnings.pop(event, None)
         self.refresh()
 
     def _render_events(self):
         """在展开的事件卡片中编辑标题、正文并提供示例预览。"""
         for child in self.events_body.winfo_children():
             child.destroy()
+        self.event_bodies = {}
         self.preview_labels = {}
+        self.preview_frames = {}
+        self.preview_warning_labels = {}
         self.preview_buttons = {}
         self.variables = {}
         self._event_switches = {}
@@ -393,58 +526,116 @@ class Page(ctk_kit.CTkScrollableFrame):
             text='' if isinstance(raw, Mapping) else '通知事件配置缺失或结构无效，请在 YAML 中检查')
         for event, label in EVENTS:
             path = ('push', 'templates', event)
-            card = ctk_kit.CTkFrame(self.events_body, corner_radius=8)
-            card.pack(fill='x', pady=4)
-            row = ctk_kit.CTkFrame(card, fg_color='transparent')
+            expanded = event in self._expanded_events
+            panel = ctk_kit.Collapsible(
+                self.events_body, collapsed_text='', expanded_text='',
+                expanded=expanded, button_height=48)
+            panel.pack(fill='x', pady=ROW_PAD_Y)
+            panel.button.pack_forget()
+            panel.detail_label.place_forget()
+            panel.body.configure(fg_color=COLORS['soft'])
+            self.event_bodies[event] = panel
+            row = ctk_kit.CTkFrame(panel.header, fg_color=ROW_SURFACE,
+                                   corner_radius=8)
             row.pack(fill='x', padx=12, pady=8)
-            ctk_kit.CTkLabel(row, text=label, font=FONT_BODY).pack(side='left')
-            enabled = ctk_kit.CTkSwitch(row, text='', font=FONT_BODY)
+            name = ctk_kit.CTkLabel(
+                row, text=label, font=FONT_BODY, anchor='w',
+                text_color=COLORS['text_primary'])
+            name.pack(side='left', fill='x', expand=True)
+            # FlatButton 按文字实测宽度建控件，ctk-kit 的字体缓存跨 Tk 解释器
+            # 不失效；这里用固定宽度的透明按钮，避免重建窗口后测量失败。
+            edit = ctk_kit.CTkButton(
+                row, text='收起消息 ▴' if expanded else '编辑消息 ▾',
+                command=lambda key=event: self.expand_event(key),
+                width=108, height=32, fg_color='transparent',
+                hover_color=COLORS['card_hover'],
+                text_color=COLORS['accent'], font=FONT_SMALL)
+            edit.pack(side='right')
+            enabled = ctk_kit.CTkSwitch(row, text='', font=FONT_BODY,
+                                        **SWITCH_STYLE)
             enabled.configure(command=lambda key=event, widget=enabled:
-                              self.model.set(('push', 'templates', key, 'enable'), bool(widget.get())))
-            enabled.pack(side='right')
+                              self.model.set(('push', 'templates', key, 'enable'),
+                                             bool(widget.get())))
+            enabled.pack(side='right', padx=(8, 12))
             self._event_switches[event] = enabled
             if not path_writable(self.model, (*path, 'enable')):
                 enabled.configure(state='disabled')
-            if isinstance(templates, dict) and isinstance(templates.get(event), dict) and templates[event].get('enable'):
+            if (isinstance(templates, Mapping) and isinstance(templates.get(event),
+                                                             Mapping)
+                    and templates[event].get('enable')):
                 enabled.select()
-            ctk_kit.CTkButton(row, text='编辑消息 ' + ('⌄' if event in self._expanded_events else '›'),
-                              font=FONT_BODY,
-                              command=lambda key=event: self.expand_event(key)).pack(side='right')
-            if event not in self._expanded_events:
-                continue
-            ctk_kit.CTkLabel(card, text='标题', font=FONT_BODY).pack(anchor='w', padx=12)
-            self._entry(card, (*path, 'title'))
-            ctk_kit.CTkLabel(card, text='正文', font=FONT_BODY).pack(anchor='w', padx=12)
-            text = ctk_kit.CTkTextbox(card, height=100, font=FONT_BODY, wrap='word')
-            text.pack(fill='x', padx=12, pady=4)
-            text.insert('1.0', str(self._safe_get((*path, 'content')) or ''))
-            text.bind('<KeyRelease>', lambda _, key=(*path, 'content'), widget=text:
-                      self._text_changed(key, widget))
-            text.bind('<FocusOut>', lambda _, key=(*path, 'content'), widget=text:
-                      self._text_changed(key, widget))
-            text.bind('<<Paste>>', lambda _, key=(*path, 'content'), widget=text:
-                      self.after_idle(lambda: self._text_changed(key, widget)))
-            self.fields[(*path, 'content')] = (None, text, 'multiline')
-            controls = ctk_kit.CTkFrame(card, fg_color='transparent')
-            controls.pack(fill='x', padx=12, pady=6)
-            names = self._variable_names(event)
-            options = {f'{VARIABLE_LABELS.get(name, name)} ({name})': name for name in names}
-            variable = ctk_kit.CTkOptionMenu(controls, values=list(options), font=FONT_BODY)
-            variable.pack(side='left', fill='x', expand=True)
-            self.variables[event] = (variable, options)
-            ctk_kit.CTkButton(controls, text='插入正文', font=FONT_BODY,
-                              command=lambda key=event: self.insert_variable(
-                                  key, self.variables[key][1][self.variables[key][0].get()])).pack(side='left')
-            button = ctk_kit.CTkButton(
-                controls, text='收起预览' if event in self._preview_events else '预览消息',
-                font=FONT_BODY, command=lambda key=event: self.preview_event(key))
-            button.pack(side='left')
-            self.preview_buttons[event] = button
-            preview = ctk_kit.CTkLabel(card, text=self._preview_text.get(event, ''), font=FONT_BODY,
-                                       justify='left', anchor='w')
-            self.preview_labels[event] = preview
-            if event in self._preview_events:
-                preview.pack(fill='x', padx=12, pady=8)
+            for widget in (name, row):
+                widget.bind('<Button-1>', lambda _event=None, key=event:
+                            self.expand_event(key))
+            if expanded:
+                self._render_event_body(panel.body, event, path)
+        self._sync_preview_states()
+
+    def _render_event_body(self, body, event, path):
+        """展开后依次绘制标题、正文、变量工具栏与预览区。"""
+        title_row = ctk_kit.CTkFrame(body, fg_color='transparent')
+        title_row.pack(fill='x', padx=28, pady=(10, 4))
+        self._text(title_row, '标题', width=64, anchor='w').pack(side='left')
+        self._entry(title_row, (*path, 'title'))
+        self._text(body, '正文', anchor='w').pack(fill='x', padx=28)
+        text = ctk_kit.CTkTextbox(body, height=110, font=FONT_BODY, wrap='word')
+        text.pack(fill='x', padx=28, pady=(4, 6))
+        text.insert('1.0', str(self._safe_get((*path, 'content')) or ''))
+        text.bind('<KeyRelease>', lambda _, key=(*path, 'content'), widget=text:
+                  self._text_changed(key, widget))
+        text.bind('<FocusOut>', lambda _, key=(*path, 'content'), widget=text:
+                  self._text_changed(key, widget))
+        text.bind('<<Paste>>', lambda _, key=(*path, 'content'), widget=text:
+                  self.after_idle(lambda: self._text_changed(key, widget)))
+        self.fields[(*path, 'content')] = (None, text, 'multiline')
+        controls = ctk_kit.CTkFrame(body, fg_color='transparent')
+        controls.pack(fill='x', padx=28, pady=(2, 8))
+        names = self._variable_names(event)
+        options = {'选择变量': None}
+        options.update({f'{VARIABLE_LABELS.get(name, name)} ({name})': name
+                        for name in names})
+        variable = self._option_menu(controls, list(options), width=220)
+        variable.set('选择变量')
+        variable.pack(side='left', fill='x', expand=True)
+        self.variables[event] = (variable, options)
+        ctk_kit.SecondaryButton(
+            controls, '插入正文', lambda key=event: self._insert_selected(key),
+            width=92, height=34, font=FONT_SMALL, border=True).pack(
+                side='left', padx=8)
+        button = ctk_kit.SecondaryButton(
+            controls, '收起预览' if event in self._preview_events else '预览消息',
+            lambda key=event: self.preview_event(key),
+            width=92, height=34, font=FONT_SMALL, border=True)
+        button.pack(side='left')
+        self.preview_buttons[event] = button
+        frame = ctk_kit.CTkFrame(body, corner_radius=8,
+                                 border_width=1,
+                                 border_color=COLORS['border_strong'],
+                                 fg_color=COLORS['input_bg'])
+        main = ctk_kit.CTkLabel(
+            frame, text=self._preview_text.get(event, ''), font=FONT_BODY,
+            justify='left', anchor='w', wraplength=520)
+        main.pack(fill='x', padx=12, pady=(8, 0))
+        warning = ctk_kit.CTkLabel(
+            frame, text=self._preview_warnings.get(event, ''), font=FONT_BODY,
+            justify='left', anchor='w', wraplength=520,
+            text_color=('#9A6700', '#F0B429'))
+        if self._preview_warnings.get(event):
+            warning.pack(fill='x', padx=12, pady=(4, 8))
+        else:
+            main.pack_configure(pady=(8, 8))
+        self.preview_labels[event] = main
+        self.preview_warning_labels[event] = warning
+        self.preview_frames[event] = frame
+        if event in self._preview_events:
+            frame.pack(fill='x', padx=28, pady=(0, 10))
+
+    def _insert_selected(self, event):
+        """变量下拉未选择时插入动作保持无副作用。"""
+        variable, options = self.variables[event]
+        name = options.get(variable.get())
+        if name:
+            self.insert_variable(event, name)
 
     def insert_variable(self, event, variable):
         """只在当前正文光标位置插入事件合法的占位符。"""
@@ -458,15 +649,28 @@ class Page(ctk_kit.CTkScrollableFrame):
         text.insert('insert', '{' + variable + '}')
         self._text_changed(('push', 'templates', event, 'content'), text)
 
+    def _sync_preview_states(self):
+        """刷新重建后恢复已展开预览的按钮文字与可见性。"""
+        for event in self._preview_events & self.preview_buttons.keys():
+            self.preview_buttons[event].configure(text='收起预览')
+            if event in self.preview_frames:
+                self.preview_frames[event].pack(fill='x', padx=28, pady=(0, 10))
+
+    def preview_text(self, event):
+        """返回当前预览的完整文本（正文与警告块）。"""
+        parts = [self._preview_text.get(event, ''),
+                 self._preview_warnings.get(event, '')]
+        return '\n'.join(part for part in parts if part)
+
     def preview_event(self, event):
         """预览当前草稿，不触发通知、截图或上传。"""
         if event not in self._expanded_events:
             self.expand_event(event)
-        preview = self.preview_labels[event]
+        frame = self.preview_frames[event]
         if event in self._preview_events:
             self._preview_events.remove(event)
             self.preview_buttons[event].configure(text='预览消息')
-            preview.pack_forget()
+            frame.pack_forget()
             return
         self._preview_events.add(event)
         self.preview_buttons[event].configure(text='收起预览')
@@ -475,7 +679,9 @@ class Page(ctk_kit.CTkScrollableFrame):
             title, content = preview_template(snapshot, event)
         except (ValueError, KeyError, TypeError):
             self._preview_text[event] = '示例预览：通知模板变量或格式无效'
+            self._preview_warnings.pop(event, None)
         else:
+            self._preview_text[event] = f'示例预览\n{title}\n{content}'
             try:
                 conditions = screenshot_conditions(snapshot, event)
             except (KeyError, TypeError, ValueError):
@@ -486,10 +692,15 @@ class Page(ctk_kit.CTkScrollableFrame):
                 detail = ('截图被阻止，请检查配置文件：capture_screenshot 为 false'
                           if capture is False else
                           '截图条件：' + ('满足' if all(conditions.values()) else '未满足'))
-            self._preview_text[event] = f'示例预览\n{title}\n{content}\n{detail}'
-        preview.configure(text=self._preview_text[event])
-        preview.pack(fill='x', padx=12, pady=8)
+            self._preview_warnings[event] = detail
+        self.preview_labels[event].configure(text=self._preview_text.get(event, ''))
+        warning = self.preview_warning_labels[event]
+        warning.configure(text=self._preview_warnings.get(event, ''))
+        if self._preview_warnings.get(event):
+            warning.pack(fill='x', padx=12, pady=(4, 8))
+        frame.pack(fill='x', padx=28, pady=(0, 10))
 
+    # ---------------------------------------------------------------- 刷新
     def refresh(self):
         """同步数字输入及列表，不覆盖未展示的 YAML 字段。"""
         if self.generation != self.model.document_generation:
@@ -497,6 +708,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._expanded_events.clear()
             self._preview_events.clear()
             self._preview_text.clear()
+            self._preview_warnings.clear()
             self.generation = self.model.document_generation
         self._refreshing = True
         try:

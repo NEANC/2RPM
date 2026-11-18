@@ -31,6 +31,12 @@ def test_notification_page_channels_and_preview_follow_draft(monkeypatch):
                             lambda *args, **kwargs: True)
         assert isinstance(page, ctk_kit.CTkScrollableFrame)
         assert not any(widget.winfo_class().startswith('T') for widget in descendants(page))
+        assert isinstance(page.notify_button, ctk_kit.CTkButton)
+        assert page.notify_button.cget('text') == '通知测试'
+        assert all(isinstance(row['panel'], ctk_kit.Collapsible)
+                   for row in page.channel_rows)
+        assert all(isinstance(row['delete'], ctk_kit.CTkButton)
+                   for row in page.channel_rows)
         original = model.get(page.channels_path)
         page.add_channel('telegram')
         assert len(model.get(page.channels_path)) == len(original) + 1
@@ -42,7 +48,9 @@ def test_notification_page_channels_and_preview_follow_draft(monkeypatch):
         assert model.on_list_edit.call_count == 2
         model.set(('push', 'templates', 'on_timeout', 'capture_screenshot'), False)
         page.preview_event('on_timeout')
-        assert '截图被阻止' in page.preview_labels['on_timeout'].cget('text')
+        assert isinstance(page.event_bodies['on_timeout'], ctk_kit.Collapsible)
+        assert '截图被阻止' in page.preview_text('on_timeout')
+        assert page.preview_warning_labels['on_timeout'].cget('text')
         app.notify.assert_not_called()
     finally:
         root.destroy()
@@ -208,13 +216,14 @@ def test_channel_outer_margin_click_toggles_real_row():
     try:
         page.expand_channel(0)
         root.update()
-        row = page.channel_rows[0]['header'].master
-        assert isinstance(row, ctk_kit.CTkFrame)
-        assert row.winfo_width() > row.winfo_children()[0].winfo_width()
-        row._canvas.event_generate('<Button-1>', x=2, y=2)
+        panel = page.channel_rows[0]['panel']
+        line = page.channel_rows[0]['header']
+        assert isinstance(panel.header, ctk_kit.CTkFrame)
+        assert panel.header.winfo_width() > line.winfo_width()
+        panel.header._canvas.event_generate('<Button-1>', x=2, y=2)
         assert page._expanded_channel is None
         root.update()
-        page.channel_rows[0]['header'].master._canvas.event_generate('<Button-1>', x=2, y=2)
+        page.channel_rows[0]['panel'].header._canvas.event_generate('<Button-1>', x=2, y=2)
         assert page._expanded_channel == 0
     finally:
         root.destroy()
@@ -352,7 +361,7 @@ def test_preview_tolerates_non_mapping_screenshot_section():
     try:
         page.expand_event('on_end')
         page.preview_event('on_end')
-        text = page.preview_labels['on_end'].cget('text')
+        text = page.preview_text('on_end')
         assert text.startswith('示例预览')
         assert '截图条件：待校验' in text
     finally:
