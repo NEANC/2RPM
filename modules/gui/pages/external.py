@@ -34,6 +34,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.restore_buttons = {}
         self.generation = self.model.document_generation
         self._refreshing = False
+        self._focus_request = 0
         ctk_kit.CTkLabel(self, text='外部程序设置', font=FONT_TITLE).pack(anchor='w', pady=(0, 12))
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
@@ -175,15 +176,22 @@ class Page(ctk_kit.CTkScrollableFrame):
         """导航到与诊断路径相符的输入。"""
         field = self.fields.get(tuple(path))
         if field:
+            self._focus_request += 1
+            request = self._focus_request
             widget = field[1]
             scroll_to_widget(self, widget)
             if self.winfo_toplevel().winfo_viewable():
                 widget.focus_force()
             else:
+                def focus_latest():
+                    """窗口恢复焦点稳定后只兑现最近一次导航。"""
+                    if request == self._focus_request:
+                        widget.focus_force()
+
                 def focus_on_map(event):
                     """窗口实际映射后再将焦点交给诊断字段。"""
                     if event.widget is self.winfo_toplevel():
                         self.winfo_toplevel().unbind('<Map>', binding)
-                        self.after_idle(widget.focus_force)
+                        self.after(120, focus_latest)
 
                 binding = self.winfo_toplevel().bind('<Map>', focus_on_map, add='+')

@@ -1216,8 +1216,57 @@ def test_external_diagnostic_focus_survives_unmapped_window(tmp_path):
         app.validate()
         root.deiconify()
         root.update()
+        root.after(250, root.quit)
+        root.mainloop()
         assert app.current_page == '外部程序设置'
         assert root.focus_get() is app.visible_pages['外部程序设置'].fields[path][1]._entry
+    finally:
+        root.destroy()
+
+
+def test_external_diagnostic_focus_after_ctk_app_restore(tmp_path):
+    """真实 ctk-kit 窗口恢复后诊断字段保持最终焦点。"""
+    root = ctk_kit.App(title='焦点测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        root.withdraw()
+        path = ('external', 'on_timeout')
+        app.focus_validation_issue('外部程序设置', SimpleNamespace(path=path))
+        root.deiconify()
+        root.update()
+        root.after(250, root.quit)
+        root.mainloop()
+        assert root.focus_get() is app.visible_pages['外部程序设置'].fields[path][1]._entry
+    finally:
+        root.destroy()
+
+
+def test_external_hidden_navigation_only_focuses_latest_target(tmp_path):
+    """隐藏期间连续导航不让旧目标短暂或最终夺回焦点。"""
+    root = ctk_kit.App(title='焦点测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('外部程序设置')
+        root.update()
+        root.withdraw()
+        page = app.visible_pages['外部程序设置']
+        old = page.fields[('external', 'on_end')][1]._entry
+        latest = page.fields[('external', 'on_timeout')][1]._entry
+        old_focus = []
+        old.bind('<FocusIn>', lambda event: old_focus.append(event.widget), add='+')
+        app.focus_validation_issue('外部程序设置',
+                                   SimpleNamespace(path=('external', 'on_end')))
+        app.focus_validation_issue('外部程序设置',
+                                   SimpleNamespace(path=('external', 'on_timeout')))
+        root.deiconify()
+        root.update()
+        root.after(250, root.quit)
+        root.mainloop()
+        assert root.focus_get() is latest
+        assert old_focus == []
     finally:
         root.destroy()
 
