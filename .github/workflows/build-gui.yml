@@ -20,7 +20,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="$GITHUB_REF_NAME"
           else
-            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null | sed 's/-g/-build./' || echo "v0.0.1-build.$(git rev-parse --short HEAD)")
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null) || tag="v0.0.1-build.$(git rev-parse --short HEAD)"
+            tag="${tag/-g/-build.}"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -115,7 +116,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             tag="$GITHUB_REF_NAME"
           else
-            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null | sed 's/-g/-build./' || echo "v0.0.1-build.$(git rev-parse --short HEAD)")
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null) || tag="v0.0.1-build.$(git rev-parse --short HEAD)"
+            tag="${tag/-g/-build.}"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

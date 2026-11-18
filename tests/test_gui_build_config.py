@@ -4,6 +4,9 @@
 """GUI 打包入口、构建身份与 CI 配对配置测试。"""
 
 import ast
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -224,6 +227,28 @@ def test_gui_workflow_is_manual_artifact_only():
         assert 'Get-FileHash "package/$name" -Algorithm SHA256' in text
         assert 'refs/tags/v*' in text
         assert 'git describe --tags --match "v*" HEAD' in text
+
+
+@pytest.mark.parametrize('job_name', ('build-nuitka', 'build-pyinstaller'))
+def test_gui_workflow_without_v_tag_uses_nonempty_fallback(tmp_path, job_name):
+    """两个 GUI job 在无匹配 v 标签时均写出非空的提交版本。"""
+    subprocess.run(['git', 'init', '-q'], cwd=tmp_path, check=True)
+    subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                    'commit', '-q', '--allow-empty', '-m', 'initial'],
+                   cwd=tmp_path, check=True)
+    short_sha = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'],
+                                        cwd=tmp_path, text=True).strip()
+    workflow = _workflow('build-gui.yml')
+    step = next(step for step in workflow['jobs'][job_name]['steps']
+                if step.get('id') == 'version')
+    output = tmp_path / 'github_output'
+    env = {**os.environ, 'GITHUB_REF': 'refs/heads/main',
+           'GITHUB_REF_NAME': 'main', 'GITHUB_OUTPUT': str(output)}
+    bash = Path(shutil.which('git')).resolve().parents[1] / 'bin' / 'bash.exe'
+    result = subprocess.run([str(bash), '-e', '-c', step['run']], cwd=tmp_path,
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert f'tag=v0.0.1-build.{short_sha}' in output.read_text(encoding='utf-8')
 
 
 @pytest.mark.parametrize('tool,command', (
