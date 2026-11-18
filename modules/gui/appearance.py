@@ -17,7 +17,12 @@ FONT_FAMILY = 'Microsoft YaHei UI'
 FONT_TITLE = (FONT_FAMILY, 30, 'bold')
 FONT_CARD_TITLE = (FONT_FAMILY, 18, 'bold')
 FONT_BODY = (FONT_FAMILY, 15)
+FONT_BODY_BOLD = (FONT_FAMILY, 15, 'bold')
 FONT_SMALL = (FONT_FAMILY, 10)
+# 原型按 2 倍尺寸映射到 900 逻辑像素宽窗口：10px 按钮文字 -> 15pt 加粗。
+FONT_BUTTON = (FONT_FAMILY, 15, 'bold')
+FONT_BRAND = (FONT_FAMILY, 21, 'bold')
+FONT_GROUP = (FONT_FAMILY, 17, 'bold')
 
 COLORS = {
     'panel_bg': ('#F3F3F3B3', '#1C1C1C99'),
@@ -35,6 +40,8 @@ COLORS = {
     'input_bg': ('#FFFFFF', '#242424'),
     'titlebar': ('#F3F3F3', '#1C1C1C'),
     'border_strong': ('#C9C9C9', '#4A4A4A'),
+    # 原型选中项为强调色 12.5% 叠加在侧栏底色上，而不是整块实心强调色。
+    'nav_active_bg': ('#D5E2ED', '#253238'),
 }
 CARD_STYLE = {
     'corner_radius': 10,

@@ -10,7 +10,7 @@ import ctk_kit
 
 from modules.config_document import new_document, read_document
 from modules.gui.home_summary import summary
-from tests.test_gui_pages import make_app
+from tests.gui_support import make_app
 
 
 NAMES = ('主页', '监视设置', '截图设置', '消息推送设置',
@@ -417,8 +417,8 @@ def test_home_summary_groups_and_nested_reasons_follow_draft(tmp_path, monkeypat
         assert set(home.groups) == {'通知事件', '事件截图', '外部程序'}
         assert all(not group.expanded for group in home.groups.values())
         before = home.groups['通知事件'].detail
-        assert '/4' in before
-        assert '/3' in home.groups['外部程序'].detail
+        assert '/ 4 个' in before
+        assert '/ 3 个' in home.groups['外部程序'].detail
         home.groups['事件截图'].expand()
         failed = next(row for row in home.screenshot_rows.values()
                       if row['reasons'] is not None)
@@ -446,7 +446,8 @@ def test_home_actions_and_paths_have_expected_layout_and_tooltips(tmp_path, monk
         assert home.save_button.master is home.summary_header
         assert home.save_as_button.master is home.summary_header
         assert home.save_button.pack_info()['side'] == 'right'
-        assert home.path_value.cget('text_color') == home.filename_value.cget('text_color')
+        assert home.path_value.cget('text_color') == '#1A1A1A'
+        assert home.filename_value.cget('text_color') == '#0067C0'
         assert home.path_tip.text == str(app.model.document.path)
         path = app.model.document.path
         assert home.path_tip.text == str(path)

@@ -7,7 +7,8 @@ import tkinter as tk
 from tkinter import ttk
 
 from modules.config import DEFAULT_VALUES
-from modules.gui.widgets import CollapsibleSection, ScrollForm
+from modules.gui.widgets import (CollapsibleSection, ScrollForm,
+                                 activate_and_focus)
 
 
 class Page(ScrollForm):
@@ -144,7 +145,7 @@ class Page(ScrollForm):
         """切换页面后在主线程展开并滚动到目标控件。"""
         self.winfo_toplevel().update_idletasks()
         self.widget_for_issue = widget
-        widget.focus_force()
+        activate_and_focus(widget)
         self.update_idletasks()
         if self.body.winfo_height():
             offset = 0

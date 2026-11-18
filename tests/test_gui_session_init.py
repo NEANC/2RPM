@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import pytest
 
 from modules.gui import app as app_module
-from tests.test_gui_pages import make_app
+from tests.gui_support import make_app
 
 
 def test_mkdtemp_failure_leaves_no_poll_callback(tmp_path, monkeypatch):

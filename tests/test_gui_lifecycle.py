@@ -164,7 +164,7 @@ def test_exit_confirms_worker_only_after_final_approval(tmp_path):
 
 def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
     """未完整输入或冲突阻止业务操作，保留草稿。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -183,7 +183,7 @@ def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
 
 def test_capture_selection_rejects_changed_document(tmp_path):
     """选择截图目标期间文档被重载时要求重新选择。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -203,7 +203,7 @@ def test_capture_selection_rejects_changed_document(tmp_path):
 
 def test_stale_host_selection_requires_reselect(tmp_path):
     """图床顺序或内容更新后不将旧序号送往 worker。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -226,7 +226,7 @@ def test_stale_host_selection_requires_reselect(tmp_path):
 
 def test_upload_confirmation_rejects_changed_host_selection(tmp_path, monkeypatch):
     """外发确认期间重排图床后，旧序号不得提交给 worker。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -255,7 +255,7 @@ def test_upload_confirmation_rejects_changed_host_selection(tmp_path, monkeypatc
 
 def test_notification_confirmation_rejects_changed_document(tmp_path, monkeypatch):
     """外发确认期间切换文档后，不发送旧身份通知。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -279,7 +279,7 @@ def test_notification_confirmation_rejects_changed_document(tmp_path, monkeypatc
 
 def test_upload_confirmation_reloads_disk_and_requires_reselect(tmp_path, monkeypatch):
     """确认期间磁盘图床变动时刷新列表而不按旧序号上传。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -311,7 +311,7 @@ def test_upload_confirmation_reloads_disk_and_requires_reselect(tmp_path, monkey
 
 def test_notification_confirmation_rejects_disk_change(tmp_path, monkeypatch):
     """确认期间外部编辑磁盘配置时拒绝发送旧通道快照。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -340,7 +340,7 @@ def test_notification_confirmation_rejects_disk_change(tmp_path, monkeypatch):
 
 def test_result_and_conflict_actions_bypass_flush(tmp_path):
     """查看与隐藏结果不强制补存尚不能表示的草稿。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -360,7 +360,7 @@ def test_result_and_conflict_actions_bypass_flush(tmp_path):
 
 def test_hidden_running_result_stays_hidden_when_finished(tmp_path):
     """用户主动隐藏运行窗后，终态仅更新结果，不擅自重新弹出。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -387,7 +387,7 @@ def test_hidden_running_result_stays_hidden_when_finished(tmp_path):
 
 def test_reopened_running_result_updates_on_completion(tmp_path):
     """运行中手动重新打开结果窗后，终态须更新当前可见窗口。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -414,7 +414,7 @@ def test_external_reload_keeps_running_result_with_old_version(tmp_path):
     """同路径自动重载后仍接纳原请求，并将结果标注为旧配置。"""
     from modules.config_document import read_document
     from modules.config_document import save_document
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -447,7 +447,7 @@ def test_external_reload_keeps_finished_result(tmp_path):
     """同路径重载不清除已结束测试的可重新打开结果。"""
     from modules.config_document import read_document
     from modules.config_document import save_document
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -471,7 +471,7 @@ def test_external_reload_keeps_finished_result(tmp_path):
 
 def test_notify_late_result_does_not_popup_on_new_document(tmp_path, monkeypatch):
     """新配置不能接收已切换文档的迟到通知错误窗。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     root = tk.Tk()
@@ -494,7 +494,7 @@ def test_notify_late_result_does_not_popup_on_new_document(tmp_path, monkeypatch
 
 def test_notify_has_no_cancel_or_reopen(tmp_path, monkeypatch):
     """无通道通知不发起测试；通知结果不保留持续弹窗。"""
-    from tests.test_gui_pages import make_app
+    from tests.gui_support import make_app
     import tkinter as tk
 
     monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *_, **__: False)

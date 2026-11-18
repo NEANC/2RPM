@@ -12,7 +12,8 @@ import ctk_kit
 
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
-from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
+from modules.gui.widgets import (STRUCTURE_HINT, activate_and_focus,
+                                 path_writable, scroll_to_widget)
 from modules.monitor_target import resolve_monitor_target
 
 
@@ -292,4 +293,4 @@ class Page(ctk_kit.CTkScrollableFrame):
             entry[1] if entry else self.section_for_issue.button)
         self.widget_for_issue = widget
         scroll_to_widget(self, widget)
-        widget.focus_force()
+        activate_and_focus(widget)

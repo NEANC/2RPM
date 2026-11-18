@@ -20,7 +20,8 @@ import ctk_kit
 from ctk_kit.styles import style_of
 
 from modules.gui.appearance import (AppearancePreferences, COLORS, apply_appearance,
-                                    FONT_BODY, load_preferences, preferences_path,
+                                    FONT_BODY, FONT_BODY_BOLD, FONT_BRAND, FONT_GROUP,
+                                    FONT_SMALL, load_preferences, preferences_path,
                                     save_preferences)
 from modules.gui.pages import (external, home, logs, monitor, notification_ctk,
                                screenshot, settings)
@@ -28,7 +29,6 @@ from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
-from modules.gui.window import MainWindow
 
 
 class _MonitorInfo(ctypes.Structure):
@@ -100,9 +100,10 @@ class App:
         self.appearance_path = preferences_path()
         self.appearance = load_preferences(self.appearance_path)
         if isinstance(root, ctk_kit.App):
-            apply_appearance(root, self.appearance)
+            # 系统标题栏窗口不能再使用 ctk-kit 的玻璃客户区：Acrylic/Mica 会让
+            # 整窗半透明并透出桌面。保存的材质偏好不变，仅本次渲染降级为纯色。
+            apply_appearance(root, self._effective_appearance(self.appearance))
         self.actions = {}
-        self.window = MainWindow(root, self.close) if isinstance(root, ctk_kit.App) else None
         self.footer = ctk_kit.CTkFrame(root, corner_radius=0, fg_color=COLORS['side'])
         self.path_label = ctk_kit.CTkLabel(self.footer, text='', font=FONT_BODY)
         self.status = ctk_kit.CTkLabel(self.footer, text='新建配置或打开现有 YAML', font=FONT_BODY)
@@ -115,8 +116,13 @@ class App:
             """在侧栏真实内容区域装入常驻页面。"""
             def create(parent):
                 """按页面约定注入共享模型或窗口对象。"""
-                container = ctk_kit.CTkFrame(parent, corner_radius=0)
+                container = ctk_kit.CTkFrame(parent, corner_radius=0,
+                                             fg_color=COLORS['side'])
                 page = module.Page(container, self.model if with_model else self)
+                try:
+                    page.configure(fg_color=COLORS['side'])
+                except Exception:
+                    pass
                 page.pack(fill='both', expand=True)
                 self.visible_pages[name] = page
                 if name == '消息推送设置':
@@ -131,30 +137,31 @@ class App:
                     '外部程序设置': build('外部程序设置', external),
                     '日志设置': build('日志设置', logs)}
         self.sidebar = ctk_kit.SidebarNav(root, title='2RPM', logo=False,
-                                           pages=builders, width=280, bottom_width=256,
+                                           pages=builders, width=246, bottom_width=206,
+                                           padding=(0, 0),
                                            bottom_pages={'设置': build('设置', settings)},
                                            initial='主页', on_change=self._page_changed)
-        if self.window is not None:
-            self.window.bind_brand(self.sidebar)
-        for button in (*self.sidebar._buttons.values(),
-                       *self.sidebar._bottom_buttons.values()):
-            button.configure(font=FONT_BODY)
+        self.sidebar.title_label.configure(font=FONT_BRAND)
+        self.sidebar.subtitle_label.configure(font=FONT_SMALL)
+        for button in self.sidebar._buttons.values():
+            button.configure(font=FONT_BODY, height=56, corner_radius=12,
+                             border_spacing=12)
+            button.pack_configure(padx=16, pady=4)
+        for button in self.sidebar._bottom_buttons.values():
+            button.configure(font=FONT_BODY, height=48, width=206)
+        self._apply_nav_styles()
         self.config_group_button = ctk_kit.CTkButton(
-            self.sidebar.nav_scroll, text='配置  ▾', height=38, anchor='w',
-            fg_color='transparent', font=FONT_BODY,
+            self.sidebar.nav_scroll, text='配置  ▾', height=44, anchor='w',
+            fg_color='transparent', font=FONT_GROUP,
             command=self._toggle_config_group)
-        self.config_group_button.pack(fill='x', padx=10, pady=3,
+        self.config_group_button.pack(fill='x', padx=16, pady=4,
                                       before=self.sidebar._buttons['监视设置'])
         self._paint_sidebar()
         self.sidebar.pack(fill='both', expand=True)
         self.sidebar.pack_propagate(False)
-        if self.window is not None:
-            self.window.titlebar.lift()
         self.sidebar._warm_enabled = False
-        self.footer.pack(fill='x', side='bottom')
-        self.status.pack(fill='x', padx=12)
-        self.path_label.pack(fill='x', padx=12)
         self.actions['处理冲突'].pack_forget()
+        # 底部状态栏已移除；状态与路径标签保留为隐藏对象，供内部状态与测试读取。
         self.controller.on_change = self.refresh
         self.controller.on_edit = self._refresh_save_status
         self.controller.on_saved = self._refresh_saved_home
@@ -182,10 +189,16 @@ class App:
             return
         previous = self.config_group_button
         for name in names:
-            buttons[name].pack(fill='x', padx=10, pady=3, after=previous)
+            buttons[name].pack(fill='x', padx=16, pady=4, after=previous)
             previous = buttons[name]
         self.config_group_button.configure(text='配置  ▾')
         self._paint_config_group()
+
+    def _effective_appearance(self, preferences):
+        """系统标题栏窗口只渲染纯色材质，保存的用户选择保持不变。"""
+        if not self.root.overrideredirect():
+            return type(preferences)(preferences.dark, 'none')
+        return preferences
 
     def _paint_config_group(self):
         """收起时以组标题表示当前配置页，展开或离开时恢复普通样式。"""
@@ -196,21 +209,51 @@ class App:
         if not active:
             self.config_group_button.configure(text_color=COLORS['text_secondary'])
 
+    @staticmethod
+    def _apply_nav_styles():
+        """侧栏选中项采用原型的浅色强调底，而不是整块实心强调色。"""
+        from ctk_kit import styles
+        styles.SHEETS['sidebar']['nav_active'].update({
+            'fg_color': COLORS['nav_active_bg'], 'bg_color': COLORS['side'],
+            'hover_color': COLORS['nav_active_bg'], 'text_color': COLORS['accent']})
+        styles.SHEETS['sidebar']['nav_normal'].update({
+            'fg_color': 'transparent', 'bg_color': COLORS['side'],
+            'hover_color': COLORS['card_hover'],
+            'text_color': COLORS['text_secondary']})
+
     def _paint_sidebar(self):
         """按当前明暗主题刷新侧栏表面与导航对比度。"""
         dark = ctk_kit.get_appearance_mode() == 'Dark'
-        side = '#1C1C1C' if dark else '#F3F3F3'
-        text = COLORS['text_primary'][int(dark)]
-        muted = COLORS['text_secondary'][int(dark)]
+        index = int(dark)
+        side = COLORS['side'][index]
+        text = COLORS['text_primary'][index]
+        muted = COLORS['text_secondary'][index]
+        self.sidebar.configure(fg_color=side)
         self.sidebar.sidebar.configure(fg_color=side, bg_color=side)
         for frame in (self.sidebar._head, self.sidebar._title_box,
                       self.sidebar.nav_scroll, self.sidebar.bottom):
-            frame.configure(bg_color=side)
+            frame.configure(fg_color=side, bg_color=side)
+        if self.sidebar.divider is not None:
+            self.sidebar.divider.configure(bg=COLORS['border_strong'][index])
+        nav_bar = getattr(self.sidebar.nav_scroll, '_scrollbar', None)
+        if nav_bar is not None:
+            nav_bar.configure(fg_color=side,
+                              button_color=COLORS['border_strong'][index],
+                              button_hover_color=COLORS['text_secondary'][index])
+        canvas = getattr(self.sidebar.nav_scroll, '_parent_canvas', None)
+        if canvas is not None:
+            canvas.configure(bg=side, highlightthickness=0)
         self.sidebar.title_label.configure(text_color=text, bg_color=side)
         self.sidebar.subtitle_label.configure(text_color=muted, bg_color=side)
         for name, button in self.sidebar._buttons.items():
-            button.configure(bg_color=side, text_color=(COLORS['accent_text'][int(dark)]
-                             if name == self.current_page else muted))
+            active = name == self.current_page
+            button.configure(
+                bg_color=side,
+                fg_color=COLORS['nav_active_bg'][index] if active else 'transparent',
+                hover_color=(COLORS['nav_active_bg'][index] if active
+                             else COLORS['card_hover'][index]),
+                text_color=COLORS['accent'][index] if active else muted,
+                font=FONT_BODY_BOLD if active else FONT_BODY)
         for button in self.sidebar._bottom_buttons.values():
             button.configure(bg_color=side, text_color=text)
         self.config_group_button.configure(bg_color=side, text_color=muted)
@@ -267,8 +310,10 @@ class App:
         except OSError:
             messagebox.showerror('外观设置', '无法保存外观偏好', parent=self.root)
         self.appearance = preferences
-        apply_appearance(self.root, preferences)
+        apply_appearance(self.root, self._effective_appearance(preferences))
         if hasattr(self, 'config_group_button'):
+            self._apply_nav_styles()
+            self.sidebar._paint_nav(self.current_page, force=True)
             self._paint_config_group()
             self._paint_sidebar()
         if '设置' in getattr(self, 'visible_pages', {}):
@@ -277,7 +322,7 @@ class App:
     @property
     def summary_text(self):
         """返回不包含凭证的检查页文字。"""
-        return self.visible_pages['主页'].summary.cget('text')
+        return self.visible_pages['主页'].summary_text
 
     @staticmethod
     def _plain_value(value):

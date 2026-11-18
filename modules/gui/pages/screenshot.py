@@ -16,8 +16,8 @@ from modules.config_rules import Issue
 from modules.gui.appearance import CARD_STYLE, COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
-from modules.gui.widgets import PRESAVE_HINT, scroll_to_widget
-from modules.gui.window import wrap_header
+from modules.gui.widgets import (PRESAVE_HINT, activate_and_focus,
+                                 scroll_to_widget)
 
 
 TARGETS = ('push', 'screenshot', 'targets')
@@ -41,14 +41,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.invalid_options = {}
         self.generation = self.model.document_generation
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', padx=(0, 132) if app.window else 0, pady=(0, 12))
+        header.pack(fill='x', pady=(0, 12))
         ctk_kit.CTkLabel(header, text='截图设置', font=FONT_TITLE).pack(side='left')
         ctk_kit.CTkButton(header, text='上传测试', command=app.upload, font=FONT_BODY).pack(
             side='right', padx=4)
         ctk_kit.CTkButton(header, text='截图测试', command=app.capture, font=FONT_BODY).pack(
             side='right', padx=4)
-        if app.window:
-            wrap_header(app.root, header, app.window.titlebar)
         targets_card = self._card('截图目标')
         self.add_target_button = ctk_kit.CTkButton(
             targets_card, text='添加目标', font=FONT_BODY, command=self.add_target)
@@ -607,7 +605,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             widget = self.days.number._entry
             scroll_to_widget(self, widget)
             self.widget_for_issue = widget
-            widget.focus_force()
+            activate_and_focus(widget)
             return
         rows = self.target_rows if tuple(path[:len(TARGETS)]) == TARGETS else self.host_rows
         if len(path) > 3 and isinstance(path[3], int):
@@ -616,4 +614,4 @@ class Page(ctk_kit.CTkScrollableFrame):
             if row_index is not None:
                 widget = rows[row_index]['number']
                 scroll_to_widget(self, widget)
-                widget.focus_force()
+                activate_and_focus(widget)

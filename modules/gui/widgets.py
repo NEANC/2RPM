@@ -35,6 +35,25 @@ def path_writable(model, path) -> bool:
     return isinstance(node, Mapping)
 
 
+def activate_and_focus(widget) -> None:
+    """激活主窗后再把焦点交给目标控件（系统标题栏窗口必需）。"""
+    window = widget.winfo_toplevel()
+    try:
+        if not window.winfo_viewable():
+            window.deiconify()
+            window.update()
+        window.attributes('-topmost', True)
+        window.lift()
+        window.focus_force()
+        window.update()
+        widget.focus_force()
+        window.update()
+        window.attributes('-topmost', False)
+    except Exception:
+        pass
+    widget.focus_force()
+
+
 def scroll_to_widget(container, widget) -> None:
     """把 ctk 可滚动容器滚动到目标控件所在位置。
 

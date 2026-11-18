@@ -11,8 +11,8 @@ import ctk_kit
 
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
-from modules.gui.window import wrap_header
+from modules.gui.widgets import (STRUCTURE_HINT, activate_and_focus,
+                                 path_writable, scroll_to_widget)
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -25,12 +25,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields = {}
         self._refreshing = False
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', padx=(0, 132) if app.window else 0, pady=(0, 12))
+        header.pack(fill='x', pady=(0, 12))
         ctk_kit.CTkLabel(header, text='日志设置', font=FONT_TITLE).pack(side='left')
         ctk_kit.CTkButton(header, text='打开日志目录', font=FONT_BODY,
                           command=app.open_logs).pack(side='right')
-        if app.window:
-            wrap_header(app.root, header, app.window.titlebar)
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('保存位置')

@@ -12,7 +12,7 @@ import pytest
 
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
-from tests.test_gui_pages import make_app
+from tests.gui_support import make_app
 
 
 def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
@@ -111,7 +111,7 @@ def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll
             root.geometry(f'{width}x420+100+100')
             root.update()
             assert abs(app.sidebar.sidebar.winfo_width() /
-                       root._get_window_scaling() - 280) <= 5
+                       root._get_window_scaling() - 246) <= 5
             for event, _title, _hint in EVENTS:
                 entry = page.fields[('external', event)][1]
                 page.update_idletasks()

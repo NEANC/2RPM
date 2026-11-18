@@ -10,7 +10,8 @@ import ctk_kit
 
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
-from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
+from modules.gui.widgets import (STRUCTURE_HINT, activate_and_focus,
+                                 path_writable, scroll_to_widget)
 
 
 EVENTS = (
@@ -182,7 +183,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             widget = field[1]
             scroll_to_widget(self, widget)
             if self.winfo_toplevel().winfo_viewable():
-                widget.focus_force()
+                activate_and_focus(widget)
             else:
                 def focus_latest():
                     """窗口恢复焦点稳定后只兑现最近一次导航。"""
@@ -190,7 +191,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                             and self.app.current_page == '外部程序设置'
                             and self.winfo_viewable()
                             and widget.winfo_viewable()):
-                        widget.focus_force()
+                        activate_and_focus(widget)
 
                 def focus_on_map(event):
                     """窗口实际映射后再将焦点交给诊断字段。"""

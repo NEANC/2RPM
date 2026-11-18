@@ -11,8 +11,8 @@ import ctk_kit
 
 from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.forms import event_variables, preview_template, provider_fields, screenshot_conditions
-from modules.gui.widgets import PRESAVE_HINT, STRUCTURE_HINT, path_writable, scroll_to_widget
-from modules.gui.window import wrap_header
+from modules.gui.widgets import (PRESAVE_HINT, STRUCTURE_HINT, activate_and_focus,
+                                 path_writable, scroll_to_widget)
 from modules.notification import _configured_screenshot_names
 
 
@@ -57,13 +57,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._preview_text = {}
         self.generation = self.model.document_generation
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', padx=(0, 132) if app.window else 0, pady=(0, 12))
+        header.pack(fill='x', pady=(0, 12))
         ctk_kit.CTkLabel(header, text='消息推送设置', font=FONT_TITLE).pack(side='left')
         self.notify_button = ctk_kit.CTkButton(header, text='通知测试', font=FONT_BODY,
                                                command=app.notify)
         self.notify_button.pack(side='right')
-        if app.window:
-            wrap_header(app.root, header, app.window.titlebar)
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
         card = self._card('推送通道')
@@ -524,7 +522,7 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _focus_widget(self, widget):
         """滚动到目标控件并聚焦，使诊断字段真实进入可见区域。"""
         scroll_to_widget(self, widget)
-        widget.focus_force()
+        activate_and_focus(widget)
 
     def focus_issue(self, path):
         """对诊断的通道或事件展开对应行并滚动聚焦字段。"""
