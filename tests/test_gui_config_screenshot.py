@@ -184,8 +184,8 @@ def test_screenshot_page_retention_and_credentials():
         root.destroy()
 
 
-def test_screenshot_order_arrows_respect_visible_boundaries():
-    """目标与图床排序箭头仅在有相邻可见行时启用。"""
+def test_screenshot_order_indices_use_native_spinner():
+    """目标与图床的两位序号由原生 Spinner 显示。"""
     from unittest.mock import Mock
     from modules.gui.pages.screenshot import Page as ScreenshotPage
 
@@ -200,17 +200,8 @@ def test_screenshot_order_arrows_respect_visible_boundaries():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         for rows in (page.target_rows, page.host_rows):
-            first, last = (row['number'].master for row in rows)
-            first_buttons = [child for child in first.winfo_children()
-                             if isinstance(child, ctk_kit.CTkFrame)][0].winfo_children()
-            last_buttons = [child for child in last.winfo_children()
-                            if isinstance(child, ctk_kit.CTkFrame)][0].winfo_children()
-            assert [button.cget('state') for button in first_buttons] == ['disabled', 'normal']
-            assert [button.cget('state') for button in last_buttons] == ['normal', 'disabled']
-            assert all(button.cget('font') == page.target_rows[0]['number'].cget('font')
-                       for button in first_buttons)
-            assert all(button.cget('text_color') == page.target_rows[0]['number'].cget('text_color')
-                       for button in first_buttons)
+            assert all(isinstance(row['number'], ctk_kit.Spinner) for row in rows)
+            assert [row['number'].get() for row in rows] == ['01', '02']
     finally:
         root.destroy()
 
@@ -259,8 +250,7 @@ def test_host_rows_show_only_provider_and_credentials_and_preserve_legacy_fields
         page = ScreenshotPage(root, Mock(model=model))
         assert page.host_rows[0]['provider'].get() == 'catbox'
         assert page.host_rows[0]['token'].get() == 'legacy'
-        assert all(set(row) == {'number', 'provider', 'token', 'up', 'down',
-                                'source_index'}
+        assert all(set(row) == {'number', 'provider', 'token', 'source_index'}
                    for row in page.host_rows)
         assert len(page.hosts_body.winfo_children()) == 2
         page.host_rows[0]['token'].delete(0, 'end')
@@ -988,7 +978,7 @@ def test_screenshot_page_visible_and_safe_operations(monkeypatch):
             '{screenshot_2} {screenshot_1}')
         assert model.before_list_edit.called
         assert model.on_list_edit.called
-        assert page.target_rows[0]['number'].cget('text') == '01'
+        assert page.target_rows[0]['number'].get() == '01'
         monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
                             lambda *a, **k: True)
         page.remove_target(0)

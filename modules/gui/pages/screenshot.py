@@ -168,29 +168,21 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.days.pack(side='left', padx=(12, 0))
 
     def _stepper(self, parent, action, number, total):
-        """绘制窄编号与上下箭头。"""
-        frame = ctk_kit.CTkFrame(parent, fg_color='transparent')
-        frame.number = ctk_kit.CTkLabel(frame, text=f'{number:02d}', font=FONT_SMALL,
-                                        text_color=COLORS['text_secondary'][self._dark],
-                                        width=38)
-        frame.number.pack(side='left')
-        arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
-        arrows.pack(side='left')
-        frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
-                                     font=FONT_SMALL,
-                                     fg_color='transparent', hover_color=HOVER_FAINT[self._dark],
-                                     text_color=COLORS['text_secondary'][self._dark],
-                                     state='disabled' if number == 1 else 'normal',
-                                     command=lambda: action(-1))
-        frame.up.pack()
-        frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
-                                       font=FONT_SMALL,
-                                       fg_color='transparent', hover_color=HOVER_FAINT[self._dark],
-                                       text_color=COLORS['text_secondary'][self._dark],
-                                       state='disabled' if number == total else 'normal',
-                                       command=lambda: action(1))
-        frame.down.pack()
-        return frame
+        """用原生 Spinner 显示两位序号，步进即移动整条配置。"""
+        values = [f'{index:02d}' for index in range(1, total + 1)]
+
+        def moved(value):
+            """把用户选中的序号换算成相对当前行的位移。"""
+            try:
+                offset = int(value) - number
+            except (TypeError, ValueError):
+                return
+            if offset:
+                action(offset)
+
+        return ctk_kit.Spinner(
+            parent, values=values, value=f'{number:02d}',
+            width=110, height=CONTROL_HEIGHT, command=moved)
 
     def _before(self):
         """优先补存现有编辑；仅补存失败时提示，重载提示保持不动。"""
@@ -498,9 +490,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             port_entry.pack(side='left')
         ctk_kit.DangerButton(row, '删除', lambda: self.remove_target(index)).pack(
             side='right')
-        self.target_rows.append({'number': stepper.number, 'entry': entry,
+        self.target_rows.append({'number': stepper, 'entry': entry,
                                  'port': port_entry, 'provider': chooser,
-                                 'up': stepper.up, 'down': stepper.down,
                                  'source_index': index if source_index is None else source_index})
 
     def _change_provider(self, index, value):
@@ -585,8 +576,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             side='left')
         token = self._entry(row, item.get('token', ''),
                             lambda value: self._set_item(HOSTS, index, 'token', value), secret=True)
-        self.host_rows.append({'number': stepper.number, 'provider': provider,
-                               'up': stepper.up, 'down': stepper.down,
+        self.host_rows.append({'number': stepper, 'provider': provider,
                                'token': token, 'source_index': source_index})
         ctk_kit.DangerButton(row, '删除', lambda: self.remove_host(index)).pack(
             side='right')
