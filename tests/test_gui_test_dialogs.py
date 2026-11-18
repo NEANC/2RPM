@@ -63,7 +63,7 @@ def test_upload_selection_requires_host_and_image():
         dialogs.submit_upload()
         callback.assert_not_called()
         dialogs.upload_host.set('02 catbox')
-        dialogs.upload_image.insert(0, 'C:/image.jpg')
+        dialogs.upload_image.set('C:/image.jpg')
         dialogs.submit_upload()
         callback.assert_called_once_with(1, 'C:/image.jpg')
     finally:

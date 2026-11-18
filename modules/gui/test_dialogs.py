@@ -3,7 +3,6 @@
 
 """ctk-kit 测试选择窗与可恢复的结果窗。"""
 
-from tkinter import filedialog
 
 import ctk_kit
 from PIL import Image
@@ -98,25 +97,16 @@ class TestDialogs:
             dropdown_font=FONT_BODY)
         self.upload_host.pack(fill='x', padx=24, pady=8)
         self.upload_host.set('请选择图床')
-        self.upload_image = ctk_kit.CTkEntry(window, placeholder_text='请选择 PNG/JPG/JPEG 图片',
-                                             font=FONT_BODY)
+        self.upload_image = ctk_kit.PathField(
+            window, mode='file', title='选择本地图片',
+            placeholder='请选择 PNG/JPG/JPEG 图片')
         self.upload_image.pack(fill='x', padx=24, pady=8)
-        ctk_kit.CTkButton(window, text='选择图片', command=self._choose_image,
-                          font=FONT_BODY).pack(anchor='e', padx=24)
         ctk_kit.CTkButton(window, text='取消', command=window.destroy,
                           font=FONT_BODY).pack(side='right', padx=16, pady=12)
         ctk_kit.CTkButton(window, text='开始测试', command=self.submit_upload,
                           font=FONT_BODY).pack(side='right', pady=12)
         window.grab_set()
         return window
-
-    def _choose_image(self):
-        """借助系统图片选择器填写完整本地路径。"""
-        selected = filedialog.askopenfilename(parent=self.selection_window,
-                                              filetypes=[('图片', '*.png *.jpg *.jpeg')])
-        if selected:
-            self.upload_image.delete(0, 'end')
-            self.upload_image.insert(0, selected)
 
     def submit_upload(self):
         """仅将此刻有效的图床索引和图片传给调用者。"""
