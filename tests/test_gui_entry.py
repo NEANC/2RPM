@@ -81,6 +81,45 @@ def test_gui_entry_failure_closes_runner_and_destroys_root(monkeypatch, failure)
         root.winfo_exists()
 
 
+def test_gui_entry_returns_after_app_closes_real_tk(monkeypatch, tmp_path):
+    """正常关闭由 App 销毁真实根窗口后入口仍返回成功。"""
+    from modules.gui.app import App
+    from modules.gui.test_runner import TestRunner
+
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_normal_close', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runners = []
+    roots = []
+
+    def make_runner(*args, **kwargs):
+        """记录入口创建的真实运行器。"""
+        runner = TestRunner(*args, **kwargs)
+        runners.append(runner)
+        return runner
+
+    def make_app(window, controller):
+        """使用真实 App 并从 Tk 事件循环触发正常关闭。"""
+        roots.append(window)
+        app = App(window, controller)
+        monkeypatch.setattr(window, 'mainloop', lambda: tk.Misc.mainloop(window))
+        window.after(0, app.close)
+        return app
+
+    monkeypatch.setattr('modules.gui.test_runner.TestRunner', make_runner)
+    monkeypatch.setattr('modules.gui.app.App', make_app)
+    monkeypatch.setattr('modules.gui.app.tempfile.tempdir', str(tmp_path))
+    monkeypatch.setattr('tkinter.messagebox.askyesno', lambda *args, **kwargs: True)
+    monkeypatch.setattr('tkinter.messagebox.askyesnocancel', lambda *args, **kwargs: False)
+
+    assert module.main([]) == 0
+    assert len(runners) == 1
+    assert runners[0]._closed
+    with pytest.raises(tk.TclError):
+        roots[0].winfo_exists()
+
+
 @pytest.mark.parametrize(('kind', 'detail'), [
     ('relocate', {'from': '旧目录', 'to': '新目录'}),
     ('overwrite', '配置.yaml'),

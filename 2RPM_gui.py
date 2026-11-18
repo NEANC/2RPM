@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     if args == ['--internal-gui-worker']:
         from modules.gui.worker import main as worker_main
         return worker_main()
-    from tkinter import filedialog, messagebox
+    from tkinter import TclError, filedialog, messagebox
 
     import ctk_kit
 
@@ -82,7 +82,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if runner is not None:
             runner.close()
-        if root.winfo_exists():
+        try:
+            exists = root.winfo_exists()
+        except TclError:
+            exists = False
+        if exists:
             root.destroy()
 
 
