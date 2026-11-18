@@ -289,8 +289,7 @@ def test_invalid_target_item_keeps_visible_row_actions(tmp_path, monkeypatch):
         page.refresh()
         assert len(page.target_rows) == 2
         entry = page.target_rows[1]['entry']
-        entry.delete(0, 'end')
-        entry.insert(0, 'B-edited')
+        entry.set('B-edited', notify=True)
         targets = app.model.get(path)
         assert targets[0] == 'bad'
         assert targets[1]['target'] == 'A'
@@ -376,8 +375,7 @@ def test_invalid_target_item_keeps_adb_port_editing(tmp_path):
                              {'provider': 'adb', 'target': '127.0.0.1:16384'}])
         page.refresh()
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '16385')
+        port.entry.set('16385')
         targets = app.model.get(path)
         assert targets[0] == 'bad'
         assert targets[1]['target'] == '127.0.0.1:16385'

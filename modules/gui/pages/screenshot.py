@@ -13,7 +13,8 @@ import win32gui
 
 from modules.config_rules import Issue
 
-from modules.gui.appearance import CARD_STYLE, COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
+from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
+                                    FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
 from modules.gui.widgets import (PRESAVE_HINT, activate_and_focus,
@@ -25,6 +26,22 @@ HOSTS = ('push', 'screenshot', 'image_host')
 RETENTION = ('push', 'screenshot', 'retention')
 PROVIDERS = ('wmimg', 'beeimg', 'beeimg_cn', 'superbed', 'boltp')
 DEFAULT_RETENTION_DAYS = 14
+# 与主页一致的页面、卡片比例；截图页三张卡片间距取 20，内容更紧凑。
+PAGE_PAD = 28
+CARD_GAP = 20
+CARD_PAD = 28
+CARD_RADIUS = 20
+CARD_BORDER = 2
+CARD_SURFACE = ('#FAFAFA', '#232323')
+CARD_BORDER_COLOR = ('#E1E1E1', '#3A3A3A')
+CONTROL_HEIGHT = 36
+PORT_WIDTH = 114
+PROVIDER_WIDTH = 140
+TARGET_PROVIDERS = (('window', '窗口'), ('adb', 'ADB'))
+PROVIDER_LABELS = dict(TARGET_PROVIDERS)
+HEADER_BUTTONS = dict(width=120, height=52, radius=12, font=FONT_BUTTON)
+CARD_BUTTONS = dict(width=132, height=40, radius=10, font=FONT_BUTTON)
+HOVER_FAINT = ('#EDEDED', '#2E2E2E')
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -35,88 +52,143 @@ class Page(ctk_kit.CTkScrollableFrame):
         super().__init__(parent, corner_radius=0)
         self.app = app
         self.model = app.model
+        self._dark = int(ctk_kit.get_appearance_mode() == 'Dark')
+        self.fields = {}
         self.target_rows = []
         self.host_rows = []
         self.widget_for_issue = None
         self.invalid_options = {}
         self.generation = self.model.document_generation
-        header = ctk_kit.CTkFrame(self, fg_color='transparent')
-        header.pack(fill='x', pady=(0, 12))
-        ctk_kit.CTkLabel(header, text='截图设置', font=FONT_TITLE).pack(side='left')
-        ctk_kit.CTkButton(header, text='上传测试', command=app.upload, font=FONT_BODY).pack(
-            side='right', padx=4)
-        ctk_kit.CTkButton(header, text='截图测试', command=app.capture, font=FONT_BODY).pack(
-            side='right', padx=4)
-        targets_card = self._card('截图目标')
-        self.add_target_button = ctk_kit.CTkButton(
-            targets_card, text='添加目标', font=FONT_BODY, command=self.add_target)
-        self.add_target_button.pack(anchor='e', padx=16, pady=4)
-        self.targets_body = ctk_kit.CTkFrame(targets_card, fg_color='transparent')
-        self.targets_body.pack(fill='x', padx=16, pady=(4, 8))
-        self.targets_hint = ctk_kit.CTkLabel(targets_card, text='', font=FONT_SMALL, anchor='w')
-        self.targets_hint.pack(fill='x', padx=16, pady=(0, 8))
-        hosts_card = self._card('图床')
-        self.add_host_button = ctk_kit.CTkButton(
-            hosts_card, text='添加图床', font=FONT_BODY, command=self.add_host)
-        self.add_host_button.pack(anchor='e', padx=16, pady=4)
-        self.hosts_body = ctk_kit.CTkFrame(hosts_card, fg_color='transparent')
-        self.hosts_body.pack(fill='x', padx=16, pady=(4, 8))
-        self.hosts_hint = ctk_kit.CTkLabel(hosts_card, text='', font=FONT_SMALL, anchor='w')
-        self.hosts_hint.pack(fill='x', padx=16, pady=(0, 8))
-        retention = self._card('本地保留')
-        self.cleanup = ctk_kit.CTkSwitch(retention, text='清理过期自动截图', font=FONT_BODY,
-                                         command=self._change_cleanup)
-        self.cleanup.pack(anchor='w', padx=16, pady=8)
-        ctk_kit.CTkLabel(retention, text='保留天数', font=FONT_BODY).pack(
-            anchor='w', padx=16)
-        self.days = self._days_stepper(retention)
-        self.days.pack(anchor='w', padx=16, pady=(6, 16))
+        self._build()
         self.refresh()
 
-    def _card(self, title):
-        """创建没有内部分割线的内容卡片。"""
-        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
-        card.pack(fill='x', pady=8, padx=4)
-        ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(
-            anchor='w', padx=16, pady=(12, 4))
+    # ---------------------------------------------------------------- 装配
+    def _build(self):
+        """页头之后按原型顺序放三张原生卡片。"""
+        header = ctk_kit.CTkFrame(self, fg_color='transparent')
+        header.pack(fill='x', padx=PAGE_PAD, pady=(PAGE_PAD, 0))
+        ctk_kit.CTkLabel(header, text='截图设置', font=FONT_TITLE,
+                         text_color=COLORS['text_primary'][self._dark]).pack(
+            side='left')
+        self.upload_button = self._primary(header, '上传测试', self.app.upload)
+        self.upload_button.pack(side='right')
+        self.capture_button = self._primary(header, '截图测试', self.app.capture)
+        self.capture_button.pack(side='right', padx=(0, 10))
+        self._build_targets_card()
+        self._build_hosts_card()
+        self._build_retention_card()
+        ctk_kit.CTkFrame(self, fg_color='transparent', height=CARD_GAP).pack(
+            fill='x')
+
+    def _card(self):
+        """原型比例的圆角内容卡，标题由调用方放进卡片首行。"""
+        card = ctk_kit.Card(self, corner_radius=CARD_RADIUS,
+                            border_width=CARD_BORDER,
+                            border_color=CARD_BORDER_COLOR[self._dark],
+                            fg_color=CARD_SURFACE[self._dark])
+        card.pack(fill='x', padx=PAGE_PAD, pady=(CARD_GAP, 0))
         return card
+
+    @staticmethod
+    def _primary(parent, text, command):
+        """页头与卡片标题栏统一使用强调色主按钮。"""
+        return ctk_kit.PrimaryButton(parent, text, command, **HEADER_BUTTONS)
+
+    @staticmethod
+    def _card_primary(parent, text, command):
+        """卡片标题右侧的强调色动作按钮。"""
+        return ctk_kit.PrimaryButton(parent, text, command, **CARD_BUTTONS)
+
+    def _head(self, card, title):
+        """卡片标题行：标题在左，动作按钮在右。"""
+        head = ctk_kit.CTkFrame(card, fg_color='transparent')
+        head.pack(fill='x', padx=CARD_PAD, pady=(CARD_PAD, 12))
+        ctk_kit.CTkLabel(head, text=title, font=FONT_CARD_TITLE,
+                         text_color=COLORS['text_primary'][self._dark]).pack(
+            side='left')
+        return head
+
+    def _text(self, parent, text, *, muted=False, **kwargs):
+        """正文标签；说明和字段名使用次要色。"""
+        return ctk_kit.CTkLabel(
+            parent, text=text, font=FONT_BODY,
+            text_color=COLORS['text_secondary' if muted else 'text_primary'][self._dark],
+            **kwargs)
+
+    def _build_targets_card(self):
+        """截图目标卡：编号步进、provider 与窗口／ADB 输入。"""
+        card = self._card()
+        head = self._head(card, '截图目标')
+        self.add_target_button = self._card_primary(
+            head, '＋ 添加目标', self.add_target)
+        self.add_target_button.pack(side='right')
+        self.targets_body = ctk_kit.CTkFrame(card, fg_color='transparent')
+        self.targets_body.pack(fill='x', padx=CARD_PAD)
+        self.targets_hint = self._text(card, '', muted=True, anchor='w')
+        self.targets_hint.pack(fill='x', padx=CARD_PAD, pady=(6, 0))
+
+    def _build_hosts_card(self):
+        """图床卡：序号、provider、遮挡凭证与危险删除。"""
+        card = self._card()
+        head = self._head(card, '图床')
+        self.add_host_button = self._card_primary(
+            head, '＋ 添加图床', self.add_host)
+        self.add_host_button.pack(side='right')
+        self.hosts_body = ctk_kit.CTkFrame(card, fg_color='transparent')
+        self.hosts_body.pack(fill='x', padx=CARD_PAD)
+        self.hosts_hint = self._text(card, '', muted=True, anchor='w')
+        self.hosts_hint.pack(fill='x', padx=CARD_PAD, pady=(6, 0))
+
+    def _build_retention_card(self):
+        """本地保留卡：清理开关与保留天数数字步进。"""
+        card = self._card()
+        self._head(card, '本地保留')
+        row = ctk_kit.CTkFrame(card, fg_color='transparent')
+        row.pack(fill='x', padx=CARD_PAD, pady=(0, 14))
+        self._text(row, '清理过期自动截图').pack(side='left')
+        self.cleanup = ctk_kit.Switch(row, command=self._change_cleanup)
+        self.cleanup.pack(side='right')
+        row = ctk_kit.CTkFrame(card, fg_color='transparent')
+        row.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
+        self._text(row, '保留天数').pack(side='left')
+        self.days_value = tk.StringVar(master=self,
+                                       value=str(DEFAULT_RETENTION_DAYS))
+        self._refreshing_days = False
+        self.days = ctk_kit.Spinner(
+            row, from_=1, to=10 ** 9, as_int=True, width=PORT_WIDTH,
+            height=CONTROL_HEIGHT,
+            command=lambda _value: self._days_stepped())
+        self.days.entry.configure(font=FONT_BODY,
+                                  textvariable=self.days_value)
+        self.days_value.set(str(DEFAULT_RETENTION_DAYS))
+        self.days_value.trace_add(
+            'write', lambda *_: self._edit_days(self.days_value.get()))
+        # 与旧接口兼容：本页以 ``days.number`` 暴露内部输入框。
+        self.days.number = self.days.entry
+        self.days.pack(side='left', padx=(12, 0))
 
     def _stepper(self, parent, action, number, total):
         """绘制窄编号与上下箭头。"""
         frame = ctk_kit.CTkFrame(parent, fg_color='transparent')
         frame.number = ctk_kit.CTkLabel(frame, text=f'{number:02d}', font=FONT_SMALL,
-                                        text_color=COLORS['text_secondary'], width=38)
+                                        text_color=COLORS['text_secondary'][self._dark],
+                                        width=38)
         frame.number.pack(side='left')
         arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
         arrows.pack(side='left')
         frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
-                                     font=FONT_SMALL, text_color=COLORS['text_secondary'],
+                                     font=FONT_SMALL,
+                                     fg_color='transparent', hover_color=HOVER_FAINT[self._dark],
+                                     text_color=COLORS['text_secondary'][self._dark],
                                      state='disabled' if number == 1 else 'normal',
                                      command=lambda: action(-1))
         frame.up.pack()
         frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
-                                       font=FONT_SMALL, text_color=COLORS['text_secondary'],
+                                       font=FONT_SMALL,
+                                       fg_color='transparent', hover_color=HOVER_FAINT[self._dark],
+                                       text_color=COLORS['text_secondary'][self._dark],
                                        state='disabled' if number == total else 'normal',
                                        command=lambda: action(1))
-        frame.down.pack()
-        return frame
-
-    def _days_stepper(self, parent):
-        """绘制与端口等宽等高的可编辑天数步进控件。"""
-        frame = ctk_kit.CTkFrame(parent, fg_color='transparent')
-        self.days_value = tk.StringVar(master=self)
-        self._refreshing_days = False
-        frame.number = ctk_kit.CTkEntry(frame, textvariable=self.days_value,
-                                        width=74, font=FONT_BODY)
-        frame.number.pack(side='left')
-        self.days_value.trace_add('write', lambda *_: self._edit_days(self.days_value.get()))
-        arrows = ctk_kit.CTkFrame(frame, fg_color='transparent')
-        arrows.pack(side='left')
-        frame.up = ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
-                                     command=lambda: self._change_days(1))
-        frame.up.pack()
-        frame.down = ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
-                                       command=lambda: self._change_days(-1))
         frame.down.pack()
         return frame
 
@@ -304,7 +376,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.model.set(path, items)
 
     def _entry(self, parent, value, callback, *, secret=False):
-        """建立粘贴也能触发回写的输入框。"""
+        """建立粘贴也能触发回写的单行输入框。"""
         value = '' if value is None else str(value)
         variable = tk.StringVar(master=self, value=value)
         entry = ctk_kit.CTkEntry(parent, textvariable=variable,
@@ -312,6 +384,26 @@ class Page(ctk_kit.CTkScrollableFrame):
         entry.pack(side='left', fill='x', expand=True, padx=4)
         variable.trace_add('write', lambda *_: callback(variable.get()))
         return entry
+
+    @staticmethod
+    def _bind_paste(box):
+        """右键或 Ctrl+V 粘贴不产生 KeyRelease，补一次写回。"""
+        for event in ('<<Paste>>', '<<Cut>>', '<<Clear>>'):
+            box._entry.bind(
+                event, lambda _event, current=box: current.after_idle(current.search),
+                add='+')
+
+    def _provider_field(self, parent, values, current, command):
+        """只可选不可键入的 provider 下拉；旧值与未知值仍按行显示。"""
+        choices = list(values)
+        if current not in choices:
+            choices.append(current)
+        field = ctk_kit.DropField(parent, values=choices, command=command,
+                                  height=CONTROL_HEIGHT)
+        field.configure(width=PROVIDER_WIDTH)
+        field.entry.set_readonly(True)
+        field.set(current)
+        return field
 
     def _item_at(self, path, display_index):
         """按可见行号读取原始映射项，结构异常时返回空映射。"""
@@ -353,61 +445,78 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper.pack(side='left')
         provider = item.get('provider', 'window')
         provider = provider if isinstance(provider, str) else '未知'
-        values = ['window', 'adb']
-        if provider not in values:
-            values.append(provider)
-        chooser = ctk_kit.CTkOptionMenu(row, values=values, width=95,
-                                         command=lambda value: self._change_provider(index, value))
-        chooser.set(provider)
-        chooser.pack(side='left', padx=4)
+        current = PROVIDER_LABELS.get(provider, provider)
+        chooser = self._provider_field(
+            row, [label for _value, label in TARGET_PROVIDERS], current,
+            lambda value: self._change_provider(index, value))
+        chooser.pack(side='left', padx=(8, 10))
         entry = None
         port_entry = None
         if provider == 'window':
-            field = ctk_kit.CTkFrame(row)
-            field.pack(side='left', fill='x', expand=True, padx=4)
-            ctk_kit.CTkButton(field, text='⌕', width=32, fg_color='transparent',
-                              command=lambda: self._choose_window(index)).pack(side='left')
-            entry = self._entry(field, item.get('target', ''),
-                                lambda value: self._set_item(TARGETS, index, 'target', value))
-            entry.configure(fg_color=field.cget('fg_color'), border_width=0)
-            ctk_kit.CTkButton(field, text='×', width=32, fg_color='transparent',
-                              command=lambda: entry.delete(0, 'end')).pack(side='left')
+            field = ctk_kit.CTkFrame(row, fg_color='transparent')
+            field.pack(side='left', fill='x', expand=True)
+            entry = ctk_kit.SearchBox(
+                field, placeholder='输入窗口标题或匹配表达式', delay=0,
+                command=lambda value: self._set_item(
+                    TARGETS, index, 'target', value))
+            entry._entry.configure(font=FONT_BODY)
+            self._bind_paste(entry)
+            entry.set('' if item.get('target') is None else str(item.get('target')))
+            entry.pack(side='left', fill='x', expand=True)
+            browse = ctk_kit.SecondaryButton(
+                field, '浏览', lambda: self._choose_window(index),
+                width=64, height=CONTROL_HEIGHT, font=FONT_BODY, border=True)
+            browse.pack(side='left', padx=(8, 0))
         else:
             address, port = self._split_adb(item.get('target', ''))
-            self._entry(row, address, lambda value: self._set_adb(
-                index, value, self._split_adb(self._item_at(TARGETS, index).get('target', ''))[1]))
-            port_frame = ctk_kit.CTkFrame(row, fg_color='transparent')
-            port_frame.pack(side='left', padx=4)
+            entry = self._entry(
+                row, address,
+                lambda value: self._set_adb(
+                    index, value,
+                    self._split_adb(
+                        self._item_at(TARGETS, index).get('target', ''))[1]))
+            entry.pack_configure(padx=(0, 8))
             port_path = (*TARGETS, source_index if source_index is not None else index, 'target')
-            port_value = tk.StringVar(master=self, value=self.model.raw_inputs.get(
-                port_path, '' if port is None else str(port)))
-            port_entry = ctk_kit.CTkEntry(port_frame, textvariable=port_value,
-                                          width=74, font=FONT_BODY, placeholder_text='端口')
+            raw = self.model.raw_inputs.get(
+                port_path, '' if port is None else str(port))
+            port_value = tk.StringVar(master=self, value='')
+            port_entry = ctk_kit.Spinner(
+                row, from_=1, to=65535, as_int=True, width=PORT_WIDTH,
+                height=CONTROL_HEIGHT)
+            port_entry.entry.configure(font=FONT_BODY, textvariable=port_value,
+                                       placeholder_text='端口')
+            port_value.set(raw)
+            port_value.trace_add(
+                'write', lambda *_: self._edit_port(index, port_value.get()))
+            # Spinner 原生的回车/失焦会把输入夹回范围；本页保留原文交给业务校验。
+            port_entry.entry.bind('<Return>', lambda _event: None)
+            port_entry.entry.bind('<FocusOut>', lambda _event: None)
+            # 箭头沿用「按现有目标端口步进」的业务语义。
+            port_entry._arrows.bind(
+                '<Button-1>',
+                lambda event, current=port_entry: self._step_port(index, current, event))
             port_entry.pack(side='left')
-            port_value.trace_add('write', lambda *_: self._edit_port(index, port_value.get()))
-            arrows = ctk_kit.CTkFrame(port_frame, fg_color='transparent')
-            arrows.pack(side='left')
-            ctk_kit.CTkButton(arrows, text='▲', width=24, height=18,
-                              command=lambda: self._change_port(index, 1)).pack()
-            ctk_kit.CTkButton(arrows, text='▼', width=24, height=18,
-                              command=lambda: self._change_port(index, -1)).pack()
-        ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
-                          fg_color=('#FDECEB', '#462426'),
-                          hover_color=('#F9D6D3', '#603034'),
-                          border_color=('#E8A49D', '#B74C50'), border_width=1,
-                          command=lambda: self.remove_target(index)).pack(side='right')
+        ctk_kit.DangerButton(row, '删除', lambda: self.remove_target(index)).pack(
+            side='right')
         self.target_rows.append({'number': stepper.number, 'entry': entry,
-                                 'port': port_entry,
+                                 'port': port_entry, 'provider': chooser,
+                                 'up': stepper.up, 'down': stepper.down,
                                  'source_index': index if source_index is None else source_index})
 
     def _change_provider(self, index, value):
         """主动修改来源时保留可编辑的原始目标。"""
+        value = {'窗口': 'window', 'ADB': 'adb'}.get(value, value)
         if self._item_at(TARGETS, index).get('provider') == 'adb' and value != 'adb':
             path = (*TARGETS, self._source_index(TARGETS, index), 'target')
             self.model.raw_inputs.pop(path, None)
             self.model.input_errors.pop(path, None)
         self._set_item(TARGETS, index, 'provider', value)
         self.refresh()
+
+    def _step_port(self, index, spinner, event):
+        """Spinner 的上下半格箭头按业务端口 +1／-1。"""
+        middle = max(1, spinner._arrows.winfo_height()) / 2
+        self._change_port(index, 1 if event.y < middle else -1)
 
     @staticmethod
     def _split_adb(target):
@@ -468,23 +577,19 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper.pack(side='left')
         current = item.get('provider', 'beeimg')
         current = current if isinstance(current, str) else '未知'
-        provider = ctk_kit.CTkOptionMenu(row, values=list(PROVIDERS) +
-                                         ([current] if current not in PROVIDERS else []),
-                                         width=120, command=lambda value: self._set_item(
-                                             HOSTS, index, 'provider', value))
-        provider.set(current)
-        provider.pack(side='left', padx=4)
-        ctk_kit.CTkLabel(row, text='API Key' if current == 'beeimg' else '凭证',
-                         font=FONT_BODY).pack(side='left')
+        provider = self._provider_field(
+            row, list(PROVIDERS), current,
+            lambda value: self._set_item(HOSTS, index, 'provider', value))
+        provider.pack(side='left', padx=(8, 10))
+        self._text(row, 'API Key' if current == 'beeimg' else '凭证').pack(
+            side='left')
         token = self._entry(row, item.get('token', ''),
                             lambda value: self._set_item(HOSTS, index, 'token', value), secret=True)
         self.host_rows.append({'number': stepper.number, 'provider': provider,
+                               'up': stepper.up, 'down': stepper.down,
                                'token': token, 'source_index': source_index})
-        ctk_kit.CTkButton(row, text='删除', width=60, text_color=('#B42318', '#FF7575'),
-                          fg_color=('#FDECEB', '#462426'),
-                          hover_color=('#F9D6D3', '#603034'),
-                          border_color=('#E8A49D', '#B74C50'), border_width=1,
-                          command=lambda: self.remove_host(index)).pack(side='right')
+        ctk_kit.DangerButton(row, '删除', lambda: self.remove_host(index)).pack(
+            side='right')
 
     def _retention(self):
         """返回保留节及是否可编辑；节缺失允许创建，结构异常禁用。"""
@@ -515,6 +620,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             days = DEFAULT_RETENTION_DAYS
         if days + delta > 0:
             self.days_value.set(str(days + delta))
+
+    def _days_stepped(self):
+        """Spinner 箭头或提交后由文本变量统一写回，无需重复处理。"""
+        return
 
     def _edit_days(self, raw):
         """仅把完整正整数写入配置，空输入保持为未完成草稿。"""
@@ -585,12 +694,12 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.cleanup.select()
         else:
             self.cleanup.deselect()
-        state = 'normal' if editable else 'disabled'
-        self.cleanup.configure(state=state)
-        self.days.up.configure(state=state)
-        self.days.down.configure(state=state)
+        if editable:
+            self.cleanup.enable()
+        else:
+            self.cleanup.disable()
+        self.days.set_readonly(not editable)
         days = retention.get('max_days') if editable else None
-        self.days.number.configure(state=state)
         self._refreshing_days = True
         try:
             self.days_value.set(self.model.raw_inputs.get(

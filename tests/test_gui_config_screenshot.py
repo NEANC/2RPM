@@ -8,12 +8,106 @@ from pathlib import Path
 
 import pytest
 import ctk_kit
+from ctk_kit import tokens
 
 from modules.config_document import new_document
+from modules.gui.appearance import FONT_TITLE
 from modules.gui.model import EditorModel
 from modules.gui.pages.monitor import Page
 from tests.gui_support import make_app
 from tests.gui_support import descendants as _descendants
+
+
+def _type_number(control, text):
+    """在原生 Spinner（或其内部输入框）里模拟键入并触发页面写回。"""
+    entry = control.entry if isinstance(control, ctk_kit.Spinner) else control
+    entry.set(text)
+
+
+def _number_text(control):
+    """读取原生 Spinner（或其内部输入框）里的真实文本。"""
+    entry = control.entry if isinstance(control, ctk_kit.Spinner) else control
+    return entry.get()
+
+
+def test_screenshot_header_and_cards_follow_prototype():
+    """页头两个主按钮与三张原生卡片使用原型尺寸和间距。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    try:
+        page = ScreenshotPage(root, Mock(model=EditorModel(new_document())))
+        header = page.winfo_children()[0]
+        title = header.winfo_children()[0]
+        assert title.cget('text') == '截图设置'
+        assert title.cget('font') == FONT_TITLE
+        buttons = {child.cget('text'): child
+                   for child in header.winfo_children()
+                   if isinstance(child, ctk_kit.CTkButton)}
+        assert set(buttons) == {'截图测试', '上传测试'}
+        for button in buttons.values():
+            assert button.cget('fg_color') == tokens.COLOR_ACCENT
+            assert button.cget('height') == 52
+            assert button.cget('width') == 120
+        scale = header._get_widget_scaling()
+        assert round(header.pack_info()['padx'] / scale) == 28
+        cards = [child for child in page.winfo_children()
+                 if isinstance(child, ctk_kit.Card)]
+        assert len(cards) == 3
+        for card in cards:
+            assert card.cget('corner_radius') == 20
+            assert card.cget('border_width') == 2
+            card_scale = card._get_widget_scaling()
+            assert round(card.pack_info()['padx'] / card_scale) == 28
+            assert tuple(round(value / card_scale)
+                         for value in card.pack_info()['pady']) == (20, 0)
+        for button in (page.add_target_button, page.add_host_button):
+            assert button.cget('fg_color') == tokens.COLOR_ACCENT
+        assert page.add_target_button.cget('text') == '＋ 添加目标'
+        assert page.add_host_button.cget('text') == '＋ 添加图床'
+    finally:
+        root.destroy()
+
+
+def test_screenshot_rows_use_native_controls():
+    """目标与图床行使用 DropField、SearchBox、Spinner 和危险删除按钮。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'window', 'target': '窗口 A'},
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    model.set(('push', 'screenshot', 'image_host'), [
+        {'provider': 'catbox', 'token': 'secret'}])
+    try:
+        page = ScreenshotPage(root, Mock(model=model))
+        window_row = page.target_rows[0]
+        assert isinstance(window_row['entry'], ctk_kit.SearchBox)
+        assert window_row['provider'].get() == '窗口'
+        assert window_row['provider']._values() == ['窗口', 'ADB']
+        adb_row = page.target_rows[1]
+        assert isinstance(adb_row['entry'], ctk_kit.CTkEntry)
+        assert isinstance(adb_row['port'], ctk_kit.Spinner)
+        assert adb_row['provider'].get() == 'ADB'
+        assert adb_row['port'].cget('width') == page.days.cget('width')
+        assert adb_row['port'].cget('height') == page.days.cget('height')
+        host_row = page.host_rows[0]
+        assert isinstance(host_row['provider'], ctk_kit.DropField)
+        assert host_row['provider'].get() == 'catbox'
+        assert 'catbox' in host_row['provider']._values()
+        assert host_row['token'].cget('show') == '●'
+        deletes = [child for row in page.targets_body.winfo_children() +
+                   page.hosts_body.winfo_children()
+                   for child in row.winfo_children()
+                   if isinstance(child, ctk_kit.CTkButton)
+                   and child.cget('text') == '删除']
+        assert len(deletes) == 3
+        assert all(button.cget('fg_color') != 'transparent' for button in deletes)
+    finally:
+        root.destroy()
 
 
 def test_screenshot_page_flushes_before_reorder_and_refuses_on_conflict():
@@ -122,7 +216,7 @@ def test_screenshot_order_arrows_respect_visible_boundaries():
 
 
 def test_screenshot_delete_buttons_have_red_surface_and_border():
-    """目标和图床删除入口都具有独立的红色系底色与边框。"""
+    """目标和图床删除入口都使用原生危险色按钮。"""
     from unittest.mock import Mock
     from modules.gui.pages.screenshot import Page as ScreenshotPage
 
@@ -138,8 +232,8 @@ def test_screenshot_delete_buttons_have_red_surface_and_border():
             row = body.winfo_children()[0]
             delete = next(child for child in row.winfo_children()
                           if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '删除')
-            assert delete.cget('border_width') == 1
             assert delete.cget('fg_color') != 'transparent'
+            assert delete.cget('text_color') != 'transparent'
             assert delete.cget('hover_color') != 'transparent'
     finally:
         root.destroy()
@@ -165,7 +259,8 @@ def test_host_rows_show_only_provider_and_credentials_and_preserve_legacy_fields
         page = ScreenshotPage(root, Mock(model=model))
         assert page.host_rows[0]['provider'].get() == 'catbox'
         assert page.host_rows[0]['token'].get() == 'legacy'
-        assert all(set(row) == {'number', 'provider', 'token', 'source_index'}
+        assert all(set(row) == {'number', 'provider', 'token', 'up', 'down',
+                                'source_index'}
                    for row in page.host_rows)
         assert len(page.hosts_body.winfo_children()) == 2
         page.host_rows[0]['token'].delete(0, 'end')
@@ -199,9 +294,8 @@ def test_retention_missing_or_scalar_is_safe():
         model.set(('push', 'screenshot', 'retention'), 'broken')
         page.refresh()
         assert page.days.number.get() == '--'
-        assert page.cleanup.cget('state') == 'disabled'
-        assert page.days.up.cget('state') == 'disabled'
-        assert page.days.down.cget('state') == 'disabled'
+        assert not page.cleanup.is_enabled()
+        assert page.days.is_readonly()
         page._change_cleanup()
         page._change_days(1)
         assert model.get(('push', 'screenshot', 'retention')) == 'broken'
@@ -221,18 +315,18 @@ def test_retention_days_matches_port_stepper_and_edits_value():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        days = page.days.number
-        assert isinstance(days, ctk_kit.CTkEntry)
+        days = page.days
+        assert isinstance(days, ctk_kit.Spinner)
+        assert isinstance(port, ctk_kit.Spinner)
         assert days.cget('width') == port.cget('width')
         assert days.cget('height') == port.cget('height')
-        assert days.get() == '14'
-        days.delete(0, 'end')
-        days.insert(0, '7')
+        assert days.number.get() == '14'
+        days.number.set('7')
         assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 7
-        page.days.up._command()
-        assert days.get() == '8'
-        page.days.down._command()
-        assert days.get() == '7'
+        days._step(1)
+        assert days.number.get() == '8'
+        days._step(-1)
+        assert days.number.get() == '7'
     finally:
         root.destroy()
 
@@ -284,8 +378,8 @@ def test_non_string_target_fields_are_shown_safely():
         page = ScreenshotPage(root, Mock(model=model))
         assert len(page.target_rows) == 2
         menus = [child for row in page.targets_body.winfo_children()
-                 for child in row.winfo_children()
-                 if isinstance(child, ctk_kit.CTkOptionMenu)]
+                 for child in _descendants(row)
+                 if isinstance(child, ctk_kit.DropField)]
         assert menus[1].get() == '未知'
         assert page.host_rows[0]['provider'].get() == '未知'
         assert model.get(('push', 'screenshot', 'targets')) == [
@@ -313,12 +407,10 @@ def test_scalar_screenshot_section_disables_controls_and_keeps_model(tmp_path):
         assert '结构无效' in page.hosts_hint.cget('text')
         assert page.add_target_button.cget('state') == 'disabled'
         assert page.add_host_button.cget('state') == 'disabled'
-        assert page.cleanup.cget('state') == 'disabled'
-        assert page.days.up.cget('state') == 'disabled'
-        assert page.days.down.cget('state') == 'disabled'
+        assert not page.cleanup.is_enabled()
+        assert page.days.is_readonly()
         page.cleanup.toggle()
-        page.days.up._command()
-        page.days.down._command()
+        page._change_days(1)
         assert model.snapshot() == before
         assert read_document(path).tree['push']['screenshot'] == 'bad'
     finally:
@@ -367,7 +459,7 @@ def test_window_target_selection_keeps_custom_out(monkeypatch):
 
 
 def test_window_target_search_and_clear_are_inside_one_field():
-    """窗口目标的放大镜、输入与清除入口位于同一个搜索框内。"""
+    """窗口目标使用原生 SearchBox，放大镜不可点且清除回写空目标。"""
     from unittest.mock import Mock
     from modules.gui.pages.screenshot import Page as ScreenshotPage
 
@@ -377,15 +469,15 @@ def test_window_target_search_and_clear_are_inside_one_field():
         {'provider': 'window', 'target': '原窗口'}])
     page = ScreenshotPage(root, Mock(model=model))
     try:
-        row = page.targets_body.winfo_children()[0]
         entry = page.target_rows[0]['entry']
-        field = entry.master
-        buttons = [child for child in field.winfo_children()
-                   if isinstance(child, ctk_kit.CTkButton)]
-        assert field.master is row
-        assert [button.cget('text') for button in buttons] == ['⌕', '×']
+        assert isinstance(entry, ctk_kit.SearchBox)
+        assert entry._icon.winfo_exists()
+        assert entry._clear.cget('text') == '×'
         assert entry.get() == '原窗口'
-        buttons[1]._command()
+        browse = next(child for child in entry.master.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton))
+        assert browse.cget('text') == '浏览'
+        entry.clear()
         assert entry.get() == ''
         assert model.get(('push', 'screenshot', 'targets', 0, 'target')) == ''
     finally:
@@ -404,12 +496,11 @@ def test_adb_port_entry_supports_new_address_and_edit():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '16385')
+        port.entry.set('16385')
         assert model.get(('push', 'screenshot', 'targets'))[0]['target'] == '127.0.0.1:16385'
         page._change_provider(0, 'window')
         page._change_provider(0, 'adb')
-        assert page.target_rows[0]['port'].get() == '16385'
+        assert page.target_rows[0]['port'].entry.get() == '16385'
     finally:
         root.destroy()
 
@@ -436,11 +527,9 @@ def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path
     second = ('push', 'screenshot', 'targets', 1, 'target')
     try:
         other_port = page.target_rows[1]['port']
-        other_port.delete(0, 'end')
-        other_port.insert(0, '-')
+        other_port.entry.set('-')
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '-')
+        port.entry.set('-')
         assert model.raw_inputs[first] == '-'
         assert first in model.input_errors
         assert model.raw_inputs[second] == '-'
@@ -453,15 +542,14 @@ def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path
         assert first not in model.input_errors
         assert model.raw_inputs[second] == '-'
         assert model.input_errors[second].path == second
-        assert page.target_rows[1]['port'].get() == '-'
+        assert page.target_rows[1]['port'].entry.get() == '-'
         assert not controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'] == [
             {'provider': 'adb', 'target': 'A:1000'},
             {'provider': 'adb', 'target': 'B:2000'}]
 
         other_port = page.target_rows[1]['port']
-        other_port.delete(0, 'end')
-        other_port.insert(0, '2001')
+        other_port.entry.set('2001')
         assert second not in model.input_errors
         assert controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'] == [
@@ -483,8 +571,7 @@ def test_adb_port_out_of_range_has_business_diagnostic(tmp_path):
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '70000')
+        port.entry.set('70000')
         path = ('push', 'screenshot', 'targets', 0, 'target')
         assert any(issue.path == path and issue.code == 'port_range'
                    for issue in model.validate(tmp_path).issues)
@@ -507,8 +594,7 @@ def test_adb_oversized_port_keeps_raw_and_validates_safely(tmp_path):
     raw = '9' * 4400
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, raw)
+        port.entry.set(raw)
         assert model.get_input(path) == raw
         assert model.get(path) == '127.0.0.1:16384'
         candidate = model.validate(tmp_path)
@@ -535,8 +621,7 @@ def test_adb_port_draft_follows_target_on_list_edit(monkeypatch, operation, expe
                         lambda *args, **kwargs: True)
     try:
         port = page.target_rows[1 if operation == 'remove' else 0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '-')
+        port.entry.set('-')
         if operation == 'move':
             page.move_target(0, 1)
         else:
@@ -545,7 +630,7 @@ def test_adb_port_draft_follows_target_on_list_edit(monkeypatch, operation, expe
         assert model.raw_inputs == {path: '-'}
         assert list(model.input_errors) == [path]
         assert model.input_errors[path].path == path
-        assert page.target_rows[expected_index]['port'].get() == '-'
+        assert page.target_rows[expected_index]['port'].entry.get() == '-'
     finally:
         root.destroy()
 
@@ -565,12 +650,11 @@ def test_removing_adb_target_discards_its_port_draft(monkeypatch):
                         lambda *args, **kwargs: True)
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '-')
+        port.entry.set('-')
         page.remove_target(0)
         assert model.raw_inputs == {}
         assert model.input_errors == {}
-        assert page.target_rows[0]['port'].get() == '2000'
+        assert page.target_rows[0]['port'].entry.get() == '2000'
     finally:
         root.destroy()
 
@@ -587,10 +671,8 @@ def test_adb_six_digit_port_edit_does_not_append_another_colon():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '100000')
-        port.delete(0, 'end')
-        port.insert(0, '100001')
+        port.entry.set('100000')
+        port.entry.set('100001')
         assert model.get(('push', 'screenshot', 'targets', 0, 'target')) == '127.0.0.1:100001'
     finally:
         root.destroy()
@@ -608,13 +690,12 @@ def test_adb_port_stepper_replaces_raw_input():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '00081')
+        port.entry.set('00081')
         page._change_port(0, 1)
         path = ('push', 'screenshot', 'targets', 0, 'target')
         assert model.get(path) == '127.0.0.1:82'
         assert model.get_input(path) == '82'
-        assert page.target_rows[0]['port'].get() == '82'
+        assert page.target_rows[0]['port'].entry.get() == '82'
     finally:
         root.destroy()
 
@@ -638,8 +719,7 @@ def test_adb_port_stepper_after_incomplete_input_clears_error_and_saves(tmp_path
     path = (*('push', 'screenshot', 'targets'), 0, 'target')
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, '-')
+        port.entry.set('-')
         assert path in controller.model.input_errors
         page._change_port(0, 1)
         assert controller.model.get(path) == '127.0.0.1:16385'
@@ -677,14 +757,13 @@ def test_screenshot_numeric_drafts_survive_refresh_and_block_save_and_test(
     controller.model.before_list_edit = coordinator.flush
     page = ScreenshotPage(root, Mock(model=controller.model))
     path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
-            else ('push', 'screenshot', 'retention', 'max_days'))
+    else ('push', 'screenshot', 'retention', 'max_days'))
     try:
         entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
-        entry.delete(0, 'end')
-        entry.insert(0, raw)
+        _type_number(entry, raw)
         page.refresh()
         entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
-        assert entry.get() == raw
+        assert _number_text(entry) == raw
         assert controller.model.get_input(path) == raw
         assert controller.model.get(path) == expected
         if raw == '-':
@@ -701,7 +780,7 @@ def test_screenshot_numeric_drafts_survive_refresh_and_block_save_and_test(
             assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == expected
             assert controller.model.get_input(path) == raw
             page.refresh()
-            assert page.target_rows[0]['port'].get() == raw
+            assert page.target_rows[0]['port'].entry.get() == raw
     finally:
         root.destroy()
 
@@ -728,9 +807,8 @@ def test_adb_oversized_numeric_port_stays_draft_and_blocks_save(tmp_path):
     root.report_callback_exception = lambda *args: callback_errors.append(args)
     try:
         port = page.target_rows[0]['port']
-        port.delete(0, 'end')
-        port.insert(0, raw)
-        assert port.get() == raw
+        port.entry.set(raw)
+        assert port.entry.get() == raw
         assert controller.model.get_input(path) == raw
         assert controller.model.get(path) == '127.0.0.1:16384'
         issue = controller.model.input_errors[path]
@@ -738,12 +816,11 @@ def test_adb_oversized_numeric_port_stays_draft_and_blocks_save(tmp_path):
         assert issue.code == 'invalid_port'
         assert '端口' in issue.message
         page.refresh()
-        assert page.target_rows[0]['port'].get() == raw
+        assert page.target_rows[0]['port'].entry.get() == raw
         assert not controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16384'
         assert not callback_errors
-        page.target_rows[0]['port'].delete(0, 'end')
-        page.target_rows[0]['port'].insert(0, '16385')
+        page.target_rows[0]['port'].entry.set('16385')
         assert path not in controller.model.input_errors
         assert controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == '127.0.0.1:16385'
@@ -776,17 +853,15 @@ def test_screenshot_numeric_drafts_recover_and_save_original_text(
             else ('push', 'screenshot', 'retention', 'max_days'))
     try:
         entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
-        entry.delete(0, 'end')
-        entry.insert(0, '-')
+        _type_number(entry, '-')
         assert path in controller.model.input_errors
-        entry.delete(0, 'end')
-        entry.insert(0, valid)
+        _type_number(entry, valid)
         assert path not in controller.model.input_errors
         assert controller.model.get(path) == expected
         assert controller.save()
         page.refresh()
         entry = page.target_rows[0]['port'] if field == 'port' else page.days.number
-        assert entry.get() == valid
+        assert _number_text(entry) == valid
         assert controller.model.get_input(path) == valid
         assert read_document(saved.path).tree['push']['screenshot'][
             'targets' if field == 'port' else 'retention'][
@@ -797,7 +872,7 @@ def test_screenshot_numeric_drafts_recover_and_save_original_text(
 
 
 def test_adb_port_stepper_stacks_arrows_and_updates_target():
-    """端口输入与右侧竖排箭头组成窄步进控件，箭头按方向修改目标。"""
+    """ADB 端口使用原生 Spinner，箭头按方向修改目标。"""
     from unittest.mock import Mock
     from modules.gui.pages.screenshot import Page as ScreenshotPage
 
@@ -808,21 +883,12 @@ def test_adb_port_stepper_stacks_arrows_and_updates_target():
     page = ScreenshotPage(root, Mock(model=model))
     try:
         port = page.target_rows[0]['port']
-        frame = port.master
-        arrows = [child for child in frame.winfo_children()
-                  if isinstance(child, ctk_kit.CTkFrame)
-                  and all(isinstance(button, ctk_kit.CTkButton)
-                          for button in child.winfo_children())]
-        assert port.cget('width') == 74
-        assert len(arrows) == 1
-        up, down = arrows[0].winfo_children()
-        assert up.cget('text') == '▲'
-        assert down.cget('text') == '▼'
-        assert up.pack_info()['side'] == 'top'
-        assert down.pack_info()['side'] == 'top'
-        up._command()
+        assert isinstance(port, ctk_kit.Spinner)
+        assert isinstance(port.entry, ctk_kit.CTkEntry)
+        assert port._arrows.winfo_exists()
+        page._change_port(0, 1)
         assert model.get(('push', 'screenshot', 'targets'))[0]['target'] == '127.0.0.1:16385'
-        down._command()
+        page._change_port(0, -1)
         assert model.get(('push', 'screenshot', 'targets'))[0]['target'] == '127.0.0.1:16384'
     finally:
         root.destroy()
@@ -887,7 +953,7 @@ def test_adb_oversized_numeric_serial_builds_page_without_changing_target(tmp_pa
     try:
         page = ScreenshotPage(root, Mock(model=controller.model))
         assert controller.model.get(('push', 'screenshot', 'targets', 0, 'target')) == serial
-        assert page.target_rows[0]['port'].get() == ''
+        assert page.target_rows[0]['port'].entry.get() == ''
         page.refresh()
         assert controller.save()
         assert read_document(saved.path).tree['push']['screenshot']['targets'][0]['target'] == serial

@@ -33,18 +33,18 @@ def test_screenshot_autosave_keeps_editing_widget_and_cursor(tmp_path):
         app.show_page('截图设置')
         entry = page.target_rows[-1]['entry']
         root.update()
-        entry.insert(0, '窗口标题')
+        entry.set('窗口标题', notify=True)
         entry._entry.icursor(2)
         entry._entry.focus_force()
         root.update_idletasks()
-        assert root.focus_get() == entry._entry
+        assert root.focus_get() == entry._entry._entry
 
         assert app.save_coordinator.flush()
 
         assert read_document(app.model.document.path).tree['push']['screenshot']['targets'][-1]['target'] == '窗口标题'
         assert entry.winfo_exists()
         assert page.target_rows[-1]['entry'] is entry
-        assert root.focus_get() == entry._entry
+        assert root.focus_get() == entry._entry._entry
         assert entry._entry.index('insert') == 2
     finally:
         root.destroy()
@@ -66,7 +66,7 @@ def test_same_document_save_updates_home_without_rebuilding_screenshot(tmp_path)
         assert '目标位置：已配置' in app.summary_text
 
         app.model.set(('monitor', 'target'), '')
-        entry.insert(0, '窗口标题')
+        entry.set('窗口标题', notify=True)
         entry._entry.icursor(2)
         entry._entry.focus_force()
         root.update_idletasks()
@@ -81,7 +81,7 @@ def test_same_document_save_updates_home_without_rebuilding_screenshot(tmp_path)
         assert not app.model.dirty
         assert page.target_rows[-1]['entry'] is entry
         assert entry.winfo_exists()
-        assert root.focus_get() == entry._entry
+        assert root.focus_get() == entry._entry._entry
         assert entry._entry.index('insert') == 2
     finally:
         root.destroy()
