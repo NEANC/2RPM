@@ -158,6 +158,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             row, from_=1, to=10 ** 9, as_int=True, width=PORT_WIDTH,
             height=CONTROL_HEIGHT,
             command=lambda _value: self._days_stepped())
+        self._keep_spinner_text(self.days)
         self.days.entry.configure(font=FONT_BODY,
                                   textvariable=self.days_value)
         self.days_value.set(str(DEFAULT_RETENTION_DAYS))
@@ -183,6 +184,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         return ctk_kit.Spinner(
             parent, values=values, value=f'{number:02d}',
             width=110, height=CONTROL_HEIGHT, command=moved)
+
+    @staticmethod
+    def _keep_spinner_text(spinner):
+        """移除原生数字提交绑定，由输入变量保留键入原文。"""
+        spinner.entry._entry.unbind('<Return>')
+        spinner.entry._entry.unbind('<FocusOut>')
 
     def _before(self):
         """优先补存现有编辑；仅补存失败时提示，重载提示保持不动。"""
@@ -475,14 +482,12 @@ class Page(ctk_kit.CTkScrollableFrame):
             port_entry = ctk_kit.Spinner(
                 row, from_=1, to=65535, as_int=True, width=PORT_WIDTH,
                 height=CONTROL_HEIGHT)
+            self._keep_spinner_text(port_entry)
             port_entry.entry.configure(font=FONT_BODY, textvariable=port_value,
                                        placeholder_text='端口')
             port_value.set(raw)
             port_value.trace_add(
                 'write', lambda *_: self._edit_port(index, port_value.get()))
-            # Spinner 原生的回车/失焦会把输入夹回范围；本页保留原文交给业务校验。
-            port_entry.entry.bind('<Return>', lambda _event: None)
-            port_entry.entry.bind('<FocusOut>', lambda _event: None)
             # 箭头沿用「按现有目标端口步进」的业务语义。
             port_entry._arrows.bind(
                 '<Button-1>',

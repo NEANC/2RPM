@@ -496,6 +496,47 @@ def test_adb_port_entry_supports_new_address_and_edit():
         root.destroy()
 
 
+@pytest.mark.parametrize('event', ['<Return>', '<FocusOut>'])
+@pytest.mark.parametrize('raw', ['', '-', '12x', '007', '70000'])
+def test_screenshot_numeric_entries_keep_raw_text_after_native_event(event, raw):
+    """真实内部输入框提交事件不钳制端口及保留天数原文。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    port_path = ('push', 'screenshot', 'targets', 0, 'target')
+    days_path = ('push', 'screenshot', 'retention', 'max_days')
+    try:
+        root.update()
+        for spinner, path, original in (
+                (page.target_rows[0]['port'], port_path, '127.0.0.1:16384'),
+                (page.days, days_path, 14)):
+            entry = spinner.entry._entry
+            entry.focus_force()
+            root.update()
+            entry.delete(0, 'end')
+            entry.insert(0, raw)
+            root.update()
+            before = model.get(path)
+            entry.event_generate(event)
+            root.update()
+            assert entry.get() == raw
+            assert model.get_input(path) == raw
+            if raw in ('', '-', '12x'):
+                assert model.get(path) == original == before
+                assert path in model.input_errors
+            else:
+                assert path not in model.input_errors
+                assert model.get(path) == (f'127.0.0.1:{int(raw)}'
+                                           if path == port_path else int(raw))
+    finally:
+        root.destroy()
+
+
 def test_switching_adb_to_window_discards_only_its_port_error_and_saves(tmp_path):
     """切换首个目标仅清理其端口错误，第二目标修正前不得保存。"""
     from unittest.mock import Mock
