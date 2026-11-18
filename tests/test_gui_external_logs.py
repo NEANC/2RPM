@@ -10,6 +10,7 @@ import ctk_kit
 
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
+from tests.test_gui_pages import make_app
 
 
 def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
@@ -62,6 +63,37 @@ def test_external_path_label_above_input_and_browse_before_input():
             label = labels[0]
             assert label.winfo_rooty() + label.winfo_height() <= entry.winfo_rooty()
             assert browse.winfo_rootx() < entry.winfo_rootx()
+    finally:
+        root.destroy()
+
+
+def test_external_path_row_keeps_four_controls_visible_at_600(tmp_path):
+    """固定侧栏下三个事件的浏览、输入、清空与恢复均留在内容区。"""
+    from modules.gui.pages.external import EVENTS
+
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.geometry('600x680+100+100')
+        assert app.show_page('外部程序设置')
+        root.update()
+        assert root._min_width == 600
+        assert abs(app.sidebar.sidebar.winfo_width() /
+                   root._get_window_scaling() - 280) <= 5
+        page = app.visible_pages['外部程序设置']
+        canvas = page._parent_canvas
+        left = canvas.winfo_rootx()
+        right = left + canvas.winfo_width()
+        for event, _title, _hint in EVENTS:
+            controls = (page.browse_buttons[event],
+                        page.fields[('external', event)][1],
+                        page.clear_buttons[event], page.restore_buttons[event])
+            assert all(control.winfo_ismapped() and
+                       control.winfo_width() > 1 and
+                       left <= control.winfo_rootx() and
+                       control.winfo_rootx() + control.winfo_width() <= right
+                       for control in controls), event
     finally:
         root.destroy()
 

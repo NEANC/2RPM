@@ -32,9 +32,7 @@ def wrap_header(root, header, titlebar):
         else:
             label.pack(side='left')
         for button in buttons:
-            button.pack(side='top' if narrow else 'right',
-                        anchor='e' if narrow else 'center',
-                        padx=4 if len(buttons) > 1 else 0)
+            button.pack(side='right', padx=4 if len(buttons) > 1 else 0)
 
     root.bind('<Configure>', resize, add='+')
 

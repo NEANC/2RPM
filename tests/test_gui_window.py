@@ -137,7 +137,7 @@ def test_real_app_controls_overlay_sidebar_without_displacing_it(tmp_path):
 
 
 def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
-    """切页不改变对应宽窄档位的侧栏宽度。"""
+    """配置组和底部设置不随切页或拉宽改变侧栏宽度。"""
     tk._default_root = None
     root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
                        remember_theme=False, notifier=False, backdrop='none')
@@ -149,8 +149,7 @@ def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
             for name in ('主页', '监视设置', '日志设置', '设置'):
                 assert app.show_page(name)
                 root.update()
-                assert abs(app.sidebar.sidebar.winfo_width() / scale -
-                           (80 if width < 700 else 280)) <= 5
+                assert round(app.sidebar.sidebar.winfo_width() / scale) == 280
                 assert app.sidebar._bottom_buttons['设置'].winfo_manager()
                 assert app.config_group_button.winfo_manager()
     finally:
@@ -309,7 +308,7 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
         root.geometry('420x680+100+100')
         root.update()
         _expose_for_pointer(root)
-        assert root._min_width == 320
+        assert root._min_width == 600
         assert root._min_height < 680
         minimum_width, minimum_height = root.tk.call('wm', 'minsize', root._w)
         assert root.winfo_width() >= minimum_width
@@ -328,87 +327,6 @@ def test_real_app_narrow_window_keeps_home_header_actions_visible(tmp_path):
             y = button.winfo_rooty() + button.winfo_height() // 2
             target = root.winfo_containing(x, y)
             assert target is button or str(target).startswith(str(button) + '.')
-    finally:
-        root.destroy()
-        tk._default_root = None
-
-
-def test_320_window_keeps_page_actions_inside_window(tmp_path):
-    """320 逻辑像素下四页操作按钮完整留在窗口内且中心可命中。"""
-    tk._default_root = None
-    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
-                       remember_theme=False, notifier=False, backdrop='none')
-    try:
-        app = make_app(root, tmp_path)
-        root.geometry('320x680+100+100')
-        root.update()
-        assert round(root.winfo_width() / root._get_window_scaling()) == 320
-        for name in ('主页', '截图设置', '消息推送设置', '日志设置'):
-            assert app.show_page(name)
-            root.update()
-            header = app.visible_pages[name].winfo_children()[0]
-            buttons = [child for child in header.winfo_children()
-                       if isinstance(child, ctk_kit.CTkButton)]
-            assert buttons, name
-            for button in buttons:
-                assert button.winfo_rootx() >= root.winfo_rootx(), name
-                assert button.winfo_rootx() + button.winfo_width() <= root.winfo_rootx() + root.winfo_width(), name
-                assert button.winfo_rooty() + button.winfo_height() <= root.winfo_rooty() + root.winfo_height(), name
-                x = button.winfo_rootx() + button.winfo_width() // 2
-                y = button.winfo_rooty() + button.winfo_height() // 2
-                target = root.winfo_containing(x, y)
-                assert target is button or str(target).startswith(str(button) + '.'), name
-    finally:
-        root.destroy()
-        tk._default_root = None
-
-
-def test_320_to_wide_restores_header_and_sidebar_geometry(tmp_path):
-    """窄窗返回宽窗后侧栏宽度和顶栏单行避让均恢复。"""
-    tk._default_root = None
-    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
-                       remember_theme=False, notifier=False, backdrop='none')
-    try:
-        app = make_app(root, tmp_path)
-        header = app.visible_pages['主页'].winfo_children()[0]
-        label = header.winfo_children()[0]
-        root.geometry('320x680+100+100')
-        root.update()
-        assert label.pack_info()['side'] == 'top'
-        root.geometry('900x680+100+100')
-        root.update()
-        assert label.pack_info()['side'] == 'left'
-        assert header.pack_info()['padx'] == (0, app.window.titlebar.winfo_width())
-        assert round(app.sidebar.sidebar.winfo_width() / root._get_window_scaling()) == 280
-    finally:
-        root.destroy()
-        tk._default_root = None
-
-
-@pytest.mark.parametrize('scale', (1.25, 1.5))
-def test_scaled_320_window_and_wide_geometry(tmp_path, monkeypatch, scale):
-    """不同窗口缩放时窄窗按钮不溢出，转宽后避让按物理尺寸计算。"""
-    monkeypatch.setattr(customtkinter.ScalingTracker, 'get_window_dpi_scaling',
-                        lambda _window: 1)
-    monkeypatch.setattr(customtkinter.ScalingTracker, 'widget_scaling', scale)
-    monkeypatch.setattr(customtkinter.ScalingTracker, 'window_scaling', scale)
-    tk._default_root = None
-    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
-                       remember_theme=False, notifier=False, backdrop='none')
-    try:
-        app = make_app(root, tmp_path)
-        root.geometry('320x680+100+100')
-        root.update()
-        assert round(root.winfo_width() / scale) == 320
-        header = app.visible_pages['主页'].winfo_children()[0]
-        for button in header.winfo_children()[1:]:
-            assert button.winfo_rootx() >= root.winfo_rootx()
-            assert button.winfo_rootx() + button.winfo_width() <= root.winfo_rootx() + root.winfo_width()
-        root.geometry('900x680+100+100')
-        root.update()
-        bar = app.window.titlebar
-        assert header.pack_info()['padx'] == (0, bar.winfo_width())
-        assert header.winfo_rootx() + header.winfo_width() <= bar.winfo_rootx()
     finally:
         root.destroy()
         tk._default_root = None

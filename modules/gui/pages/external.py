@@ -74,7 +74,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         """追踪粘贴与键盘输入，数字原文交由模型保存。"""
         variable = tk.StringVar(master=self)
         entry = ctk_kit.CTkEntry(parent, textvariable=variable, font=FONT_BODY,
-                                 width=75 if numeric else 250)
+                                 width=75)
         entry.pack(side='left', fill='x', expand=not numeric, padx=8)
         variable.trace_add('write', lambda *_: self._changed(path, variable, numeric))
         self.fields[path] = (variable, entry, 'int' if numeric else 'text')

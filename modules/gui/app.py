@@ -87,7 +87,7 @@ class App:
         available_width, available_height = work_area_size(root)
         width = min(900, available_width)
         root._gui_work_size = (width, min(680, work_area_height(root)))
-        root.minsize(min(320, width), 300)
+        root.minsize(min(600, width), 300)
         root.geometry(f'{width}x{root._gui_work_size[1]}')
         self.appearance_path = preferences_path()
         self.appearance = load_preferences(self.appearance_path)
@@ -138,16 +138,6 @@ class App:
                                       before=self.sidebar._buttons['监视设置'])
         self.sidebar.pack(fill='both', expand=True)
         self.sidebar.pack_propagate(False)
-        def resize_sidebar(event):
-            """窄窗收起侧栏宽度，为内容按钮保留可用空间。"""
-            if event.widget is not root:
-                return
-            width = 80 if root.winfo_width() / root._get_window_scaling() < 700 else 280
-            if self.sidebar._width != width:
-                self.sidebar._width = width
-                self.sidebar._sync_sidebar_width()
-
-        root.bind('<Configure>', resize_sidebar, add='+')
         if self.window is not None:
             self.window.titlebar.lift()
         self.sidebar._warm_enabled = False
