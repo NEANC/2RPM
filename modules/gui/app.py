@@ -148,7 +148,12 @@ class App:
                              border_spacing=12)
             button.pack_configure(padx=16, pady=4)
         for button in self.sidebar._bottom_buttons.values():
-            button.configure(font=FONT_BODY, height=48, width=206)
+            # 与导航项一致：无底色阴影、文字左对齐、占满侧栏宽度。
+            button.configure(font=FONT_BODY, height=56, anchor='w',
+                             border_width=0, fg_color='transparent',
+                             border_spacing=12,
+                             hover_color=COLORS['card_hover'])
+            button.pack_configure(fill='x', padx=4, pady=4)
         self._apply_nav_styles()
         self.config_group_button = ctk_kit.CTkButton(
             self.sidebar.nav_scroll, text='▼ 配置', height=44, anchor='w',
@@ -255,7 +260,10 @@ class App:
                 text_color=COLORS['accent'][index] if active else muted,
                 font=FONT_BODY_BOLD if active else FONT_BODY)
         for button in self.sidebar._bottom_buttons.values():
-            button.configure(bg_color=side, text_color=text)
+            button.configure(bg_color=side, text_color=text,
+                             fg_color='transparent',
+                             hover_color=COLORS['card_hover'][index],
+                             anchor='w')
         self.config_group_button.configure(bg_color=side, text_color=muted)
 
     def _page_changed(self, name):

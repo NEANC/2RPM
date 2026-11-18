@@ -185,6 +185,9 @@ def test_config_group_starts_open_and_keeps_five_pages_in_order(tmp_path, monkey
         group = app.config_group_button
         assert app.sidebar._nav_names == list(NAMES[:-1])
         assert list(app.sidebar._bottom_buttons) == ['设置']
+        bottom = app.sidebar._bottom_buttons['设置']
+        assert bottom.cget('anchor') == 'w'
+        assert bottom.cget('fg_color') == 'transparent'
         assert group.cget('text') == '▼ 配置'
         assert app.sidebar.nav_scroll.pack_slaves().index(group) < app.sidebar.nav_scroll.pack_slaves().index(buttons[names[0]])
         assert all(buttons[name].winfo_manager() == 'pack' for name in names)
