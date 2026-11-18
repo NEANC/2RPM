@@ -149,8 +149,13 @@ class App:
         self.controller.on_conflict = self._show_conflict
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.refresh()
-        self._after_id = root.after(50, self._poll)
-        self.session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-')).resolve()
+        session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-'))
+        try:
+            self.session_dir = session_dir.resolve()
+            self._after_id = root.after(50, self._poll)
+        except Exception:
+            shutil.rmtree(session_dir)
+            raise
 
     def _toggle_config_group(self):
         """切换五个配置导航入口的可见性，保持原有页面顺序。"""
