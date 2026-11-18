@@ -11,7 +11,7 @@ from tkinter import filedialog
 import ctk_kit
 
 from modules.config import DEFAULT_VALUES
-from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
+from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
 from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 from modules.monitor_target import resolve_monitor_target
 
@@ -56,7 +56,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                 ('轮询间隔', ('monitor', 'common', 'loop_interval')),
                 ('任务回溯（分钟）', ('monitor', 'watch', 'lookback_minutes'))):
             self._field(card, label, path, numeric=path[-1] == 'lookback_minutes')
-        self.section_for_issue = ctk_kit.CTkFrame(self, corner_radius=12)
+        self.section_for_issue = ctk_kit.CTkFrame(self, **CARD_STYLE)
         self.section_for_issue.pack(fill='x', pady=8)
         self.section_for_issue.button = ctk_kit.CTkButton(
             self.section_for_issue, text='高级字段请在 YAML 中编辑', font=FONT_BODY)
@@ -67,7 +67,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _card(self, title):
         """建立内容卡片。"""
-        card = ctk_kit.CTkFrame(self, corner_radius=12)
+        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
         card.pack(fill='x', pady=8)
         ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(
             anchor='w', padx=16, pady=(12, 4))

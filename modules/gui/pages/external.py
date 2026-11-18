@@ -9,7 +9,7 @@ from tkinter import filedialog
 import ctk_kit
 
 from modules.config import DEFAULT_VALUES
-from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
+from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
 
 
@@ -38,7 +38,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', pady=(0, 8))
         for event, title, hint in EVENTS:
-            card = ctk_kit.CTkFrame(self, corner_radius=12)
+            card = ctk_kit.CTkFrame(self, **CARD_STYLE)
             card.pack(fill='x', pady=8)
             ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
             ctk_kit.CTkLabel(card, text=hint, font=FONT_SMALL).pack(anchor='w', padx=16)

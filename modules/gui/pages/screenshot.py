@@ -13,7 +13,7 @@ import win32gui
 
 from modules.config_rules import Issue
 
-from modules.gui.appearance import COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
+from modules.gui.appearance import CARD_STYLE, COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
 from modules.gui.widgets import PRESAVE_HINT, scroll_to_widget
@@ -77,7 +77,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _card(self, title):
         """创建没有内部分割线的内容卡片。"""
-        card = ctk_kit.CTkFrame(self, corner_radius=12)
+        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
         card.pack(fill='x', pady=8, padx=4)
         ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(
             anchor='w', padx=16, pady=(12, 4))

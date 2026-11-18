@@ -7,8 +7,8 @@ from pathlib import Path
 
 import ctk_kit
 
-from modules.gui.appearance import (COLORS, FONT_BODY, FONT_CARD_TITLE,
-                                    FONT_TITLE, _composite)
+from modules.gui.appearance import (CARD_STYLE, COLORS, FONT_BODY,
+                                    FONT_CARD_TITLE, FONT_TITLE)
 from modules.gui.home_summary import summary
 from modules.gui.window import wrap_header
 
@@ -25,7 +25,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         ctk_kit.CTkLabel(header, text='主页', font=FONT_TITLE).pack(side='left')
         for label, action in (('打开配置', app.open), ('新建配置', app.new)):
             ctk_kit.PrimaryButton(header, text=label, command=action,
-                                  font=FONT_BODY).pack(side='right', padx=4)
+                                  font=FONT_BODY, width=124, height=56).pack(side='right', padx=4)
         if app.window:
             wrap_header(app.root, header, app.window.titlebar)
         card = self._card('配置摘要', header=True)
@@ -78,9 +78,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _card(self, title, *, header=False):
         """创建统一内圆角内容卡片。"""
-        card = ctk_kit.CTkFrame(self, corner_radius=10, border_width=1,
-                                border_color=(_composite(COLORS['border'][0], '#F3F3F3'),
-                                              _composite(COLORS['border'][1], '#1C1C1C')))
+        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
         card.pack(fill='x', pady=9, padx=4)
         title_parent = ctk_kit.CTkFrame(card, fg_color='transparent') if header else card
         if header:

@@ -5,7 +5,7 @@
 
 import ctk_kit
 
-from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
+from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
 
 
 class Page(ctk_kit.CTkFrame):
@@ -16,7 +16,7 @@ class Page(ctk_kit.CTkFrame):
         super().__init__(parent, corner_radius=0)
         self.app = app
         ctk_kit.CTkLabel(self, text='设置', font=FONT_TITLE).pack(anchor='w', pady=(0, 12))
-        card = ctk_kit.CTkFrame(self, corner_radius=12)
+        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
         card.pack(fill='x', pady=8)
         ctk_kit.CTkLabel(card, text='外观', font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=12)
         self.theme = ctk_kit.CTkSwitch(card, text='深色模式', font=FONT_BODY,

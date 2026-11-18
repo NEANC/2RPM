@@ -122,7 +122,7 @@ class App:
                     '外部程序设置': build('外部程序设置', external),
                     '日志设置': build('日志设置', logs)}
         self.sidebar = ctk_kit.SidebarNav(root, title='2RPM', logo=False,
-                                           pages=builders, width=160, bottom_width=136,
+                                           pages=builders, width=280, bottom_width=256,
                                            bottom_pages={'设置': build('设置', settings)},
                                            initial='主页', on_change=self._page_changed)
         if self.window is not None:

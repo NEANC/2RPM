@@ -14,9 +14,9 @@ import darkdetect
 
 
 FONT_FAMILY = 'Microsoft YaHei UI'
-FONT_TITLE = (FONT_FAMILY, 20, 'bold')
-FONT_CARD_TITLE = (FONT_FAMILY, 15, 'bold')
-FONT_BODY = (FONT_FAMILY, 13)
+FONT_TITLE = (FONT_FAMILY, 36, 'bold')
+FONT_CARD_TITLE = (FONT_FAMILY, 22, 'bold')
+FONT_BODY = (FONT_FAMILY, 18)
 FONT_SMALL = (FONT_FAMILY, 10)
 
 COLORS = {
@@ -29,6 +29,12 @@ COLORS = {
     'accent': ('#0067C0', '#60CDFF'),
     'accent_hover': ('#005A9E', '#87D9FF'),
     'accent_text': ('#FFFFFF', '#000000'),
+}
+CARD_STYLE = {
+    'corner_radius': 10,
+    'border_width': 1,
+    'border_color': ('#DADADA', '#333333'),
+    'fg_color': ('#FAFAFA', '#232323'),
 }
 PALETTE_KEYS = {
     'panel_bg': 'COLOR_BG', 'card_bg': 'COLOR_CARD',

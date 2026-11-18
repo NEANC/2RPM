@@ -5,7 +5,7 @@
 
 import ctk_kit
 
-from modules.gui.appearance import FONT_BODY
+from modules.gui.appearance import FONT_SMALL
 
 
 def wrap_header(root, header, titlebar):
@@ -54,17 +54,17 @@ class MainWindow:
         self.close_button = ctk_kit.CTkButton(
             self.titlebar, text='×', width=37, height=34, corner_radius=0,
             fg_color='transparent', hover_color=('#C42B1C', '#C42B1C'),
-            command=close, font=FONT_BODY)
+            command=close, font=FONT_SMALL)
         self.close_button.pack(side='right')
         self.maximize = ctk_kit.CTkButton(
             self.titlebar, text='□', width=37, height=34, corner_radius=0,
             fg_color='transparent',
-            command=self.toggle_maximize, font=FONT_BODY)
+            command=self.toggle_maximize, font=FONT_SMALL)
         self.maximize.pack(side='right')
         self.minimize = ctk_kit.CTkButton(
             self.titlebar, text='—', width=37, height=34, corner_radius=0,
             fg_color='transparent',
-            command=self.iconify, font=FONT_BODY)
+            command=self.iconify, font=FONT_SMALL)
         self.minimize.pack(side='right')
 
     def bind_brand(self, sidebar):

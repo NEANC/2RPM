@@ -9,7 +9,7 @@ from tkinter import messagebox
 
 import ctk_kit
 
-from modules.gui.appearance import FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
+from modules.gui.appearance import CARD_STYLE, FONT_BODY, FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE
 from modules.gui.forms import event_variables, preview_template, provider_fields, screenshot_conditions
 from modules.gui.widgets import PRESAVE_HINT, STRUCTURE_HINT, path_writable, scroll_to_widget
 from modules.gui.window import wrap_header
@@ -90,7 +90,7 @@ class Page(ctk_kit.CTkScrollableFrame):
 
     def _card(self, title):
         """绘制单组业务卡片。"""
-        card = ctk_kit.CTkFrame(self, corner_radius=12)
+        card = ctk_kit.CTkFrame(self, **CARD_STYLE)
         card.pack(fill='x', pady=8)
         ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(anchor='w', padx=16, pady=(12, 4))
         return card

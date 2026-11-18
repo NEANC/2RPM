@@ -146,7 +146,7 @@ def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
             for name in ('主页', '监视设置', '日志设置', '设置'):
                 assert app.show_page(name)
                 root.update()
-                assert round(app.sidebar.sidebar.winfo_width() / scale) == 160
+                assert round(app.sidebar.sidebar.winfo_width() / scale) == 280
                 assert app.sidebar._bottom_buttons['设置'].winfo_manager()
                 assert app.config_group_button.winfo_manager()
     finally:
@@ -170,7 +170,9 @@ def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path):
         for card in cards:
             assert card.cget('border_width') == 1
             assert card.cget('border_color') == ('#DADADA', '#333333')
+            assert card.cget('fg_color') == ('#FAFAFA', '#232323')
         assert FONT_BODY[0] == FONT_CARD_TITLE[0] == FONT_TITLE[0] == 'Microsoft YaHei UI'
+        assert (FONT_BODY[1], FONT_CARD_TITLE[1], FONT_TITLE[1]) == (18, 22, 36)
         assert FONT_CARD_TITLE[2] == FONT_TITLE[2] == 'bold'
         header = home.winfo_children()[0]
         actions = [child for child in header.winfo_children()
@@ -178,6 +180,34 @@ def test_home_card_uses_preview_border_type_and_primary_actions(tmp_path):
         assert {child.cget('text') for child in actions} == {'新建配置', '打开配置'}
         assert all(child.cget('fg_color') == '#0067C0'
                    for child in actions)
+        assert all(child.cget('width') == 124 and child.cget('height') == 56
+                   for child in actions)
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
+def test_other_pages_share_home_card_surface(tmp_path):
+    """跨页内容卡片与主页使用同一背景、边框和圆角。"""
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        for name in ('监视设置', '截图设置', '消息推送设置',
+                     '外部程序设置', '日志设置', '设置'):
+            assert app.show_page(name)
+            root.update()
+            page = app.visible_pages[name]
+            cards = [child for child in page.winfo_children()
+                     if isinstance(child, ctk_kit.CTkFrame)
+                     and child.cget('corner_radius') == 10]
+            assert cards, name
+            for card in cards:
+                assert card.cget('border_width') == 1, name
+                assert card.cget('border_color') == ('#DADADA', '#333333'), name
+                assert card.cget('fg_color') == ('#FAFAFA', '#232323'), name
     finally:
         root.destroy()
         tk._default_root = None
