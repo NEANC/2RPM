@@ -7,6 +7,7 @@ import tkinter as tk
 from unittest.mock import Mock
 
 import ctk_kit
+import pytest
 
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
@@ -67,35 +68,80 @@ def test_external_path_label_above_input_and_browse_before_input():
         root.destroy()
 
 
-def test_external_path_row_keeps_four_controls_visible_at_600(tmp_path):
-    """固定侧栏下三个事件的浏览、输入、清空与恢复均留在内容区。"""
+@pytest.mark.parametrize('scaling', [1.0, 1.75])
+def test_external_path_row_keeps_four_controls_reachable_after_resize_and_scroll(
+        tmp_path, monkeypatch, scaling):
+    """缩放和调整窗口后，三事件四控件可命中且只操作当前模型。"""
     from modules.gui.pages.external import EVENTS
 
+    tk._default_root = None
     root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
                        remember_theme=False, notifier=False, backdrop='none')
+    previous = float(root.tk.call('tk', 'scaling'))
     try:
+        root.withdraw()
+        root.tk.call('tk', 'scaling', scaling)
         app = make_app(root, tmp_path)
-        root.geometry('600x680+100+100')
+        root.deiconify()
         assert app.show_page('外部程序设置')
-        root.update()
         assert root._min_width == 600
-        assert abs(app.sidebar.sidebar.winfo_width() /
-                   root._get_window_scaling() - 280) <= 5
         page = app.visible_pages['外部程序设置']
         canvas = page._parent_canvas
-        left = canvas.winfo_rootx()
-        right = left + canvas.winfo_width()
-        for event, _title, _hint in EVENTS:
-            controls = (page.browse_buttons[event],
-                        page.fields[('external', event)][1],
-                        page.clear_buttons[event], page.restore_buttons[event])
-            assert all(control.winfo_ismapped() and
-                       control.winfo_width() > 1 and
-                       left <= control.winfo_rootx() and
-                       control.winfo_rootx() + control.winfo_width() <= right
-                       for control in controls), event
+        expected = {}
+        for width in (600, 900):
+            root.geometry(f'{width}x420+100+100')
+            root.update()
+            assert abs(app.sidebar.sidebar.winfo_width() /
+                       root._get_window_scaling() - 280) <= 5
+            for event, _title, _hint in EVENTS:
+                entry = page.fields[('external', event)][1]
+                page.update_idletasks()
+                offset = entry.winfo_y() + entry.master.winfo_y() + entry.master.master.winfo_y()
+                canvas.yview_moveto(max(0.0, (offset - canvas.winfo_height() // 2) /
+                                         page.winfo_height()))
+                root.update()
+                root.attributes('-topmost', True)
+                root.lift()
+                root.update()
+                root.attributes('-topmost', False)
+                controls = (page.browse_buttons[event], entry,
+                            page.clear_buttons[event], page.restore_buttons[event])
+                left = canvas.winfo_rootx()
+                right = left + canvas.winfo_width()
+                top = canvas.winfo_rooty()
+                bottom = top + canvas.winfo_height()
+                for control in controls:
+                    x = control.winfo_rootx() + control.winfo_width() // 2
+                    y = control.winfo_rooty() + control.winfo_height() // 2
+                    target = root.winfo_containing(x, y)
+                    assert (control.winfo_ismapped() and control.winfo_width() > 1
+                            and left <= control.winfo_rootx()
+                            and control.winfo_rootx() + control.winfo_width() <= right
+                            and top <= control.winfo_rooty()
+                            and control.winfo_rooty() + control.winfo_height() <= bottom
+                            and target is not None
+                            and (target is control or str(target).startswith(str(control) + '.'))), (
+                                scaling, width, event, control, target)
+                selected = f'C:/chosen/{event}.bat'
+                monkeypatch.setattr('modules.gui.pages.external.filedialog.askopenfilename',
+                                    lambda **_: selected)
+                page.browse_buttons[event].invoke()
+                assert app.model.get(('external', event)) == selected
+                page.clear_buttons[event].invoke()
+                assert app.model.get(('external', event)) == ''
+                assert page.restore_buttons[event].cget('state') == 'normal'
+                page.restore_buttons[event].invoke()
+                assert app.model.get(('external', event)) == selected
+                expected[event] = selected
+                assert all(app.model.get(('external', other)) == value
+                           for other, value in expected.items())
+        assert canvas.yview() != (0.0, 1.0)
     finally:
+        root.tk.call('tk', 'scaling', previous)
+        if 'app' in locals():
+            root.after_cancel(app._after_id)
         root.destroy()
+        tk._default_root = None
 
 
 def test_logs_page_edits_policy_and_does_not_create_directory(tmp_path, monkeypatch):
