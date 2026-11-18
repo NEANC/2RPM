@@ -148,13 +148,6 @@ jobs:
           (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ needs.meta.outputs.tag }}"' | Set-Content modules/version.py
           Select-String -Path modules/version.py -Pattern '^VERSION\b'
 
-      # 写入 GUI 构建身份，保持 GUI/CLI 工具与完整版本配对
-      - name: Write GUI build identity
-        shell: powershell
-        run: |
-          python -c "from pathlib import Path; from modules.gui.build_identity import write_identity; write_identity(Path('modules/gui/build_identity.py'), 'Nuitka', '${{ needs.meta.outputs.tag }}')"
-          Select-String -Path modules/gui/build_identity.py -Pattern '^BUILD_'
-
       # 检查当前 Python 版本
       - name: Check Python
         id: check_python
@@ -186,7 +179,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -r requirements-gui.txt
 
       # 安装 UPX 压缩工具
       - name: Setup UPX
@@ -298,45 +290,6 @@ jobs:
           path: build/2RPM.exe
           retention-days: 1
 
-      # 使用 Nuitka 编译 GUI（保留 Tk/Tcl 与 ctk-kit，不沿用 CLI 的排除项）
-      - name: Build GUI Executable with Nuitka
-        uses: Nuitka/Nuitka-Action@main
-        with:
-          nuitka-version: main
-          script-name: 2RPM_gui.py
-          mode: onefile
-          windows-console-mode: disable
-          output-filename: 2RPM-GUI.exe
-          assume-yes-for-downloads: true
-          include-plugin-directory: modules
-          output-dir: build-gui
-          include-package: psutil,ruamel.yaml,onepush,colorama,customtkinter,ctk_kit
-          no-deployment-flag: self-execution
-          msvc: latest
-          lto: "yes"
-          enable-plugins: tk-inter,upx
-          upx-binary: upx
-          onefile-no-compression: true
-          module-parameter: --include-windows-runtime-dlls=no
-          nofollow-import-to: |
-            *.tests
-            *.pytest
-            *.unittest
-            *.distutils
-            *.setuptools
-            *.pip
-            adbutils.__main__
-            adbutils.pidcat
-            apkutils
-
-      # 上传 Nuitka 编译的 GUI 可执行文件
-      - name: Upload Nuitka GUI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: 2RPM-GUI-Nuitka-${{ needs.meta.outputs.tag }}
-          path: build-gui/2RPM-GUI.exe
-          retention-days: 1
-
   # PyInstaller 构建
   build-pyinstaller:
     name: Build with PyInstaller
@@ -353,13 +306,6 @@ jobs:
         run: |
           (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ needs.meta.outputs.tag }}"' | Set-Content modules/version.py
           Select-String -Path modules/version.py -Pattern '^VERSION\b'
-
-      # 写入 GUI 构建身份，保持 GUI/CLI 工具与完整版本配对
-      - name: Write GUI build identity
-        shell: powershell
-        run: |
-          python -c "from pathlib import Path; from modules.gui.build_identity import write_identity; write_identity(Path('modules/gui/build_identity.py'), 'PyInstaller', '${{ needs.meta.outputs.tag }}')"
-          Select-String -Path modules/gui/build_identity.py -Pattern '^BUILD_'
 
       # 检查当前 Python 版本
       - name: Check Python
@@ -392,7 +338,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller
           pip install -r requirements.txt
-          pip install -r requirements-gui.txt
 
       # 安装 UPX 压缩工具
       - name: Setup UPX
@@ -402,15 +347,10 @@ jobs:
           Expand-Archive -Path upx.zip -DestinationPath .
           "$env:GITHUB_WORKSPACE\upx-4.2.4-win64" | Out-File -FilePath $env:GITHUB_PATH -Append
 
-      # 打包可执行文件（PyInstaller CLI）
+      # 打包可执行文件（PyInstaller）
       - name: Build with PyInstaller
         run: |
           pyinstaller 2RPM.spec --noconfirm
-
-      # 打包可执行文件（PyInstaller GUI）
-      - name: Build GUI with PyInstaller
-        run: |
-          pyinstaller 2RPM-GUI.spec --noconfirm
 
       # 上传 PyInstaller 打包的可执行文件
       - name: Upload PyInstaller artifact
@@ -418,14 +358,6 @@ jobs:
         with:
           name: 2RPM-PyInstaller-${{ needs.meta.outputs.tag }}
           path: dist/2RPM.exe
-          retention-days: 1
-
-      # 上传 PyInstaller 打包的 GUI 可执行文件
-      - name: Upload PyInstaller GUI artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: 2RPM-GUI-PyInstaller-${{ needs.meta.outputs.tag }}
-          path: dist/2RPM-GUI.exe
           retention-days: 1
 
   # 发布步骤
@@ -455,16 +387,6 @@ jobs:
           # 移动和重命名 PyInstaller 构建产物
           if [ -d "assets/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}" ]; then
             cp -f "assets/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}/2RPM.exe" "release/2RPM-PyInstaller-${{ needs.meta.outputs.tag }}.exe"
-          fi
-
-          # 移动和重命名 Nuitka GUI 构建产物
-          if [ -d "assets/2RPM-GUI-Nuitka-${{ needs.meta.outputs.tag }}" ]; then
-            cp -f "assets/2RPM-GUI-Nuitka-${{ needs.meta.outputs.tag }}/2RPM-GUI.exe" "release/2RPM-GUI-Nuitka-${{ needs.meta.outputs.tag }}.exe"
-          fi
-
-          # 移动和重命名 PyInstaller GUI 构建产物
-          if [ -d "assets/2RPM-GUI-PyInstaller-${{ needs.meta.outputs.tag }}" ]; then
-            cp -f "assets/2RPM-GUI-PyInstaller-${{ needs.meta.outputs.tag }}/2RPM-GUI.exe" "release/2RPM-GUI-PyInstaller-${{ needs.meta.outputs.tag }}.exe"
           fi
 
           # 复制变更日志

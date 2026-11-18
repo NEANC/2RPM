@@ -7,6 +7,7 @@ import ast
 from pathlib import Path
 
 import pytest
+from ruamel.yaml import YAML
 
 from modules.gui.build_identity import (release_names, write_identity)
 from modules.gui.launcher import CliLocationError, resolve_cli_command
@@ -162,22 +163,92 @@ def _imports_ui(node):
     return module.split('.')[0] in ('tkinter', 'ctk_kit', 'customtkinter')
 
 
-def test_ci_installs_gui_dependencies_and_builds_named_pair():
-    """CI 安装 GUI 依赖并分别校验 GUI/CLI 构建与配对命名。"""
-    build_workflow = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
-    unit_workflow = (ROOT / '.github/workflows/unit_test.yml').read_text(encoding='utf-8')
+def _workflow(name):
+    """分别解析独立工作流，防止跨文件拼接掩盖职责越界。"""
+    return YAML(typ='safe').load((ROOT / '.github/workflows' / name).read_text(
+        encoding='utf-8'))
 
-    assert 'pip install -r requirements-gui.txt' in unit_workflow
-    assert 'tests/test_gui_build_config.py' in unit_workflow
 
-    assert 'pip install -r requirements-gui.txt' in build_workflow
-    assert "pyinstaller 2RPM.spec" in build_workflow
-    assert "pyinstaller 2RPM-GUI.spec" in build_workflow
-    for tool, tag in (('Nuitka', '${{ needs.meta.outputs.tag }}'),
-                      ('PyInstaller', '${{ needs.meta.outputs.tag }}')):
-        assert f'2RPM-GUI-{tool}-{tag}' in build_workflow
-        assert f'2RPM-{tool}-{tag}' in build_workflow
-    assert "script-name: 2RPM_gui.py" in build_workflow
-    assert "write_identity(Path('modules/gui/build_identity.py'), 'Nuitka'" in build_workflow
-    assert "write_identity(Path('modules/gui/build_identity.py'), 'PyInstaller'" in build_workflow
+def _runs(job):
+    """返回一个 job 内全部命令和 action 参数供契约校验。"""
+    return '\n'.join(str(step.get('run', '')) + str(step.get('with', ''))
+                     for step in job['steps'])
 
+
+def test_cli_workflow_keeps_release_and_excludes_gui():
+    """CLI 的触发和发布维持独立，不能引入 GUI 依赖或阻断边。"""
+    workflow = _workflow('build.yml')
+    assert {'push', 'pull_request', 'workflow_dispatch'} <= set(workflow['on'])
+    assert {'meta', 'build-nuitka', 'build-pyinstaller', 'release'} == set(workflow['jobs'])
+    assert workflow['jobs']['release']['needs'] == [
+        'meta', 'build-nuitka', 'build-pyinstaller']
+    for job in workflow['jobs'].values():
+        assert 'requirements-gui.txt' not in _runs(job)
+        assert '2RPM-GUI' not in _runs(job)
+        assert 'build_identity' not in _runs(job)
+    assert 'pyinstaller 2RPM.spec' in _runs(workflow['jobs']['build-pyinstaller'])
+    assert 'softprops/action-gh-release@v3' in str(workflow['jobs']['release'])
+
+
+def test_gui_workflow_is_manual_artifact_only():
+    """GUI 只响应手动触发，不具备发布或跨工作流权限。"""
+    workflow = _workflow('build-gui.yml')
+    assert set(workflow['on']) == {'workflow_dispatch'}
+    assert workflow['permissions'] == {'contents': 'read'}
+    assert set(workflow['jobs']) == {'build-nuitka', 'build-pyinstaller'}
+    for job in workflow['jobs'].values():
+        assert job['runs-on'] == 'windows-latest'
+        assert 'needs' not in job
+        steps = job['steps']
+        assert any('actions/checkout@' in step.get('uses', '') for step in steps)
+        assert any('pip install -r requirements-gui.txt' in step.get('run', '')
+                   for step in steps)
+        assert sum('actions/upload-artifact@' in step.get('uses', '')
+                   for step in steps) == 1
+        text = _runs(job)
+        assert '2RPM.spec' not in text
+        assert 'release/CHANGELOG.md' not in text
+        assert 'download-artifact' not in str(job)
+        assert 'action-gh-release' not in str(job)
+        assert 'PIL._imagingtk' not in text
+        assert '*.tkinter' not in text
+        assert 'git rev-parse HEAD' in text
+        assert 'sha256' in text.lower()
+        assert 'release_names(' in text
+        assert 'write_identity(' in text
+        assert 'manifest.json' in text
+        assert "source_sha = '${{ steps.version.outputs.source_sha }}'" in text
+        assert 'build_tool_version = $toolVersion' in text
+        assert 'gui_file = $name' in text
+        assert "pairing_status = '未完成配对验收'" in text
+        assert 'Get-FileHash "package/$name" -Algorithm SHA256' in text
+        assert 'refs/tags/v*' in text
+        assert 'git describe --tags --match "v*" HEAD' in text
+
+
+@pytest.mark.parametrize('tool,command', (
+    ('Nuitka', '2RPM_gui.py'),
+    ('PyInstaller', 'pyinstaller 2RPM-GUI.spec --noconfirm'),
+))
+def test_gui_workflow_uploads_each_tool_with_manifest(tool, command):
+    """每种构建工具仅上传自己的可执行文件和可校验的身份清单。"""
+    workflow = _workflow('build-gui.yml')
+    job = workflow['jobs'][f'build-{tool.lower()}']
+    text = _runs(job)
+    assert command in text
+    assert f"'{tool}'" in text
+    uploads = [step for step in job['steps']
+               if step.get('uses', '').startswith('actions/upload-artifact@')]
+    assert len(uploads) == 1
+    assert f'2RPM-GUI-{tool}-' in uploads[0]['with']['name']
+    assert 'manifest.json' in uploads[0]['with']['path']
+    assert '.exe' in uploads[0]['with']['path']
+    assert uploads[0]['with']['if-no-files-found'] == 'error'
+
+
+def test_unit_workflow_checks_build_contract_without_gui_build_dependency():
+    """静态构建契约由原单元测试执行，不依赖 GUI 构建。"""
+    workflow = _workflow('unit_test.yml')
+    assert 'tests/test_gui_build_config.py' in _runs(workflow['jobs']['test'])
+    assert 'requirements-gui.txt' in _runs(workflow['jobs']['test'])
+    assert 'needs' not in workflow['jobs']['test']

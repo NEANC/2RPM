@@ -1,0 +1,174 @@
+name: Build GUI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-nuitka:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve source identity
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null | sed 's/-g/-build./' || echo "v0.0.1-build.$(git rev-parse --short HEAD)")
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: pip
+          cache-dependency-path: requirements-gui.txt
+      - name: Install GUI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-gui.txt
+      - name: Write GUI build identity
+        shell: pwsh
+        run: |
+          (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ steps.version.outputs.tag }}"' | Set-Content modules/version.py
+          python -c "from pathlib import Path; from modules.gui.build_identity import write_identity; write_identity(Path('modules/gui/build_identity.py'), 'Nuitka', '${{ steps.version.outputs.tag }}')"
+      - name: Setup UPX
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip' -OutFile upx.zip
+          Expand-Archive -Path upx.zip -DestinationPath .
+          "$env:GITHUB_WORKSPACE\upx-4.2.4-win64" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build GUI with Nuitka
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: 2RPM_gui.py
+          mode: onefile
+          windows-console-mode: disable
+          output-filename: 2RPM-GUI.exe
+          assume-yes-for-downloads: true
+          include-plugin-directory: modules
+          output-dir: build-gui
+          include-package: psutil,ruamel.yaml,onepush,colorama,customtkinter,ctk_kit
+          no-deployment-flag: self-execution
+          msvc: latest
+          lto: 'yes'
+          enable-plugins: tk-inter,upx
+          upx-binary: upx
+          onefile-no-compression: true
+          module-parameter: --include-windows-runtime-dlls=no
+          nofollow-import-to: |
+            *.tests
+            *.pytest
+            *.unittest
+            *.distutils
+            *.setuptools
+            *.pip
+            adbutils.__main__
+            adbutils.pidcat
+            apkutils
+      - name: Package GUI and manifest
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $name = python -c "from modules.gui.build_identity import release_names; print(release_names('Nuitka', '$tag')[0])"
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item build-gui/2RPM-GUI.exe "package/$name"
+          $toolVersion = (python -m nuitka --version)[0]
+          $manifest = [ordered]@{
+            source_sha = '${{ steps.version.outputs.source_sha }}'
+            version = $tag
+            build_tool = 'Nuitka'
+            build_tool_version = $toolVersion
+            gui_file = $name
+            sha256 = (Get-FileHash "package/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+            pairing_status = '未完成配对验收'
+          }
+          $manifest | ConvertTo-Json | Set-Content package/manifest.json -Encoding utf8
+      - name: Upload Nuitka GUI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: 2RPM-GUI-Nuitka-${{ steps.version.outputs.tag }}
+          path: |
+            package/*.exe
+            package/manifest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  build-pyinstaller:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve source identity
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag=$(git describe --tags --match "v*" HEAD 2>/dev/null | sed 's/-g/-build./' || echo "v0.0.1-build.$(git rev-parse --short HEAD)")
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: pip
+          cache-dependency-path: requirements-gui.txt
+      - name: Install GUI dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements-gui.txt
+      - name: Write GUI build identity
+        shell: pwsh
+        run: |
+          (Get-Content modules/version.py) -replace '^(VERSION = )".*"', '${1}"${{ steps.version.outputs.tag }}"' | Set-Content modules/version.py
+          python -c "from pathlib import Path; from modules.gui.build_identity import write_identity; write_identity(Path('modules/gui/build_identity.py'), 'PyInstaller', '${{ steps.version.outputs.tag }}')"
+      - name: Setup UPX
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/upx/upx/releases/download/v4.2.4/upx-4.2.4-win64.zip' -OutFile upx.zip
+          Expand-Archive -Path upx.zip -DestinationPath .
+          "$env:GITHUB_WORKSPACE\upx-4.2.4-win64" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build GUI with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller 2RPM-GUI.spec --noconfirm
+      - name: Package GUI and manifest
+        shell: pwsh
+        run: |
+          $tag = '${{ steps.version.outputs.tag }}'
+          $name = python -c "from modules.gui.build_identity import release_names; print(release_names('PyInstaller', '$tag')[0])"
+          New-Item -ItemType Directory -Path package | Out-Null
+          Copy-Item dist/2RPM-GUI.exe "package/$name"
+          $toolVersion = python -m PyInstaller --version
+          $manifest = [ordered]@{
+            source_sha = '${{ steps.version.outputs.source_sha }}'
+            version = $tag
+            build_tool = 'PyInstaller'
+            build_tool_version = $toolVersion
+            gui_file = $name
+            sha256 = (Get-FileHash "package/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+            pairing_status = '未完成配对验收'
+          }
+          $manifest | ConvertTo-Json | Set-Content package/manifest.json -Encoding utf8
+      - name: Upload PyInstaller GUI artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: 2RPM-GUI-PyInstaller-${{ steps.version.outputs.tag }}
+          path: |
+            package/*.exe
+            package/manifest.json
+          if-no-files-found: error
+          retention-days: 1
