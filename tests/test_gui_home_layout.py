@@ -106,6 +106,8 @@ def test_home_group_counts_use_prototype_format(tmp_path, monkeypatch):
             assert not group.expanded
             assert group.button.cget('font') == FONT_BODY
             assert group.button.cget('text_color') == COLORS['text_secondary'][0]
+            assert group.button.cget('anchor') == 'w'
+            assert group.button.cget('text').startswith('▶')
             assert group.detail.endswith(' 个')
         assert re.fullmatch(r'\d+ 个启用 / 4 个',
                             home.groups['通知事件'].detail)

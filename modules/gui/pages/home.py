@@ -12,6 +12,7 @@ import ctk_kit
 from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_TITLE)
 from modules.gui.home_summary import summary as build_summary
+from modules.gui.widgets import ChevronCollapsible
 
 # 原型单窗内容宽约 440 CSS 像素，桌面窗口为 900 逻辑像素，比例约 2 倍。
 PAGE_PAD = 28
@@ -109,7 +110,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.path_value = self.summary_rows['配置路径'][1]
         self.path_tip = ctk_kit.Tooltip(self.path_value, lambda: self._full_path)
         for title in ('通知事件', '事件截图', '外部程序'):
-            group = ctk_kit.Collapsible(card, collapsed_text=title,
+            group = ChevronCollapsible(card, collapsed_text=title,
                                         expanded_text=title, button_height=44)
             group.button.configure(font=FONT_BODY, height=44,
                                    text_color=COLORS['text_secondary'][self._dark],
@@ -232,7 +233,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             row = ctk_kit.CTkFrame(group.body, fg_color='transparent')
             row.pack(fill='x', padx=CARD_PAD, pady=4)
             if reasons and state == '条件未满足':
-                detail = ctk_kit.Collapsible(
+                detail = ChevronCollapsible(
                     row, collapsed_text=name, expanded_text=name,
                     expanded=name in expanded, detail=state, button_height=40)
                 detail.button.configure(

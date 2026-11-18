@@ -7,6 +7,8 @@ from collections.abc import Mapping
 import tkinter as tk
 from tkinter import ttk
 
+import ctk_kit
+
 
 STRUCTURE_HINT = '配置结构异常，请在 YAML 中修复'
 PRESAVE_HINT = '配置未保存，请先保存或处理冲突后再修改列表'
@@ -140,3 +142,17 @@ class ScrollForm(ttk.Frame):
         self.body.bind('<Configure>', lambda _: canvas.configure(scrollregion=canvas.bbox('all')))
         canvas.bind('<Configure>', lambda event: canvas.itemconfigure(window, width=event.width))
         self.canvas = canvas
+
+class ChevronCollapsible(ctk_kit.Collapsible):
+    """标题左对齐的折叠面板：收起显示 ▶，展开显示 ▼。"""
+
+    def __init__(self, master, **kwargs):
+        """交给原生 Collapsible 建面板，再把标题行改为左对齐。"""
+        super().__init__(master, **kwargs)
+        self.button.configure(anchor='w')
+
+    def _sync_text(self):
+        """按展开状态重画方向标识与标题，覆盖库内 ▲/▼ 的默认方向。"""
+        arrow = '▼' if self._expanded else '▶'
+        label = self._expanded_text if self._expanded else self._collapsed_text
+        self.button.configure(text=f'{arrow}    {label}')

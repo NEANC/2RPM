@@ -151,7 +151,7 @@ class App:
             button.configure(font=FONT_BODY, height=48, width=206)
         self._apply_nav_styles()
         self.config_group_button = ctk_kit.CTkButton(
-            self.sidebar.nav_scroll, text='配置  ▾', height=44, anchor='w',
+            self.sidebar.nav_scroll, text='▼ 配置', height=44, anchor='w',
             fg_color='transparent', font=FONT_GROUP,
             command=self._toggle_config_group)
         self.config_group_button.pack(fill='x', padx=16, pady=4,
@@ -184,14 +184,14 @@ class App:
         if buttons[names[0]].winfo_manager():
             for name in names:
                 buttons[name].pack_forget()
-            self.config_group_button.configure(text='配置  ▸')
+            self.config_group_button.configure(text='▶ 配置')
             self._paint_config_group()
             return
         previous = self.config_group_button
         for name in names:
             buttons[name].pack(fill='x', padx=16, pady=4, after=previous)
             previous = buttons[name]
-        self.config_group_button.configure(text='配置  ▾')
+        self.config_group_button.configure(text='▼ 配置')
         self._paint_config_group()
 
     def _effective_appearance(self, preferences):
