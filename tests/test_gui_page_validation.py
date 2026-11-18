@@ -453,7 +453,16 @@ def test_validation_routes_every_registered_field_to_its_widget(tmp_path):
             if destination == '监视设置' and path[:2] == ('monitor', 'launch'):
                 assert focused.widget_for_issue.winfo_exists()
             else:
-                assert root.focus_get() is (widget._textbox if isinstance(widget, ctk_kit.CTkTextbox)
-                                            else widget._entry), path
+                if isinstance(widget, ctk_kit.CTkTextbox):
+                    target = widget._textbox
+                else:
+                    target = widget
+                    while True:
+                        inner = (getattr(target, '_entry', None)
+                                 or getattr(target, 'entry', None))
+                        if inner is None or inner is target:
+                            break
+                        target = inner
+                assert root.focus_get() is target, path
     finally:
         root.destroy()
