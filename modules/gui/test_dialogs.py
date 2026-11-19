@@ -174,7 +174,7 @@ class TestDialogs:
         self.result_window.deiconify()
         self.result_window.lift()
         self.result_image = None
-        self.result_preview.configure(image=None, text='')
+        self.result_preview.configure(image='', text='')
         if result is None:
             self.displayed_result = None
             self.result_label.configure(text='测试进行中')

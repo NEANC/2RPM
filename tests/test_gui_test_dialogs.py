@@ -104,17 +104,26 @@ def test_long_result_text_can_scroll_without_covering_actions(action, status):
         window = dialogs.show_result(action, GuiResult('one', 0, 0, status, reason, (), url))
         root.update()
         canvas = dialogs.result_content._parent_canvas
+        assert isinstance(dialogs.result_content, ctk_kit.CTkScrollableFrame)
         assert canvas.yview()[1] < 1
+        assert dialogs.result_label.winfo_rooty() + dialogs.result_label.winfo_height() > (
+            canvas.winfo_rooty() + canvas.winfo_height())
         canvas.yview_moveto(1)
         root.update()
         assert canvas.yview()[1] == 1
-        assert dialogs.result_label.winfo_rooty() + dialogs.result_label.winfo_height() <= (
-            canvas.winfo_rooty() + canvas.winfo_height())
+        assert canvas.winfo_rooty() <= (
+            dialogs.result_label.winfo_rooty() + dialogs.result_label.winfo_height()
+        ) <= canvas.winfo_rooty() + canvas.winfo_height()
         assert (url or reason) in dialogs.result_label.cget('text')
+        assert dialogs.retry.winfo_ismapped()
+        assert not dialogs.cancel_button.winfo_ismapped()
+        assert window.winfo_rooty() <= dialogs.retry.winfo_rooty()
         assert dialogs.retry.winfo_rooty() + dialogs.retry.winfo_height() <= (
             window.winfo_rooty() + window.winfo_height())
         dialogs.retry.invoke()
         assert dialogs.selection_window.winfo_exists()
+        assert dialogs.selection_window.title() == (
+            '上传测试' if action == 'upload' else '截图测试')
     finally:
         dialogs.clear()
         root.destroy()
@@ -138,14 +147,19 @@ def test_large_capture_preview_remains_accessible_and_cancel_stays_clickable(tmp
         root.update()
         canvas = dialogs.result_content._parent_canvas
         assert canvas.yview()[1] < 1
+        assert dialogs.result_preview._label.cget('image')
+        assert dialogs.result_preview.winfo_rooty() > canvas.winfo_rooty() + canvas.winfo_height()
         canvas.yview_moveto(1)
         root.update()
         assert dialogs.result_image.cget('size')[0] <= 360
+        assert canvas.winfo_rooty() <= dialogs.result_preview.winfo_rooty()
         assert dialogs.result_preview.winfo_rooty() + dialogs.result_preview.winfo_height() <= (
             canvas.winfo_rooty() + canvas.winfo_height())
         dialogs.show_result('capture', None)
         root.update()
         assert dialogs.cancel_button.winfo_ismapped()
+        assert not dialogs.retry.winfo_ismapped()
+        assert window.winfo_rooty() <= dialogs.cancel_button.winfo_rooty()
         assert dialogs.cancel_button.winfo_rooty() + dialogs.cancel_button.winfo_height() <= (
             window.winfo_rooty() + window.winfo_height())
         dialogs.cancel_button.invoke()
@@ -341,6 +355,37 @@ def test_capture_result_displays_real_image(tmp_path):
         dialogs.show_result('capture', GuiResult('one', 0, 0, 'success', '', (str(path),)))
         assert dialogs.result_image is not None
         assert dialogs.result_image.cget('size') == (16, 12)
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+@pytest.mark.parametrize('next_result', ['running', 'upload', 'missing'])
+def test_reused_result_window_clears_old_capture_pixels(tmp_path, next_result):
+    """复用结果窗时新状态不保留旧截图的真实 Tk 像素。"""
+    path = tmp_path / 'capture.png'
+    Image.new('RGB', (16, 12), 'blue').save(path)
+    root = tk.Tk()
+    root.geometry('600x450+80+80')
+    root.update()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    try:
+        window = dialogs.show_result('capture', GuiResult('one', 0, 0, 'success',
+                                                         '', (str(path),)))
+        root.update()
+        assert dialogs.result_preview._label.cget('image')
+        dialogs.hide_result()
+        if next_result == 'running':
+            dialogs.show_result('capture', None)
+        elif next_result == 'upload':
+            dialogs.show_result('upload', GuiResult('one', 0, 0, 'success', '', (),
+                                                    'https://example.org/real.png'))
+        else:
+            dialogs.show_result('capture', GuiResult('one', 0, 0, 'success', '', ()))
+        root.update()
+        assert dialogs.result_window is window
+        assert dialogs.result_preview._label.cget('image') == ''
+        assert dialogs.result_image is None
     finally:
         dialogs.clear()
         root.destroy()
