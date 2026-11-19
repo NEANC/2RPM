@@ -118,23 +118,27 @@ class Controller:
 
     def open(self, path: Path | Callable[[], Path | None]) -> bool:
         """打开文件对话框选择的原路径，不套用 CLI 后缀转换。"""
+        return self._open_result(path) is SaveResult.SAVED
+
+    def _open_result(self, path: Path | Callable[[], Path | None]) -> SaveResult:
+        """返回本次打开的成功、取消或读取失败结果。"""
         def operation():
             """选择放弃只有打开成功才生效。"""
             if not self._resolve_unsaved():
-                return False
+                return SaveResult.CANCELLED
             selected = path() if callable(path) else path
             if selected is None:
-                return False
+                return SaveResult.CANCELLED
             try:
                 document = read_document(Path(selected).absolute())
             except ConfigReadError:
-                return False
+                return SaveResult.FAILED
             self.model.replace_document(document)
             self.conflicted = False
             self.on_change()
-            return True
+            return SaveResult.SAVED
         if self.runner.active is True:
-            return False
+            return SaveResult.FAILED
         return self._transaction(operation)
 
     def save_as(self, picker) -> bool:

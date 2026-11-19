@@ -147,21 +147,43 @@ def test_dirty_picker_valid_update_preserves_full_disk_bytes(window, monkeypatch
     assert path.read_bytes() == updated
 
 
-def test_open_picker_cancel_does_not_show_failure(window, monkeypatch):
-    """真实 Tk 打开选择器取消不显示失败框且不替换草稿。"""
+@pytest.mark.parametrize('cancel_at', ['unsaved', 'picker'])
+def test_open_cancel_does_not_show_failure(window, monkeypatch, cancel_at):
+    """真实 Tk 未保存确认或选择器取消都不报错且保留草稿。"""
     app = window
     app.model.set(('monitor', 'target'), 'draft.exe')
-    app.controller.confirm = lambda *_: 'discard'
+    app.controller.confirm = lambda *_: 'cancel' if cancel_at == 'unsaved' else 'discard'
     generation = app.model.document_generation
-    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', lambda **_: '')
+    picker = Mock(return_value='')
+    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', picker)
     error = messagebox.showerror
 
     app.open()
 
     error.assert_not_called()
+    if cancel_at == 'unsaved':
+        picker.assert_not_called()
+    else:
+        picker.assert_called_once()
     assert app.model.document_generation == generation
     assert app.model.get(('monitor', 'target')) == 'draft.exe'
     assert app.model.dirty
+
+
+def test_open_invalid_file_shows_failure(window, monkeypatch, tmp_path):
+    """真实 Tk 选择坏文件时显示错误且保留旧文档。"""
+    app = window
+    path = app.model.document.path
+    broken = tmp_path / 'broken.yaml'
+    broken.write_bytes(b'\xff')
+    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
+                        lambda **_: str(broken))
+
+    app.open()
+
+    messagebox.showerror.assert_called_once_with('打开配置', '无法打开配置',
+                                                 parent=app.root)
+    assert app.model.document.path == path
 
 
 @pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
