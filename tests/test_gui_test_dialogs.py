@@ -6,6 +6,8 @@
 import tkinter as tk
 from unittest.mock import Mock
 
+import ctk_kit
+import customtkinter as ctk
 from PIL import Image
 
 from modules.gui.protocol import TestResult as GuiResult
@@ -101,6 +103,62 @@ def test_capture_start_disables_after_programmatic_target_clear():
         dialogs.capture_target.insert(0, '127.0.0.1:16384')
         assert dialogs.capture_start.cget('state') == 'normal'
         dialogs.selection_window.destroy()
+        callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+def test_capture_entry_clear_disables_start_and_cancel_does_not_request():
+    """真实输入框 clear 后立即禁用，点击取消不创建请求。"""
+    root = tk.Tk()
+    root.withdraw()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        window = dialogs.open_capture(callback)
+        assert isinstance(dialogs.capture_target, ctk_kit.CTkEntry)
+        dialogs.capture_target.insert(0, '窗口标题')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.capture_target.clear()
+        assert dialogs.capture_target.get() == ''
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        cancel = next(child for child in window.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '取消')
+        cancel.invoke()
+        assert not window.winfo_exists()
+        callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+def test_capture_context_menu_clear_disables_start_and_cancel_does_not_request():
+    """真实右键菜单点击清空后立即禁用，点击取消不创建请求。"""
+    root = tk.Tk()
+    root.geometry('500x400')
+    root.update()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        window = dialogs.open_capture(callback)
+        root.update()
+        dialogs.capture_target.insert(0, '窗口标题')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.capture_target._entry.event_generate('<Button-3>', x=5, y=5)
+        menu = dialogs.capture_target._ctk_kit_edit_menu
+        assert menu._popup is not None
+        inner = menu._popup.winfo_children()[0].winfo_children()[0]
+        clear = next(child for child in inner.winfo_children()
+                     if isinstance(child, ctk.CTkButton) and child.cget('text') == '清空')
+        assert clear.cget('state') == 'normal'
+        clear.invoke()
+        assert dialogs.capture_target.get() == ''
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        cancel = next(child for child in window.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '取消')
+        cancel.invoke()
+        assert not window.winfo_exists()
         callback.assert_not_called()
     finally:
         dialogs.clear()
