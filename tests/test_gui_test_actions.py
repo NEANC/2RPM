@@ -167,6 +167,46 @@ def test_notify_real_chain_sends_mixed_channels_without_leaking(
     assert 'other-secret' not in str(result)
 
 
+def test_notify_real_chain_partial_failure_keeps_fixed_message_and_yaml(
+        monkeypatch, tmp_path):
+    """真实编排逐通道发固定消息，部分失败不报整体成功且不改 YAML。"""
+    import modules.gui.test_actions as actions
+    import modules.notification as notification
+
+    yaml_path = tmp_path / 'config.yaml'
+    original = b'push:\n  templates: untouched\n'
+    yaml_path.write_bytes(original)
+    config = _config()
+    config['push']['push_channel_settings']['channels'].append(
+        {'provider': 'bark', 'key': 'other-secret'})
+    before = copy.deepcopy(config)
+    sent = []
+
+    def fake_channel(channel, title, content, *_args, **_kwargs):
+        """替代外发，记录真实通道调用及消息。"""
+        sent.append((channel['provider'], title, content))
+        return channel['provider'] == 'serverchan'
+
+    monkeypatch.setattr(notification, '_notify_single_channel', fake_channel)
+    monkeypatch.setattr(actions, 'capture',
+                        Mock(side_effect=AssertionError('意外截图')))
+    monkeypatch.setattr(actions, 'upload_with_fallback',
+                        Mock(side_effect=AssertionError('意外上传')))
+
+    result = run_test(_request(tmp_path, 'notify', config, template_key='on_end'))
+
+    assert result.status == 'partial'
+    assert result.status != 'success'
+    assert sent == [
+        (provider, '2RPM推送测试', '这是一个测试，当你收到时表明一切正常。')
+        for provider in ('serverchan', 'bark')]
+    assert [(item.index, item.status) for item in result.channel_results] == [
+        (0, 'success'), (1, 'failure')]
+    assert result.preview_paths == ()
+    assert yaml_path.read_bytes() == original
+    assert config == before
+
+
 def test_notify_empty_result_is_failure(monkeypatch, tmp_path):
     """无通道时不调用发送入口。"""
     import modules.notification as notification
@@ -288,6 +328,31 @@ def test_capture_does_not_run_other_actions(monkeypatch, tmp_path):
     assert run_test(_request(tmp_path, 'capture', target_index=0)).status == 'success'
 
 
+def test_capture_does_not_upload_notify_or_rewrite_yaml(monkeypatch, tmp_path):
+    """预览只生成会话图片，不发送请求或改动磁盘 YAML。"""
+    import modules.gui.test_actions as actions
+
+    yaml_path = tmp_path / 'config.yaml'
+    original = b'push:\n  templates: untouched\n'
+    yaml_path.write_bytes(original)
+    config = _config()
+    before = copy.deepcopy(config)
+    captured = Mock(return_value=CaptureResult(b'image', 'window', '演示窗口', 1, 1))
+    monkeypatch.setattr(actions, 'capture', captured)
+    monkeypatch.setattr(actions, 'upload_with_fallback',
+                        Mock(side_effect=AssertionError('意外上传')))
+    monkeypatch.setattr(actions, 'send_notification',
+                        Mock(side_effect=AssertionError('意外通知')))
+
+    result = run_test(_request(tmp_path, 'capture', config, target_index=0))
+
+    assert result.status == 'success'
+    assert Path(result.preview_paths[0]).read_bytes() == b'image'
+    assert yaml_path.read_bytes() == original
+    assert config == before
+    captured.assert_called_once()
+
+
 def test_capture_failure_is_safe(monkeypatch, tmp_path):
     """截图失败只显示可信错误分类而不回传原始异常。"""
     import modules.gui.test_actions as actions
@@ -319,6 +384,40 @@ def test_upload_only_selected_host_without_capture(monkeypatch, tmp_path):
     assert uploaded.call_args.args == (
         b'image-data', '照片.jpg', [config['push']['screenshot']['image_host'][1]])
     assert 'secret-value' not in result.reason
+
+
+@pytest.mark.parametrize('selected_success', [True, False])
+def test_upload_real_registry_calls_only_selected_host(monkeypatch, tmp_path,
+                                                       selected_success):
+    """真实注册表分发只调用所选图床，失败也不尝试其他图床。"""
+    import modules.gui.test_actions as actions
+    import modules.image_host.registry as registry
+    from modules.image_host.core import ImageHostError
+
+    image = tmp_path / 'image.jpg'
+    image.write_bytes(b'image-data')
+    config = _config()
+    config['push']['screenshot']['image_host'] = [
+        {'provider': 'wmimg', 'token': 'unused'}, {'provider': 'catbox'}]
+    first = Mock(side_effect=AssertionError('意外回退到未选图床'))
+    selected = Mock(return_value='https://images.example/selected.jpg')
+    if not selected_success:
+        selected.side_effect = ImageHostError('upload_failed', '')
+    monkeypatch.setitem(registry.UPLOADERS, 'wmimg', first)
+    monkeypatch.setitem(registry.UPLOADERS, 'catbox', selected)
+    monkeypatch.setattr(actions, 'capture',
+                        Mock(side_effect=AssertionError('意外截图')))
+    monkeypatch.setattr(actions, 'send_notification',
+                        Mock(side_effect=AssertionError('意外通知')))
+
+    result = run_test(_request(tmp_path, 'upload', config, host_index=1,
+                               image_path=str(image)))
+
+    assert result.status == ('success' if selected_success else 'failure')
+    assert result.upload_url == ('https://images.example/selected.jpg'
+                                 if selected_success else '')
+    selected.assert_called_once()
+    first.assert_not_called()
 
 
 def test_upload_failed_result_does_not_expose_url(monkeypatch, tmp_path):
