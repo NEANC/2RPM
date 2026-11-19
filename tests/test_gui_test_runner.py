@@ -4,12 +4,14 @@
 """隔离测试进程的线程、结果及回收契约。"""
 
 from dataclasses import replace
+import io
 import os
 from pathlib import Path
 import queue
 import subprocess
 import sys
 import threading
+from unittest.mock import Mock
 from unittest.mock import patch
 
 import psutil
@@ -31,6 +33,7 @@ def run_large_stdin_child(command, *, timeout, env=None):
     """在 Job 中启动子测试，并在所有退出路径回收其全部后代。"""
     job = win32job.CreateJobObject(None, '')
     child = None
+    assigned = False
     try:
         limits = win32job.QueryInformationJobObject(
             job, win32job.JobObjectExtendedLimitInformation)
@@ -42,7 +45,8 @@ def run_large_stdin_child(command, *, timeout, env=None):
                                  creationflags=win32process.CREATE_SUSPENDED)
         try:
             win32job.AssignProcessToJobObject(job, child._handle)
-        except Exception:
+            assigned = True
+        except Exception as assignment_error:
             try:
                 try:
                     child.terminate()
@@ -50,8 +54,9 @@ def run_large_stdin_child(command, *, timeout, env=None):
                 except (OSError, subprocess.TimeoutExpired):
                     child.kill()
                     child.wait(timeout=5)
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                cleanup_error.child = child
+                raise cleanup_error from assignment_error
             finally:
                 for stream in (child.stdin, child.stdout, child.stderr):
                     if stream is not None:
@@ -59,7 +64,7 @@ def run_large_stdin_child(command, *, timeout, env=None):
                             stream.close()
                         except OSError:
                             pass
-                child = None
+            child = None
             raise
         thread_id = psutil.Process(child.pid).threads()[0].id
         thread = win32api.OpenThread(win32con.THREAD_SUSPEND_RESUME, False, thread_id)
@@ -71,7 +76,7 @@ def run_large_stdin_child(command, *, timeout, env=None):
         assert child.returncode == 0, stdout + stderr
     finally:
         job.Close()
-        if child is not None:
+        if child is not None and assigned:
             child.communicate(timeout=5)
 
 
@@ -136,6 +141,40 @@ def test_large_stdin_child_assignment_failure_reaps_direct_child(termination):
                 for stream in (process.stdin, process.stdout, process.stderr):
                     if stream is not None:
                         stream.close()
+
+
+@pytest.mark.parametrize('failure', ('termination_rejected', 'wait_timeout'))
+def test_large_stdin_child_assignment_failure_reports_unreaped_child(failure):
+    """双重回收失败时有界报错，保留进程和分配失败上下文。"""
+    child = Mock()
+    child._handle = 1
+    child.poll.return_value = None
+    child.stdin = io.StringIO()
+    child.stdout = io.StringIO()
+    child.stderr = io.StringIO()
+    if failure == 'termination_rejected':
+        child.terminate.side_effect = OSError('terminate rejected')
+        child.kill.side_effect = OSError('kill rejected')
+        expected_error = OSError
+    else:
+        child.wait.side_effect = subprocess.TimeoutExpired('child', 1)
+        expected_error = subprocess.TimeoutExpired
+
+    with patch('tests.test_gui_test_runner.subprocess.Popen', return_value=child), \
+            patch('tests.test_gui_test_runner.win32job.AssignProcessToJobObject',
+                  side_effect=RuntimeError('assignment rejected')):
+        with pytest.raises(expected_error) as caught:
+            run_large_stdin_child((sys.executable, '-c', 'pass'), timeout=2)
+
+    assert caught.value.child is child
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == 'assignment rejected'
+    child.terminate.assert_called_once_with()
+    child.kill.assert_called_once_with()
+    assert [call.kwargs['timeout'] for call in child.wait.call_args_list] == (
+        [1, 5] if failure == 'wait_timeout' else [])
+    assert all(stream.closed for stream in (child.stdin, child.stdout, child.stderr))
+    assert child.poll() is None
 
 
 def request(tmp_path, *, request_id='first', config=None):
