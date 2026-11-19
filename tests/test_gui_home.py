@@ -168,7 +168,7 @@ def test_first_save_write_failure_displays_failure_and_keeps_draft(tmp_path, mon
 
 
 def test_background_save_failure_marks_visible_path_without_popups(tmp_path, monkeypatch):
-    """切页及延迟保存失败沿用路径行提示，不重复弹窗。"""
+    """真实延迟回调和切页补存失败沿用可见路径行，不重复弹窗。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -179,14 +179,21 @@ def test_background_save_failure_marks_visible_path_without_popups(tmp_path, mon
         def fail(*args, **kwargs):
             """模拟写入失败。"""
             raise ConfigSaveError('secret-token')
-        monkeypatch.setattr('modules.gui.controller.save_document', fail)
+        write = Mock(side_effect=fail)
+        monkeypatch.setattr('modules.gui.controller.save_document', write)
         app.show_page('监视设置')
         app.model.set(('monitor', 'target'), 'draft.exe')
-        app.save_coordinator._save(app.model.document_generation)
+        root.after(650, root.quit)
+        root.mainloop()
+        write.assert_called_once()
         assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+        assert app.model.dirty
+        assert path.read_bytes() == original
         app.show_page('主页')
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
         app.show_page('监视设置')
         app.show_page('主页')
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
         popup.assert_not_called()
         assert app.model.dirty
         assert path.read_bytes() == original
@@ -194,6 +201,38 @@ def test_background_save_failure_marks_visible_path_without_popups(tmp_path, mon
         assert app.save_coordinator.flush()
         assert '（未保存）' not in app.visible_pages['主页'].path_value.cget('text')
         assert read_document(path).tree['monitor']['target'] == 'draft.exe'
+    finally:
+        root.destroy()
+
+
+def test_list_edit_flush_failure_marks_visible_path(tmp_path, monkeypatch):
+    """列表编辑后的立即补存失败仍在主页显示未保存，草稿和磁盘各自保留。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        original = path.read_bytes()
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        def fail(*args, **kwargs):
+            """模拟列表操作已完成后的写盘失败。"""
+            raise ConfigSaveError('secret-token')
+
+        write = Mock(side_effect=fail)
+        monkeypatch.setattr('modules.gui.controller.save_document', write)
+        app.show_page('截图设置')
+        app.visible_pages['截图设置'].add_target_button.invoke()
+
+        write.assert_called_once()
+        assert app.model.get(('push', 'screenshot', 'targets'))[-1] == {
+            'provider': 'window', 'target': ''}
+        assert app.model.dirty
+        assert path.read_bytes() == original
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+        app.show_page('主页')
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+        popup.assert_not_called()
     finally:
         root.destroy()
 
