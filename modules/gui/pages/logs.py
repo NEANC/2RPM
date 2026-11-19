@@ -4,6 +4,8 @@
 """ctk-kit 日志位置与保留策略。"""
 
 from collections.abc import Mapping
+import re
+import tkinter as tk
 from tkinter import filedialog
 
 import ctk_kit
@@ -42,6 +44,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields = {}
         self.path_fields = {}
         self.spinners = {}
+        self.number_variables = {}
         self._refreshing = False
         header = ctk_kit.CTkFrame(self, fg_color='transparent')
         header.pack(fill='x', padx=PAGE_PAD, pady=(PAGE_PAD, 0))
@@ -77,12 +80,20 @@ class Page(ctk_kit.CTkScrollableFrame):
                              anchor='w').pack(side='left')
             path = ('log', key)
             limits = NUMBER_RANGES[path]
+            variable = tk.StringVar(master=self)
             spinner = ctk_kit.Spinner(
                 row, from_=limits[0], to=limits[1], as_int=True,
                 value=DEFAULT_VALUES['log'][key],
-                command=lambda value, field=path: self._number_changed(field, value))
+                command=lambda _value, field=path: self._number_changed(field))
+            spinner.entry._entry.unbind('<Return>')
+            spinner.entry._entry.unbind('<FocusOut>')
+            spinner.entry.configure(textvariable=variable)
+            variable.trace_add('write', lambda *_, field=path: self._number_changed(field))
+            spinner._arrows.bind('<Button-1>',
+                                 lambda event, field=path: self._step_arrow(field, event))
             spinner.pack(side='right')
             self.spinners[path] = spinner
+            self.number_variables[path] = variable
             self.fields[path] = (spinner, spinner.entry, 'int')
         ctk_kit.CTkFrame(self, fg_color='transparent', height=CARD_GAP).pack(
             fill='x')
@@ -102,25 +113,32 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not self._refreshing and path_writable(self.model, path):
             self.model.set(path, value)
 
-    def _number_changed(self, path, value):
-        """Spinner 提交后写回已钳制的整数。"""
+    def _number_changed(self, path):
+        """将可见输入原文写回模型，不进行范围钳制。"""
         if not self._refreshing and path_writable(self.model, path):
-            self.model.set_input(path, str(value), kind='int')
+            self.model.set_input(path, self.number_variables[path].get(), kind='int')
+
+    def _step_arrow(self, path, event):
+        """根据箭头点击的上下半区选择单步增减。"""
+        spinner = self.spinners[path]
+        middle = max(1, spinner._arrows.winfo_height()) / 2
+        self._step(path, 1 if event.y < middle else -1)
 
     def _step(self, path, delta):
-        """保留旧测试接口：按步长调整数值，空输入从默认值起步。"""
+        """只步进完整整数，并限制在对应字段的箭头范围内。"""
         if not path_writable(self.model, path):
             return
         spinner = self.spinners[path]
-        raw = spinner.entry.get().strip()
+        raw = spinner.entry.get()
+        if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            return
         try:
             current = int(raw)
         except ValueError:
-            current = DEFAULT_VALUES['log'][path[1]]
+            return
         limits = NUMBER_RANGES[path]
         value = max(limits[0], min(limits[1], current + delta))
         spinner.set(value)
-        self._number_changed(path, value)
 
     def choose_directory(self):
         """选择目录只更新草稿，结构异常时不修改显示。"""
@@ -149,7 +167,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._refreshing = True
         try:
             for path, (control, entry, kind) in self.fields.items():
-                control.set(self._safe_value(path, kind))
+                if kind == 'int':
+                    self.number_variables[path].set(self._safe_value(path, kind))
+                else:
+                    control.set(self._safe_value(path, kind))
                 writable = path_writable(self.model, path)
                 control.set_readonly(not writable)
                 entry.configure(state='normal' if writable else 'disabled')

@@ -74,6 +74,152 @@ def test_external_threshold_real_event_preserves_raw(event, raw):
         root.destroy()
 
 
+@pytest.mark.parametrize('path', [('log', 'max_log_files'), ('log', 'retention_days')])
+@pytest.mark.parametrize('event', ['<Return>', '<FocusOut>'])
+@pytest.mark.parametrize('raw', ['', '-', '12x', '007', '10000', '-1'])
+def test_logs_number_real_event_preserves_raw(path, event, raw):
+    """两个日志数值在真实提交事件下均保留原文。"""
+    from modules.gui.pages.logs import Page
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    page = Page(root, Mock(model=model, open_logs=Mock()))
+    try:
+        entry = page.spinners[path].entry._entry
+        before = model.get(path)
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        entry.event_generate(event)
+        root.update()
+        assert entry.get() == raw
+        assert model.get_input(path) == raw
+        assert model.get(path) == (int(raw) if raw.lstrip('-').isdigit() else before)
+        assert (path in model.input_errors) == (raw in ('', '-', '12x'))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('path', 'top'), [
+    (('log', 'max_log_files'), 9999), (('log', 'retention_days'), 3650),
+])
+@pytest.mark.parametrize(('raw', 'y', 'expected'), [
+    ('007', 1, '8'), ('7', 30, '6'), ('', 1, ''),
+    ('-', 1, '-'), ('12x', 1, '12x'),
+])
+def test_logs_number_real_arrow(path, top, raw, y, expected):
+    """日志箭头只操作可解析整数且不替换非法草稿。"""
+    from modules.gui.pages.logs import Page
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    page = Page(root, Mock(model=model, open_logs=Mock()))
+    try:
+        spinner = page.spinners[path]
+        entry = spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert entry.get() == expected
+        assert model.get_input(path) == expected
+        assert model.get(path) == (before if raw in ('', '-', '12x') else int(expected))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('path', 'top'), [
+    (('log', 'max_log_files'), 9999), (('log', 'retention_days'), 3650),
+])
+@pytest.mark.parametrize('upper', [True, False])
+def test_logs_number_arrow_stays_in_range(path, top, upper):
+    """日志数值的主动步进不越过各自上下界。"""
+    from modules.gui.pages.logs import Page
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    page = Page(root, Mock(model=model, open_logs=Mock()))
+    try:
+        spinner = page.spinners[path]
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, str(top if upper else 1))
+        root.update()
+        spinner._arrows.event_generate('<Button-1>', x=5, y=1 if upper else 30)
+        root.update()
+        assert spinner.entry.get() == str(top if upper else 1)
+        assert model.get(path) == (top if upper else 1)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('path', [('log', 'max_log_files'), ('log', 'retention_days')])
+@pytest.mark.parametrize('y', [1, 30])
+def test_logs_number_long_integer_arrow(path, y):
+    """过长整数在真实箭头操作下保留草稿并且不抛错。"""
+    from modules.gui.pages.logs import Page
+
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    root = None
+    try:
+        root = tk.Tk()
+        model = EditorModel(new_document())
+        page = Page(root, Mock(model=model, open_logs=Mock()))
+        spinner = page.spinners[path]
+        raw = '9' * 641
+        errors = []
+        root.report_callback_exception = lambda *error: errors.append(error)
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert not errors
+        assert spinner.entry.get() == raw
+        assert model.get_input(path) == raw
+        assert model.get(path) == before
+        assert path in model.input_errors
+    finally:
+        if root is not None:
+            root.destroy()
+        sys.set_int_max_str_digits(previous)
+
+
+@pytest.mark.parametrize('path', [('log', 'max_log_files'), ('log', 'retention_days')])
+@pytest.mark.parametrize(('raw', 'saved'), [
+    ('', False), ('-', False), ('12x', False), ('007', True),
+    ('10000', True), ('-1', True), pytest.param('9' * 4301, False, id='超长整数'),
+])
+def test_logs_number_save_preserves_draft(tmp_path, path, raw, saved):
+    """日志数值未完成时不落盘，完整非法值留给业务校验。"""
+    from modules.config_document import read_document
+    from modules.gui.pages.logs import Page
+    from tests.test_gui_controller import make_controller
+
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, Mock(model=controller.model, open_logs=Mock()))
+    try:
+        entry = page.spinners[path].entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        entry.event_generate('<Return>')
+        root.update()
+        assert controller.save() is saved
+        assert (tmp_path / 'a.yaml').exists() is saved
+        assert entry.get() == raw
+        assert controller.model.get_input(path) == raw
+        if saved:
+            assert read_document(tmp_path / 'a.yaml').tree['log'][path[1]] == int(raw)
+        else:
+            assert path in controller.model.input_errors
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize(('raw', 'y', 'expected'), [
     ('007', 1, '8'), ('7', 30, '6'), ('99', 1, '99'),
     ('1', 30, '1'), ('', 1, ''), ('-', 1, '-'), ('12x', 1, '12x'),
@@ -333,7 +479,8 @@ def test_logs_page_edits_policy_and_does_not_create_directory(tmp_path, monkeypa
         spinner = page.fields[number][0]
         spinner.entry.delete(0, 'end')
         spinner.entry.insert(0, '19')
-        spinner._commit()
+        spinner.entry._entry.event_generate('<Return>')
+        root.update()
         assert model.get(number) == 19
         app.open_logs.assert_not_called()
     finally:
