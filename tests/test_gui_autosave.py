@@ -333,6 +333,42 @@ def test_save_as_failure_and_cancel_keep_original(tmp_path):
     assert controller.model.get(('monitor', 'target')) == 'draft.exe'
 
 
+@pytest.mark.parametrize('outer_cancelled', [True, False])
+def test_save_as_restores_own_cancel_result_after_transaction_reentry(tmp_path,
+                                                                       outer_cancelled):
+    """事务结束重入保存后，另存为仍报告其自身的取消或失败。"""
+    controller, coordinator, _ = setup(tmp_path)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    original = controller.model.document.path
+    before = original.read_bytes()
+    entered = False
+
+    def reenter():
+        """在结束事务恢复自动保存时执行一次内层保存。"""
+        nonlocal entered
+        if entered:
+            return
+        entered = True
+        if outer_cancelled:
+            assert controller.save() is True
+            assert controller.save_cancelled is False
+        else:
+            assert controller.save_as(lambda: None) is False
+            assert controller.save_cancelled is True
+
+    controller.on_edit = reenter
+    destination = None if outer_cancelled else tmp_path / 'missing' / 'new.yaml'
+    assert controller.save_as(lambda: destination) is False
+    assert entered
+    assert controller.save_cancelled is outer_cancelled
+    assert controller.model.document.path == original
+    if outer_cancelled:
+        assert original.read_bytes() != before
+    else:
+        assert original.read_bytes() == before
+        assert controller.model.dirty
+
+
 def test_reload_invalid_conflict_preserves_draft(tmp_path):
     """冲突文件无法解析时重新加载不得丢弃内存草稿。"""
     controller, coordinator, _ = setup(tmp_path)

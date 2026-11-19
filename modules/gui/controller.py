@@ -123,7 +123,19 @@ class Controller:
         """选定路径前不向原文件补存。"""
         if self.runner.active is True:
             return False
-        return self._transaction(lambda: self.save(destination=picker(), as_new=True))
+        cancelled = [False]
+
+        def operation():
+            """记录本次另存的取消结果，避免事务收尾重入覆盖。"""
+            try:
+                return self.save(destination=picker(), as_new=True)
+            finally:
+                cancelled[0] = self.save_cancelled
+
+        try:
+            return self._transaction(operation)
+        finally:
+            self.save_cancelled = cancelled[0]
 
     def check_external(self) -> bool:
         """干净草稿自动重载有效磁盘版本，否则保留草稿并阻断覆盖。"""
