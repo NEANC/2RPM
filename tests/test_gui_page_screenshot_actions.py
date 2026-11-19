@@ -140,6 +140,61 @@ def test_test_request_uses_document_directory(tmp_path):
         root.destroy()
 
 
+def test_capture_selection_rejects_document_change_during_request(tmp_path, monkeypatch):
+    """截图选择提交后若补存改变文档身份，不得提交旧目标。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_dialogs.open_capture = Mock()
+        app.capture()
+        submit = app.test_dialogs.open_capture.call_args.args[0]
+        original = app.save_coordinator.flush
+        calls = 0
+
+        def flush():
+            """模拟选择提交与请求冻结之间发生文档重载。"""
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                app.model.replace_document(read_document(app.model.document.path))
+            return original()
+
+        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        assert not submit('window', '旧窗口')
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('changed', ['host', 'image'])
+def test_upload_selection_changed_during_confirmation_is_not_sent(tmp_path, monkeypatch,
+                                                                  changed):
+    """外发确认期间改选图床或图片，不得提交确认前的旧选择。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('push', 'screenshot', 'image_host'),
+                      [{'provider': 'beeimg'}, {'provider': 'catbox'}])
+        app.open_upload_selection()
+        dialogs = app.test_dialogs
+        dialogs.upload_host.set('01 beeimg')
+        dialogs.upload_image.set(str(tmp_path / 'one.png'))
+
+        def confirm(*args, **kwargs):
+            """模拟模态确认期间用户改变原选择窗。"""
+            if changed == 'host':
+                dialogs.upload_host.set('02 catbox')
+            else:
+                dialogs.upload_image.set(str(tmp_path / 'two.png'))
+            return True
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirm)
+        dialogs.submit_upload()
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('action', ['capture', 'upload'])
 def test_ctk_result_window_restores_active_request_and_cancels_once(
         tmp_path, monkeypatch, action):

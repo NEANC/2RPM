@@ -618,7 +618,7 @@ class App:
 
     def _request(self, action, *, target_index=None, host_index=None,
                  image_path=None, template_key=None, capture_provider=None,
-                 capture_target=None, expected_identity=None):
+                 capture_target=None, expected_identity=None, selection_unchanged=None):
         """主线程冻结草稿与绝对路径，后台只接收不可变请求。"""
         if not self._require_saved():
             return False
@@ -639,6 +639,9 @@ class App:
             return False
         if identity != (self.model.document_generation, self.model.revision):
             self.status.configure(text='配置已更新，请重新选择测试参数')
+            return False
+        if selection_unchanged is not None and not selection_unchanged():
+            self.status.configure(text='选择已更新，请重新确认测试参数')
             return False
         path = self.model.document.path
         request = TestRequest(uuid.uuid4().hex, self.model.document_generation,
@@ -698,7 +701,7 @@ class App:
                 self.open_capture_selection()
                 return False
             return self._request('capture', capture_provider=provider,
-                                 capture_target=target)
+                                 capture_target=target, expected_identity=identity)
 
         self.test_dialogs.open_capture(submit)
 
@@ -754,8 +757,17 @@ class App:
                 self.status.configure(text='配置已更新，请重新选择图床')
                 self.open_upload_selection()
                 return False
+            window = self.test_dialogs.selection_window
+            selection_unchanged = None
+            if window is not None and window.winfo_exists():
+                selected = self.test_dialogs.upload_host.get()
+                selection_unchanged = lambda: (window.winfo_exists()
+                                                and self.test_dialogs.selection_window is window
+                                                and self.test_dialogs.upload_host.get() == selected
+                                                and self.test_dialogs.upload_image.get().strip() == image)
             started = self._request('upload', host_index=index, image_path=image,
-                                    expected_identity=identity[:2])
+                                    expected_identity=identity[:2],
+                                    selection_unchanged=selection_unchanged)
             if not started and identity[:2] != (self.model.document_generation,
                                                 self.model.revision):
                 self.open_upload_selection()
