@@ -202,6 +202,7 @@ def test_open_modal_reentry_keeps_failure_with_its_own_call(
     selections = iter((str(broken) if outer_broken else '',
                        '' if outer_broken else str(broken)))
     events = []
+    callback_errors = []
 
     def picker(**_):
         """首次选择进入真实 Tk 模态循环，并在其中执行第二次打开。"""
@@ -211,19 +212,25 @@ def test_open_modal_reentry_keeps_failure_with_its_own_call(
             return selected
         events.append(('outer-picker', selected))
         modal = tk.Toplevel(app.root)
-        modal.withdraw()
+        modal.update()
+        assert modal.winfo_ismapped()
         modal.grab_set()
 
         def reenter():
             """在模态事件循环里重入，返回前记录内层错误数量。"""
+            events.append(('reenter', modal.grab_current() is modal))
             try:
                 app.open()
                 events.append(('inner-return', messagebox.showerror.call_count))
+            except Exception as exc:
+                callback_errors.append(exc)
             finally:
                 modal.destroy()
 
         modal.after(0, reenter)
         modal.wait_window()
+        if callback_errors:
+            raise callback_errors[0]
         events.append(('outer-resume', messagebox.showerror.call_count))
         return selected
 
@@ -232,6 +239,7 @@ def test_open_modal_reentry_keeps_failure_with_its_own_call(
     app.open()
 
     assert events == [('outer-picker', str(broken) if outer_broken else ''),
+                      ('reenter', True),
                       ('inner-picker', '' if outer_broken else str(broken)),
                       ('inner-return', 0 if outer_broken else 1),
                       ('outer-resume', 0 if outer_broken else 1)]
