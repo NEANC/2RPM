@@ -581,9 +581,13 @@ class App:
             return
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
-        if result is not None:
-            popup = messagebox.showinfo if result.created else messagebox.showerror
-            popup('启动 CLI', result.message, parent=self.root)
+        if result is None:
+            if not self.controller.cli_cancelled:
+                messagebox.showerror('启动 CLI',
+                                     '未能启动 CLI，请检查配置、磁盘文件或保存状态。', parent=self.root)
+            return
+        popup = messagebox.showinfo if result.created else messagebox.showerror
+        popup('启动 CLI', result.message, parent=self.root)
 
     def _request(self, action, *, target_index=None, host_index=None,
                  image_path=None, template_key=None, capture_provider=None,

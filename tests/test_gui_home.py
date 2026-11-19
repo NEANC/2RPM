@@ -10,7 +10,7 @@ from unittest.mock import Mock
 import ctk_kit
 import pytest
 
-from modules.config_document import ConfigSaveError, new_document, read_document
+from modules.config_document import ConfigReadError, ConfigSaveError, new_document, read_document
 from modules.gui.home_summary import summary
 from tests.gui_support import make_app
 
@@ -35,6 +35,48 @@ def test_cli_creation_result_is_visible(tmp_path, monkeypatch, created, message,
         app.start_cli()
         popup.assert_called_once()
         assert message in popup.call_args.args[1]
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('reason', ['repeat_cancel', 'normalize_cancel',
+                                    'invalid_config', 'unreadable_disk'])
+def test_cli_none_distinguishes_cancel_from_blocked_launch(tmp_path, monkeypatch, reason):
+    """取消不报错；真实阻断显示固定脱敏提示且不创建进程。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        if reason == 'repeat_cancel':
+            app.controller.launch_count = 1
+            app.controller.confirm = lambda kind, _: 'cancel'
+        elif reason == 'normalize_cancel':
+            app.model.set(('monitor', 'common', 'max_wait'), '-30s')
+            app.controller.confirm = lambda kind, _: 'cancel'
+        elif reason == 'invalid_config':
+            app.model.set(('monitor', 'mode'), 'secret-token')
+        else:
+            def fail_read(_):
+                """模拟携带敏感信息的读取失败。"""
+                raise ConfigReadError('secret-token')
+            monkeypatch.setattr('modules.gui.controller.read_document', fail_read)
+        popup = Mock()
+        info = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+
+        app.start_cli()
+
+        launch.assert_not_called()
+        info.assert_not_called()
+        if reason in ('repeat_cancel', 'normalize_cancel'):
+            popup.assert_not_called()
+        else:
+            popup.assert_called_once_with('启动 CLI',
+                                          '未能启动 CLI，请检查配置、磁盘文件或保存状态。',
+                                          parent=root)
+            assert 'secret-token' not in str(popup.call_args)
     finally:
         root.destroy()
 
