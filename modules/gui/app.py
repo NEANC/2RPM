@@ -365,12 +365,7 @@ class App:
         self._invalidate_validation_if_stale()
         if self.generation != self.model.document_generation:
             if self.document_path != self.model.document.path:
-                self.test_session.clear()
-                self.test_dialogs.clear()
-                self.actions['测试通知'].configure(text='测试通知', state='normal')
-                self.result_text = ''
-                self.preview_image = None
-                self.preview_label.configure(image='', text='')
+                self._clear_test_results()
             message_page = self.visible_pages.get('消息推送设置')
             if message_page is not None:
                 message_page._expanded_channel = None
@@ -383,6 +378,15 @@ class App:
         self.test_dialogs.mark_previous(self.model.document_generation, self.model.revision)
         self._sync_test_buttons()
         self._refresh_save_status()
+
+    def _clear_test_results(self):
+        """释放旧配置的测试会话、结果窗口和本窗口预览引用。"""
+        self.test_session.clear()
+        self.test_dialogs.clear()
+        self.actions['测试通知'].configure(text='测试通知', state='normal')
+        self.result_text = ''
+        self.preview_image = None
+        self.preview_label.configure(image='', text='')
 
     def _refresh_saved_home(self):
         """同文档纯保存时仅刷新主页和保存标记，保留输入控件。"""
@@ -497,8 +501,9 @@ class App:
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
-        self.controller.new(lambda: filedialog.asksaveasfilename(
-            parent=self.root, defaultextension='.yaml') or None)
+        if self.controller.new(lambda: filedialog.asksaveasfilename(
+                parent=self.root, defaultextension='.yaml') or None):
+            self._clear_test_results()
 
     def open(self):
         """用原始选择路径读取，不隐式添加后缀。"""
@@ -511,7 +516,9 @@ class App:
             name = filedialog.askopenfilename(parent=self.root, filetypes=[('YAML', '*.yaml *.yml'), ('所有文件', '*.*')])
             return Path(name) if name else None
 
-        if not self.controller.open(picker):
+        if self.controller.open(picker):
+            self._clear_test_results()
+        else:
             messagebox.showerror('打开配置', '无法打开配置，或操作已取消', parent=self.root)
 
     def save(self):
@@ -532,6 +539,8 @@ class App:
             return
         result = self.controller._save_as_result(lambda: filedialog.asksaveasfilename(
             parent=self.root, defaultextension='.yaml') or None)
+        if result is SaveResult.SAVED:
+            self._clear_test_results()
         if result is SaveResult.FAILED:
             self.status.configure(text='配置未另存')
             messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
