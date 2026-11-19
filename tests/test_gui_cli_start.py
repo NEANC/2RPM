@@ -324,3 +324,43 @@ def test_start_cli_auto_reload_invalid_config_shows_safe_error(tmp_path, monkeyp
                                       parent=root)
     finally:
         root.destroy()
+
+
+def test_start_cli_repeat_confirm_auto_reload_invalid_shows_one_error(tmp_path, monkeypatch):
+    """重复启动确认中磁盘业务无效版本自动重载后只提示一次失败。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.launch_count = 1
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        path = app.model.document.path
+        generation = app.model.document_generation
+        confirmations = []
+
+        def confirm(kind, detail):
+            """在真实重复启动确认期间改写当前配置文件。"""
+            confirmations.append(kind)
+            external = read_document(path)
+            external.tree['monitor']['mode'] = 'invalid'
+            save_document(external, path, expected_fingerprint=external.fingerprint)
+            return 'confirm'
+
+        app.controller.confirm = confirm
+        app.start_cli()
+
+        assert confirmations == ['repeat_launch']
+        assert app.model.document_generation > generation
+        assert app.model.document.path == path
+        assert app.model.get(('monitor', 'mode')) == 'invalid'
+        assert not app.model.dirty
+        assert not app.controller.conflicted
+        assert app.controller.launch_count == 1
+        launch.assert_not_called()
+        error.assert_called_once_with('启动 CLI',
+                                      '未能启动 CLI，请检查配置、磁盘文件或保存状态。',
+                                      parent=root)
+    finally:
+        root.destroy()

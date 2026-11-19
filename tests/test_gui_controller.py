@@ -921,7 +921,7 @@ def test_repeat_confirmation_external_reload_invalid_config_blocks_launch(tmp_pa
         return 'confirm'
 
     controller.confirm = confirm
-    assert controller.start_cli() is None
+    assert controller.start_cli() == LaunchResult(False, '未能启动 CLI，请检查配置、磁盘文件或保存状态。')
     disk = read_document(document.path)
     assert disk.fingerprint != document.fingerprint
     assert disk.tree['monitor']['mode'] == 'invalid'
