@@ -691,16 +691,19 @@ class App:
         if not self._require_saved():
             return
         identity = (self.model.document_generation, self.model.revision)
+        window = None
 
         def submit(provider, target):
             """截图目标输入期间的文档变更需重新选择。"""
+            if window is not None and (not window.winfo_exists()
+                                       or self.test_dialogs.selection_window is not window):
+                return False
             if not self._require_saved():
                 return False
             if identity != (self.model.document_generation, self.model.revision):
                 self.status.configure(text='配置已更新，请重新选择截图目标')
                 self.open_capture_selection()
                 return False
-            window = self.test_dialogs.selection_window
             selection_unchanged = None
             if window is not None and window.winfo_exists():
                 selection_unchanged = lambda: (
@@ -711,7 +714,9 @@ class App:
                                  capture_target=target, expected_identity=identity,
                                  selection_unchanged=selection_unchanged)
 
-        self.test_dialogs.open_capture(submit)
+        opened = self.test_dialogs.open_capture(submit)
+        if opened is self.test_dialogs.selection_window:
+            window = opened
 
     def upload(self):
         """展示图床和本地图片选择，确认后仅发送选定图床。"""
@@ -771,6 +776,7 @@ class App:
                 selected = self.test_dialogs.upload_host.get()
                 selection_unchanged = lambda: (window.winfo_exists()
                                                 and self.test_dialogs.selection_window is window
+                                                and selected == f'{index + 1:02d} {names[index]}'
                                                 and self.test_dialogs.upload_host.get() == selected
                                                 and self.test_dialogs.upload_image.get().strip() == image)
             started = self._request('upload', host_index=index, image_path=image,

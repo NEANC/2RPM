@@ -198,6 +198,56 @@ def test_capture_selection_changed_during_request_is_not_sent(tmp_path, monkeypa
         root.destroy()
 
 
+def test_closed_capture_selection_callback_cannot_submit_after_reopen(tmp_path):
+    """旧截图选择窗关闭重开后，旧回调不能提交或关闭新窗口。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.open_capture_selection()
+        dialogs = app.test_dialogs
+        old_callback = dialogs._capture_callback
+        dialogs.selection_window.destroy()
+        app.open_capture_selection()
+        new_window = dialogs.selection_window
+        dialogs.capture_target.insert(0, '旧窗口')
+
+        assert not old_callback('window', '旧窗口')
+        app.controller.runner.start.assert_not_called()
+        assert new_window.winfo_exists()
+    finally:
+        root.destroy()
+
+
+def test_upload_selection_changed_during_request_flush_is_not_sent(tmp_path, monkeypatch):
+    """上传请求补存期间改选图床，不得沿用旧图床索引。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('push', 'screenshot', 'image_host'),
+                      [{'provider': 'beeimg'}, {'provider': 'catbox'}])
+        app.open_upload_selection()
+        dialogs = app.test_dialogs
+        dialogs.upload_host.set('01 beeimg')
+        dialogs.upload_image.set(str(tmp_path / 'one.png'))
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        original = app.save_coordinator.flush
+        calls = 0
+
+        def flush():
+            """在请求冻结前的补存期间改选图床。"""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                dialogs.upload_host.set('02 catbox')
+            return original()
+
+        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        dialogs.submit_upload()
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('changed', ['host', 'image'])
 def test_upload_selection_changed_during_confirmation_is_not_sent(tmp_path, monkeypatch,
                                                                   changed):
