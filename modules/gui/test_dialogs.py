@@ -65,10 +65,13 @@ class TestDialogs:
         self.capture_target = ctk_kit.CTkEntry(window, placeholder_text='请输入窗口标题',
                                                font=FONT_BODY)
         self.capture_target.pack(fill='x', padx=24, pady=8)
+        self.capture_target.bind('<KeyRelease>', lambda _event: self._update_capture_start())
         ctk_kit.CTkButton(window, text='取消', command=window.destroy,
                           font=FONT_BODY).pack(side='right', padx=16, pady=12)
-        ctk_kit.CTkButton(window, text='开始测试', command=self.submit_capture,
-                          font=FONT_BODY).pack(side='right', pady=12)
+        self.capture_start = ctk_kit.CTkButton(
+            window, text='开始测试', command=self.submit_capture, font=FONT_BODY)
+        self.capture_start.pack(side='right', pady=12)
+        self._update_capture_start()
         window.grab_set()
         return window
 
@@ -76,6 +79,13 @@ class TestDialogs:
         """按选择来源显示窗口标题或 ADB 地址输入提示。"""
         self.capture_target.configure(placeholder_text=('请输入 ADB 地址'
                                                     if source == 'ADB' else '请输入窗口标题'))
+        self._update_capture_start()
+
+    def _update_capture_start(self):
+        """来源与目标均有效时才允许截图测试。"""
+        ready = (self.capture_provider.get() in ('窗口', 'ADB')
+                 and bool(self.capture_target.get().strip()))
+        self.capture_start.configure(state='normal' if ready else 'disabled')
 
     def submit_capture(self):
         """不完整的选择不能进入 worker。"""
@@ -93,20 +103,30 @@ class TestDialogs:
         self._host_names = [f'{index:02d} {name}' for index, name in enumerate(hosts or [], 1)]
         window = self._selection('上传测试')
         self.upload_host = ctk_kit.CTkOptionMenu(
-            window, values=self._host_names or ['请选择图床'], font=FONT_BODY,
+            window, values=self._host_names or ['请选择图床'],
+            command=lambda _value: self._update_upload_start(), font=FONT_BODY,
             dropdown_font=FONT_BODY)
         self.upload_host.pack(fill='x', padx=24, pady=8)
         self.upload_host.set('请选择图床')
         self.upload_image = ctk_kit.PathField(
             window, mode='file', title='选择本地图片',
-            placeholder='请选择 PNG/JPG/JPEG 图片')
+            placeholder='请选择 PNG/JPG/JPEG 图片',
+            on_change=lambda _path: self._update_upload_start())
         self.upload_image.pack(fill='x', padx=24, pady=8)
         ctk_kit.CTkButton(window, text='取消', command=window.destroy,
                           font=FONT_BODY).pack(side='right', padx=16, pady=12)
-        ctk_kit.CTkButton(window, text='开始测试', command=self.submit_upload,
-                          font=FONT_BODY).pack(side='right', pady=12)
+        self.upload_start = ctk_kit.CTkButton(
+            window, text='开始测试', command=self.submit_upload, font=FONT_BODY)
+        self.upload_start.pack(side='right', pady=12)
+        self._update_upload_start()
         window.grab_set()
         return window
+
+    def _update_upload_start(self):
+        """图床与图片路径均已选择时才允许上传测试。"""
+        ready = (self.upload_host.get() in self._host_names
+                 and bool(self.upload_image.get().strip()))
+        self.upload_start.configure(state='normal' if ready else 'disabled')
 
     def submit_upload(self):
         """仅将此刻有效的图床索引和图片传给调用者。"""

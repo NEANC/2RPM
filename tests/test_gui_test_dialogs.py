@@ -52,6 +52,36 @@ def test_capture_selection_requires_source_and_target():
         root.destroy()
 
 
+def test_capture_start_button_tracks_source_and_target():
+    """真实截图选择窗仅在来源和目标齐备时允许开始。"""
+    root = tk.Tk()
+    root.geometry('500x400')
+    root.update()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        dialogs.open_capture(callback)
+        root.update()
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        dialogs.capture_target._entry.focus_force()
+        root.update()
+        dialogs.capture_target.insert(0, '窗口标题')
+        dialogs.capture_target._entry.event_generate('<KeyRelease>')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.capture_provider._dropdown_callback('')
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        dialogs.capture_provider._dropdown_callback('ADB')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.capture_target.delete(0, 'end')
+        dialogs.capture_target._entry.event_generate('<KeyRelease>')
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        dialogs.selection_window.destroy()
+        callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
 def test_upload_selection_requires_host_and_image():
     """图床及本地图片都选定后才可提交。"""
     root = tk.Tk()
@@ -66,6 +96,37 @@ def test_upload_selection_requires_host_and_image():
         dialogs.upload_image.set('C:/image.jpg')
         dialogs.submit_upload()
         callback.assert_called_once_with(1, 'C:/image.jpg')
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+def test_upload_start_button_tracks_host_and_image():
+    """真实上传选择窗在图床及图片选择变化时即时更新。"""
+    root = tk.Tk()
+    root.geometry('500x400')
+    root.update()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        dialogs.open_upload(['beeimg'], callback)
+        root.update()
+        assert dialogs.upload_start.cget('state') == 'disabled'
+        dialogs.upload_image.set('C:/image.jpg')
+        assert dialogs.upload_start.cget('state') == 'disabled'
+        dialogs.upload_host._dropdown_callback('01 beeimg')
+        assert dialogs.upload_start.cget('state') == 'normal'
+        dialogs.upload_image.clear()
+        assert dialogs.upload_start.cget('state') == 'disabled'
+        dialogs.upload_image.entry._entry.focus_force()
+        root.update()
+        dialogs.upload_image.entry.insert(0, 'C:/another.png')
+        dialogs.upload_image.entry._entry.event_generate('<KeyRelease>')
+        assert dialogs.upload_start.cget('state') == 'normal'
+        dialogs.upload_host._dropdown_callback('请选择图床')
+        assert dialogs.upload_start.cget('state') == 'disabled'
+        dialogs.selection_window.destroy()
+        callback.assert_not_called()
     finally:
         dialogs.clear()
         root.destroy()
