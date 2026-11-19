@@ -375,6 +375,34 @@ def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, y, expect
         root.destroy()
 
 
+def test_retry_max_count_oversized_draft_survives_arrow_and_blocks_save(tmp_path):
+    """超长数字点击真实箭头不报错、不覆盖原文，并阻断落盘。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        raw = '9' * 4301
+        errors = []
+        root.report_callback_exception = lambda *args: errors.append(args)
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        page.retry_spinner._arrows.event_generate('<Button-1>', x=5, y=1)
+        root.update()
+
+        assert not errors
+        assert entry.get() == raw
+        assert app.model.get_input(path) == raw
+        assert app.model.get(path) == 3
+        assert path in app.model.input_errors
+        assert not app.controller.save()
+        assert read_document(tmp_path / 'a.yaml').tree['push']['retry']['max_count'] == 3
+    finally:
+        root.destroy()
+
+
 def test_retry_max_count_refresh_keeps_entry_and_cursor(tmp_path):
     """切页刷新保持未完成原文与活动输入框的光标。"""
     root = tk.Tk()

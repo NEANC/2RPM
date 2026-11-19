@@ -190,3 +190,24 @@ def test_partial_number_keeps_raw_draft():
     model.set_input(path, '12', kind='int')
     assert model.get(path) == 12
     assert not model.input_errors
+
+
+def test_oversized_integer_keeps_raw_draft_and_blocks_validation(tmp_path):
+    """超过整数转换限制的数字原文保留，诊断不得放行保存。"""
+    model = EditorModel(new_document())
+    path = ('push', 'retry', 'max_count')
+    original = model.get(path)
+    raw = '9' * 4301
+
+    model.set_input(path, raw, kind='int')
+
+    assert model.get_input(path) == raw
+    assert model.get(path) == original
+    assert model.dirty
+    assert model.input_errors[path].severity == 'error'
+    assert any(issue.path == path and issue.severity == 'error'
+               for issue in model.validate(tmp_path).issues)
+    model.set_input(path, '007', kind='int')
+    assert model.get_input(path) == '007'
+    assert model.get(path) == 7
+    assert path not in model.input_errors

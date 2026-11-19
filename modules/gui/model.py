@@ -65,7 +65,13 @@ class EditorModel:
 
     def set_input(self, path: tuple[str | int, ...], raw: str, *, kind: str = 'text') -> None:
         """保留原始输入，仅将可以表示的字段值写入编辑树。"""
-        if kind == 'int' and not re.fullmatch(r'[+-]?\d+', raw.strip()):
+        value = raw
+        if kind == 'int':
+            try:
+                value = int(raw.strip()) if re.fullmatch(r'[+-]?\d+', raw.strip()) else None
+            except ValueError:
+                value = None
+        if kind == 'int' and value is None:
             if self.raw_inputs.get(path) == raw:
                 return
             self.raw_inputs[path] = raw
@@ -74,7 +80,6 @@ class EditorModel:
             self.dirty = True
             self.on_edit()
             return
-        value = int(raw.strip()) if kind == 'int' else raw
         self.set(path, value)
         if kind == 'int':
             self.raw_inputs[path] = raw

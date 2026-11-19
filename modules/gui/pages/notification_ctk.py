@@ -231,7 +231,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         middle = max(1, self.retry_spinner._arrows.winfo_height()) / 2
         delta = 1 if event.y < middle else -1
-        self.retry_spinner.set(max(0, min(99, int(raw) + delta)))
+        try:
+            value = int(raw)
+        except ValueError:
+            return
+        self.retry_spinner.set(max(0, min(99, value + delta)))
 
     def _changed(self, path, variable, numeric):
         """模型刷新期间或结构异常时不写回旧值。"""
