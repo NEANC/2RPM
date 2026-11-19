@@ -174,6 +174,7 @@ def test_close_reaps_worker(tmp_path):
 
 def test_cancel_reaps_worker(tmp_path):
     """同一请求取消后清理期间保持忙态，终态完成后回收并释放槽位。"""
+    from modules.gui.test_runner import TestBusyError
     results = queue.Queue()
     runner = runner_for(results, command=(sys.executable, '-c',
                              'import time;time.sleep(30)'))
@@ -215,6 +216,8 @@ def test_cancel_reaps_worker(tmp_path):
             assert processes[0].poll() is not None
             assert all(stream.closed for stream in
                        (processes[0].stdin, processes[0].stdout, processes[0].stderr))
+            with pytest.raises(TestBusyError):
+                runner.start(request(tmp_path, request_id='second'))
         finally:
             release.set()
         result = results.get(timeout=5)
