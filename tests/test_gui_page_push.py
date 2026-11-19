@@ -164,6 +164,54 @@ def test_request_uses_selected_event_and_host(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_notify_button_without_channels_saves_draft_but_does_not_start_worker(
+        tmp_path, monkeypatch):
+    """真实通知按钮无通道时提示并补存合法草稿，不创建 worker。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        app.model.set(page.channels_path, [])
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'draft.exe')
+        notices = []
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo',
+                            lambda *args, **kwargs: notices.append(args))
+        confirmation = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirmation)
+
+        page.notify_button.invoke()
+
+        assert read_document(app.model.document.path).tree['monitor']['target'] == 'draft.exe'
+        assert read_document(app.model.document.path).tree['push']['push_channel_settings']['channels'] == []
+        assert notices and '请先添加推送通道' in notices[-1][1]
+        confirmation.assert_not_called()
+        app.controller.runner.start.assert_not_called()
+        assert app.test_session.active_request is None
+    finally:
+        root.destroy()
+
+
+def test_notify_button_cancelled_confirmation_sends_no_request(tmp_path, monkeypatch):
+    """真实通知按钮取消外发确认后不创建 worker，草稿仍补存。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'draft.exe')
+        confirmation = Mock(return_value=False)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', confirmation)
+
+        page.notify_button.invoke()
+
+        assert read_document(app.model.document.path).tree['monitor']['target'] == 'draft.exe'
+        confirmation.assert_called_once()
+        assert '固定测试消息将发往全部配置通道' in confirmation.call_args.args[1]
+        app.controller.runner.start.assert_not_called()
+        assert app.test_session.active_request is None
+    finally:
+        root.destroy()
+
+
 def test_normal_close_removes_unused_preview_session(tmp_path):
     """未发测试的会话目录也应在正常关闭时清理。"""
     root = tk.Tk()

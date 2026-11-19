@@ -140,6 +140,33 @@ def test_test_request_uses_document_directory(tmp_path):
         root.destroy()
 
 
+def test_capture_button_saves_valid_draft_without_injecting_screenshot_target(tmp_path):
+    """真实截图按钮补存合法草稿，手填目标只进入请求而不落入 YAML。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('截图设置')
+        page = app.visible_pages['截图设置']
+        original_targets = read_document(app.model.document.path).tree['push']['screenshot']['targets']
+        app.visible_pages['监视设置'].set_field(('monitor', 'target'), 'draft.exe')
+
+        page.capture_button.invoke()
+        dialogs = app.test_dialogs
+        assert dialogs.selection_window.winfo_exists()
+        assert read_document(app.model.document.path).tree['monitor']['target'] == 'draft.exe'
+        dialogs.capture_target.insert(0, '手填窗口')
+        dialogs.capture_start.invoke()
+
+        request = app.controller.runner.start.call_args.args[0]
+        assert (request.capture_provider, request.capture_target) == ('window', '手填窗口')
+        assert request.config['push']['screenshot']['targets'] == original_targets
+        saved = read_document(app.model.document.path).tree
+        assert saved['push']['screenshot']['targets'] == original_targets
+        assert saved['monitor']['target'] == 'draft.exe'
+    finally:
+        root.destroy()
+
+
 def test_capture_selection_rejects_document_change_during_request(tmp_path, monkeypatch):
     """截图选择提交后若补存改变文档身份，不得提交旧目标。"""
     root = tk.Tk()
