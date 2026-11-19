@@ -67,6 +67,86 @@ def test_save_as_cancel_does_not_display_failure(tmp_path, monkeypatch):
         root.destroy()
 
 
+@pytest.mark.parametrize('action,confirmation', [
+    ('save', None),
+    ('save_as', 'overwrite'),
+    ('save_as', 'relocate'),
+])
+def test_manual_save_cancel_preserves_draft_without_failure_popup(
+        tmp_path, monkeypatch, action, confirmation):
+    """首次选路及目标确认取消不误报失败，也不变更草稿与文件。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        source = app.model.document.path
+        source_bytes = source.read_bytes()
+        if action == 'save':
+            app.model.replace_document(new_document())
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        draft = app.model.snapshot()
+        revision = app.model.revision
+        generation = app.model.document_generation
+        target = (tmp_path / 'other' / 'copy.yaml' if confirmation == 'relocate'
+                  else tmp_path / 'copy.yaml')
+        if confirmation == 'relocate':
+            target.parent.mkdir()
+        if confirmation == 'overwrite':
+            target.write_bytes(b'original target')
+        target_bytes = target.read_bytes() if target.exists() else None
+        if action == 'save':
+            monkeypatch.setattr(app.controller, 'choose_path', lambda: None)
+        else:
+            monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                                lambda **_: str(target))
+            app.controller.confirm = lambda kind, _: 'cancel' if kind == confirmation else 'confirm'
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        button = (app.visible_pages['主页'].save_button if action == 'save'
+                  else app.visible_pages['主页'].save_as_button)
+        button.invoke()
+
+        popup.assert_not_called()
+        assert app.model.document.path == (None if action == 'save' else source)
+        assert app.model.snapshot() == draft
+        assert app.model.revision == revision
+        assert app.model.document_generation == generation
+        assert app.model.dirty
+        assert source.read_bytes() == source_bytes
+        assert (target.read_bytes() if target.exists() else None) == target_bytes
+    finally:
+        root.destroy()
+
+
+def test_first_save_write_failure_displays_failure_and_keeps_draft(tmp_path, monkeypatch):
+    """首次选定路径后写入失败仍提示，并保留无路径草稿。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.replace_document(new_document())
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        target = tmp_path / 'first.yaml'
+        app.controller.choose_path = lambda: target
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        def fail(*args, **kwargs):
+            """模拟首次写盘失败。"""
+            raise ConfigSaveError('secret-token')
+
+        monkeypatch.setattr('modules.gui.controller.save_document', fail)
+        app.visible_pages['主页'].save_button.invoke()
+
+        popup.assert_called_once()
+        assert 'secret-token' not in str(popup.call_args)
+        assert app.model.document.path is None
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.model.dirty
+        assert not target.exists()
+    finally:
+        root.destroy()
+
+
 def test_background_save_failure_marks_visible_path_without_popups(tmp_path, monkeypatch):
     """切页及延迟保存失败沿用路径行提示，不重复弹窗。"""
     root = tk.Tk()
