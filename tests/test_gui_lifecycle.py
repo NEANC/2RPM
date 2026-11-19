@@ -229,6 +229,28 @@ def test_busy_test_is_visible_without_resubmitting(tmp_path, monkeypatch, action
         root.destroy()
 
 
+@pytest.mark.parametrize('action', ['_require_saved', '_before_list_edit'])
+def test_operation_flush_failure_is_visible(tmp_path, monkeypatch, action):
+    """操作补存失败时显示可见提示并保留原文草稿。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set_input(('monitor', 'common', 'max_wait'), '-')
+        app.save_coordinator.flush = Mock(return_value=False)
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+        assert not getattr(app, action)()
+        popup.assert_called_once()
+        assert '未保存' in popup.call_args.args[1]
+        assert app.model.get_input(('monitor', 'common', 'max_wait')) == '-'
+    finally:
+        root.destroy()
+
+
 def test_capture_selection_rejects_changed_document(tmp_path):
     """选择截图目标期间文档被重载时要求重新选择。"""
     from tests.gui_support import make_app

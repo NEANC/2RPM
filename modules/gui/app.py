@@ -409,6 +409,7 @@ class App:
         if self.save_coordinator.flush():
             return True
         self.status.configure(text='配置未保存，操作已停止')
+        messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。', parent=self.root)
         return False
 
     def _before_list_edit(self):
@@ -422,6 +423,9 @@ class App:
                 message_page.refresh()
             self.status.configure(text='配置已更新，请重新选择列表项')
             return False
+        if not saved:
+            self.status.configure(text='配置未保存，操作已停止')
+            messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。', parent=self.root)
         return saved
 
     def drain_results(self):
