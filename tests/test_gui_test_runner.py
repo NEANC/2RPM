@@ -218,6 +218,7 @@ def test_cancel_reaps_worker(tmp_path):
                        (processes[0].stdin, processes[0].stdout, processes[0].stderr))
             with pytest.raises(TestBusyError):
                 runner.start(request(tmp_path, request_id='second'))
+            assert len(processes) == 1
         finally:
             release.set()
         result = results.get(timeout=5)
