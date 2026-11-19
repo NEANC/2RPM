@@ -580,9 +580,10 @@ class App:
 
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
+        generation = self.model.document_generation
         if not self.save_coordinator.flush():
             self.status.configure(text='配置未保存，操作已停止')
-            if not self.controller.conflicted:
+            if not self.controller.conflicted and self.model.document_generation == generation:
                 messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。',
                                      parent=self.root)
             return

@@ -6,6 +6,7 @@
 import tkinter as tk
 from unittest.mock import Mock
 
+from modules.config_document import read_document, save_document
 from tests.gui_support import make_app
 
 
@@ -29,6 +30,45 @@ def test_start_cli_conflict_choice_does_not_show_second_popup(tmp_path, monkeypa
         error.assert_not_called()
         launch.assert_not_called()
         assert app.controller.conflicted
+    finally:
+        root.destroy()
+
+
+def test_start_cli_reload_discard_stops_without_second_error(tmp_path, monkeypatch):
+    """启动时发现外部有效变更，确认放弃草稿后只重载而不启动。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        choice = Mock(return_value=True)
+        error = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', choice)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        confirmations = []
+
+        def confirm(kind, detail):
+            """记录真正触发的放弃确认。"""
+            confirmations.append(kind)
+            return 'confirm' if kind == 'discard_external' else 'cancel'
+
+        app.controller.confirm = confirm
+        path = app.model.document.path
+        generation = app.model.document_generation
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        external = read_document(path)
+        external.tree['monitor']['target'] = 'external.exe'
+        save_document(external, path, expected_fingerprint=external.fingerprint)
+
+        app.start_cli()
+
+        choice.assert_called_once()
+        assert confirmations == ['discard_external']
+        launch.assert_not_called()
+        error.assert_not_called()
+        assert app.model.document_generation != generation
+        assert app.model.get(('monitor', 'target')) == 'external.exe'
+        assert not app.controller.conflicted
     finally:
         root.destroy()
 
