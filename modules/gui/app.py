@@ -590,7 +590,8 @@ class App:
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
         if result is None:
-            if not self.controller.cli_cancelled and not self.controller.conflicted:
+            if (not self.controller.cli_cancelled and not self.controller.conflicted
+                    and self.model.document_generation == generation):
                 messagebox.showerror('启动 CLI',
                                      '未能启动 CLI，请检查配置、磁盘文件或保存状态。', parent=self.root)
             return

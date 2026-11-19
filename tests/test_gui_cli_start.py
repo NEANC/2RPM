@@ -177,6 +177,43 @@ def test_start_cli_repeat_launch_cancel_has_no_error(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_start_cli_confirm_save_as_switches_generation_without_error(tmp_path, monkeypatch):
+    """重复启动确认中显式另存为切换文档时外层不启动也不误报。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.launch_count = 1
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        destination = tmp_path / 'another.yaml'
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                            Mock(return_value=str(destination)))
+        generation = app.model.document_generation
+        confirmations = []
+
+        def confirm(kind, detail):
+            """在外层启动确认模态期间执行真实另存为。"""
+            confirmations.append(kind)
+            if kind == 'repeat_launch':
+                app.save_as()
+            return 'confirm'
+
+        app.controller.confirm = confirm
+
+        app.start_cli()
+
+        assert confirmations == ['repeat_launch']
+        assert app.model.document_generation != generation
+        assert app.model.document.path == destination
+        assert destination.exists()
+        launch.assert_not_called()
+        error.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_start_cli_conflict_after_flush_has_one_dialog(tmp_path, monkeypatch):
     """补存后磁盘变化仍只显示冲突对话框而不重复报错。"""
     root = tk.Tk()
