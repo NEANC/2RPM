@@ -7,6 +7,7 @@ import copy
 import hashlib
 import math
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -18,6 +19,15 @@ from modules.gui.launcher import LaunchResult, launch_cli
 from modules.gui.model import EditorModel
 from modules.gui.test_runner import TestRunner
 from modules.monitor_target import resolve_monitor_target
+
+
+class SaveResult(Enum):
+    """单次保存调用的成功、取消、失败与被重入成功取代。"""
+
+    SAVED = 'saved'
+    CANCELLED = 'cancelled'
+    FAILED = 'failed'
+    SUPERSEDED = 'superseded'
 
 
 class Controller:
@@ -121,21 +131,23 @@ class Controller:
 
     def save_as(self, picker) -> bool:
         """选定路径前不向原文件补存。"""
+        return self._save_as_result(picker) is SaveResult.SAVED
+
+    def _save_as_result(self, picker) -> SaveResult:
+        """返回本次另存的局部结果，不读取重入调用的共享取消标志。"""
         if self.runner.active is True:
-            return False
-        cancelled = [False]
+            return SaveResult.FAILED
 
         def operation():
-            """记录本次另存的取消结果，避免事务收尾重入覆盖。"""
-            try:
-                return self.save(destination=picker(), as_new=True)
-            finally:
-                cancelled[0] = self.save_cancelled
+            """在事务内执行路径选择与写盘。"""
+            return self._save_result(destination=picker(), as_new=True)
 
+        result = SaveResult.FAILED
         try:
-            return self._transaction(operation)
+            result = self._transaction(operation)
+            return result
         finally:
-            self.save_cancelled = cancelled[0]
+            self.save_cancelled = result is SaveResult.CANCELLED
 
     def check_external(self) -> bool:
         """干净草稿自动重载有效磁盘版本，否则保留草稿并阻断覆盖。"""
@@ -203,36 +215,45 @@ class Controller:
 
     def save(self, destination: Path | None = None, *, as_new: bool = False) -> bool:
         """对最终规范化目标确认、检查指纹并原子保存。"""
-        cancelled = [False]
-        self.save_cancelled = False
-        try:
-            return self._save(destination, as_new=as_new, cancelled=cancelled)
-        finally:
-            self.save_cancelled = cancelled[0]
+        return self._save_result(destination, as_new=as_new) is SaveResult.SAVED
 
-    def _save(self, destination: Path | None, *, as_new: bool, cancelled: list[bool]) -> bool:
-        """执行保存事务，取消状态仅归属于当前调用。"""
+    def _save_result(self, destination: Path | None = None, *, as_new: bool = False) -> SaveResult:
+        """以本次调用的结果驱动兼容性取消标志。"""
+        self.save_cancelled = False
+        result = SaveResult.FAILED
+        try:
+            result = self._save(destination, as_new=as_new)
+            return result
+        finally:
+            self.save_cancelled = result is SaveResult.CANCELLED
+
+    def _save(self, destination: Path | None, *, as_new: bool) -> SaveResult:
+        """执行保存事务并直接返回本次调用的结果。"""
         if self.model.input_errors:
-            return False
+            return SaveResult.FAILED
         selected = destination if as_new else destination or self.model.document.path or self.choose_path()
         if selected is None:
-            cancelled[0] = True
-            return False
+            return SaveResult.CANCELLED
         target = normalize_config_path(Path(selected), program_dir=self.program_dir)
         previous = self.model.document.path
         same = target == previous
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
+            dirty = self.model.dirty
             if self.check_external():
-                return False
+                if self.model.document_generation != generation and not self.model.dirty:
+                    return SaveResult.SUPERSEDED if dirty else SaveResult.SAVED
+                return SaveResult.FAILED
             if self.model.document_generation != generation:
-                return not self.model.dirty
+                if self.model.dirty:
+                    return SaveResult.FAILED
+                return SaveResult.SUPERSEDED if dirty else SaveResult.SAVED
         revision = self.model.revision
         document = self.model.materialize()
         if self.conflicted and same:
-            return False
+            return SaveResult.FAILED
         if self.conflicted and not as_new and previous is not None:
-            return False
+            return SaveResult.FAILED
         if not same and previous is not None and target.parent != previous.parent:
             mode = self.model.get(('monitor', 'mode'))
             monitor = self.model.get(('monitor', 'target'))
@@ -246,8 +267,7 @@ class Controller:
                       'target': str(target), 'resolved_target': resolved_target,
                       'resolved_cwd': resolved_cwd}
             if self.confirm('relocate', detail) != 'confirm':
-                cancelled[0] = True
-                return False
+                return SaveResult.CANCELLED
         if same:
             expected = self.model.document.fingerprint
         else:
@@ -256,23 +276,22 @@ class Controller:
             except FileNotFoundError:
                 data = None
             except OSError:
-                return False
+                return SaveResult.FAILED
             expected = hashlib.sha256(data).hexdigest() if data is not None else None
             if data is not None and self.confirm('overwrite', str(target)) != 'confirm':
-                cancelled[0] = True
-                return False
+                return SaveResult.CANCELLED
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
-                return False
+                return SaveResult.FAILED
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:
             if same:
                 self._mark_conflict()
-            return False
+            return SaveResult.FAILED
         except ConfigSaveError:
-            return False
+            return SaveResult.FAILED
         newer = self.model.revision != revision
         changed_tree = saved.tree != document.tree
         if newer:
@@ -292,7 +311,7 @@ class Controller:
             self.on_saved()
         else:
             self.on_change()
-        return True
+        return SaveResult.SAVED
 
     def start_cli(self) -> LaunchResult | None:
         """先保存并复验磁盘候选，再创建独立 CLI 控制台。"""

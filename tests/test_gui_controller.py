@@ -350,7 +350,7 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     controller.model.set(('monitor', 'target'), 'draft.exe')
     source.path.write_bytes(b'external')
     generation = controller.model.document_generation
-    original_save_as = controller.save_as
+    original_save_as = controller._save_as_result
     results = []
 
     def record_save_as(picker):
@@ -359,7 +359,7 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
         results.append(result)
         return result
 
-    controller.save_as = record_save_as
+    controller._save_as_result = record_save_as
     app = object.__new__(App)
     app.controller = controller
     app.model = controller.model
@@ -376,7 +376,9 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
 
     app.save_as()
 
-    assert results == [True, False]
+    from modules.gui.controller import SaveResult
+
+    assert results == [SaveResult.SAVED, SaveResult.SUPERSEDED]
     assert controller.model.document_generation > generation
     assert controller.model.document.path == destination
     assert not controller.model.dirty
@@ -385,6 +387,54 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     assert not any(call.kwargs.get('text') == '配置未另存'
                    for call in app.status.configure.call_args_list)
     alert.assert_not_called()
+
+
+def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, monkeypatch):
+    """内层另存成功不能掩盖外层目标的写入失败。"""
+    from modules.gui.app import App
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    inner = tmp_path / 'inner.yaml'
+    outer = tmp_path / 'outer.yaml'
+    outer.write_bytes(b'existing')
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.runner.active = False
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    write = __import__('modules.gui.controller', fromlist=['save_document']).save_document
+
+    def save_with_outer_failure(document, path, *, expected_fingerprint):
+        """只拒绝外层目标的写入。"""
+        if path == outer:
+            raise ConfigSaveError('写入失败')
+        return write(document, path, expected_fingerprint=expected_fingerprint)
+
+    def confirm(kind, detail):
+        """外层覆盖确认期间另存到内层目标。"""
+        if kind == 'overwrite':
+            assert controller.save_as(lambda: inner) is True
+        return 'confirm'
+
+    controller.confirm = confirm
+    app = object.__new__(App)
+    app.controller = controller
+    app.model = controller.model
+    app.root = Mock()
+    app.status = Mock()
+    alert = Mock()
+    monkeypatch.setattr('modules.gui.controller.save_document', save_with_outer_failure)
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                        lambda **_: str(outer))
+    monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
+
+    app.save_as()
+
+    app.status.configure.assert_called_once_with(text='配置未另存')
+    alert.assert_called_once_with('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                  parent=app.root)
+    assert controller.model.document.path == inner
+    assert inner.exists()
+    assert outer.read_bytes() == b'existing'
 
 
 @pytest.mark.parametrize('phase', ['conflict', 'overwrite', 'relocate', 'read', 'write'])

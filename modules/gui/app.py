@@ -23,6 +23,7 @@ from modules.gui.appearance import (AppearancePreferences, COLORS, apply_appeara
                                     FONT_BODY, FONT_BODY_BOLD, FONT_BRAND, FONT_GROUP,
                                     FONT_SMALL, load_preferences, preferences_path,
                                     save_preferences)
+from modules.gui.controller import SaveResult
 from modules.gui.pages import (external, home, logs, monitor, notification_ctk,
                                screenshot, settings)
 from modules.gui.protocol import TestRequest, encode_request
@@ -490,28 +491,23 @@ class App:
 
     def save(self):
         """只通过控制器保存编辑文档。"""
-        if not self.controller.save():
+        result = self.controller._save_result()
+        if result is SaveResult.FAILED:
             self.status.configure(text='配置未保存')
-            if not self.controller.save_cancelled:
-                messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
-                                     parent=self.root)
+            messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                 parent=self.root)
 
     def save_as(self):
         """选择另存为目标，由控制器规范化并检查冲突。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
-        generation = self.model.document_generation
-        path = self.model.document.path
-        if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None) and not (
-                    self.model.document_generation != generation
-                    and self.model.document.path != path
-                    and not self.model.dirty and not self.model.input_errors):
+        result = self.controller._save_as_result(lambda: filedialog.asksaveasfilename(
+            parent=self.root, defaultextension='.yaml') or None)
+        if result is SaveResult.FAILED:
             self.status.configure(text='配置未另存')
-            if not self.controller.save_cancelled:
-                messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
-                                     parent=self.root)
+            messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                 parent=self.root)
 
     def show_path(self):
         """展示完整路径而非缩略的文件名。"""
