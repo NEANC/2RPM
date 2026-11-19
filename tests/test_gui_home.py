@@ -39,6 +39,66 @@ def test_cli_creation_result_is_visible(tmp_path, monkeypatch, created, message,
         root.destroy()
 
 
+def test_cli_button_invalidates_old_validation_and_saves_before_launch(tmp_path, monkeypatch):
+    """真实主页编辑后旧校验消失，启动使用写盘后的配置。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.validate()
+        home = app.visible_pages['主页']
+        assert home.check.cget('text') != '尚未校验'
+        app.model.set(('monitor', 'target'), 'edited.exe')
+        assert home.check.cget('text') == '尚未校验'
+        path = app.model.document.path
+        launch = Mock(return_value=SimpleNamespace(created=True, message='已创建 CLI 进程'))
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', Mock())
+
+        home.start_button.invoke()
+
+        assert read_document(path).tree['monitor']['target'] == 'edited.exe'
+        launch.assert_called_once_with(app.controller.cli_command, path.resolve())
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('reason', ['write_failure', 'cancel', 'conflict', 'incomplete'])
+def test_cli_button_never_creates_process_without_saved_config(tmp_path, monkeypatch, reason):
+    """真实主页的四种未落盘状态均不创建 CLI。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        original = path.read_bytes()
+        launch = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', Mock())
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', lambda *_, **__: None)
+        if reason == 'incomplete':
+            app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
+        else:
+            app.model.set(('monitor', 'target'), 'draft.exe')
+            if reason == 'write_failure':
+                monkeypatch.setattr('modules.gui.controller.save_document',
+                                    Mock(side_effect=ConfigSaveError('write failed')))
+            elif reason == 'cancel':
+                app.model.replace_document(new_document())
+                app.model.set(('monitor', 'target'), 'draft.exe')
+                app.controller.choose_path = lambda: None
+            else:
+                path.write_bytes(original + b'\n# external\n')
+
+        app.visible_pages['主页'].start_button.invoke()
+
+        launch.assert_not_called()
+        assert app.model.get(('monitor', 'target')) == ('draft.exe' if reason != 'incomplete'
+                                                       else app.model.document.tree['monitor']['target'])
+        if reason in ('write_failure', 'incomplete'):
+            assert path.read_bytes() == original
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('reason', ['repeat_cancel', 'normalize_cancel',
                                     'invalid_config', 'unreadable_disk'])
 def test_cli_none_distinguishes_cancel_from_blocked_launch(tmp_path, monkeypatch, reason):

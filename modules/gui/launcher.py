@@ -55,7 +55,8 @@ def launch_cli(command: tuple[str, ...], config_path: Path) -> LaunchResult:
     """只创建拥有独立控制台的 CLI，不跟踪其退出或接管标准流。"""
     try:
         subprocess.Popen([*command, '-c', str(config_path.resolve())],
-                         shell=False, creationflags=subprocess.CREATE_NEW_CONSOLE,
+                         shell=False, cwd=str(Path(command[0]).resolve().parent),
+                         creationflags=subprocess.CREATE_NEW_CONSOLE,
                          close_fds=True, stdin=None, stdout=None, stderr=None)
     except OSError:
         return LaunchResult(False, '无法创建 CLI 进程')

@@ -49,6 +49,22 @@ def test_existing_bare_watch_target_still_starts(tmp_path, monkeypatch):
     launch.assert_called_once()
 
 
+def test_launch_validates_reread_disk_tree_not_old_draft(tmp_path, monkeypatch):
+    """复验实际磁盘候选，不能用旧草稿的检查结果放行。"""
+    document = save_document(new_document(), tmp_path / 'config.yaml',
+                             expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, document)
+    disk_tree = controller.model.snapshot()
+    disk_tree['monitor']['mode'] = 'invalid'
+    monkeypatch.setattr('modules.gui.controller.read_document',
+                        lambda _: ConfigDocument(document.path, disk_tree, document.fingerprint))
+    launch = Mock()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    assert controller.start_cli() is None
+    launch.assert_not_called()
+
+
 def test_cancel_keeps_dirty(tmp_path):
     """取消替换文档后保持原有草稿及代次。"""
     controller, _, runner = make_controller(tmp_path, answers=['cancel', 'cancel'])
@@ -928,14 +944,14 @@ def test_normalization_diff_does_not_send_credential_values_to_dialog(tmp_path, 
     assert controller.save()
     value = 'private-key-98765'
     change = Change(('push', 'screenshot', 'image_host', 0, 'token'), value, '', 'set')
-    original_validate = controller.model.validate
+    original_validate = EditorModel.validate
 
-    def changed_candidate(config_dir):
+    def changed_candidate(self, config_dir):
         """模拟候选清理中含有敏感值。"""
-        candidate = original_validate(config_dir)
+        candidate = original_validate(self, config_dir)
         return Candidate(candidate.tree, candidate.issues, (change,))
 
-    monkeypatch.setattr(controller.model, 'validate', changed_candidate)
+    monkeypatch.setattr(EditorModel, 'validate', changed_candidate)
     assert controller.start_cli() is None
     assert 'private-key-98765' not in repr(confirm.call_args.args[1])
 
@@ -959,7 +975,8 @@ def test_normalization_with_deleted_unknown_section_is_explicit(tmp_path, monkey
     path = controller.model.document.path
     tree = controller.model.materialize().tree
     tree['unknown'] = {'keep': 'value'}
-    controller.model.replace_document(ConfigDocument(path, tree, controller.model.document.fingerprint))
+    path.write_bytes(path.read_bytes() + b'\nunknown:\n  keep: value\n')
+    controller.model.replace_document(read_document(path))
     original = path.read_bytes()
     monkeypatch.setattr('modules.gui.controller.launch_cli', Mock())
     assert controller.start_cli() is None
@@ -1014,14 +1031,14 @@ def test_start_rejects_unknown_cleanup_after_normalization(tmp_path, monkeypatch
     controller, _, _ = make_controller(tmp_path, answers=['confirm'])
     assert controller.save()
     change = Change(('monitor', 'common', 'loop_interval'), '1s', '2s', 'set')
-    original = controller.model.validate
+    original = EditorModel.validate
 
-    def persistent_change(directory):
+    def persistent_change(self, directory):
         """模拟规则在规范化之后仍报告同一项差异。"""
-        candidate = original(directory)
+        candidate = original(self, directory)
         return Candidate(candidate.tree, candidate.issues, (change,))
 
-    monkeypatch.setattr(controller.model, 'validate', persistent_change)
+    monkeypatch.setattr(EditorModel, 'validate', persistent_change)
     launch = Mock()
     monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
     assert controller.start_cli() is None

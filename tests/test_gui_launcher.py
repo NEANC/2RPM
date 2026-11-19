@@ -135,6 +135,7 @@ def test_launch_never_manages_cli(monkeypatch, tmp_path):
     assert args[0] == [str(tmp_path / '2RPM.exe'), '-c',
                        str(config_path.resolve())]
     assert kwargs['shell'] is False
+    assert kwargs['cwd'] == str((tmp_path / '2RPM.exe').parent.resolve())
     assert kwargs['creationflags'] == subprocess.CREATE_NEW_CONSOLE
     assert all(kwargs.get(k) is None for k in ('stdin', 'stdout', 'stderr'))
     assert kwargs['close_fds'] is True

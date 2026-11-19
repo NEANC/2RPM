@@ -367,8 +367,9 @@ class Controller:
         if disk.fingerprint != self.model.document.fingerprint:
             self._mark_conflict()
             return None
-        candidate = self.model.validate(path.parent)
-        if any(issue.severity == 'error' for issue in candidate.issues):
+        candidate = EditorModel(disk).validate(path.parent)
+        if (any(issue.severity == 'error' for issue in candidate.issues)
+                or any(issue.severity == 'error' for issue in self.model.validate(path.parent).issues)):
             return None
         if candidate.changes:
             summary = tuple({'path': change.path, 'operation': change.operation,
@@ -392,7 +393,7 @@ class Controller:
                 return None
             self.model.accept_saved(saved)
             self.on_change()
-            verified = self.model.validate(path.parent)
+            verified = EditorModel(disk).validate(path.parent)
             if verified.changes or any(issue.severity == 'error' for issue in verified.issues):
                 return None
         if self.launch_count:
