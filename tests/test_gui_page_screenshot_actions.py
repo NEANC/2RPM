@@ -563,13 +563,26 @@ def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
         assert request is not None
         app.controller.runner.start.assert_called_once_with(request)
         dialogs.hide_result()
+        app.controller.runner.active = True
+        app.controller.runner.results.put(GuiTestResult(
+            'older', request.document_generation, request.revision,
+            'failure', '旧结果', ()))
         app.controller.runner.results.put(GuiTestResult(
             request.request_id, request.document_generation, request.revision,
             'failure' if outcome == 'cancelled' else outcome,
             '测试已取消' if outcome == 'cancelled' else '测试失败', ()))
-        app.drain_results()
+        for _ in range(2):
+            app._poll()
+            assert app.test_session.active_request is request
+            assert app.controller.runner.results.qsize() == 2
+            assert app.test_dialogs.result_label.cget('text') == '测试进行中'
         app.controller.runner.active = False
-        app._sync_test_buttons()
+        app._poll()
+        assert app.test_session.active_request is None
+        assert app.controller.runner.results.empty()
+        assert '旧结果' not in app.result_text
+        app._poll()
+        assert app.controller.runner.results.empty()
         assert (page.capture_button.cget('state'), page.upload_button.cget('state'),
                 app.visible_pages['消息推送设置'].notify_button.cget('state')) == (
                     'normal', 'normal', 'normal')
@@ -651,13 +664,26 @@ def test_notify_terminal_has_no_reopen_or_independent_cancel(tmp_path, monkeypat
         assert app.test_dialogs.result_window is None
         app.cancel_test()
         app.controller.runner.cancel.assert_not_called()
+        app.controller.runner.active = True
+        app.controller.runner.results.put(GuiTestResult(
+            'older', request.document_generation, request.revision,
+            'failure', '旧结果', ()))
         app.controller.runner.results.put(GuiTestResult(
             request.request_id, request.document_generation, request.revision,
             'failure' if outcome == 'cancelled' else outcome,
             '测试已取消' if outcome == 'cancelled' else '发送失败', ()))
-        app.drain_results()
+        for _ in range(2):
+            app._poll()
+            assert app.test_session.active_request is request
+            assert app.controller.runner.results.qsize() == 2
+            errors.assert_not_called()
         app.controller.runner.active = False
-        app._sync_test_buttons()
+        app._poll()
+        assert app.test_session.active_request is None
+        assert app.controller.runner.results.empty()
+        assert '旧结果' not in app.result_text
+        app._poll()
+        assert app.controller.runner.results.empty()
         assert app.test_dialogs.result_window is None
         assert button.cget('state') == 'normal'
         assert button.cget('text') == '通知测试'
