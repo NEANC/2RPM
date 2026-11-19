@@ -4,9 +4,11 @@
 """GUI 页面行为（GUI 测试分片）。"""
 
 import queue
+import sys
 import tkinter as tk
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -18,6 +20,7 @@ from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestRequest as GuiTestRequest
 from modules.gui.protocol import TestResult as GuiTestResult
+from modules.gui.test_runner import TestRunner as GuiTestRunner
 
 
 from tests.gui_support import make_app
@@ -539,6 +542,72 @@ def test_real_result_waits_for_runner_reclaim(tmp_path, monkeypatch, action):
         root.destroy()
 
 
+def test_real_worker_capture_failure_waits_for_cleanup_and_stays_terminal(
+        tmp_path, monkeypatch):
+    """真实 worker 截图失败在清理释放后才展示终态，后续轮询不重复展示。"""
+    root = tk.Tk()
+    release = threading.Event()
+    runner = None
+    try:
+        app = make_app(root, tmp_path)
+        runner = GuiTestRunner((sys.executable, '-m', 'modules.gui.worker'),
+                               queue.Queue(), worker_cwd=Path(__file__).resolve().parents[1])
+        app.controller.runner = runner
+        app.test_session.runner = runner
+        cleaning = threading.Event()
+        original_clean = runner._clean_request
+
+        def blocked_clean(request):
+            """真实进程返回后阻塞监督线程的产物清理。"""
+            cleaning.set()
+            assert release.wait(10)
+            original_clean(request)
+
+        monkeypatch.setattr(runner, '_clean_request', blocked_clean)
+        assert app._request('capture', target_index=999)
+        request = app.test_session.active_request
+        assert cleaning.wait(10)
+        assert runner.active
+        assert runner.results.empty()
+        for _ in range(2):
+            app._poll()
+            assert app.test_session.active_request is request
+            assert app.test_dialogs.result_label.cget('text') == '测试进行中'
+
+        release.set()
+        deadline = time.monotonic() + 10
+        while runner.active and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not runner.active
+        assert runner.results.qsize() == 1
+        app._poll()
+        terminal = app.result_text
+        label = app.test_dialogs.result_label.cget('text')
+        window = app.test_dialogs.result_window
+        assert app.test_session.active_request is None
+        assert terminal == 'failure: 测试执行失败'
+        assert app.status.cget('text') == terminal
+        assert label == ('截图失败\n问题：测试执行失败\n解决方案：'
+                         '请检查截图来源和目标后重试。')
+        assert window.winfo_viewable()
+        assert runner.results.empty()
+        for _ in range(2):
+            app._poll()
+            assert app.result_text == terminal
+            assert app.status.cget('text') == terminal
+            assert app.test_dialogs.result_window is window
+            assert app.test_dialogs.result_label.cget('text') == label
+            assert window.winfo_viewable()
+            assert runner.results.empty()
+    finally:
+        release.set()
+        if runner is not None:
+            runner.close()
+            if runner._supervisor is not None:
+                runner._supervisor.join(timeout=10)
+        root.destroy()
+
+
 @pytest.mark.parametrize('action', ['capture', 'upload'])
 @pytest.mark.parametrize('outcome', ['success', 'failure', 'cancelled'])
 def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
@@ -562,6 +631,17 @@ def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
         request = app.test_session.active_request
         assert request is not None
         app.controller.runner.start.assert_called_once_with(request)
+        reason = '测试已取消' if outcome == 'cancelled' else (
+            '截图目标不可用' if action == 'capture' else '图床连接失败')
+        status = 'failure' if outcome == 'cancelled' else outcome
+        upload_url = ('https://example.com/uploaded.jpg' if action == 'upload'
+                      and outcome == 'success' else '')
+        final_text = (('截图成功' if action == 'capture' else
+                       '上传成功\n回调地址：' + upload_url) if outcome == 'success' else
+                      ('截图失败' if action == 'capture' else '上传失败') +
+                      '\n问题：' + reason + '\n解决方案：' +
+                      ('请检查截图来源和目标后重试。' if action == 'capture' else
+                       '请检查图床配置和网络连接后重试。'))
         dialogs.hide_result()
         app.controller.runner.active = True
         app.controller.runner.results.put(GuiTestResult(
@@ -569,8 +649,7 @@ def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
             'failure', '旧结果', ()))
         app.controller.runner.results.put(GuiTestResult(
             request.request_id, request.document_generation, request.revision,
-            'failure' if outcome == 'cancelled' else outcome,
-            '测试已取消' if outcome == 'cancelled' else '测试失败', ()))
+            status, reason, (), upload_url))
         for _ in range(2):
             app._poll()
             assert app.test_session.active_request is request
@@ -580,17 +659,34 @@ def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
         app._poll()
         assert app.test_session.active_request is None
         assert app.controller.runner.results.empty()
-        assert '旧结果' not in app.result_text
-        app._poll()
-        assert app.controller.runner.results.empty()
+        assert app.result_text == f'{status}: {reason}'
+        assert app.status.cget('text') == app.result_text
+        assert dialogs.result_label.cget('text') == '测试进行中'
+        result_window = dialogs.result_window
+        assert not result_window.winfo_viewable()
+        for _ in range(2):
+            app._poll()
+            assert app.controller.runner.results.empty()
+            assert app.result_text == f'{status}: {reason}'
+            assert dialogs.result_window is result_window
+            assert dialogs.result_label.cget('text') == '测试进行中'
+            assert not result_window.winfo_viewable()
         assert (page.capture_button.cget('state'), page.upload_button.cget('state'),
                 app.visible_pages['消息推送设置'].notify_button.cget('state')) == (
                     'normal', 'normal', 'normal')
         button.invoke()
         assert dialogs.result_window.winfo_viewable()
+        assert dialogs.result_window is result_window
+        assert dialogs.result_label.cget('text') == final_text
         assert dialogs.retry.winfo_manager() == 'pack'
         assert not dialogs.cancel_button.winfo_manager()
         app.controller.runner.start.assert_called_once_with(request)
+        for _ in range(2):
+            app._poll()
+            assert dialogs.result_window is result_window
+            assert dialogs.result_label.cget('text') == final_text
+            assert dialogs.result_window.winfo_viewable()
+            app.controller.runner.start.assert_called_once_with(request)
         dialogs.retry.invoke()
         assert dialogs.selection_window.winfo_exists()
         app.controller.runner.start.assert_called_once_with(request)
@@ -659,6 +755,9 @@ def test_notify_terminal_has_no_reopen_or_independent_cancel(tmp_path, monkeypat
         button.invoke()
         request = app.test_session.active_request
         assert request is not None
+        status = 'failure' if outcome == 'cancelled' else outcome
+        reason = ('测试已取消' if outcome == 'cancelled' else
+                  '通知发送失败' if outcome == 'failure' else '')
         assert button.cget('state') == 'disabled'
         assert button.cget('text') == '发送中…'
         assert app.test_dialogs.result_window is None
@@ -670,8 +769,7 @@ def test_notify_terminal_has_no_reopen_or_independent_cancel(tmp_path, monkeypat
             'failure', '旧结果', ()))
         app.controller.runner.results.put(GuiTestResult(
             request.request_id, request.document_generation, request.revision,
-            'failure' if outcome == 'cancelled' else outcome,
-            '测试已取消' if outcome == 'cancelled' else '发送失败', ()))
+            status, reason, ()))
         for _ in range(2):
             app._poll()
             assert app.test_session.active_request is request
@@ -681,9 +779,19 @@ def test_notify_terminal_has_no_reopen_or_independent_cancel(tmp_path, monkeypat
         app._poll()
         assert app.test_session.active_request is None
         assert app.controller.runner.results.empty()
-        assert '旧结果' not in app.result_text
-        app._poll()
-        assert app.controller.runner.results.empty()
+        assert app.result_text == f'{status}: {reason}'
+        assert app.status.cget('text') == app.result_text
+        if outcome == 'success':
+            errors.assert_not_called()
+        else:
+            errors.assert_called_once_with('通知测试失败', reason, parent=root)
+        for _ in range(2):
+            app._poll()
+            assert app.controller.runner.results.empty()
+            assert app.result_text == f'{status}: {reason}'
+            assert app.status.cget('text') == app.result_text
+            assert errors.call_count == (0 if outcome == 'success' else 1)
+            assert app.test_dialogs.result_window is None
         assert app.test_dialogs.result_window is None
         assert button.cget('state') == 'normal'
         assert button.cget('text') == '通知测试'
