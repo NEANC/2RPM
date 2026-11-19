@@ -100,6 +100,46 @@ def test_validation_navigation_focuses_monitor_target_entry(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('raw', ['', '12x', '007'])
+def test_retry_diagnostic_focuses_inner_entry_without_losing_raw_input(tmp_path, raw):
+    """重试次数诊断落在真实输入框，刷新和重复导航不覆盖原文。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        app.show_page('消息推送设置')
+        root.update()
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        assert app.model.get_input(path) == raw
+        issue = SimpleNamespace(path=path, severity='error')
+        for _ in range(2):
+            app.focus_validation_issue('消息推送设置', issue)
+            root.update()
+            assert root.focus_get() is entry
+            assert page.fields[path][1] is entry
+            assert entry.get() == raw
+            assert app.model.get_input(path) == raw
+    finally:
+        root.destroy()
+
+
+def test_hidden_push_diagnostic_only_offers_yaml_hint(tmp_path):
+    """隐藏的截图通知高级字段仍仅给出 YAML 提示。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.focus_validation_issue('消息推送设置', SimpleNamespace(
+            path=('push', 'templates', 'on_end', 'capture_screenshot')))
+        assert app.current_page == '消息推送设置'
+        assert 'YAML' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_external_action_disable_restore_is_memory_only(tmp_path):
     """清空动作路径停用后可恢复，替换文档后旧草稿不再可选。"""
     root = tk.Tk()

@@ -180,7 +180,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                 self.retry_variable.trace_add('write', lambda *_: self._max_retry_changed())
                 self.retry_spinner._arrows.bind('<Button-1>', self._step_retry)
                 self.retry_spinner.pack(side='right')
-                self.fields[path] = (self.retry_variable, self.retry_spinner, 'int')
+                self.fields[path] = (self.retry_variable, self.retry_spinner.entry._entry, 'int')
             else:
                 self._entry(row, path, side='right', expand=False, width=140)
         ctk_kit.CTkFrame(card, fg_color='transparent', height=(
@@ -753,8 +753,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             for path, (variable, widget, kind) in self.fields.items():
                 raw = self._safe_input(path) if kind == 'int' else str(self._safe_get(path) or '')
                 variable.set(raw)
-                if widget is self.retry_spinner and widget.entry.get() != raw:
-                    widget.set(raw)
+                if widget is self.retry_spinner.entry._entry and widget.get() != raw:
+                    self.retry_spinner.set(raw)
             self.retry_spinner.set_readonly(
                 not path_writable(self.model, ('push', 'retry', 'max_count')))
             self._render_channels()
@@ -766,7 +766,7 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.add_channel_button.configure(
                 state='disabled' if push_invalid else 'normal')
             for path, (_variable, widget, _kind) in self.fields.items():
-                if widget is self.retry_spinner:
+                if widget is self.retry_spinner.entry._entry:
                     continue
                 widget.configure(
                     state='normal' if path_writable(self.model, path) else 'disabled')
