@@ -759,10 +759,17 @@ class App:
         names = [item.get('provider', '未知') if isinstance(item, dict) else '未知'
                  for item in hosts]
         identity = (self.model.document_generation, self.model.revision, hosts)
+        window = None
 
         def submit(index, image):
             """复核重选时的列表内容与修订。"""
+            if window is not None and (not window.winfo_exists()
+                                       or self.test_dialogs.selection_window is not window):
+                return False
             if not self._require_saved():
+                return False
+            if window is not None and (not window.winfo_exists()
+                                       or self.test_dialogs.selection_window is not window):
                 return False
             if (identity != (self.model.document_generation, self.model.revision,
                              self.model.get(('push', 'screenshot', 'image_host')))
@@ -770,7 +777,6 @@ class App:
                 self.status.configure(text='配置已更新，请重新选择图床')
                 self.open_upload_selection()
                 return False
-            window = self.test_dialogs.selection_window
             selection_unchanged = None
             if window is not None and window.winfo_exists():
                 selected = self.test_dialogs.upload_host.get()
@@ -788,7 +794,9 @@ class App:
                 self.status.configure(text='配置已更新，请重新选择图床')
             return started
 
-        self.test_dialogs.open_upload(names, submit)
+        opened = self.test_dialogs.open_upload(names, submit)
+        if opened is self.test_dialogs.selection_window:
+            window = opened
 
     def notify(self):
         """通知测试无通道提前阻止，不保留可重开的结果。"""

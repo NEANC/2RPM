@@ -248,6 +248,45 @@ def test_upload_selection_changed_during_request_flush_is_not_sent(tmp_path, mon
         root.destroy()
 
 
+@pytest.mark.parametrize('reopen', [False, True])
+def test_upload_callback_rejects_window_closed_during_flush(tmp_path, monkeypatch, reopen):
+    """补存模态期间旧上传窗关闭或重开，旧回调不得启动 worker。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('push', 'screenshot', 'image_host'), [{'provider': 'beeimg'}])
+        app.open_upload_selection()
+        dialogs = app.test_dialogs
+        old_callback = dialogs._upload_callback
+        old_window = dialogs.selection_window
+        image = str(tmp_path / 'one.png')
+        dialogs.upload_host.set('01 beeimg')
+        dialogs.upload_image.set(image)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        original = app.save_coordinator.flush
+        calls = 0
+
+        def flush():
+            """模拟模态补存时关闭旧窗并选择性重开同配置的新窗。"""
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                old_window.destroy()
+                if reopen:
+                    app.open_upload_selection()
+                    dialogs.upload_host.set('01 beeimg')
+                    dialogs.upload_image.set(image)
+            return original()
+
+        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        assert not old_callback(0, image)
+        app.controller.runner.start.assert_not_called()
+        if reopen:
+            assert dialogs.selection_window.winfo_exists()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('changed', ['host', 'image'])
 def test_upload_selection_changed_during_confirmation_is_not_sent(tmp_path, monkeypatch,
                                                                   changed):
