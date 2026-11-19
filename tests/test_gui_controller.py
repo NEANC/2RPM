@@ -408,6 +408,64 @@ def test_conflict_reload_is_not_an_inner_save(tmp_path):
     assert not controller.model.dirty
 
 
+def test_second_external_check_inner_save_as_is_superseded(tmp_path):
+    """第二次外部检查期间另存成功应归因为被内层保存取代。"""
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    check = controller.check_external
+    calls = 0
+
+    def check_on_second_call():
+        """首次检查通过后，在第二次检查前注入外部修改。"""
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            source.path.write_bytes(b'external')
+        return check()
+
+    controller.check_external = check_on_second_call
+    controller.on_conflict = lambda: controller.save_as(lambda: destination)
+
+    assert controller._save_result() is SaveResult.SUPERSEDED
+    assert calls == 2
+    assert controller.model.document.path == destination
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
+    assert source.path.read_bytes() == b'external'
+
+
+def test_conflict_inner_save_as_then_open_clean_file_is_not_superseded(tmp_path):
+    """另存后又打开另一干净文件不能冒充本次保存成功。"""
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    other = save_document(new_document(), tmp_path / 'other.yaml',
+                          expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    source.path.write_bytes(b'external')
+
+    def save_then_open():
+        """在冲突回调中真实另存后切换到另一干净文件。"""
+        assert controller.save_as(lambda: destination)
+        assert controller.open(other.path)
+
+    controller.on_conflict = save_then_open
+
+    assert controller._save_result() is SaveResult.FAILED
+    assert controller.model.document.path == other.path
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
+    assert source.path.read_bytes() == b'external'
+
+
 def test_conflict_inner_save_as_keeps_boolean_save_success(tmp_path):
     """冲突回调真实另存成功后旧布尔保存接口不得误报失败。"""
     source = save_document(new_document(), tmp_path / 'source.yaml',

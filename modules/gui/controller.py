@@ -52,6 +52,7 @@ class Controller:
         self.conflicted = False
         self.save_cancelled = False
         self._saved_identity = 0
+        self._saved_document_identity = None
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
@@ -242,15 +243,22 @@ class Controller:
             generation = self.model.document_generation
             saved_identity = self._saved_identity
             dirty = self.model.dirty
+
+            def inner_save_is_current():
+                """仅识别仍为当前文档基线的内层保存。"""
+                current = self.model.document
+                return (self._saved_identity != saved_identity and not self.model.dirty
+                        and (current.path, current.fingerprint) == self._saved_document_identity)
+
             if self.check_external():
                 if self.model.document_generation != generation and not self.model.dirty:
-                    return (SaveResult.SUPERSEDED if self._saved_identity != saved_identity
+                    return (SaveResult.SUPERSEDED if inner_save_is_current()
                             else SaveResult.FAILED if dirty else SaveResult.SAVED)
                 return SaveResult.FAILED
             if self.model.document_generation != generation:
                 if self.model.dirty:
                     return SaveResult.FAILED
-                return (SaveResult.SUPERSEDED if self._saved_identity != saved_identity
+                return (SaveResult.SUPERSEDED if inner_save_is_current()
                         else SaveResult.FAILED if dirty else SaveResult.SAVED)
         revision = self.model.revision
         document = self.model.materialize()
@@ -287,7 +295,8 @@ class Controller:
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
-                return SaveResult.FAILED
+                return (SaveResult.SUPERSEDED if inner_save_is_current()
+                        else SaveResult.FAILED)
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:
@@ -304,6 +313,7 @@ class Controller:
             input_errors = copy.deepcopy(self.model.input_errors)
         self.model.accept_saved(saved)
         self._saved_identity += 1
+        self._saved_document_identity = (saved.path, saved.fingerprint)
         if newer:
             self.model._tree = draft
             self.model.raw_inputs = raw_inputs
