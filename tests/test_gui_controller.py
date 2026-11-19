@@ -317,6 +317,7 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
     controller.runner.active = False
     app = object.__new__(App)
     app.controller = controller
+    app.model = controller.model
     app.status = Mock()
     app.root = Mock()
     alert = Mock()
@@ -334,6 +335,56 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
     assert controller.model.dirty
     assert source.path.read_bytes() == source_bytes
     assert not destination.exists()
+
+
+def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failure(
+        tmp_path, monkeypatch):
+    """外层旧路径冲突返回失败时，回调另存成功不得覆盖成功状态。"""
+    from modules.gui.app import App
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.runner.active = False
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    source.path.write_bytes(b'external')
+    generation = controller.model.document_generation
+    original_save_as = controller.save_as
+    results = []
+
+    def record_save_as(picker):
+        """观察内外两次真实另存的返回值。"""
+        result = original_save_as(picker)
+        results.append(result)
+        return result
+
+    controller.save_as = record_save_as
+    app = object.__new__(App)
+    app.controller = controller
+    app.model = controller.model
+    app.root = Mock()
+    app.status = Mock()
+    app._refresh_save_status = Mock()
+    controller.on_conflict = app._show_conflict
+    picker = Mock(side_effect=[str(source.path), str(destination)])
+    alert = Mock()
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                        Mock(return_value=False))
+    monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
+
+    app.save_as()
+
+    assert results == [True, False]
+    assert controller.model.document_generation > generation
+    assert controller.model.document.path == destination
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
+    assert source.path.read_bytes() == b'external'
+    assert not any(call.kwargs.get('text') == '配置未另存'
+                   for call in app.status.configure.call_args_list)
+    alert.assert_not_called()
 
 
 @pytest.mark.parametrize('phase', ['conflict', 'overwrite', 'relocate', 'read', 'write'])

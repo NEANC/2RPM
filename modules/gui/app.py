@@ -501,8 +501,13 @@ class App:
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
+        generation = self.model.document_generation
+        path = self.model.document.path
         if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None):
+                parent=self.root, defaultextension='.yaml') or None) and not (
+                    self.model.document_generation != generation
+                    and self.model.document.path != path
+                    and not self.model.dirty and not self.model.input_errors):
             self.status.configure(text='配置未另存')
             if not self.controller.save_cancelled:
                 messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
