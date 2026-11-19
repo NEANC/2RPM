@@ -695,6 +695,7 @@ class App:
             return
         if not hosts:
             self.status.configure(text='请先添加图床后再测试')
+            messagebox.showinfo('上传测试', '请先添加图床后再测试', parent=self.root)
             return
         names = [item.get('provider', '未知') if isinstance(item, dict) else '未知'
                  for item in hosts]
@@ -735,6 +736,7 @@ class App:
             return
         if not channels:
             self.status.configure(text='请先添加推送通道')
+            messagebox.showinfo('通知测试', '请先添加推送通道', parent=self.root)
             return
         self._request('notify', template_key='on_end', expected_identity=(
             self.model.document_generation, self.model.revision))

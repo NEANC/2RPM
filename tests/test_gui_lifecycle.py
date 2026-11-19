@@ -181,6 +181,30 @@ def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize(('action', 'path', 'notice'), [
+    ('open_upload_selection', ('push', 'screenshot', 'image_host'), '请先添加图床后再测试'),
+    ('notify', ('push', 'push_channel_settings', 'channels'), '请先添加推送通道'),
+])
+def test_empty_test_destination_is_visible(tmp_path, monkeypatch, action, path, notice):
+    """真实窗口在没有外发目标时给出可见提示且不启动 worker。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(path, [])
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', dialogs)
+        getattr(app, action)()
+        dialogs.assert_called_once()
+        assert notice in dialogs.call_args.args[1]
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_capture_selection_rejects_changed_document(tmp_path):
     """选择截图目标期间文档被重载时要求重新选择。"""
     from tests.gui_support import make_app
