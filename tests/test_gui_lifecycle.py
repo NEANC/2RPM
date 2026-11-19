@@ -568,6 +568,7 @@ def test_notify_has_no_cancel_or_reopen(tmp_path, monkeypatch):
     import tkinter as tk
 
     monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *_, **__: False)
+    monkeypatch.setattr('modules.gui.app.messagebox.showinfo', Mock())
     root = tk.Tk()
     root.withdraw()
     try:

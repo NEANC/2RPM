@@ -77,14 +77,15 @@ def test_empty_push_and_log_sections_allow_creation_and_actions(tmp_path, monkey
                         'push: {}\nlog: {}\nexternal: {}\n', encoding='utf-8')
         assert app.controller.open(path)
         app.test_dialogs.open_upload = Mock()
+        notices = []
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo',
+                            lambda *args, **kwargs: notices.append(args))
         app.upload()
         assert '请先添加图床' in app.status.cget('text')
         app.test_dialogs.open_upload.assert_not_called()
         app.notify()
         assert '请先添加推送通道' in app.status.cget('text')
-        notices = []
-        monkeypatch.setattr('modules.gui.app.messagebox.showinfo',
-                            lambda *args, **kwargs: notices.append(args))
+        assert len(notices) == 2
         app.open_logs()
         assert notices
         screenshot = app.visible_pages['截图设置']
