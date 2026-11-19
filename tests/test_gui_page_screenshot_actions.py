@@ -400,6 +400,10 @@ def test_ctk_result_window_restores_active_request_and_cancels_once(
             request.request_id, request.document_generation, request.revision,
             'failure', '测试已取消', ()))
         app.drain_results()
+        assert app.test_session.active_request is request
+        assert app.test_dialogs.result_label.cget('text') == '测试进行中'
+        app.controller.runner.active = False
+        app.drain_results()
         assert app.test_session.active_request is None
         assert app.test_dialogs.result_window is window
         assert '测试已取消' in app.test_dialogs.result_label.cget('text')
@@ -445,14 +449,93 @@ def test_real_test_buttons_follow_worker_and_terminal_state(tmp_path, monkeypatc
             'failure' if outcome == 'cancelled' else outcome,
             '测试已取消' if outcome == 'cancelled' else '', ()))
         app.drain_results()
-        assert tuple(button.cget('state') for button in buttons) == (
-            'disabled', 'disabled', 'disabled')
+        assert app.test_session.active_request is request
+        assert tuple(button.cget('state') for button in buttons) == expected
         app.controller.runner.active = False
         app._poll()
+        assert app.test_session.active_request is None
         assert tuple(button.cget('state') for button in buttons) == (
             'normal', 'normal', 'normal')
         assert buttons[2].cget('text') == '通知测试'
     finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('action', ['capture', 'upload', 'notify'])
+def test_real_result_waits_for_runner_reclaim(tmp_path, monkeypatch, action):
+    """真实 Tk 在结果入队但 worker 未回收时仍保持运行态。"""
+    root = tk.Tk()
+    release = threading.Event()
+    worker = None
+    try:
+        app = make_app(root, tmp_path)
+        runner = app.controller.runner
+        queued = threading.Event()
+        errors = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', errors)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        page = app.visible_pages['截图设置']
+        notify = app.visible_pages['消息推送设置'].notify_button
+        if action == 'notify':
+            notify.invoke()
+        else:
+            (page.capture_button if action == 'capture' else page.upload_button).invoke()
+            dialogs = app.test_dialogs
+            if action == 'capture':
+                dialogs.capture_target.insert(0, '测试窗口')
+                dialogs.capture_start.invoke()
+            else:
+                dialogs.upload_host.set(dialogs._host_names[0])
+                dialogs.upload_image.set(str(tmp_path / 'image.png'))
+                dialogs.upload_start.invoke()
+        request = app.test_session.active_request
+        assert request is not None
+        runner.active = True
+
+        def finish_after_cleanup():
+            """模拟监督线程入队后等待清理屏障再释放运行槽位。"""
+            runner.results.put(GuiTestResult(
+                request.request_id, request.document_generation, request.revision,
+                'failure', '测试失败', ()))
+            queued.set()
+            if release.wait(5):
+                runner.active = False
+
+        worker = threading.Thread(target=finish_after_cleanup)
+        worker.start()
+        assert queued.wait(5)
+        assert runner.active
+        app.drain_results()
+        app._sync_test_buttons()
+        assert app.test_session.active_request is request
+        assert app.status.cget('text') == '测试进行中'
+        assert notify.cget('text') == ('发送中…' if action == 'notify' else '通知测试')
+        assert notify.cget('state') == 'disabled'
+        if action != 'notify':
+            assert dialogs.result_label.cget('text') == '测试进行中'
+            assert not dialogs.retry.winfo_manager()
+            assert dialogs.cancel_button.winfo_manager() == 'pack'
+        errors.assert_not_called()
+
+        release.set()
+        worker.join(timeout=5)
+        assert not runner.active
+        app.drain_results()
+        app._sync_test_buttons()
+        assert app.test_session.active_request is None
+        assert (page.capture_button.cget('state'), page.upload_button.cget('state'),
+                notify.cget('state')) == ('normal', 'normal', 'normal')
+        assert app.status.cget('text').startswith('failure:')
+        if action == 'notify':
+            errors.assert_called_once()
+            assert notify.cget('text') == '通知测试'
+        else:
+            assert dialogs.retry.winfo_manager() == 'pack'
+            assert not dialogs.cancel_button.winfo_manager()
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(timeout=5)
         root.destroy()
 
 

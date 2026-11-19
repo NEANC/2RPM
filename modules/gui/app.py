@@ -446,7 +446,9 @@ class App:
         return saved
 
     def drain_results(self):
-        """只接纳最近请求及当前文档代次的终态。"""
+        """待 worker 回收后只接纳最近请求及当前文档代次的终态。"""
+        if self.controller.runner.active:
+            return
         while True:
             try:
                 result = self.controller.runner.results.get_nowait()
