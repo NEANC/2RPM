@@ -40,7 +40,27 @@ def run_large_stdin_child(command, *, timeout, env=None):
         child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE, text=True,
                                  creationflags=win32process.CREATE_SUSPENDED)
-        win32job.AssignProcessToJobObject(job, child._handle)
+        try:
+            win32job.AssignProcessToJobObject(job, child._handle)
+        except Exception:
+            try:
+                try:
+                    child.terminate()
+                    child.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    child.kill()
+                    child.wait(timeout=5)
+            except Exception:
+                pass
+            finally:
+                for stream in (child.stdin, child.stdout, child.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+                child = None
+            raise
         thread_id = psutil.Process(child.pid).threads()[0].id
         thread = win32api.OpenThread(win32con.THREAD_SUSPEND_RESUME, False, thread_id)
         try:
@@ -53,6 +73,69 @@ def run_large_stdin_child(command, *, timeout, env=None):
         job.Close()
         if child is not None:
             child.communicate(timeout=5)
+
+
+@pytest.mark.parametrize('termination', ('normal', 'ignored', 'raises'))
+def test_large_stdin_child_assignment_failure_reaps_direct_child(termination):
+    """Job 分配失败仍有界回收挂起的直接子进程并保留原异常。"""
+    original = subprocess.Popen
+    processes = []
+    terminated = []
+    killed = []
+    waits = []
+
+    def spawn(*args, **kwargs):
+        """记录真实挂起进程及其回收动作。"""
+        process = original(*args, **kwargs)
+        processes.append(process)
+        terminate = process.terminate
+        kill = process.kill
+        wait = process.wait
+
+        def tracked_terminate():
+            """可选模拟 terminate 未结束进程。"""
+            terminated.append(True)
+            if termination == 'raises':
+                raise OSError('terminate rejected')
+            if termination == 'normal':
+                terminate()
+
+        def tracked_kill():
+            """记录升级为强制终止。"""
+            killed.append(True)
+            kill()
+
+        def tracked_wait(*, timeout=None):
+            """记录每次等待的上界。"""
+            waits.append(timeout)
+            return wait(timeout=timeout)
+
+        process.terminate = tracked_terminate
+        process.kill = tracked_kill
+        process.wait = tracked_wait
+        return process
+
+    with patch('tests.test_gui_test_runner.subprocess.Popen', side_effect=spawn), \
+            patch('tests.test_gui_test_runner.win32job.AssignProcessToJobObject',
+                  side_effect=RuntimeError('assignment rejected')):
+        try:
+            with pytest.raises(RuntimeError, match='assignment rejected'):
+                run_large_stdin_child((sys.executable, '-c', 'pass'), timeout=2)
+            assert terminated
+            assert bool(killed) == (termination != 'normal')
+            assert waits and all(value is not None for value in waits)
+            assert processes[0].poll() is not None
+            assert all(stream.closed for stream in
+                       (processes[0].stdin, processes[0].stdout, processes[0].stderr)
+                       if stream is not None)
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
 
 
 def request(tmp_path, *, request_id='first', config=None):
