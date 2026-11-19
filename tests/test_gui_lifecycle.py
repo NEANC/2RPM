@@ -182,6 +182,109 @@ def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
         root.destroy()
 
 
+def test_modal_conflict_does_not_hide_reentrant_save_as_failure(tmp_path, monkeypatch):
+    """真实 Tk 模态循环内的另存失败归属于内层，外层冲突不重复报错。"""
+    from modules.config_document import ConfigSaveError
+    from modules.gui.controller import save_document as original_save
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        path.write_bytes(b'external')
+
+        def fail_copy(document, destination, *, expected_fingerprint):
+            """仅令重入另存操作在真实保存边界失败。"""
+            if destination == tmp_path / 'new.yaml':
+                raise ConfigSaveError('写入失败')
+            return original_save(document, destination,
+                                 expected_fingerprint=expected_fingerprint)
+
+        monkeypatch.setattr('modules.gui.controller.save_document', fail_copy)
+        errors = []
+        prompts = []
+        entered = []
+
+        def confirm_conflict(*args, **kwargs):
+            """在真实 wait_window 事件循环中触发另一次保存。"""
+            prompts.append(args[0])
+            dialog = tk.Toplevel(root)
+            dialog.withdraw()
+
+            def reenter():
+                """另存失败后退出当前模态事件循环。"""
+                entered.append(True)
+                app.save_as()
+                dialog.destroy()
+
+            root.after(0, reenter)
+            root.wait_window(dialog)
+            return None
+
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', confirm_conflict)
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                            lambda **_: str(tmp_path / 'new.yaml'))
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror',
+                            lambda title, text, **_: errors.append(title))
+        app.save()
+        assert entered == [True]
+        assert prompts == ['外部变更']
+        assert errors == ['另存配置']
+        assert path.read_bytes() == b'external'
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.controller.conflicted
+    finally:
+        root.destroy()
+
+
+def test_modal_save_failure_is_not_reclassified_by_reentrant_conflict(tmp_path, monkeypatch):
+    """保存失败时模态回调产生的别次冲突不能抹掉本次失败。"""
+    from modules.config_document import ConfigSaveError
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        path = app.model.document.path
+        errors = []
+        prompts = []
+
+        def fail_save(*args, **kwargs):
+            """外层保存失败前运行模态循环，令另一次检查发现冲突。"""
+            dialog = tk.Toplevel(root)
+            dialog.withdraw()
+
+            def conflict():
+                """外部写盘与独立检查发生在模态框内。"""
+                path.write_bytes(b'external')
+                app.controller.check_external()
+                dialog.destroy()
+
+            root.after(0, conflict)
+            root.wait_window(dialog)
+            raise ConfigSaveError('写入失败')
+
+        monkeypatch.setattr('modules.gui.controller.save_document', fail_save)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                            lambda *args, **_: prompts.append(args[0]))
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror',
+                            lambda title, text, **_: errors.append(title))
+        app.save()
+        assert prompts == ['外部变更']
+        assert errors == ['保存配置']
+        assert path.read_bytes() == b'external'
+        assert app.model.dirty
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize(('action', 'path', 'notice'), [
     ('open_upload_selection', ('push', 'screenshot', 'image_host'), '请先添加图床后再测试'),
     ('notify', ('push', 'push_channel_settings', 'channels'), '请先添加推送通道'),

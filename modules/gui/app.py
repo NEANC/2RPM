@@ -496,6 +496,9 @@ class App:
     def save(self):
         """只通过控制器保存编辑文档。"""
         result = self.controller._save_result()
+        if result is SaveResult.CONFLICT:
+            self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
+            return
         if result is SaveResult.FAILED:
             self.status.configure(text='配置未保存')
             messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',

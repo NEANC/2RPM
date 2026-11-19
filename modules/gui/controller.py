@@ -22,11 +22,12 @@ from modules.monitor_target import resolve_monitor_target
 
 
 class SaveResult(Enum):
-    """单次保存调用的成功、取消、失败与被重入成功取代。"""
+    """单次保存调用的成功、取消、失败、冲突及被重入成功取代。"""
 
     SAVED = 'saved'
     CANCELLED = 'cancelled'
     FAILED = 'failed'
+    CONFLICT = 'conflict'
     SUPERSEDED = 'superseded'
 
 
@@ -256,7 +257,7 @@ class Controller:
                 if self.model.document_generation != generation and not self.model.dirty:
                     return (SaveResult.SUPERSEDED if inner_save_is_current()
                             else SaveResult.FAILED if dirty else SaveResult.SAVED)
-                return SaveResult.FAILED
+                return SaveResult.CONFLICT if self.conflicted else SaveResult.FAILED
             if self.model.document_generation != generation:
                 if self.model.dirty:
                     return SaveResult.FAILED
@@ -265,9 +266,9 @@ class Controller:
         revision = self.model.revision
         document = self.model.materialize()
         if self.conflicted and same:
-            return SaveResult.FAILED
+            return SaveResult.CONFLICT
         if self.conflicted and not as_new and previous is not None:
-            return SaveResult.FAILED
+            return SaveResult.CONFLICT
         if not same and previous is not None and target.parent != previous.parent:
             mode = self.model.get(('monitor', 'mode'))
             monitor = self.model.get(('monitor', 'target'))
@@ -298,12 +299,13 @@ class Controller:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
                 return (SaveResult.SUPERSEDED if inner_save_is_current()
-                        else SaveResult.FAILED)
+                        else SaveResult.CONFLICT if self.conflicted else SaveResult.FAILED)
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:
             if same:
                 self._mark_conflict()
+                return SaveResult.CONFLICT
             return SaveResult.FAILED
         except ConfigSaveError:
             return SaveResult.FAILED
