@@ -22,6 +22,7 @@ class TestDialogs:
         self.selection_window = None
         self.result_window = None
         self.result_label = None
+        self.displayed_result = None
         self.result_image = None
         self.result_preview = None
         self.retry = None
@@ -170,14 +171,17 @@ class TestDialogs:
         self.result_image = None
         self.result_preview.configure(image=None, text='')
         if result is None:
+            self.displayed_result = None
             self.result_label.configure(text='测试进行中')
             self.retry.pack_forget()
             self.cancel_button.pack(side='right', padx=18, pady=10)
             return self.result_window
         self.cancel_button.pack_forget()
+        self.displayed_result = result
         self.retry.configure(command=lambda: self._retry(action))
         self.retry.pack(side='right', padx=8, pady=10)
-        suffix = '（对应先前草稿）' if previous else ''
+        suffix = ('（对应先前配置）' if previous == 'config' else
+                  '（对应先前草稿）' if previous else '')
         if result.status == 'success':
             text = ('上传成功\n回调地址：' + result.upload_url
                     if action == 'upload' else '截图成功')
@@ -199,6 +203,22 @@ class TestDialogs:
             except (OSError, ValueError):
                 self.result_preview.configure(text='无法显示截图图片')
         return self.result_window
+
+    def mark_previous(self, generation, revision):
+        """可见旧结果在草稿编辑或同路径重载后更新归属文案。"""
+        result = self.displayed_result
+        if (result is None or self.result_window is None
+                or not self.result_window.winfo_viewable()):
+            return
+        text = self.result_label.cget('text')
+        if result.document_generation != generation:
+            suffix = '（对应先前配置）'
+        elif result.revision != revision:
+            suffix = '（对应先前草稿）'
+        else:
+            return
+        text = text.removesuffix('（对应先前草稿）').removesuffix('（对应先前配置）')
+        self.result_label.configure(text=text + suffix)
 
     def _retry(self, action):
         """重新测试返回选择页而非重复发送旧参数。"""
@@ -225,6 +245,7 @@ class TestDialogs:
             if window is not None and window.winfo_exists():
                 window.destroy()
         self.selection_window = self.result_window = None
+        self.displayed_result = None
         self.result_image = None
         self._capture_retry_callback = None
         self._upload_retry_callback = None

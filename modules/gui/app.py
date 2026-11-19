@@ -380,6 +380,7 @@ class App:
         for page in self.visible_pages.values():
             if hasattr(page, 'refresh'):
                 page.refresh()
+        self.test_dialogs.mark_previous(self.model.document_generation, self.model.revision)
         self._sync_test_buttons()
         self._refresh_save_status()
 
@@ -391,6 +392,7 @@ class App:
     def _refresh_save_status(self):
         """编辑时仅刷新保存标记，不重建正在输入的控件。"""
         self._invalidate_validation_if_stale()
+        self.test_dialogs.mark_previous(self.model.document_generation, self.model.revision)
         path = self.model.document.path
         pending = self.model.dirty or bool(self.model.input_errors)
         suffix = '（外部冲突）' if self.controller.conflicted else '（未保存）' if pending else ''
@@ -473,8 +475,8 @@ class App:
                 continue
             if not self.test_session.hidden:
                 self.test_dialogs.show_result(current.action, result,
-                                              previous=(self.test_session.previous_generation
-                                                        or self.test_session.previous_draft),
+                                              previous=('config' if self.test_session.previous_generation
+                                                        else self.test_session.previous_draft),
                                               retry_callback=(self.open_upload_selection
                                                               if current.action == 'upload'
                                                               else self.open_capture_selection))
@@ -679,9 +681,9 @@ class App:
             return
         if self.test_session.last_capture is not None:
             self.test_dialogs.show_result('capture', self.test_session.last_capture,
-                                          previous=(self.test_session.last_capture_previous
-                                                    or self.test_session.last_capture.document_generation
-                                                    != self.model.document_generation
+                                          previous=('config' if self.test_session.last_capture.document_generation
+                                                    != self.model.document_generation else
+                                                    self.test_session.last_capture_previous
                                                     or self.test_session.last_capture.revision
                                                     != self.model.revision),
                                           retry_callback=self.open_capture_selection)
@@ -731,9 +733,9 @@ class App:
             return
         if self.test_session.last_upload is not None:
             self.test_dialogs.show_result('upload', self.test_session.last_upload,
-                                          previous=(self.test_session.last_upload_previous
-                                                    or self.test_session.last_upload.document_generation
-                                                    != self.model.document_generation
+                                          previous=('config' if self.test_session.last_upload.document_generation
+                                                    != self.model.document_generation else
+                                                    self.test_session.last_upload_previous
                                                     or self.test_session.last_upload.revision
                                                     != self.model.revision),
                                           retry_callback=self.open_upload_selection)

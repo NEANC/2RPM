@@ -556,6 +556,98 @@ def test_result_and_conflict_actions_bypass_flush(tmp_path):
         root.destroy()
 
 
+def test_capture_request_freezes_config_source_and_document_identity(tmp_path):
+    """真实窗口发起的请求固定当时草稿、路径和文档身份。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.model.set(('monitor', 'target'), '最初目标.exe')
+        assert app._request('capture', capture_provider='window', capture_target='测试窗口')
+        request = app.controller.runner.start.call_args.args[0]
+        assert request.config['monitor']['target'] == '最初目标.exe'
+        assert request.config_dir == str(app.model.document.path.parent)
+        assert (request.document_generation, request.revision) == (
+            app.model.document_generation, app.model.revision)
+        app.model.set(('monitor', 'target'), '后来目标.exe')
+        assert request.config['monitor']['target'] == '最初目标.exe'
+        assert request.revision != app.model.revision
+    finally:
+        root.destroy()
+
+
+def test_finished_capture_reopened_after_edit_shows_previous_draft(tmp_path):
+    """真实结果窗重新打开时标示编辑后旧结果的草稿归属。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        assert app._request('capture', capture_provider='window', capture_target='测试窗口')
+        request = app.controller.runner.start.call_args.args[0]
+        app.controller.runner.results.put(GuiResult(
+            request.request_id, request.document_generation, request.revision,
+            'success', '', ()))
+        app.drain_results()
+        assert '对应先前草稿' not in app.test_dialogs.result_label.cget('text')
+        app.test_dialogs.hide_result()
+        app.model.set(('monitor', 'target'), '后来目标.exe')
+        app.capture()
+        assert '对应先前草稿' in app.test_dialogs.result_label.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_visible_finished_capture_marks_previous_draft_after_edit(tmp_path):
+    """结果窗持续可见时编辑草稿也应立即标明旧结果归属。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        assert app._request('capture', capture_provider='window', capture_target='测试窗口')
+        request = app.controller.runner.start.call_args.args[0]
+        app.controller.runner.results.put(GuiResult(
+            request.request_id, request.document_generation, request.revision,
+            'success', '', ()))
+        app.drain_results()
+        assert '对应先前草稿' not in app.test_dialogs.result_label.cget('text')
+        app.model.set(('monitor', 'target'), '后来目标.exe')
+        assert '对应先前草稿' in app.test_dialogs.result_label.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_visible_finished_capture_marks_previous_config_after_reload(tmp_path):
+    """同路径重载后可见结果注明先前配置而不是先前草稿。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        assert app._request('capture', capture_provider='window', capture_target='测试窗口')
+        request = app.controller.runner.start.call_args.args[0]
+        app.controller.runner.results.put(GuiResult(
+            request.request_id, request.document_generation, request.revision,
+            'success', '', ()))
+        app.drain_results()
+        app.model.replace_document(read_document(app.model.document.path))
+        app.refresh()
+        assert '对应先前配置' in app.test_dialogs.result_label.cget('text')
+        assert '对应先前草稿' not in app.test_dialogs.result_label.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_hidden_running_result_stays_hidden_when_finished(tmp_path):
     """用户主动隐藏运行窗后，终态仅更新结果，不擅自重新弹出。"""
     from tests.gui_support import make_app
