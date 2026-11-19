@@ -141,7 +141,7 @@ def test_hidden_push_diagnostic_only_offers_yaml_hint(tmp_path):
 
 
 def test_external_path_field_input_clear_and_real_focus(tmp_path):
-    """原生路径框输入与清空同步模型，诊断定位到真实输入框。"""
+    """内部输入事件写回模型，清空及换文档不恢复旧路径或旧按钮。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -151,15 +151,25 @@ def test_external_path_field_input_clear_and_real_focus(tmp_path):
         path = ('external', 'on_end')
         field = page.path_fields[path]
         entry = field.entry._entry
-        field.set('C:\\task.bat')
-        assert app.model.get(path) == 'C:\\task.bat'
-        assert field.get() == 'C:\\task.bat'
         page.focus_issue(path)
         root.update()
         assert root.focus_get() is entry
+        entry.delete(0, 'end')
+        entry.insert(0, 'C:\\task.bat')
+        assert app.model.get(path) != 'C:\\task.bat'
+        entry.event_generate('<KeyRelease>', keysym='t')
+        root.update()
+        assert app.model.get(path) == 'C:\\task.bat'
+        assert field.get() == 'C:\\task.bat'
         page.clear_file('on_end')
         assert field.get() == ''
         assert app.model.get(path) == ''
+        app.model.replace_document(new_document())
+        page.refresh()
+        assert field.get() == app.model.get(path)
+        assert field.get() != 'C:\\task.bat'
+        assert not hasattr(page, 'restore_buttons')
+        assert not hasattr(page, 'restore_file')
     finally:
         root.destroy()
 
