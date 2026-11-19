@@ -173,28 +173,56 @@ def test_close_reaps_worker(tmp_path):
 
 
 def test_cancel_reaps_worker(tmp_path):
-    """取消后在终态之前确认真实 worker 退出及管道关闭。"""
+    """同一请求取消后清理期间保持忙态，终态完成后回收并释放槽位。"""
     results = queue.Queue()
     runner = runner_for(results, command=(sys.executable, '-c',
                              'import time;time.sleep(30)'))
+    session = tmp_path / 'session'
+    session.mkdir()
+    artifact = session / 'first.jpg'
+    artifact.write_bytes(b'image')
     original = subprocess.Popen
     processes = []
+    spawned = threading.Event()
+    cleaning = threading.Event()
+    release = threading.Event()
+    clean_request = runner._clean_request
 
     def spawn(*args, **kwargs):
         """保存本次唯一 worker 供回收检查。"""
         process = original(*args, **kwargs)
         processes.append(process)
+        spawned.set()
         return process
 
-    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn):
+    def blocked_clean(current_request):
+        """在同一请求的产物清理中固定忙态观察窗口。"""
+        cleaning.set()
+        assert release.wait(5)
+        clean_request(current_request)
+
+    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn), \
+            patch.object(runner, '_clean_request', side_effect=blocked_clean):
         runner.start(request(tmp_path))
-        while not processes:
-            threading.Event().wait(0.01)
-        runner.cancel()
-        assert results.get(timeout=5).reason == '测试已取消；已发出的请求仍可能完成'
+        try:
+            assert spawned.wait(5)
+            runner.cancel()
+            assert runner._cancel.is_set()
+            assert cleaning.wait(5)
+            assert runner.active
+            assert results.empty()
+            assert artifact.exists()
+        finally:
+            release.set()
+        result = results.get(timeout=5)
+    assert (result.request_id, result.status, result.reason) == (
+        'first', 'failure', '测试已取消；已发出的请求仍可能完成')
+    assert not artifact.exists()
     assert processes[0].poll() is not None
     assert all(stream.closed for stream in
                (processes[0].stdin, processes[0].stdout, processes[0].stderr))
+    assert not runner.active
+    assert runner._cancel is None
     assert results.empty()
 
 
