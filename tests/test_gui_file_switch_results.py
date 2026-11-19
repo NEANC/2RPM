@@ -4,6 +4,7 @@
 """真实 Tk 窗口的显式文件操作与测试结果归属回归。"""
 
 import tkinter as tk
+from pathlib import Path
 from unittest.mock import Mock
 
 import ctk_kit
@@ -14,6 +15,7 @@ from modules.config_document import ConfigSaveError
 from modules.config_document import new_document
 from modules.config_document import save_document
 from modules.gui.protocol import TestResult as GuiResult
+from modules.gui.protocol import TestRequest as GuiRequest
 from tests.gui_support import make_app
 
 
@@ -48,6 +50,94 @@ def seed_result(app):
     app.preview_label.configure(image=image)
     app.result_text = '旧结果'
     return capture, upload, app.test_dialogs.result_window, image
+
+
+def seed_preview(app, tmp_path):
+    """用已接纳的截图结果登记会话预览，另放两种用户资源。"""
+    preview = app.session_dir / 'owned.jpg'
+    preview.write_bytes(b'owned')
+    upload = tmp_path / 'upload.jpg'
+    upload.write_bytes(b'upload')
+    business = tmp_path / 'business.jpg'
+    business.write_bytes(b'business')
+    request = GuiRequest('owned', app.model.document_generation, app.model.revision,
+                         'capture', {}, str(tmp_path), str(app.session_dir), 0,
+                         None, None, None)
+    app.test_session.active_request = request
+    app.controller.runner.results.put(GuiResult('owned', request.document_generation,
+                                                request.revision, 'success', '',
+                                                (str(preview), str(business))))
+    app.drain_results()
+    upload_request = GuiRequest('upload', request.document_generation, request.revision,
+                                'upload', {}, str(tmp_path), str(app.session_dir),
+                                None, 0, str(upload), None)
+    app.test_session.active_request = upload_request
+    app.controller.runner.results.put(GuiResult('upload', request.document_generation,
+                                                request.revision, 'success', '',
+                                                (str(upload),)))
+    app.drain_results()
+    return preview, upload, business
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+def test_successful_switch_deletes_only_owned_preview(window, tmp_path, monkeypatch,
+                                                       action):
+    """成功切换只删除会话截图，保留上传原图和业务截图。"""
+    app = window
+    preview, upload, business = seed_preview(app, tmp_path)
+    target = tmp_path / 'other.yaml'
+    if action == 'open':
+        save_document(new_document(), target, expected_fingerprint=None)
+    app.controller.confirm = lambda *_: 'confirm'
+    picker = 'askopenfilename' if action == 'open' else 'asksaveasfilename'
+    monkeypatch.setattr('modules.gui.app.filedialog.' + picker,
+                        lambda **_: str(target))
+
+    getattr(app, action)()
+
+    assert app.model.document.path == target
+    assert not preview.exists()
+    assert upload.read_bytes() == b'upload'
+    assert business.read_bytes() == b'business'
+
+
+def test_preview_delete_failure_keeps_retry_path_and_new_config_usable(
+        window, tmp_path, monkeypatch):
+    """清理失败不回滚新配置，下次成功切换可重试原预览。"""
+    app = window
+    preview, upload, business = seed_preview(app, tmp_path)
+    target = tmp_path / 'next.yaml'
+    later = tmp_path / 'later.yaml'
+    app.controller.confirm = lambda *_: 'confirm'
+    destinations = iter((str(target), str(later)))
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                        lambda **_: next(destinations))
+    original_unlink = Path.unlink
+    attempts = []
+
+    def fail_once(path, *args, **kwargs):
+        """仅让所属预览首次删除失败，其余文件操作保持真实。"""
+        if path == preview:
+            attempts.append(path)
+            if len(attempts) <= 2:
+                raise PermissionError('文件占用')
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'unlink', fail_once)
+    app.save_as()
+    assert app.model.document.path == target
+    assert preview.exists()
+    assert attempts == [preview, preview]
+    assert app.test_session.last_capture is None
+    app.model.set(('monitor', 'target'), 'next.exe')
+    assert app.controller.save()
+    app.save_as()
+
+    assert app.model.document.path == later
+    assert attempts == [preview, preview, preview]
+    assert not preview.exists()
+    assert upload.read_bytes() == b'upload'
+    assert business.read_bytes() == b'business'
 
 
 @pytest.mark.parametrize('action,same_path', [

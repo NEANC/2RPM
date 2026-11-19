@@ -30,6 +30,7 @@ from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
 from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
+from modules.screenshot.retention import FORMAT_SUFFIX
 
 
 class _MonitorInfo(ctypes.Structure):
@@ -88,6 +89,7 @@ class App:
         self._validated = None
         self.result_text = ''
         self.preview_image = None
+        self._owned_previews = set()
         self.page_names = ('主页', '监视设置', '截图设置', '消息推送设置',
                            '外部程序设置', '日志设置', '设置')
         self.current_page = '主页'
@@ -387,6 +389,12 @@ class App:
         self.result_text = ''
         self.preview_image = None
         self.preview_label.configure(image='', text='')
+        for path in tuple(self._owned_previews):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                continue
+            self._owned_previews.remove(path)
 
     def _refresh_saved_home(self):
         """同文档纯保存时仅刷新主页和保存标记，保留输入控件。"""
@@ -465,6 +473,13 @@ class App:
                     result, current_revision=self.model.revision,
                     current_generation=self.model.document_generation):
                 continue
+            if current.action == 'capture':
+                for name in result.preview_paths:
+                    path = Path(name)
+                    if (path.parent == self.session_dir
+                            and path.name in {current.request_id + suffix
+                                              for suffix in FORMAT_SUFFIX.values()}):
+                        self._owned_previews.add(path)
             self._sync_test_buttons()
             suffix = ('（对应先前配置）' if self.test_session.previous_generation else
                       '（对应先前草稿）' if self.test_session.previous_draft else '')
