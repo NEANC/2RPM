@@ -375,7 +375,11 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         middle = max(1, self.lookback._arrows.winfo_height()) / 2
         delta = 1 if event.y < middle else -1
-        value = max(0, min(999, int(raw) + delta))
+        try:
+            value = int(raw)
+        except ValueError:
+            return
+        value = max(0, min(999, value + delta))
         self.lookback.set(value)
 
     def _set_advanced(self, expanded):

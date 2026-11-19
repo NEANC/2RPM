@@ -3,6 +3,7 @@
 
 """监视配置页行为（GUI 测试分片）。"""
 
+import sys
 import tkinter as tk
 from pathlib import Path
 
@@ -109,6 +110,36 @@ def test_lookback_arrow_steps_only_parseable_input(raw, y, expected):
         assert model.get_input(path) == (raw if raw in ('', '-', '12x') else expected)
     finally:
         root.destroy()
+
+
+@pytest.mark.parametrize('y', [1, 30])
+def test_lookback_real_arrow_preserves_integer_over_dynamic_limit(y):
+    """真实箭头遇到超过当前整数位数限制的原文时不抛异常、不覆写。"""
+    previous_limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    root = None
+    try:
+        root, model, page = _page()
+        path = ('monitor', 'watch', 'lookback_minutes')
+        raw = '9' * (sys.get_int_max_str_digits() + 1)
+        errors = []
+        root.report_callback_exception = lambda *error: errors.append(error)
+        entry = page.lookback.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        page.lookback._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert not errors
+        assert entry.get() == raw
+        assert model.get_input(path) == raw
+        assert model.get(path) == before
+        assert path in model.input_errors
+    finally:
+        if root is not None:
+            root.destroy()
+        sys.set_int_max_str_digits(previous_limit)
 
 
 @pytest.mark.parametrize(('raw', 'saved'), [('', False), ('-', False),
