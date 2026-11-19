@@ -529,15 +529,19 @@ class App:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
 
+        cancelled = False
+
         def picker():
             """由控制器暂停保存后再打开系统选择器。"""
+            nonlocal cancelled
             name = filedialog.askopenfilename(parent=self.root, filetypes=[('YAML', '*.yaml *.yml'), ('所有文件', '*.*')])
+            cancelled = not name
             return Path(name) if name else None
 
         if self.controller.open(picker):
             self._clear_test_results()
-        else:
-            messagebox.showerror('打开配置', '无法打开配置，或操作已取消', parent=self.root)
+        elif not cancelled:
+            messagebox.showerror('打开配置', '无法打开配置', parent=self.root)
 
     def save(self):
         """只通过控制器保存编辑文档。"""

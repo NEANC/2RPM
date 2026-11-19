@@ -15,6 +15,7 @@ from PIL import Image
 from modules.config_document import ConfigSaveError
 from modules.config_document import new_document
 from modules.config_document import save_document
+from modules.gui.app import messagebox
 from modules.gui.protocol import TestResult as GuiResult
 from modules.gui.protocol import TestRequest as GuiRequest
 from tests.gui_support import make_app
@@ -26,6 +27,7 @@ def window(tmp_path, monkeypatch):
     root = tk.Tk()
     root.withdraw()
     monkeypatch.setattr('modules.gui.app.messagebox.showerror', Mock())
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', lambda *_, **__: None)
     app = None
     try:
         app = make_app(root, tmp_path)
@@ -78,6 +80,88 @@ def seed_preview(app, tmp_path):
                                                 (str(upload),)))
     app.drain_results()
     return preview, upload, business
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('damage', ['invalid', 'missing'])
+def test_dirty_picker_unavailable_bytes_preserve_draft(window, monkeypatch, action, damage):
+    """真实选择器返回坏 YAML 或缺失路径时保留草稿代次并冻结原路径。"""
+    app = window
+    path = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    generation = app.model.document_generation
+    revision = app.model.revision
+    app.controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+
+    def picker(**_):
+        """在选择器期间破坏原始磁盘字节。"""
+        if damage == 'invalid':
+            path.write_bytes(b'\xff')
+        else:
+            path.unlink()
+        return str(path)
+
+    name = 'askopenfilename' if action == 'open' else 'asksaveasfilename'
+    monkeypatch.setattr('modules.gui.app.filedialog.' + name, picker)
+    getattr(app, action)()
+
+    assert app.model.document.path == path
+    assert app.model.document_generation == generation
+    assert app.model.revision == revision
+    assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.model.dirty and app.controller.conflicted
+    assert not app.controller.save()
+    if damage == 'invalid':
+        assert path.read_bytes() == b'\xff'
+    else:
+        assert not path.exists()
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+def test_dirty_picker_valid_update_preserves_full_disk_bytes(window, monkeypatch, action):
+    """有效 YAML 的任意原始字节更新在选择期间都不被旧草稿覆盖。"""
+    app = window
+    path = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    generation = app.model.document_generation
+    app.controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+    original = path.read_bytes()
+    updated = original + b'\n# full bytes\n'
+
+    def picker(**_):
+        """在选择器内更改有效 YAML 文件的末尾字节。"""
+        path.write_bytes(updated)
+        return str(path)
+
+    name = 'askopenfilename' if action == 'open' else 'asksaveasfilename'
+    monkeypatch.setattr('modules.gui.app.filedialog.' + name, picker)
+    getattr(app, action)()
+
+    if action == 'open':
+        assert app.model.document_generation == generation + 1
+        assert not app.model.dirty
+    else:
+        assert app.model.document_generation == generation
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.controller.conflicted and not app.controller.save()
+    assert path.read_bytes() == updated
+
+
+def test_open_picker_cancel_does_not_show_failure(window, monkeypatch):
+    """真实 Tk 打开选择器取消不显示失败框且不替换草稿。"""
+    app = window
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    app.controller.confirm = lambda *_: 'discard'
+    generation = app.model.document_generation
+    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', lambda **_: '')
+    error = messagebox.showerror
+
+    app.open()
+
+    error.assert_not_called()
+    assert app.model.document_generation == generation
+    assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.model.dirty
 
 
 @pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
