@@ -205,6 +205,30 @@ def test_empty_test_destination_is_visible(tmp_path, monkeypatch, action, path, 
         root.destroy()
 
 
+@pytest.mark.parametrize('action', ['notify', '_request'])
+def test_busy_test_is_visible_without_resubmitting(tmp_path, monkeypatch, action):
+    """worker 忙时通知与新测试请求均反馈用户且不重复提交。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.runner.active = True
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', dialogs)
+        if action == '_request':
+            assert not app._request('capture')
+        else:
+            app.notify()
+        dialogs.assert_called_once()
+        assert '已有测试正在运行' in dialogs.call_args.args[1]
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_capture_selection_rejects_changed_document(tmp_path):
     """选择截图目标期间文档被重载时要求重新选择。"""
     from tests.gui_support import make_app

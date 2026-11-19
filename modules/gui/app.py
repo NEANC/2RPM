@@ -590,6 +590,7 @@ class App:
             return False
         if self.test_session.active_request is not None or self.controller.runner.active:
             self.status.configure(text='已有测试正在运行')
+            messagebox.showinfo('测试进行中', '已有测试正在运行，请等待完成。', parent=self.root)
             return False
         if action in ('upload', 'notify') and not messagebox.askyesno(
                 '真实测试', ('固定测试消息将发往全部配置通道，继续吗？' if action == 'notify'
@@ -724,6 +725,8 @@ class App:
     def notify(self):
         """通知测试无通道提前阻止，不保留可重开的结果。"""
         if self.test_session.active_request is not None or self.controller.runner.active:
+            self.status.configure(text='已有测试正在运行')
+            messagebox.showinfo('测试进行中', '已有测试正在运行，请等待完成。', parent=self.root)
             return
         if not self._require_saved():
             return
