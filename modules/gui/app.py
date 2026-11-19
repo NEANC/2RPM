@@ -391,6 +391,7 @@ class App:
         pending = self.model.dirty or bool(self.model.input_errors)
         suffix = '（外部冲突）' if self.controller.conflicted else '（未保存）' if pending else ''
         self.path_label.configure(text=f'{path or "未保存的新配置"}{suffix}')
+        self.visible_pages['主页'].refresh_path()
         conflict = self.actions['处理冲突']
         if self.controller.conflicted:
             conflict.pack(side='left')
@@ -491,15 +492,28 @@ class App:
         """只通过控制器保存编辑文档。"""
         if not self.controller.save():
             self.status.configure(text='配置未保存')
+            messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                 parent=self.root)
 
     def save_as(self):
         """选择另存为目标，由控制器规范化并检查冲突。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
-        if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None):
+        selected = None
+
+        def picker():
+            """区分用户取消选择与选定目标后的写入失败。"""
+            nonlocal selected
+            selected = filedialog.asksaveasfilename(
+                parent=self.root, defaultextension='.yaml') or None
+            return selected
+
+        if not self.controller.save_as(picker):
             self.status.configure(text='配置未另存')
+            if selected is not None:
+                messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                     parent=self.root)
 
     def show_path(self):
         """展示完整路径而非缩略的文件名。"""

@@ -193,9 +193,8 @@ class Page(ctk_kit.CTkScrollableFrame):
     # ---------------------------------------------------------------- 刷新
     def refresh(self):
         """由当前草稿计算安全状态，不显示凭证、目标原文或未知诊断。"""
+        self.refresh_path()
         path = self.app.model.document.path
-        self._full_path = str(path) if path else '未保存的新配置'
-        self.path_value.configure(text=self._display_path(path))
         self.filename_value.configure(
             text=Path(path).name if path else '未保存的新配置')
         text, conditions = build_summary(self.app.model.snapshot())
@@ -220,6 +219,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._rows(self.groups['通知事件'], events)
         self._rows(self.groups['外部程序'], external)
         self._screenshot_rows(conditions)
+
+    def refresh_path(self):
+        """在已有配置路径行显示未保存或外部冲突，不重建编辑控件。"""
+        path = self.app.model.document.path
+        suffix = ('（外部冲突）' if self.app.controller.conflicted else
+                  '（未保存）' if self.app.model.dirty or self.app.model.input_errors else '')
+        self._full_path = f'{path or "未保存的新配置"}{suffix}'
+        self.path_value.configure(text=f'{self._display_path(path)}{suffix}')
 
     def _screenshot_rows(self, conditions):
         """重绘事件截图行；仅未满足条件时有二级原因折叠。"""

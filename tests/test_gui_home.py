@@ -5,16 +5,97 @@
 
 import tkinter as tk
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import ctk_kit
+import pytest
 
-from modules.config_document import new_document, read_document
+from modules.config_document import ConfigSaveError, new_document, read_document
 from modules.gui.home_summary import summary
 from tests.gui_support import make_app
 
 
 NAMES = ('主页', '监视设置', '截图设置', '消息推送设置',
          '外部程序设置', '日志设置', '设置')
+
+
+@pytest.mark.parametrize('action', ['save', 'save_as'])
+def test_manual_save_failure_is_visible_without_leaking_exception(tmp_path, monkeypatch, action):
+    """主动保存失败显示固定安全提示，保留草稿和磁盘内容。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        original = path.read_bytes()
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                            lambda **_: str(tmp_path / 'copy.yaml'))
+        def fail(*args, **kwargs):
+            """模拟底层携带敏感信息的写入失败。"""
+            raise ConfigSaveError('secret-token')
+        monkeypatch.setattr('modules.gui.controller.save_document', fail)
+
+        button = (app.visible_pages['主页'].save_button if action == 'save'
+                  else app.visible_pages['主页'].save_as_button)
+        button.invoke()
+
+        popup.assert_called_once()
+        assert '配置未保存' in popup.call_args.args[1]
+        assert 'secret-token' not in str(popup.call_args)
+        assert app.model.dirty
+        assert path.read_bytes() == original
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+        if action == 'save_as':
+            assert not (tmp_path / 'copy.yaml').exists()
+    finally:
+        root.destroy()
+
+
+def test_save_as_cancel_does_not_display_failure(tmp_path, monkeypatch):
+    """用户取消文件选择不被误报为保存失败。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', lambda **_: '')
+        app.visible_pages['主页'].save_as_button.invoke()
+        popup.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_background_save_failure_marks_visible_path_without_popups(tmp_path, monkeypatch):
+    """切页及延迟保存失败沿用路径行提示，不重复弹窗。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        original = path.read_bytes()
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+        def fail(*args, **kwargs):
+            """模拟写入失败。"""
+            raise ConfigSaveError('secret-token')
+        monkeypatch.setattr('modules.gui.controller.save_document', fail)
+        app.show_page('监视设置')
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        app.save_coordinator._save(app.model.document_generation)
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+        app.show_page('主页')
+        app.show_page('监视设置')
+        app.show_page('主页')
+        popup.assert_not_called()
+        assert app.model.dirty
+        assert path.read_bytes() == original
+        monkeypatch.undo()
+        assert app.save_coordinator.flush()
+        assert '（未保存）' not in app.visible_pages['主页'].path_value.cget('text')
+        assert read_document(path).tree['monitor']['target'] == 'draft.exe'
+    finally:
+        root.destroy()
 
 
 def test_home_buttons_restore_all_fields_through_mainloop(tmp_path, monkeypatch):
@@ -267,8 +348,8 @@ def test_failed_flush_preserves_page_inputs(tmp_path, monkeypatch):
         assert app.show_page('主页')
         assert app.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
         home = app.visible_pages['主页']
-        assert home.path_value.cget('text') == app.model.document.path.name
-        assert home.path_tip.text == str(app.model.document.path)
+        assert home.path_value.cget('text') == app.model.document.path.name + '（未保存）'
+        assert home.path_tip.text == str(app.model.document.path) + '（未保存）'
         assert app.model.input_errors
     finally:
         root.destroy()
