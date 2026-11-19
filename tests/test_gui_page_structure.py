@@ -97,10 +97,11 @@ def test_structure_invalid_auxiliary_buttons_disable_and_keep_display(tmp_path,
         assert app.show_page('日志设置')
         logs_page = app.visible_pages['日志设置']
         assert logs_page.browse_button.cget('state') == 'disabled'
-        assert logs_page.clear_button.cget('state') == 'disabled'
+        assert logs_page.path_field.entry.cget('state') == 'readonly'
         monkeypatch.setattr('modules.gui.pages.logs.filedialog.askdirectory',
                             lambda **_: str(tmp_path / 'chosen'))
         logs_page.choose_directory()
+        logs_page.clear_directory()
         assert logs_page.fields[('log', 'log_directory')][1].get() == ''
         assert app.model.snapshot()['log'] is None
         external_path = tmp_path / 'null-external.yaml'
@@ -110,8 +111,7 @@ def test_structure_invalid_auxiliary_buttons_disable_and_keep_display(tmp_path,
         assert app.show_page('外部程序设置')
         external_page = app.visible_pages['外部程序设置']
         assert external_page.browse_buttons['on_end'].cget('state') == 'disabled'
-        assert external_page.clear_buttons['on_end'].cget('state') == 'disabled'
-        assert external_page.restore_buttons['on_end'].cget('state') == 'disabled'
+        assert external_page.path_fields[('external', 'on_end')].entry.cget('state') == 'disabled'
         monkeypatch.setattr('modules.gui.pages.external.filedialog.askopenfilename',
                             lambda **_: r'C:\chosen.bat')
         external_page.choose_file('on_end')
