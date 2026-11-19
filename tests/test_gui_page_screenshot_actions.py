@@ -140,6 +140,72 @@ def test_test_request_uses_document_directory(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('action, expected', [
+    ('capture', ('normal', 'disabled', 'disabled')),
+    ('upload', ('disabled', 'normal', 'disabled')),
+    ('notify', ('disabled', 'disabled', 'disabled')),
+])
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'cancelled'])
+def test_real_test_buttons_follow_worker_and_terminal_state(tmp_path, monkeypatch,
+                                                            action, expected, outcome):
+    """单 worker 运行、终态及回收时同步真实页面的三个测试按钮。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        buttons = (page.capture_button, page.upload_button,
+                   app.visible_pages['消息推送设置'].notify_button)
+        app.test_dialogs.show_result = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', Mock())
+        parameters = {'capture': {'capture_provider': 'window',
+                                  'capture_target': '测试窗口'},
+                      'upload': {'host_index': 0, 'image_path': str(tmp_path / 'image.png')},
+                      'notify': {'template_key': 'on_end'}}
+        assert app._request(action, **parameters[action])
+        request = app.controller.runner.start.call_args.args[0]
+        app.controller.runner.active = True
+        assert tuple(button.cget('state') for button in buttons) == expected
+        if action != 'notify':
+            app.test_session.hide()
+            buttons[0 if action == 'capture' else 1].invoke()
+            assert app.test_dialogs.show_result.call_count == 2
+            app.controller.runner.start.assert_called_once()
+        else:
+            assert buttons[2].cget('text') == '发送中…'
+        app.controller.runner.results.put(GuiTestResult(
+            request.request_id, request.document_generation, request.revision,
+            'failure' if outcome == 'cancelled' else outcome,
+            '测试已取消' if outcome == 'cancelled' else '', ()))
+        app.drain_results()
+        assert tuple(button.cget('state') for button in buttons) == (
+            'disabled', 'disabled', 'disabled')
+        app.controller.runner.active = False
+        app._poll()
+        assert tuple(button.cget('state') for button in buttons) == (
+            'normal', 'normal', 'normal')
+        assert buttons[2].cget('text') == '通知测试'
+    finally:
+        root.destroy()
+
+
+def test_failed_worker_start_restores_real_test_buttons(tmp_path, monkeypatch):
+    """启动失败后真实截图、上传及通知入口均可再次使用。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['截图设置']
+        app.controller.runner.start.side_effect = RuntimeError('启动失败')
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        assert not app._request('notify')
+        assert tuple(button.cget('state') for button in (
+            page.capture_button, page.upload_button,
+            app.visible_pages['消息推送设置'].notify_button)) == (
+                'normal', 'normal', 'normal')
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('answer, expected', [('save', False), ('discard', True)])
 def test_incomplete_visible_input_save_or_discard(tmp_path, answer, expected):
     """未完成的可见输入不能假装保存成功；放弃后仍经最终退出确认。"""

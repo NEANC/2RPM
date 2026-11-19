@@ -378,6 +378,7 @@ class App:
         for page in self.visible_pages.values():
             if hasattr(page, 'refresh'):
                 page.refresh()
+        self._sync_test_buttons()
         self._refresh_save_status()
 
     def _refresh_saved_home(self):
@@ -402,7 +403,21 @@ class App:
     def _poll(self):
         """每 50ms 在 Tk 线程消费一次队列。"""
         self.drain_results()
+        self._sync_test_buttons()
         self._after_id = self.root.after(50, self._poll)
+
+    def _sync_test_buttons(self):
+        """按会话请求和 worker 回收状态同步三个真实测试入口。"""
+        current = self.test_session.active_request
+        action = current.action if current is not None else None
+        busy = current is not None or self.controller.runner.active
+        page = self.visible_pages.get('截图设置')
+        if page is not None:
+            page.capture_button.configure(state='normal' if not busy or action == 'capture' else 'disabled')
+            page.upload_button.configure(state='normal' if not busy or action == 'upload' else 'disabled')
+        self.actions['测试通知'].configure(
+            text='发送中…' if action == 'notify' else '通知测试',
+            state='disabled' if busy else 'normal')
 
     def _require_saved(self):
         """在业务操作前补存，不把未保存草稿当作磁盘配置。"""
@@ -440,11 +455,11 @@ class App:
                     result, current_revision=self.model.revision,
                     current_generation=self.model.document_generation):
                 continue
+            self._sync_test_buttons()
             suffix = ('（对应先前配置）' if self.test_session.previous_generation else
                       '（对应先前草稿）' if self.test_session.previous_draft else '')
             self.result_text = f'{result.status}: {result.reason}{suffix}'
             if current.action == 'notify':
-                self.actions['测试通知'].configure(text='测试通知', state='normal')
                 if result.status != 'success':
                     failures = [f'{item.index + 1} {item.provider}：{item.reason}'
                                 for item in result.channel_results if item.status == 'failure']
@@ -637,11 +652,11 @@ class App:
             return False
         if not self.test_session.start(request):
             self.status.configure(text='无法启动测试')
+            self._sync_test_buttons()
             return False
         self.status.configure(text='测试进行中')
-        if action == 'notify':
-            self.actions['测试通知'].configure(text='发送中…', state='disabled')
-        else:
+        self._sync_test_buttons()
+        if action != 'notify':
             self.test_dialogs.show_result(action)
         return True
 
