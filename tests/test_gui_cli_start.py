@@ -210,6 +210,35 @@ def test_start_cli_conflict_after_flush_has_one_dialog(tmp_path, monkeypatch):
         root.destroy()
 
 
+def test_start_cli_save_document_failure_preserves_draft(tmp_path, monkeypatch):
+    """启动前实际保存写盘失败时显示固定错误并保留草稿。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        path = app.model.document.path
+        disk = path.read_bytes()
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        generation = app.model.document_generation
+        monkeypatch.setattr('modules.config_document.os.replace',
+                            Mock(side_effect=OSError('private-write-failure')))
+
+        app.start_cli()
+
+        error.assert_called_once_with('配置未保存', '配置未保存，操作已停止。草稿已保留。',
+                                      parent=root)
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.model.document_generation == generation
+        assert app.model.dirty
+        assert path.read_bytes() == disk
+        launch.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_start_cli_invalid_config_shows_safe_error(tmp_path, monkeypatch):
     """已保存但业务无效的配置不能启动且给出固定可见提示。"""
     root = tk.Tk()
