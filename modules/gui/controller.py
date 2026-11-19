@@ -40,6 +40,7 @@ class Controller:
         self.on_conflict = lambda: None
         self.coordinator = None
         self.conflicted = False
+        self.save_cancelled = False
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
@@ -190,10 +191,12 @@ class Controller:
 
     def save(self, destination: Path | None = None, *, as_new: bool = False) -> bool:
         """对最终规范化目标确认、检查指纹并原子保存。"""
+        self.save_cancelled = False
         if self.model.input_errors:
             return False
         selected = destination if as_new else destination or self.model.document.path or self.choose_path()
         if selected is None:
+            self.save_cancelled = True
             return False
         target = normalize_config_path(Path(selected), program_dir=self.program_dir)
         previous = self.model.document.path
@@ -223,6 +226,7 @@ class Controller:
                       'target': str(target), 'resolved_target': resolved_target,
                       'resolved_cwd': resolved_cwd}
             if self.confirm('relocate', detail) != 'confirm':
+                self.save_cancelled = True
                 return False
         if same:
             expected = self.model.document.fingerprint
@@ -235,6 +239,7 @@ class Controller:
                 return False
             expected = hashlib.sha256(data).hexdigest() if data is not None else None
             if data is not None and self.confirm('overwrite', str(target)) != 'confirm':
+                self.save_cancelled = True
                 return False
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation

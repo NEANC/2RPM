@@ -492,26 +492,19 @@ class App:
         """只通过控制器保存编辑文档。"""
         if not self.controller.save():
             self.status.configure(text='配置未保存')
-            messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
-                                 parent=self.root)
+            if not self.controller.save_cancelled:
+                messagebox.showerror('保存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                     parent=self.root)
 
     def save_as(self):
         """选择另存为目标，由控制器规范化并检查冲突。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             return
-        selected = None
-
-        def picker():
-            """区分用户取消选择与选定目标后的写入失败。"""
-            nonlocal selected
-            selected = filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None
-            return selected
-
-        if not self.controller.save_as(picker):
+        if not self.controller.save_as(lambda: filedialog.asksaveasfilename(
+                parent=self.root, defaultextension='.yaml') or None):
             self.status.configure(text='配置未另存')
-            if selected is not None:
+            if not self.controller.save_cancelled:
                 messagebox.showerror('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
                                      parent=self.root)
 
