@@ -385,6 +385,37 @@ def test_large_stdin_child_reaps_reported_worker_on_timeout_or_failure(tmp_path,
                 worker.wait(timeout=5)
 
 
+@pytest.mark.parametrize('exit_code', (None, 2))
+def test_large_stdin_child_reaps_detached_grandchild_without_killing_pid_file_target(
+        tmp_path, exit_code):
+    """超时和失败都清理真实孙进程，但不能信任 PID 文件中的无关进程。"""
+    pid_path = tmp_path / 'worker.pid'
+    grandchild_path = tmp_path / 'grandchild.pid'
+    unrelated = subprocess.Popen((sys.executable, '-c', 'import time; time.sleep(30)'))
+    script = ('import subprocess, sys, time; '
+              'grandchild = subprocess.Popen([sys.executable, "-c", '
+              '"import time; time.sleep(30)"]); '
+              'open(sys.argv[1], "w").write(str(grandchild.pid)); '
+              f'{"time.sleep(30)" if exit_code is None else "sys.exit(2)"}')
+    try:
+        pid_path.write_text(str(unrelated.pid))
+        with pytest.raises((subprocess.TimeoutExpired, AssertionError)):
+            run_large_stdin_child((sys.executable, '-c', script, str(grandchild_path)),
+                                  pid_path, timeout=2)
+        assert grandchild_path.exists()
+        assert unrelated.poll() is None
+        assert not psutil.pid_exists(int(grandchild_path.read_text()))
+    finally:
+        unrelated.kill()
+        unrelated.wait(timeout=5)
+        if grandchild_path.exists():
+            grandchild_pid = int(grandchild_path.read_text())
+            if psutil.pid_exists(grandchild_pid):
+                grandchild = psutil.Process(grandchild_pid)
+                grandchild.kill()
+                grandchild.wait(timeout=5)
+
+
 def test_cancel_after_terminal_commit_is_noop(tmp_path):
     """已提交结果不可被迟来的取消改写。"""
     results = queue.Queue()
