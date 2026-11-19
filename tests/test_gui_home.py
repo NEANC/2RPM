@@ -205,6 +205,39 @@ def test_background_save_failure_marks_visible_path_without_popups(tmp_path, mon
         root.destroy()
 
 
+def test_leave_page_before_debounce_write_failure_keeps_unsaved_draft(tmp_path, monkeypatch):
+    """防抖未到期立即离页写盘失败只尝试一次，并保留主页未保存标记。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = app.model.document.path
+        original = path.read_bytes()
+        write = Mock(side_effect=ConfigSaveError('secret-token'))
+        monkeypatch.setattr('modules.gui.controller.save_document', write)
+
+        app.show_page('监视设置')
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        assert app.save_coordinator.pending is not None
+        write.assert_not_called()
+
+        app.show_page('主页')
+        write.assert_called_once()
+        assert app.save_coordinator.pending is None
+        assert path.read_bytes() == original
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.model.dirty
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+
+        root.after(650, root.quit)
+        root.mainloop()
+        write.assert_called_once()
+        assert path.read_bytes() == original
+        assert app.model.dirty
+        assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+    finally:
+        root.destroy()
+
+
 def test_list_edit_flush_failure_marks_visible_path(tmp_path, monkeypatch):
     """列表编辑后的立即补存失败仍在主页显示未保存，草稿和磁盘各自保留。"""
     root = tk.Tk()
