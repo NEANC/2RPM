@@ -186,6 +186,70 @@ def test_open_invalid_file_shows_failure(window, monkeypatch, tmp_path):
     assert app.model.document.path == path
 
 
+@pytest.mark.parametrize('outer_broken', [True, False], ids=['outer-broken', 'inner-broken'])
+def test_open_modal_reentry_keeps_failure_with_its_own_call(
+        window, monkeypatch, tmp_path, outer_broken):
+    """真实 Tk 模态循环重入时，失败只归属于选中坏文件的那次打开。"""
+    app = window
+    original = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    app.controller.confirm = lambda *_: 'discard'
+    generation = app.model.document_generation
+    revision = app.model.revision
+    capture, upload, dialog, image = seed_result(app)
+    broken = tmp_path / 'broken.yaml'
+    broken.write_bytes(b'\xff')
+    selections = iter((str(broken) if outer_broken else '',
+                       '' if outer_broken else str(broken)))
+    events = []
+
+    def picker(**_):
+        """首次选择进入真实 Tk 模态循环，并在其中执行第二次打开。"""
+        selected = next(selections)
+        if events:
+            events.append(('inner-picker', selected))
+            return selected
+        events.append(('outer-picker', selected))
+        modal = tk.Toplevel(app.root)
+        modal.withdraw()
+        modal.grab_set()
+
+        def reenter():
+            """在模态事件循环里重入，返回前记录内层错误数量。"""
+            try:
+                app.open()
+                events.append(('inner-return', messagebox.showerror.call_count))
+            finally:
+                modal.destroy()
+
+        modal.after(0, reenter)
+        modal.wait_window()
+        events.append(('outer-resume', messagebox.showerror.call_count))
+        return selected
+
+    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', picker)
+
+    app.open()
+
+    assert events == [('outer-picker', str(broken) if outer_broken else ''),
+                      ('inner-picker', '' if outer_broken else str(broken)),
+                      ('inner-return', 0 if outer_broken else 1),
+                      ('outer-resume', 0 if outer_broken else 1)]
+    messagebox.showerror.assert_called_once_with('打开配置', '无法打开配置',
+                                                 parent=app.root)
+    assert app.model.document.path == original
+    assert app.model.document_generation == generation
+    assert app.model.revision == revision
+    assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.model.dirty
+    assert app.test_session.last_capture is capture
+    assert app.test_session.last_upload is upload
+    assert app.test_dialogs.result_window is dialog
+    assert dialog.winfo_exists()
+    assert app.preview_image is image
+    assert app.result_text == '旧结果'
+
+
 @pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
 def test_successful_switch_deletes_only_owned_preview(window, tmp_path, monkeypatch,
                                                        action):
