@@ -248,7 +248,8 @@ class Controller:
                 """仅识别仍为当前文档基线的内层保存。"""
                 current = self.model.document
                 return (self._saved_identity != saved_identity and not self.model.dirty
-                        and (current.path, current.fingerprint) == self._saved_document_identity)
+                        and (self.model.document_generation, current.path, current.fingerprint)
+                        == self._saved_document_identity)
 
             if self.check_external():
                 if self.model.document_generation != generation and not self.model.dirty:
@@ -313,7 +314,8 @@ class Controller:
             input_errors = copy.deepcopy(self.model.input_errors)
         self.model.accept_saved(saved)
         self._saved_identity += 1
-        self._saved_document_identity = (saved.path, saved.fingerprint)
+        self._saved_document_identity = (self.model.document_generation, saved.path,
+                                         saved.fingerprint)
         if newer:
             self.model._tree = draft
             self.model.raw_inputs = raw_inputs

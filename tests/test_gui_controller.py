@@ -466,6 +466,42 @@ def test_conflict_inner_save_as_then_open_clean_file_is_not_superseded(tmp_path)
     assert source.path.read_bytes() == b'external'
 
 
+def test_conflict_inner_save_as_then_open_same_file_is_not_superseded(tmp_path):
+    """内层另存后显式重开相同路径，文档代次改变不得归因于保存。"""
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    source.path.write_bytes(b'external')
+    generation = controller.model.document_generation
+    saved_generation = None
+    saved_identity = None
+
+    def save_then_open():
+        """确认内层保存身份后重新打开同一路径。"""
+        nonlocal saved_generation, saved_identity
+        assert controller.save_as(lambda: destination)
+        saved_generation = controller.model.document_generation
+        saved_identity = (controller.model.document.path,
+                          controller.model.document.fingerprint)
+        assert saved_generation > generation
+        assert (saved_generation, *saved_identity) == controller._saved_document_identity
+        assert controller.open(destination)
+
+    controller.on_conflict = save_then_open
+
+    assert controller._save_result() is SaveResult.FAILED
+    assert controller.model.document_generation > saved_generation
+    assert (controller.model.document.path,
+            controller.model.document.fingerprint) == saved_identity
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
+    assert source.path.read_bytes() == b'external'
+
+
 def test_conflict_inner_save_as_keeps_boolean_save_success(tmp_path):
     """冲突回调真实另存成功后旧布尔保存接口不得误报失败。"""
     source = save_document(new_document(), tmp_path / 'source.yaml',
