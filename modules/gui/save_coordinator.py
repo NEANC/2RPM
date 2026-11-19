@@ -13,6 +13,7 @@ class SaveCoordinator:
         self.schedule = schedule
         self.cancel = cancel
         self.pending = None
+        self._save_serial = 0
         self.poll = None
         self.depth = 0
         self.closed = False
@@ -37,17 +38,20 @@ class SaveCoordinator:
     def edited(self):
         """新的编辑撤销旧防抖，仅保留最后一次写入。"""
         self.controller.on_edit()
+        self._save_serial += 1
         if self.pending is not None:
             self.cancel(self.pending)
             self.pending = None
         if self.closed or self.depth or self.controller.conflicted:
             return
         generation = self.controller.model.document_generation
-        self.pending = self.schedule(500, lambda: self._save(generation))
+        serial = self._save_serial
+        self.pending = self.schedule(500, lambda: self._save(generation, serial))
 
-    def _save(self, generation):
+    def _save(self, generation, serial=None):
         """过期回调不写入别的文档。"""
-        if generation != self.controller.model.document_generation or self.closed or self.depth:
+        if (generation != self.controller.model.document_generation or self.closed or self.depth
+                or serial is not None and serial != self._save_serial):
             return
         self.pending = None
         self.flush()
@@ -68,6 +72,7 @@ class SaveCoordinator:
     def begin_transaction(self) -> None:
         """暂停自动写入及自动重载直到文件事务结束。"""
         self.depth += 1
+        self._save_serial += 1
         if self.pending is not None:
             self.cancel(self.pending)
             self.pending = None

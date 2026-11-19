@@ -425,6 +425,7 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     app.test_dialogs = Mock()
     app.actions = {'测试通知': Mock()}
     app.preview_label = Mock()
+    app._owned_previews = set()
     controller.on_conflict = app.save_as
     picker = Mock(side_effect=[str(source.path), str(destination)])
     alert = Mock()
@@ -635,6 +636,7 @@ def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, m
     app.test_dialogs = Mock()
     app.actions = {'测试通知': Mock()}
     app.preview_label = Mock()
+    app._owned_previews = set()
     alert = Mock()
     monkeypatch.setattr('modules.gui.controller.save_document', save_with_outer_failure)
     monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',

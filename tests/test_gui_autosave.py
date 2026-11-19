@@ -3,6 +3,8 @@
 
 """保存协调器和文件事务回归测试。"""
 
+import os
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -151,6 +153,104 @@ def test_save_as_pauses_original_writes(tmp_path):
     assert not controller.save_as(picker)
     assert controller.model.dirty
     assert old.read_bytes() == before
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+def test_failed_file_transaction_ignores_cancelled_save_callback(tmp_path, monkeypatch,
+                                                                 action):
+    """真实文件事务失败后迟到的旧回调不能提前写入草稿。"""
+    controller, coordinator, clock = setup(tmp_path)
+    original = controller.model.document.path
+    original_bytes = original.read_bytes()
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    stale = clock.events[coordinator.pending][1]
+    generation = controller.model.document_generation
+    destination = tmp_path / 'selected.yaml'
+    destination.write_bytes(b'old-target')
+    destination_bytes = destination.read_bytes()
+    controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+
+    if action == 'open':
+        destination.write_bytes(b'\xff')
+        destination_bytes = destination.read_bytes()
+    else:
+        original_replace = os.replace
+
+        def fail_replace(source, target):
+            """在真实临时文件写完后拒绝目标替换。"""
+            assert Path(source).is_file()
+            if Path(target) == destination:
+                raise OSError('write failed')
+            return original_replace(source, target)
+
+        monkeypatch.setattr('modules.config_document.os.replace', fail_replace)
+
+    def picker():
+        """在选择器停留时推进防抖时间并返回真实目标。"""
+        clock.advance(600)
+        assert original.read_bytes() == original_bytes
+        return destination
+
+    assert not getattr(controller, action)(picker)
+    assert original.read_bytes() == original_bytes
+    assert destination.read_bytes() == destination_bytes
+    assert controller.model.document.path == original
+    assert controller.model.document_generation == generation
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    assert coordinator.pending is not None
+    resumed = coordinator.pending
+    stale()
+    assert original.read_bytes() == original_bytes
+    assert destination.read_bytes() == destination_bytes
+    assert coordinator.pending == resumed
+    clock.advance(500)
+    assert read_document(original).tree['monitor']['target'] == 'draft.exe'
+
+
+@pytest.mark.parametrize('action', ['new', 'save_as'])
+def test_conflicting_file_transaction_ignores_cancelled_save_callback(tmp_path, action):
+    """目标冲突与迟到回调均不能覆盖真实磁盘版本。"""
+    controller, coordinator, clock = setup(tmp_path)
+    original = controller.model.document.path
+    original_bytes = original.read_bytes()
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    stale = clock.events[coordinator.pending][1]
+    generation = controller.model.document_generation
+    destination = tmp_path / 'selected.yaml'
+    destination.write_bytes(b'first-version')
+
+    def confirm(kind, detail):
+        """确认覆盖后模拟另一进程修改目标字节。"""
+        if kind == 'overwrite':
+            destination.write_bytes(b'new-external-version')
+        return 'discard' if kind == 'unsaved' else 'confirm'
+
+    controller.confirm = confirm
+
+    def picker():
+        """目标选择不触发原路径的延迟保存。"""
+        clock.advance(600)
+        assert original.read_bytes() == original_bytes
+        return destination
+
+    assert not getattr(controller, action)(picker)
+    assert destination.read_bytes() == b'new-external-version'
+    assert original.read_bytes() == original_bytes
+    assert controller.model.document.path == original
+    assert controller.model.document_generation == generation
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    assert coordinator.pending is not None
+    resumed = coordinator.pending
+    stale()
+    assert original.read_bytes() == original_bytes
+    assert destination.read_bytes() == b'new-external-version'
+    assert coordinator.pending == resumed
+    clock.advance(500)
+    assert read_document(original).tree['monitor']['target'] == 'draft.exe'
 
 
 def test_external_change_during_confirmation_blocks_write(tmp_path):
