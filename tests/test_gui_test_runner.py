@@ -212,6 +212,9 @@ def test_cancel_reaps_worker(tmp_path):
             assert runner.active
             assert results.empty()
             assert artifact.exists()
+            assert processes[0].poll() is not None
+            assert all(stream.closed for stream in
+                       (processes[0].stdin, processes[0].stdout, processes[0].stderr))
         finally:
             release.set()
         result = results.get(timeout=5)
