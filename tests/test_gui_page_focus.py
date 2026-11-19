@@ -140,30 +140,26 @@ def test_hidden_push_diagnostic_only_offers_yaml_hint(tmp_path):
         root.destroy()
 
 
-def test_external_action_disable_restore_is_memory_only(tmp_path):
-    """清空动作路径停用后可恢复，替换文档后旧草稿不再可选。"""
+def test_external_path_field_input_clear_and_real_focus(tmp_path):
+    """原生路径框输入与清空同步模型，诊断定位到真实输入框。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
         app.show_page('外部程序设置')
+        root.update()
         page = app.visible_pages['外部程序设置']
         path = ('external', 'on_end')
-        page.fields[path][1].delete(0, 'end')
-        page.fields[path][1].insert(0, 'C:\\task.bat')
-        page.clear_file('on_end')
-        assert app.model.get(path) == ''
-        assert page.fields[path][0].get() == ''
-        assert page.restore_buttons['on_end'].cget('state') == 'normal'
-        page.restore_file('on_end')
+        field = page.path_fields[path]
+        entry = field.entry._entry
+        field.set('C:\\task.bat')
         assert app.model.get(path) == 'C:\\task.bat'
-        assert page.fields[path][1].winfo_exists()
-        assert page.restore_buttons['on_end'].cget('state') == 'disabled'
+        assert field.get() == 'C:\\task.bat'
+        page.focus_issue(path)
+        root.update()
+        assert root.focus_get() is entry
         page.clear_file('on_end')
-        app.model.replace_document(new_document())
-        page.refresh()
-        page.restore_file('on_end')
-        assert app.model.get(path) != 'C:\\task.bat'
-        assert page.restore_buttons['on_end'].cget('state') == 'disabled'
+        assert field.get() == ''
+        assert app.model.get(path) == ''
     finally:
         root.destroy()
 
