@@ -233,6 +233,69 @@ def test_cancel_reaps_worker(tmp_path):
     assert results.empty()
 
 
+@pytest.mark.parametrize('action', ('cancel', 'close'))
+def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
+    """Windows 大请求写入不读 stdin 的真实 worker 后仍可取消或关闭回收。"""
+    from modules.gui.test_runner import CANCEL_REASON
+    from modules.gui.test_runner import TestRunnerClosedError
+    results = queue.Queue()
+    runner = runner_for(results, command=(sys.executable, '-c',
+                             'import time;time.sleep(30)'))
+    original = subprocess.Popen
+    processes = []
+    writing = threading.Event()
+    write_returned = threading.Event()
+    payload = request(tmp_path, config={'blob': 'x' * (8 * 1024 * 1024)})
+
+    def spawn(*args, **kwargs):
+        """保留真实进程和管道，观察首次真实 stdin 写入入口。"""
+        process = original(*args, **kwargs)
+        processes.append(process)
+        write = process._stdin_write
+
+        def observed(data):
+            """记录写入量并继续执行原生阻塞写入。"""
+            assert len(data) >= 8 * 1024 * 1024
+            writing.set()
+            write(data)
+            write_returned.set()
+
+        process._stdin_write = observed
+        return process
+
+    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn):
+        try:
+            runner.start(payload)
+            assert writing.wait(10)
+            assert not write_returned.wait(0.1)
+            assert processes[0].poll() is None
+            assert not processes[0].stdin.closed
+            assert runner.active
+            assert results.empty()
+            getattr(runner, action)()
+            if action == 'close':
+                with pytest.raises(TestRunnerClosedError):
+                    runner.start(request(tmp_path, request_id='second'))
+            result = results.get(timeout=10)
+            assert (result.request_id, result.status, result.reason) == (
+                'first', 'failure', CANCEL_REASON)
+            assert processes[0].poll() is not None
+            assert all(stream.closed for stream in
+                       (processes[0].stdin, processes[0].stdout, processes[0].stderr))
+            assert not runner.active
+            runner._supervisor.join(timeout=5)
+            assert not runner._supervisor.is_alive()
+            assert results.empty()
+        finally:
+            runner.cancel()
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+            if runner._supervisor is not None:
+                runner._supervisor.join(timeout=5)
+
+
 def test_cancel_after_terminal_commit_is_noop(tmp_path):
     """已提交结果不可被迟来的取消改写。"""
     results = queue.Queue()
