@@ -8,6 +8,7 @@ import ctypes
 from ctypes import wintypes
 import queue
 import shutil
+import stat
 import tempfile
 import threading
 import uuid
@@ -391,6 +392,8 @@ class App:
         self.preview_label.configure(image='', text='')
         for path in tuple(self._owned_previews):
             try:
+                if self.session_dir.stat(follow_symlinks=False).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                    continue
                 path.unlink(missing_ok=True)
             except OSError:
                 continue

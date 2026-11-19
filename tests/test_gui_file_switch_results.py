@@ -3,6 +3,7 @@
 
 """真实 Tk 窗口的显式文件操作与测试结果归属回归。"""
 
+import os
 import tkinter as tk
 from pathlib import Path
 from unittest.mock import Mock
@@ -128,6 +129,7 @@ def test_preview_delete_failure_keeps_retry_path_and_new_config_usable(
     assert app.model.document.path == target
     assert preview.exists()
     assert attempts == [preview, preview]
+    assert preview in app._owned_previews
     assert app.test_session.last_capture is None
     app.model.set(('monitor', 'target'), 'next.exe')
     assert app.controller.save()
@@ -136,8 +138,31 @@ def test_preview_delete_failure_keeps_retry_path_and_new_config_usable(
     assert app.model.document.path == later
     assert attempts == [preview, preview, preview]
     assert not preview.exists()
+    assert preview not in app._owned_previews
     assert upload.read_bytes() == b'upload'
     assert business.read_bytes() == b'business'
+
+
+def test_replaced_session_directory_does_not_delete_outside_preview(
+        window, tmp_path):
+    """会话目录被换成有效目录链接时，不能误删外部同名文件。"""
+    app = window
+    preview, _, _ = seed_preview(app, tmp_path)
+    original_dir = app.session_dir.with_name(app.session_dir.name + '-original')
+    outside_dir = app.session_dir.with_name(app.session_dir.name + '-outside')
+    outside_dir.mkdir()
+    outside = outside_dir / preview.name
+    outside.write_bytes(b'outside')
+    app.session_dir.rename(original_dir)
+    os.symlink(outside_dir.name, app.session_dir, target_is_directory=True)
+    assert app.session_dir.is_symlink()
+    assert preview.read_bytes() == b'outside'
+
+    app._clear_test_results()
+
+    assert outside.read_bytes() == b'outside'
+    assert (original_dir / preview.name).read_bytes() == b'owned'
+    assert preview in app._owned_previews
 
 
 @pytest.mark.parametrize('action,same_path', [
