@@ -140,6 +140,70 @@ def test_test_request_uses_document_directory(tmp_path):
         root.destroy()
 
 
+@pytest.mark.parametrize('action', ['capture', 'upload'])
+def test_ctk_result_window_restores_active_request_and_cancels_once(
+        tmp_path, monkeypatch, action):
+    """真实 ctk App 隐藏后从同类型页恢复原结果窗，取消只针对原请求。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('截图设置')
+        root.update()
+        page = app.visible_pages['截图设置']
+        button = page.capture_button if action == 'capture' else page.upload_button
+        if action == 'upload':
+            app.model.set(('push', 'screenshot', 'image_host'),
+                          [{'provider': 'beeimg'}])
+        button.invoke()
+        selection = app.test_dialogs.selection_window
+        assert selection.winfo_exists()
+        if action == 'capture':
+            app.test_dialogs.capture_target.insert(0, '受控窗口')
+            app.test_dialogs.capture_start.invoke()
+        else:
+            app.test_dialogs.upload_host.set('01 beeimg')
+            app.test_dialogs.upload_image.set(str(tmp_path / 'image.png'))
+            app.test_dialogs.upload_start.invoke()
+        request = app.test_session.active_request
+        assert request is not None and request.action == action
+        assert app.controller.runner.start.call_args.args[0] is request
+        window = app.test_dialogs.result_window
+        root.update()
+        assert window.winfo_viewable()
+        app.test_dialogs.hide_result()
+        root.update()
+        assert not window.winfo_viewable()
+        assert app.test_session.active_request is request
+        app.controller.runner.active = True
+        button.invoke()
+        root.update()
+        assert app.test_dialogs.result_window is window
+        assert window.winfo_viewable()
+        assert app.test_session.active_request is request
+        app.controller.runner.start.assert_called_once_with(request)
+        app.test_dialogs.cancel_button.invoke()
+        app.controller.runner.cancel.assert_called_once_with()
+        assert app.test_session.active_request is request
+        app.controller.runner.results.put(GuiTestResult(
+            'other-request', request.document_generation, request.revision,
+            'failure', '其他请求', ()))
+        app.drain_results()
+        assert app.test_session.active_request is request
+        assert app.test_dialogs.result_label.cget('text') == '测试进行中'
+        app.controller.runner.results.put(GuiTestResult(
+            request.request_id, request.document_generation, request.revision,
+            'failure', '测试已取消', ()))
+        app.drain_results()
+        assert app.test_session.active_request is None
+        assert app.test_dialogs.result_window is window
+        assert '测试已取消' in app.test_dialogs.result_label.cget('text')
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('action, expected', [
     ('capture', ('normal', 'disabled', 'disabled')),
     ('upload', ('disabled', 'normal', 'disabled')),
