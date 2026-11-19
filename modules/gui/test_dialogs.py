@@ -4,6 +4,8 @@
 """ctk-kit 测试选择窗与可恢复的结果窗。"""
 
 
+import tkinter as tk
+
 import ctk_kit
 from PIL import Image
 
@@ -65,12 +67,14 @@ class TestDialogs:
         self.capture_target = ctk_kit.CTkEntry(window, placeholder_text='请输入窗口标题',
                                                font=FONT_BODY)
         self.capture_target.pack(fill='x', padx=24, pady=8)
-        self.capture_target.bind('<KeyRelease>', lambda _event: self._update_capture_start())
+        self.capture_target_value = tk.StringVar(master=window)
+        self.capture_target.configure(textvariable=self.capture_target_value)
         ctk_kit.CTkButton(window, text='取消', command=window.destroy,
                           font=FONT_BODY).pack(side='right', padx=16, pady=12)
         self.capture_start = ctk_kit.CTkButton(
             window, text='开始测试', command=self.submit_capture, font=FONT_BODY)
         self.capture_start.pack(side='right', pady=12)
+        self.capture_target_value.trace_add('write', lambda *_: self._update_capture_start())
         self._update_capture_start()
         window.grab_set()
         return window

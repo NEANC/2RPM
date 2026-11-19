@@ -82,6 +82,31 @@ def test_capture_start_button_tracks_source_and_target():
         root.destroy()
 
 
+def test_capture_start_disables_after_programmatic_target_clear():
+    """程序清空截图目标时无需键盘事件也会禁用开始按钮。"""
+    root = tk.Tk()
+    root.withdraw()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        dialogs.open_capture(callback)
+        dialogs.capture_target.insert(0, '窗口标题')
+        dialogs.capture_provider._dropdown_callback('窗口')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.capture_target.delete(0, 'end')
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        dialogs.capture_provider._dropdown_callback('ADB')
+        assert dialogs.capture_provider.get() == 'ADB'
+        assert dialogs.capture_start.cget('state') == 'disabled'
+        dialogs.capture_target.insert(0, '127.0.0.1:16384')
+        assert dialogs.capture_start.cget('state') == 'normal'
+        dialogs.selection_window.destroy()
+        callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
 def test_upload_selection_requires_host_and_image():
     """图床及本地图片都选定后才可提交。"""
     root = tk.Tk()
