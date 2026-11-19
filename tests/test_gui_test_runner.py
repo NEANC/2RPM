@@ -14,6 +14,10 @@ from unittest.mock import patch
 
 import psutil
 import pytest
+import win32api
+import win32con
+import win32job
+import win32process
 
 from modules.gui.protocol import TestRequest as GuiRequest
 from modules.gui.protocol import TestResult as GuiResult
@@ -23,44 +27,32 @@ from modules.gui.protocol import encode_result
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_large_stdin_child(command, pid_path, *, timeout, env=None):
-    """运行隔离子进程，并在所有退出路径有界回收其 worker 进程树。"""
-    child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True)
+def run_large_stdin_child(command, *, timeout, env=None):
+    """在 Job 中启动子测试，并在所有退出路径回收其全部后代。"""
+    job = win32job.CreateJobObject(None, '')
+    child = None
     try:
+        limits = win32job.QueryInformationJobObject(
+            job, win32job.JobObjectExtendedLimitInformation)
+        limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation,
+                                         limits)
+        child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True,
+                                 creationflags=win32process.CREATE_SUSPENDED)
+        win32job.AssignProcessToJobObject(job, child._handle)
+        thread_id = psutil.Process(child.pid).threads()[0].id
+        thread = win32api.OpenThread(win32con.THREAD_SUSPEND_RESUME, False, thread_id)
+        try:
+            win32process.ResumeThread(thread)
+        finally:
+            thread.Close()
         stdout, stderr = child.communicate(timeout=timeout)
         assert child.returncode == 0, stdout + stderr
     finally:
-        worker = None
-        if pid_path.exists():
-            try:
-                worker = psutil.Process(int(pid_path.read_text()))
-            except (ValueError, psutil.NoSuchProcess):
-                pass
-        targets = []
-        try:
-            targets.append(psutil.Process(child.pid))
-        except psutil.NoSuchProcess:
-            pass
-        if worker is not None:
-            targets.append(worker)
-        descendants = []
-        for process in tuple(targets):
-            try:
-                descendants.extend(process.children(recursive=True))
-            except psutil.NoSuchProcess:
-                pass
-        processes = tuple({process.pid: process for process in (*descendants, *targets)}.values())
-        for process in processes:
-            try:
-                process.kill()
-            except psutil.NoSuchProcess:
-                pass
-        _, alive = psutil.wait_procs(processes, timeout=5)
-        if child.poll() is None:
-            child.kill()
-        child.communicate(timeout=5)
-        assert not alive, f'子测试进程树未回收: {[process.pid for process in alive]}'
+        job.Close()
+        if child is not None:
+            child.communicate(timeout=5)
 
 
 def request(tmp_path, *, request_id='first', config=None):
@@ -283,7 +275,7 @@ def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
         run_large_stdin_child(
             (sys.executable, '-m', 'pytest',
              f'{__file__}::test_blocked_large_stdin_reaps_real_worker[{action}]',
-             '-q'), pid_path, timeout=20,
+             '-q'), timeout=20,
             env={**os.environ, 'GUI_TEST_LARGE_STDIN_CHILD': '1',
                  'GUI_TEST_LARGE_STDIN_PID_PATH': str(pid_path)})
         return
@@ -372,7 +364,7 @@ def test_large_stdin_child_reaps_reported_worker_on_timeout_or_failure(tmp_path,
     command = (sys.executable, '-c', script, str(pid_path))
     try:
         with pytest.raises((subprocess.TimeoutExpired, AssertionError)):
-            run_large_stdin_child(command, pid_path, timeout=2)
+            run_large_stdin_child(command, timeout=2)
         assert pid_path.exists()
         worker_pid = int(pid_path.read_text())
         assert not psutil.pid_exists(worker_pid)
@@ -401,7 +393,7 @@ def test_large_stdin_child_reaps_detached_grandchild_without_killing_pid_file_ta
         pid_path.write_text(str(unrelated.pid))
         with pytest.raises((subprocess.TimeoutExpired, AssertionError)):
             run_large_stdin_child((sys.executable, '-c', script, str(grandchild_path)),
-                                  pid_path, timeout=2)
+                                  timeout=2)
         assert grandchild_path.exists()
         assert unrelated.poll() is None
         assert not psutil.pid_exists(int(grandchild_path.read_text()))
