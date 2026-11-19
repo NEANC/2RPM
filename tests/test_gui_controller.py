@@ -908,6 +908,7 @@ def test_repeat_confirmation_external_reload_invalid_config_blocks_launch(tmp_pa
                              expected_fingerprint=None)
     controller, _, _ = make_controller(tmp_path, document)
     controller.launch_count = 1
+    generation = controller.model.document_generation
     launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
     monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
 
@@ -921,7 +922,18 @@ def test_repeat_confirmation_external_reload_invalid_config_blocks_launch(tmp_pa
 
     controller.confirm = confirm
     assert controller.start_cli() is None
-    assert read_document(document.path).tree['monitor']['mode'] == 'invalid'
+    disk = read_document(document.path)
+    assert disk.fingerprint != document.fingerprint
+    assert disk.tree['monitor']['mode'] == 'invalid'
+    assert controller.model.document_generation > generation
+    assert controller.model.revision == 0
+    assert controller.model.document.path == document.path
+    assert controller.model.document.fingerprint == disk.fingerprint
+    assert controller.model.get(('monitor', 'mode')) == 'invalid'
+    assert controller.model.snapshot() == disk.tree
+    assert not controller.model.dirty
+    assert not controller.conflicted
+    assert controller.launch_count == 1
     launch.assert_not_called()
 
 
@@ -935,6 +947,10 @@ def test_normalize_confirmation_reentry_does_not_replace_current_draft(
     source = controller.model.document.path
     original = source.read_bytes()
     destination = tmp_path / 'copy.yaml'
+    generation = controller.model.document_generation
+    revision = controller.model.revision
+    fingerprint = controller.model.document.fingerprint
+    launch_count = controller.launch_count
     launch = Mock()
     monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
 
@@ -945,18 +961,72 @@ def test_normalize_confirmation_reentry_does_not_replace_current_draft(
             controller.model.set(('monitor', 'target'), 'new-draft.exe')
         else:
             assert controller.save_as(lambda: destination)
+        current = controller.model.document
+        identity = (controller.model.document_generation, controller.model.revision,
+                    current.path, current.fingerprint)
+        assert identity != (generation, revision, source, fingerprint)
+        return_identity.append(identity)
         return 'confirm'
 
+    return_identity = []
     controller.confirm = confirm
     assert controller.start_cli() is None
+    assert (controller.model.document_generation, controller.model.revision,
+            controller.model.document.path, controller.model.document.fingerprint) == return_identity[0]
     assert source.read_bytes() == original
     assert controller.model.get(('monitor', 'common', 'max_wait')) == '-30s'
     if reentry == 'edit':
+        assert controller.model.document_generation == generation
+        assert controller.model.revision > revision
+        assert controller.model.document.path == source
+        assert controller.model.document.fingerprint == fingerprint
         assert controller.model.get(('monitor', 'target')) == 'new-draft.exe'
         assert controller.model.dirty
     else:
+        assert controller.model.document_generation > generation
+        assert controller.model.revision == 0
         assert controller.model.document.path == destination
-        assert read_document(destination).tree['monitor']['common']['max_wait'] == '-30s'
+        saved = read_document(destination)
+        assert controller.model.document.fingerprint == saved.fingerprint
+        assert saved.tree['monitor']['common']['max_wait'] == '-30s'
+        assert not controller.model.dirty
+    assert not controller.conflicted
+    assert controller.launch_count == launch_count
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize('kind', ['normalize', 'repeat_launch'])
+def test_start_confirmation_cancel_preserves_draft_identity_and_state(tmp_path, monkeypatch,
+                                                                      kind):
+    """确认取消不启动、不增加计数，亦不改变草稿基线与冲突状态。"""
+    controller, confirm, _ = make_controller(tmp_path, answers=['cancel'])
+    if kind == 'normalize':
+        controller.model.set(('monitor', 'common', 'max_wait'), '-30s')
+    assert controller.save()
+    if kind == 'repeat_launch':
+        controller.launch_count = 1
+    document = controller.model.document
+    original = document.path.read_bytes()
+    draft = controller.model.snapshot()
+    identity = (controller.model.document_generation, controller.model.revision,
+                document.path, document.fingerprint)
+    count = controller.launch_count
+    conflict = controller.conflicted
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    assert controller.start_cli() is None
+    confirm.assert_called_once()
+    assert confirm.call_args.args[0] == kind
+    assert controller.cli_cancelled is True
+    assert controller.launch_count == count
+    assert (controller.model.document_generation, controller.model.revision,
+            controller.model.document.path, controller.model.document.fingerprint) == identity
+    assert controller.model.document == document
+    assert controller.model.snapshot() == draft
+    assert controller.model.dirty is False
+    assert controller.conflicted == conflict
+    assert document.path.read_bytes() == original
     launch.assert_not_called()
 
 
