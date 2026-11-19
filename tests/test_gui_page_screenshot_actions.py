@@ -4,13 +4,14 @@
 """GUI 页面行为（GUI 测试分片）。"""
 
 import queue
+import subprocess
 import sys
 import tkinter as tk
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 import ctk_kit
@@ -605,6 +606,107 @@ def test_real_worker_capture_failure_waits_for_cleanup_and_stays_terminal(
             runner.close()
             if runner._supervisor is not None:
                 runner._supervisor.join(timeout=10)
+        root.destroy()
+
+
+def test_real_tk_capture_cancel_reaps_worker_and_shows_terminal_once(tmp_path, monkeypatch):
+    """真实截图点击取消后，三管道回收完毕才在 GUI 展示一次取消终态。"""
+    root = tk.Tk()
+    release = threading.Event()
+    runner = None
+    processes = []
+    try:
+        app = make_app(root, tmp_path)
+        runner = GuiTestRunner((sys.executable, '-c', 'import time; time.sleep(30)'),
+                               queue.Queue(), worker_cwd=Path(__file__).resolve().parents[1])
+        app.controller.runner = runner
+        app.test_session.runner = runner
+        spawned = threading.Event()
+        cleaning = threading.Event()
+        original_popen = subprocess.Popen
+        original_clean = runner._clean_request
+
+        def spawn(*args, **kwargs):
+            """保留真实子进程供三管道回收断言。"""
+            process = original_popen(*args, **kwargs)
+            processes.append(process)
+            spawned.set()
+            return process
+
+        def blocked_clean(request):
+            """固定取消后、监督线程释放槽位前的观察窗口。"""
+            cleaning.set()
+            assert release.wait(10)
+            original_clean(request)
+
+        monkeypatch.setattr(runner, '_clean_request', blocked_clean)
+        with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn):
+            app.show_page('截图设置')
+            page = app.visible_pages['截图设置']
+            page.capture_button.invoke()
+            dialogs = app.test_dialogs
+            dialogs.capture_target.insert(0, '本地受控窗口')
+            dialogs.capture_start.invoke()
+            request = app.test_session.active_request
+            assert request is not None and request.action == 'capture'
+            assert spawned.wait(5)
+            assert len(processes) == 1
+            process = processes[0]
+            assert all(getattr(process, name) is not None
+                       for name in ('stdin', 'stdout', 'stderr'))
+            window = dialogs.result_window
+            root.update()
+            dialogs.cancel_button.invoke()
+            assert cleaning.wait(10)
+            assert runner.active
+            assert runner.results.empty()
+            assert process.poll() is not None
+            assert all(stream.closed for stream in
+                       (process.stdin, process.stdout, process.stderr))
+            app._poll()
+            assert app.test_session.active_request is request
+            assert dialogs.result_label.cget('text') == '测试进行中'
+            assert page.upload_button.cget('state') == 'disabled'
+
+            show_result = Mock(wraps=dialogs.show_result)
+            monkeypatch.setattr(dialogs, 'show_result', show_result)
+            release.set()
+            runner._supervisor.join(timeout=10)
+            assert not runner._supervisor.is_alive()
+            assert not runner.active
+            assert runner.results.qsize() == 1
+            app._poll()
+            terminal = app.result_text
+            label = dialogs.result_label.cget('text')
+            assert app.test_session.active_request is None
+            assert terminal == 'failure: 测试已取消；已发出的请求仍可能完成'
+            assert app.status.cget('text') == terminal
+            assert '测试已取消' in label
+            assert dialogs.result_window is window
+            assert window.winfo_viewable()
+            assert page.upload_button.cget('state') == 'normal'
+            assert show_result.call_count == 1
+            assert runner.results.empty()
+            for _ in range(3):
+                app._poll()
+                assert app.result_text == terminal
+                assert dialogs.result_label.cget('text') == label
+                assert dialogs.result_window is window
+                assert show_result.call_count == 1
+                assert runner.results.empty()
+            assert process.poll() is not None
+            assert all(stream.closed for stream in
+                       (process.stdin, process.stdout, process.stderr))
+    finally:
+        release.set()
+        if runner is not None:
+            runner.close()
+            if runner._supervisor is not None:
+                runner._supervisor.join(timeout=10)
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
         root.destroy()
 
 
