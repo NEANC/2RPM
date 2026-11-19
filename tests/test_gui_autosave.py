@@ -290,6 +290,64 @@ def test_clean_external_edit_reloads(tmp_path):
     assert not controller.conflicted
 
 
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('dirty', [False, True])
+def test_external_update_in_same_path_picker_preserves_disk(tmp_path, action, dirty):
+    """选择器内更新当前文件时，旧草稿不能覆盖新版本。"""
+    controller, _, _ = setup(tmp_path)
+    path = controller.model.document.path
+    if dirty:
+        controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+
+    def picker():
+        """在模态选择器停留期间由外部进程更新真实 YAML。"""
+        external = read_document(path)
+        external.tree['monitor']['target'] = 'external.exe'
+        save_document(external, path, expected_fingerprint=external.fingerprint)
+        return path
+
+    result = getattr(controller, action)(picker)
+
+    assert result is (action == 'open' or action == 'save_as' and not dirty)
+    assert read_document(path).tree['monitor']['target'] == 'external.exe'
+    if dirty and action != 'open':
+        assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+        assert controller.model.dirty
+        assert controller.conflicted
+    else:
+        assert controller.model.get(('monitor', 'target')) == 'external.exe'
+        assert not controller.conflicted
+
+
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('damage', ['invalid', 'missing'])
+def test_unavailable_external_version_in_picker_blocks_old_write(tmp_path, action, damage):
+    """选择器内 YAML 损坏或文件暂缺时保留旧视图并阻断写回。"""
+    controller, _, _ = setup(tmp_path)
+    path = controller.model.document.path
+    before = controller.model.snapshot()
+    controller.confirm = lambda *_: 'confirm'
+
+    def picker():
+        """在模态选择器内制造真实文件不可读取状态。"""
+        if damage == 'invalid':
+            path.write_bytes(b'\xff')
+        else:
+            path.unlink()
+        return path
+
+    assert not getattr(controller, action)(picker)
+    assert controller.model.snapshot() == before
+    assert controller.model.document.path == path
+    assert controller.conflicted
+    assert not controller.save()
+    if damage == 'invalid':
+        assert path.read_bytes() == b'\xff'
+    else:
+        assert not path.exists()
+
+
 def test_invalid_external_yaml_preserves_view(tmp_path):
     """坏 YAML 不替换最后有效的视图，并禁止写回。"""
     controller, coordinator, _ = setup(tmp_path)

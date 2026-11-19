@@ -91,6 +91,10 @@ class Controller:
             if selected is None:
                 return False
             target = normalize_config_path(Path(selected), program_dir=self.program_dir)
+            if target == self.model.document.path:
+                generation = self.model.document_generation
+                if self.check_external() or self.model.document_generation != generation:
+                    return False
             try:
                 data = target.read_bytes()
             except FileNotFoundError:
