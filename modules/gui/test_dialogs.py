@@ -21,6 +21,7 @@ class TestDialogs:
         self.session = session
         self.selection_window = None
         self.result_window = None
+        self.result_content = None
         self.result_label = None
         self.displayed_result = None
         self.result_image = None
@@ -156,15 +157,19 @@ class TestDialogs:
             window.protocol('WM_DELETE_WINDOW', self.hide_result)
             ctk_kit.CTkButton(window, text='×', width=32, command=self.hide_result,
                               font=FONT_BODY).pack(anchor='ne', padx=12, pady=8)
-            self.result_label = ctk_kit.CTkLabel(window, text='', font=FONT_BODY,
+            actions = ctk_kit.CTkFrame(window, fg_color='transparent')
+            actions.pack(side='bottom', fill='x')
+            self.result_content = ctk_kit.CTkScrollableFrame(window, fg_color='transparent')
+            self.result_content.pack(fill='both', expand=True)
+            self.result_label = ctk_kit.CTkLabel(self.result_content, text='', font=FONT_BODY,
                                                   wraplength=390)
             self.result_label.pack(padx=18, pady=8)
-            self.result_preview = ctk_kit.CTkLabel(window, text='', font=FONT_BODY)
+            self.result_preview = ctk_kit.CTkLabel(self.result_content, text='', font=FONT_BODY)
             self.result_preview.pack(padx=18, pady=8)
-            self.cancel_button = ctk_kit.CTkButton(window, text='取消测试',
+            self.cancel_button = ctk_kit.CTkButton(actions, text='取消测试',
                                                      command=self.session.cancel, font=FONT_BODY)
             self.cancel_button.pack(side='right', padx=18, pady=10)
-            self.retry = ctk_kit.CTkButton(window, text='重新测试', font=FONT_BODY)
+            self.retry = ctk_kit.CTkButton(actions, text='重新测试', font=FONT_BODY)
             self.retry.pack(side='right', padx=8, pady=10)
         self.result_window.deiconify()
         self.result_window.lift()
@@ -244,7 +249,7 @@ class TestDialogs:
         for window in (self.selection_window, self.result_window):
             if window is not None and window.winfo_exists():
                 window.destroy()
-        self.selection_window = self.result_window = None
+        self.selection_window = self.result_window = self.result_content = None
         self.displayed_result = None
         self.result_image = None
         self._capture_retry_callback = None

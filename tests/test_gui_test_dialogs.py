@@ -9,8 +9,10 @@ from unittest.mock import Mock
 import ctk_kit
 import customtkinter as ctk
 from PIL import Image
+import pytest
 
 from modules.gui.protocol import TestResult as GuiResult
+from modules.gui.protocol import TestRequest as GuiRequest
 from modules.gui.test_dialogs import TestDialogs as GuiDialogs
 from modules.gui.test_session import TestSession as GuiSession
 
@@ -79,6 +81,80 @@ def test_capture_start_button_tracks_source_and_target():
         assert dialogs.capture_start.cget('state') == 'disabled'
         dialogs.selection_window.destroy()
         callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+@pytest.mark.parametrize(('action', 'status'), [
+    ('upload', 'success'),
+    ('upload', 'failure'),
+    ('capture', 'failure'),
+])
+def test_long_result_text_can_scroll_without_covering_actions(action, status):
+    """长回调与错误可滚至末尾，底部操作始终在窗口内。"""
+    root = tk.Tk()
+    root.geometry('600x450+80+80')
+    root.update()
+    runner = Mock(active=True)
+    dialogs = GuiDialogs(root, GuiSession(runner))
+    try:
+        url = 'https://example.org/' + 'long-path/' * 120 if status == 'success' else ''
+        reason = '错误详情' * 160 if status == 'failure' else ''
+        window = dialogs.show_result(action, GuiResult('one', 0, 0, status, reason, (), url))
+        root.update()
+        canvas = dialogs.result_content._parent_canvas
+        assert canvas.yview()[1] < 1
+        canvas.yview_moveto(1)
+        root.update()
+        assert canvas.yview()[1] == 1
+        assert dialogs.result_label.winfo_rooty() + dialogs.result_label.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height())
+        assert (url or reason) in dialogs.result_label.cget('text')
+        assert dialogs.retry.winfo_rooty() + dialogs.retry.winfo_height() <= (
+            window.winfo_rooty() + window.winfo_height())
+        dialogs.retry.invoke()
+        assert dialogs.selection_window.winfo_exists()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
+def test_large_capture_preview_remains_accessible_and_cancel_stays_clickable(tmp_path):
+    """大图缩放后仍可见，长详情可滚动，运行中取消与关闭可操作。"""
+    path = tmp_path / 'large.png'
+    Image.new('RGB', (2600, 1800), 'blue').save(path)
+    root = tk.Tk()
+    root.geometry('600x450+80+80')
+    root.update()
+    runner = Mock(active=False)
+    session = GuiSession(runner)
+    assert session.start(GuiRequest('one', 0, 0, 'capture', {}, str(tmp_path),
+                                    str(tmp_path), 0, None, None, None))
+    dialogs = GuiDialogs(root, session)
+    try:
+        window = dialogs.show_result('capture', GuiResult('one', 0, 0, 'failure',
+                                                         '截图失败详情' * 160, (str(path),)))
+        root.update()
+        canvas = dialogs.result_content._parent_canvas
+        assert canvas.yview()[1] < 1
+        canvas.yview_moveto(1)
+        root.update()
+        assert dialogs.result_image.cget('size')[0] <= 360
+        assert dialogs.result_preview.winfo_rooty() + dialogs.result_preview.winfo_height() <= (
+            canvas.winfo_rooty() + canvas.winfo_height())
+        dialogs.show_result('capture', None)
+        root.update()
+        assert dialogs.cancel_button.winfo_ismapped()
+        assert dialogs.cancel_button.winfo_rooty() + dialogs.cancel_button.winfo_height() <= (
+            window.winfo_rooty() + window.winfo_height())
+        dialogs.cancel_button.invoke()
+        runner.cancel.assert_called_once_with()
+        close = next(child for child in window.winfo_children()
+                     if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '×')
+        close.invoke()
+        assert not window.winfo_viewable()
+        assert session.hidden
     finally:
         dialogs.clear()
         root.destroy()
