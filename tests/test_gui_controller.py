@@ -366,12 +366,14 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     app.root = Mock()
     app.status = Mock()
     app._refresh_save_status = Mock()
-    controller.on_conflict = app._show_conflict
+    app.test_session = Mock()
+    app.test_dialogs = Mock()
+    app.actions = {'测试通知': Mock()}
+    app.preview_label = Mock()
+    controller.on_conflict = app.save_as
     picker = Mock(side_effect=[str(source.path), str(destination)])
     alert = Mock()
     monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
-    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
-                        Mock(return_value=False))
     monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
 
     app.save_as()
@@ -384,6 +386,9 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     assert not controller.model.dirty
     assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
     assert source.path.read_bytes() == b'external'
+    app.test_session.clear.assert_called_once_with()
+    app.test_dialogs.clear.assert_called_once_with()
+    app.preview_label.configure.assert_called_once_with(image='', text='')
     assert not any(call.kwargs.get('text') == '配置未另存'
                    for call in app.status.configure.call_args_list)
     alert.assert_not_called()
@@ -562,7 +567,7 @@ def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, m
     def confirm(kind, detail):
         """外层覆盖确认期间另存到内层目标。"""
         if kind == 'overwrite':
-            assert controller.save_as(lambda: inner) is True
+            app.save_as()
         return 'confirm'
 
     controller.confirm = confirm
@@ -571,10 +576,14 @@ def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, m
     app.model = controller.model
     app.root = Mock()
     app.status = Mock()
+    app.test_session = Mock()
+    app.test_dialogs = Mock()
+    app.actions = {'测试通知': Mock()}
+    app.preview_label = Mock()
     alert = Mock()
     monkeypatch.setattr('modules.gui.controller.save_document', save_with_outer_failure)
     monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
-                        lambda **_: str(outer))
+                        Mock(side_effect=[str(outer), str(inner)]))
     monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
 
     app.save_as()
@@ -585,6 +594,9 @@ def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, m
     assert controller.model.document.path == inner
     assert inner.exists()
     assert outer.read_bytes() == b'existing'
+    app.test_session.clear.assert_called_once_with()
+    app.test_dialogs.clear.assert_called_once_with()
+    app.preview_label.configure.assert_called_once_with(image='', text='')
 
 
 @pytest.mark.parametrize('phase', ['conflict', 'overwrite', 'relocate', 'read', 'write'])
