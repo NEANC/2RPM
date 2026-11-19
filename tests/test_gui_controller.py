@@ -337,9 +337,64 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
     assert not destination.exists()
 
 
+def test_app_save_as_conflict_prompt_save_as_does_not_report_failure(
+        tmp_path, monkeypatch):
+    """冲突提示选择另存后，内层成功不得被外层结果误报为失败。"""
+    from modules.gui.app import App
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.runner.active = False
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    source.path.write_bytes(b'external')
+    generation = controller.model.document_generation
+    original_save_as = controller._save_as_result
+    results = []
+
+    def record_save_as(picker):
+        """观察冲突提示触发的内层另存与外层另存结果。"""
+        result = original_save_as(picker)
+        results.append(result)
+        return result
+
+    controller._save_as_result = record_save_as
+    app = object.__new__(App)
+    app.controller = controller
+    app.model = controller.model
+    app.root = Mock()
+    app.status = Mock()
+    app._refresh_save_status = Mock()
+    controller.on_conflict = app._show_conflict
+    picker = Mock(side_effect=[str(source.path), str(destination)])
+    choice = Mock(return_value=False)
+    alert = Mock()
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', choice)
+    monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
+
+    app.save_as()
+
+    choice.assert_called_once_with(
+        '外部变更', '磁盘配置已变化。是：重新加载；否：将草稿另存为；取消：暂不处理。',
+        parent=app.root)
+    assert picker.call_count == 2
+    assert results == [SaveResult.SAVED, SaveResult.SUPERSEDED]
+    assert controller.model.document_generation > generation
+    assert controller.model.document.path == destination
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'draft.exe'
+    assert source.path.read_bytes() == b'external'
+    assert not any(call.kwargs.get('text') == '配置未另存'
+                   for call in app.status.configure.call_args_list)
+    alert.assert_not_called()
+
+
 def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failure(
         tmp_path, monkeypatch):
-    """外层旧路径冲突返回失败时，回调另存成功不得覆盖成功状态。"""
+    """直接重入 App.save_as 成功后清理旧测试结果且不误报失败。"""
     from modules.gui.app import App
 
     source = save_document(new_document(), tmp_path / 'source.yaml',
