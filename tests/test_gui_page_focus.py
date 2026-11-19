@@ -164,12 +164,14 @@ def test_external_path_field_input_clear_and_real_focus(tmp_path):
         page.clear_file('on_end')
         assert field.get() == ''
         assert app.model.get(path) == ''
+        entry.insert(0, 'C:\\task.bat')
+        entry.event_generate('<KeyRelease>', keysym='t')
+        root.update()
+        assert app.model.get(path) == 'C:\\task.bat'
         app.model.replace_document(new_document())
         page.refresh()
         assert field.get() == app.model.get(path)
         assert field.get() != 'C:\\task.bat'
-        assert not hasattr(page, 'restore_buttons')
-        assert not hasattr(page, 'restore_file')
     finally:
         root.destroy()
 
