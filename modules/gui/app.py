@@ -461,6 +461,7 @@ class App:
             suffix = ('（对应先前配置）' if self.test_session.previous_generation else
                       '（对应先前草稿）' if self.test_session.previous_draft else '')
             self.result_text = f'{result.status}: {result.reason}{suffix}'
+            self.status.configure(text=self.result_text)
             if current.action == 'notify':
                 if result.status != 'success':
                     failures = [f'{item.index + 1} {item.provider}：{item.reason}'
@@ -475,7 +476,6 @@ class App:
                                               retry_callback=(self.open_upload_selection
                                                               if current.action == 'upload'
                                                               else self.open_capture_selection))
-            self.status.configure(text=self.result_text)
             self.preview_image = None
             self.preview_label.configure(image='', text='')
             if result.preview_paths and not isinstance(self.root, ctk_kit.App):

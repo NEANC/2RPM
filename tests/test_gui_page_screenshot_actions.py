@@ -456,6 +456,138 @@ def test_real_test_buttons_follow_worker_and_terminal_state(tmp_path, monkeypatc
         root.destroy()
 
 
+@pytest.mark.parametrize('action', ['capture', 'upload'])
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'cancelled'])
+def test_real_result_buttons_restore_without_resending(tmp_path, monkeypatch,
+                                                       action, outcome):
+    """真实结果窗在终态可恢复，重新测试只打开选择窗而不重复发请求。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        page = app.visible_pages['截图设置']
+        button = page.capture_button if action == 'capture' else page.upload_button
+        button.invoke()
+        dialogs = app.test_dialogs
+        if action == 'capture':
+            dialogs.capture_target.insert(0, '测试窗口')
+            dialogs.capture_start.invoke()
+        else:
+            dialogs.upload_host.set(dialogs._host_names[0])
+            dialogs.upload_image.set(str(tmp_path / 'image.png'))
+            dialogs.upload_start.invoke()
+        request = app.test_session.active_request
+        assert request is not None
+        app.controller.runner.start.assert_called_once_with(request)
+        dialogs.hide_result()
+        app.controller.runner.results.put(GuiTestResult(
+            request.request_id, request.document_generation, request.revision,
+            'failure' if outcome == 'cancelled' else outcome,
+            '测试已取消' if outcome == 'cancelled' else '测试失败', ()))
+        app.drain_results()
+        app.controller.runner.active = False
+        app._sync_test_buttons()
+        assert (page.capture_button.cget('state'), page.upload_button.cget('state'),
+                app.visible_pages['消息推送设置'].notify_button.cget('state')) == (
+                    'normal', 'normal', 'normal')
+        button.invoke()
+        assert dialogs.result_window.winfo_viewable()
+        assert dialogs.retry.winfo_manager() == 'pack'
+        assert not dialogs.cancel_button.winfo_manager()
+        app.controller.runner.start.assert_called_once_with(request)
+        dialogs.retry.invoke()
+        assert dialogs.selection_window.winfo_exists()
+        app.controller.runner.start.assert_called_once_with(request)
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('action', ['capture', 'upload', 'notify'])
+def test_real_buttons_recover_after_start_failure(tmp_path, monkeypatch, action):
+    """启动失败释放三个真实测试入口，后续点击可以重新发起选择。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        page = app.visible_pages['截图设置']
+        notify_button = app.visible_pages['消息推送设置'].notify_button
+        app.controller.runner.start.side_effect = RuntimeError('worker 无法启动')
+        if action == 'notify':
+            notify_button.invoke()
+        else:
+            (page.capture_button if action == 'capture' else page.upload_button).invoke()
+            dialogs = app.test_dialogs
+            if action == 'capture':
+                dialogs.capture_target.insert(0, '测试窗口')
+                dialogs.capture_start.invoke()
+            else:
+                dialogs.upload_host.set(dialogs._host_names[0])
+                dialogs.upload_image.set(str(tmp_path / 'image.png'))
+                dialogs.upload_start.invoke()
+        assert app.controller.runner.start.call_count == 1
+        assert app.test_session.active_request is None
+        assert (page.capture_button.cget('state'), page.upload_button.cget('state'),
+                notify_button.cget('state')) == ('normal', 'normal', 'normal')
+        assert notify_button.cget('text') == '通知测试'
+        if action != 'notify':
+            assert dialogs.selection_window.winfo_exists()
+            assert not dialogs.result_window or not dialogs.result_window.winfo_viewable()
+            app.controller.runner.start.side_effect = None
+            if action == 'capture':
+                dialogs.capture_start.invoke()
+            else:
+                dialogs.upload_start.invoke()
+            assert app.controller.runner.start.call_count == 2
+            assert app.test_session.active_request is not None
+        else:
+            app.controller.runner.start.side_effect = None
+            notify_button.invoke()
+            assert app.controller.runner.start.call_count == 2
+            assert app.test_session.active_request is not None
+            assert app.test_dialogs.result_window is None
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('outcome', ['success', 'failure', 'cancelled'])
+def test_notify_terminal_has_no_reopen_or_independent_cancel(tmp_path, monkeypatch,
+                                                             outcome):
+    """通知结果只反馈终态，不创建结果窗或独立取消入口。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        errors = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', errors)
+        button = app.visible_pages['消息推送设置'].notify_button
+        button.invoke()
+        request = app.test_session.active_request
+        assert request is not None
+        assert button.cget('state') == 'disabled'
+        assert button.cget('text') == '发送中…'
+        assert app.test_dialogs.result_window is None
+        app.cancel_test()
+        app.controller.runner.cancel.assert_not_called()
+        app.controller.runner.results.put(GuiTestResult(
+            request.request_id, request.document_generation, request.revision,
+            'failure' if outcome == 'cancelled' else outcome,
+            '测试已取消' if outcome == 'cancelled' else '发送失败', ()))
+        app.drain_results()
+        app.controller.runner.active = False
+        app._sync_test_buttons()
+        assert app.test_dialogs.result_window is None
+        assert button.cget('state') == 'normal'
+        assert button.cget('text') == '通知测试'
+        assert app.status.cget('text') == app.result_text
+        app.controller.runner.start.assert_called_once_with(request)
+        assert errors.call_count == (0 if outcome == 'success' else 1)
+        button.invoke()
+        assert app.controller.runner.start.call_count == 2
+        assert app.test_dialogs.result_window is None
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('action, lazy_page, expected', [
     ('notify', '截图设置', ('disabled', 'disabled')),
     ('capture', '消息推送设置', ('disabled', '通知测试')),
