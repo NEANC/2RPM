@@ -227,6 +227,39 @@ def test_lazy_test_page_created_during_worker_uses_current_busy_state(
         root.destroy()
 
 
+@pytest.mark.parametrize('lazy_page', ['截图设置', '消息推送设置'])
+def test_lazy_test_page_is_disabled_while_runner_active_without_request(
+        tmp_path, lazy_page):
+    """请求已清空但 worker 尚未回收时，首次进入真实页面仍禁用测试入口。"""
+    from modules.gui.app import App
+    from modules.gui.controller import Controller
+
+    root = tk.Tk()
+    try:
+        runner = Mock(active=False, results=queue.Queue())
+        model = EditorModel(save_document(new_document(), tmp_path / 'a.yaml',
+                                          expected_fingerprint=None))
+        controller = Controller(model, confirm=lambda *_: 'cancel',
+                                choose_path=lambda: tmp_path / 'a.yaml',
+                                cli_command=('python.exe',), runner=runner,
+                                program_dir=tmp_path)
+        app = App(root, controller)
+        assert lazy_page not in app.visible_pages
+        assert app.test_session.active_request is None
+        runner.active = True
+
+        assert app.show_page(lazy_page)
+        page = app.visible_pages[lazy_page]
+        if lazy_page == '截图设置':
+            assert (page.capture_button.cget('state'),
+                    page.upload_button.cget('state')) == ('disabled', 'disabled')
+        else:
+            assert (page.notify_button.cget('state'),
+                    page.notify_button.cget('text')) == ('disabled', '通知测试')
+    finally:
+        root.destroy()
+
+
 def test_failed_worker_start_restores_real_test_buttons(tmp_path, monkeypatch):
     """启动失败后真实截图、上传及通知入口均可再次使用。"""
     root = tk.Tk()
