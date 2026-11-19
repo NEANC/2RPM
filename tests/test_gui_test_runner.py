@@ -4,6 +4,7 @@
 """隔离测试进程的线程、结果及回收契约。"""
 
 from dataclasses import replace
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -236,13 +237,24 @@ def test_cancel_reaps_worker(tmp_path):
 @pytest.mark.parametrize('action', ('cancel', 'close'))
 def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
     """Windows 大请求写入不读 stdin 的真实 worker 后仍可取消或关闭回收。"""
+    if os.environ.get('GUI_TEST_LARGE_STDIN_CHILD') != '1':
+        completed = subprocess.run(
+            (sys.executable, '-m', 'pytest',
+             f'{__file__}::test_blocked_large_stdin_reaps_real_worker[{action}]',
+             '-q'), cwd=ROOT, env={**os.environ, 'GUI_TEST_LARGE_STDIN_CHILD': '1'},
+            capture_output=True, text=True, timeout=20)
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+        return
+
     from modules.gui.test_runner import CANCEL_REASON
     from modules.gui.test_runner import TestRunnerClosedError
     results = queue.Queue()
     runner = runner_for(results, command=(sys.executable, '-c',
                              'import time;time.sleep(30)'))
     original = subprocess.Popen
+    original_io = runner._io
     processes = []
+    io_threads = []
     writing = threading.Event()
     write_returned = threading.Event()
     payload = request(tmp_path, config={'blob': 'x' * (8 * 1024 * 1024)})
@@ -263,7 +275,13 @@ def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
         process._stdin_write = observed
         return process
 
-    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn):
+    def tracked_io(*args):
+        """记录实际执行管道通信的线程对象。"""
+        io_threads.append(threading.current_thread())
+        original_io(*args)
+
+    with patch('modules.gui.test_runner.subprocess.Popen', side_effect=spawn), \
+            patch.object(runner, '_io', side_effect=tracked_io):
         try:
             runner.start(payload)
             assert writing.wait(10)
@@ -285,6 +303,10 @@ def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
             assert not runner.active
             runner._supervisor.join(timeout=5)
             assert not runner._supervisor.is_alive()
+            assert len(io_threads) == 1
+            io_threads[0].join(timeout=5)
+            assert io_threads[0].name == 'gui-test-io'
+            assert not io_threads[0].is_alive()
             assert results.empty()
         finally:
             runner.cancel()
