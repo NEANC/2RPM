@@ -105,3 +105,86 @@ def test_start_cli_nested_cancel_does_not_hide_outer_block(tmp_path, monkeypatch
         launch.assert_not_called()
     finally:
         root.destroy()
+
+
+def test_start_cli_repeat_launch_cancel_has_no_error(tmp_path, monkeypatch):
+    """重复启动的确认取消不误报为配置失败。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.launch_count = 1
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        confirmations = []
+
+        def confirm(kind, detail):
+            """记录重复启动确认并选择取消。"""
+            confirmations.append(kind)
+            return 'cancel'
+
+        app.controller.confirm = confirm
+
+        app.start_cli()
+
+        assert confirmations == ['repeat_launch']
+        error.assert_not_called()
+        launch.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_start_cli_conflict_after_flush_has_one_dialog(tmp_path, monkeypatch):
+    """补存后磁盘变化仍只显示冲突对话框而不重复报错。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        choice = Mock(return_value=None)
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', choice)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        path = app.model.document.path
+        original = app.controller.start_cli
+
+        def start_after_external_edit():
+            """模拟补存与控制器复验之间的外部改动。"""
+            external = read_document(path)
+            external.tree['monitor']['target'] = 'external.exe'
+            save_document(external, path, expected_fingerprint=external.fingerprint)
+            return original()
+
+        monkeypatch.setattr(app.controller, 'start_cli', start_after_external_edit)
+
+        app.start_cli()
+
+        choice.assert_called_once()
+        error.assert_not_called()
+        launch.assert_not_called()
+        assert app.controller.conflicted
+    finally:
+        root.destroy()
+
+
+def test_start_cli_invalid_config_shows_safe_error(tmp_path, monkeypatch):
+    """已保存但业务无效的配置不能启动且给出固定可见提示。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        app.model.set(('monitor', 'mode'), 'bad')
+
+        app.start_cli()
+
+        error.assert_called_once_with('启动 CLI',
+                                      '未能启动 CLI，请检查配置、磁盘文件或保存状态。',
+                                      parent=root)
+        launch.assert_not_called()
+        assert not app.model.dirty
+    finally:
+        root.destroy()
