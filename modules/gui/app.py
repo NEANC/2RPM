@@ -580,12 +580,16 @@ class App:
 
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
-        if not self._require_saved():
+        if not self.save_coordinator.flush():
+            self.status.configure(text='配置未保存，操作已停止')
+            if not self.controller.conflicted:
+                messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。',
+                                     parent=self.root)
             return
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
         if result is None:
-            if not self.controller.cli_cancelled:
+            if not self.controller.cli_cancelled and not self.controller.conflicted:
                 messagebox.showerror('启动 CLI',
                                      '未能启动 CLI，请检查配置、磁盘文件或保存状态。', parent=self.root)
             return

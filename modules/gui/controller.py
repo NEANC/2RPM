@@ -341,13 +341,15 @@ class Controller:
         if not self.cli_command:
             return LaunchResult(False, '未找到匹配的 CLI 程序')
         if self.model.dirty:
-            if not self.save():
-                self.cli_cancelled = self.save_cancelled
+            save_result = self._save_result()
+            self.cli_cancelled = save_result is SaveResult.CANCELLED
+            if save_result not in (SaveResult.SAVED, SaveResult.SUPERSEDED):
                 return None
         path = self.model.document.path
         if path is None or normalize_config_path(path, program_dir=self.program_dir) != path:
-            if not self.save():
-                self.cli_cancelled = self.save_cancelled
+            save_result = self._save_result()
+            self.cli_cancelled = save_result is SaveResult.CANCELLED
+            if save_result not in (SaveResult.SAVED, SaveResult.SUPERSEDED):
                 return None
             path = self.model.document.path
         try:
@@ -365,8 +367,9 @@ class Controller:
                              'before': self._display_change(change.path, change.before),
                              'after': self._display_change(change.path, change.after)}
                             for change in candidate.changes)
-            if self.confirm('normalize', summary) != 'confirm':
-                self.cli_cancelled = True
+            confirmed = self.confirm('normalize', summary) == 'confirm'
+            self.cli_cancelled = not confirmed
+            if not confirmed:
                 return None
             try:
                 normalized = patch_document(disk, candidate.changes)
@@ -386,8 +389,9 @@ class Controller:
                 return None
         if self.launch_count:
             generation, revision = self.model.document_generation, self.model.revision
-            if self.confirm('repeat_launch', str(path)) != 'confirm':
-                self.cli_cancelled = True
+            confirmed = self.confirm('repeat_launch', str(path)) == 'confirm'
+            self.cli_cancelled = not confirmed
+            if not confirmed:
                 return None
             if (self.model.document_generation != generation or self.model.revision != revision
                     or self.model.dirty or self.check_external()):
