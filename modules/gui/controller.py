@@ -51,6 +51,7 @@ class Controller:
         self.coordinator = None
         self.conflicted = False
         self.save_cancelled = False
+        self._saved_identity = 0
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
@@ -131,7 +132,7 @@ class Controller:
 
     def save_as(self, picker) -> bool:
         """选定路径前不向原文件补存。"""
-        return self._save_as_result(picker) is SaveResult.SAVED
+        return self._save_as_result(picker) in (SaveResult.SAVED, SaveResult.SUPERSEDED)
 
     def _save_as_result(self, picker) -> SaveResult:
         """返回本次另存的局部结果，不读取重入调用的共享取消标志。"""
@@ -215,7 +216,7 @@ class Controller:
 
     def save(self, destination: Path | None = None, *, as_new: bool = False) -> bool:
         """对最终规范化目标确认、检查指纹并原子保存。"""
-        return self._save_result(destination, as_new=as_new) is SaveResult.SAVED
+        return self._save_result(destination, as_new=as_new) in (SaveResult.SAVED, SaveResult.SUPERSEDED)
 
     def _save_result(self, destination: Path | None = None, *, as_new: bool = False) -> SaveResult:
         """以本次调用的结果驱动兼容性取消标志。"""
@@ -239,15 +240,18 @@ class Controller:
         same = target == previous
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
+            saved_identity = self._saved_identity
             dirty = self.model.dirty
             if self.check_external():
                 if self.model.document_generation != generation and not self.model.dirty:
-                    return SaveResult.SUPERSEDED if dirty else SaveResult.SAVED
+                    return (SaveResult.SUPERSEDED if self._saved_identity != saved_identity
+                            else SaveResult.FAILED if dirty else SaveResult.SAVED)
                 return SaveResult.FAILED
             if self.model.document_generation != generation:
                 if self.model.dirty:
                     return SaveResult.FAILED
-                return SaveResult.SUPERSEDED if dirty else SaveResult.SAVED
+                return (SaveResult.SUPERSEDED if self._saved_identity != saved_identity
+                        else SaveResult.FAILED if dirty else SaveResult.SAVED)
         revision = self.model.revision
         document = self.model.materialize()
         if self.conflicted and same:
@@ -299,6 +303,7 @@ class Controller:
             raw_inputs = copy.deepcopy(self.model.raw_inputs)
             input_errors = copy.deepcopy(self.model.input_errors)
         self.model.accept_saved(saved)
+        self._saved_identity += 1
         if newer:
             self.model._tree = draft
             self.model.raw_inputs = raw_inputs

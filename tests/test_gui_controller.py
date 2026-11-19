@@ -389,6 +389,62 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
     alert.assert_not_called()
 
 
+def test_conflict_reload_is_not_an_inner_save(tmp_path):
+    """冲突回调重载磁盘虽使草稿干净，也不能冒充另存成功。"""
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    external = read_document(source.path)
+    external.tree['monitor']['target'] = 'external.exe'
+    save_document(external, source.path, expected_fingerprint=source.fingerprint)
+    controller.on_conflict = lambda: controller.resolve_external('reload')
+    controller.confirm = lambda kind, detail: 'confirm'
+
+    assert controller._save_result() is SaveResult.FAILED
+    assert controller.model.get(('monitor', 'target')) == 'external.exe'
+    assert not controller.model.dirty
+
+
+def test_conflict_inner_save_as_keeps_boolean_save_success(tmp_path):
+    """冲突回调真实另存成功后旧布尔保存接口不得误报失败。"""
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'demo.exe')
+    source.path.write_bytes(b'external')
+    controller.on_conflict = lambda: controller.save_as(lambda: destination)
+
+    assert controller.save() is True
+    assert controller.model.document.path == destination
+    assert not controller.model.dirty
+    assert read_document(destination).tree['monitor']['target'] == 'demo.exe'
+    assert source.path.read_bytes() == b'external'
+
+
+def test_conflict_inner_save_as_allows_cli_launch(tmp_path, monkeypatch):
+    """启动时冲突回调另存成功，应复验新磁盘路径并启动。"""
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = tmp_path / 'saved.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'demo.exe')
+    source.path.write_bytes(b'external')
+    controller.on_conflict = lambda: controller.save_as(lambda: destination)
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    result = controller.start_cli()
+
+    assert result is not None and result.created
+    launch.assert_called_once_with(controller.cli_command, destination.resolve())
+    assert read_document(destination).tree['monitor']['target'] == 'demo.exe'
+    assert source.path.read_bytes() == b'external'
+
+
 def test_app_save_as_inner_success_outer_write_failure_reports_error(tmp_path, monkeypatch):
     """内层另存成功不能掩盖外层目标的写入失败。"""
     from modules.gui.app import App
