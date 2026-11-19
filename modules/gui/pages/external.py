@@ -3,6 +3,8 @@
 
 """ctk-kit 外部动作路径和触发次数设置。"""
 
+import re
+import tkinter as tk
 from tkinter import filedialog
 
 import ctk_kit
@@ -44,6 +46,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields = {}
         self.path_fields = {}
         self.spinners = {}
+        self.number_variables = {}
         self.browse_buttons = {}
         self._refreshing = False
         self._focus_request = 0
@@ -101,12 +104,19 @@ class Page(ctk_kit.CTkScrollableFrame):
         return field
 
     def _spinner(self, parent, path, limits, default):
-        """建立整数值步进框并跟踪写回。"""
+        """保留数字草稿，同时接管原生箭头的主动步进。"""
+        variable = tk.StringVar(master=self)
         spinner = ctk_kit.Spinner(
             parent, from_=limits[0], to=limits[1], as_int=True,
             value=default,
-            command=lambda value, field=path: self._number_changed(field, value))
+            command=lambda _value: self._number_changed(path))
+        spinner.entry._entry.unbind('<Return>')
+        spinner.entry._entry.unbind('<FocusOut>')
+        spinner.entry.configure(textvariable=variable)
+        variable.trace_add('write', lambda *_: self._number_changed(path))
+        spinner._arrows.bind('<Button-1>', self._step_arrow)
         self.spinners[path] = spinner
+        self.number_variables[path] = variable
         self.fields[path] = (spinner, spinner.entry, 'int')
         return spinner
 
@@ -115,25 +125,32 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not self._refreshing and path_writable(self.model, path):
             self.model.set(path, value)
 
-    def _number_changed(self, path, value):
-        """Spinner 提交后写回已钳制的整数。"""
+    def _number_changed(self, path):
+        """将可见数字原文写入草稿，不进行范围钳制。"""
         if not self._refreshing and path_writable(self.model, path):
-            self.model.set_input(path, str(value), kind='int')
+            self.model.set_input(path, self.number_variables[path].get(), kind='int')
+
+    def _step_arrow(self, event):
+        """根据箭头的上下半区仅步进可转换的整数。"""
+        spinner = self.spinners[THRESHOLD]
+        middle = max(1, spinner._arrows.winfo_height()) / 2
+        self._step(1 if event.y < middle else -1)
 
     def _step(self, delta):
-        """保留旧测试接口：按步长调整阈值，空输入从默认值起步。"""
+        """只对完整整数执行限定范围内的一步操作。"""
         path = THRESHOLD
         if not path_writable(self.model, path):
             return
         spinner = self.spinners[path]
-        raw = spinner.entry.get().strip()
+        raw = spinner.entry.get()
+        if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            return
         try:
             current = int(raw)
         except ValueError:
-            current = DEFAULT_VALUES['monitor']['common']['timeout_threshold']
+            return
         value = max(THRESHOLD_RANGE[0], min(THRESHOLD_RANGE[1], current + delta))
         spinner.set(value)
-        self._number_changed(path, value)
 
     def choose_file(self, event):
         """系统选择器取消时保持原输入，结构异常时不修改显示。"""
@@ -167,7 +184,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         try:
             invalid = False
             for path, (control, entry, kind) in self.fields.items():
-                control.set(self._safe_value(path, kind))
+                if kind == 'int':
+                    self.number_variables[path].set(self._safe_value(path, kind))
+                else:
+                    control.set(self._safe_value(path, kind))
                 writable = path_writable(self.model, path)
                 control.set_readonly(not writable)
                 entry.configure(state='normal' if writable else 'disabled')

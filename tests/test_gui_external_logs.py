@@ -4,6 +4,7 @@
 """外部动作与日志页可见字段回写验证。"""
 
 import shutil
+import sys
 import tkinter as tk
 from unittest.mock import Mock
 
@@ -39,11 +40,129 @@ def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
         assert isinstance(spinner, ctk_kit.Spinner)
         spinner.entry.delete(0, 'end')
         spinner.entry.insert(0, '-')
-        spinner._commit()
-        # Spinner 会把无法解析的原文钳制到下限，不再保留 '-'。
-        assert model.get_input(threshold) == '1'
+        spinner.entry._entry.event_generate('<Return>')
+        root.update()
+        assert model.get_input(threshold) == '-'
         assert ('external', 'timeout_threshold') not in model.snapshot()['external']
         app.start_cli.assert_not_called()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('event', ['<Return>', '<FocusOut>'])
+@pytest.mark.parametrize('raw', ['', '-', '12x', '007', '100', '-1'])
+def test_external_threshold_real_event_preserves_raw(event, raw):
+    """阈值内部输入事件保留草稿且只转换完整整数。"""
+    from modules.gui.pages.external import Page, THRESHOLD
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    page = Page(root, Mock(model=model))
+    try:
+        entry = page.spinners[THRESHOLD].entry._entry
+        before = model.get(THRESHOLD)
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        entry.event_generate(event)
+        root.update()
+        assert entry.get() == raw
+        assert model.get_input(THRESHOLD) == raw
+        assert model.get(THRESHOLD) == (int(raw) if raw.lstrip('-').isdigit() else before)
+        assert (THRESHOLD in model.input_errors) == (raw in ('', '-', '12x'))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('raw', 'y', 'expected'), [
+    ('007', 1, '8'), ('7', 30, '6'), ('99', 1, '99'),
+    ('1', 30, '1'), ('', 1, ''), ('-', 1, '-'), ('12x', 1, '12x'),
+    ('100', 1, '99'),
+])
+def test_external_threshold_real_arrow(raw, y, expected):
+    """真实箭头仅步进完整整数，且限制主动步进范围。"""
+    from modules.gui.pages.external import Page, THRESHOLD
+
+    root = tk.Tk()
+    model = EditorModel(new_document())
+    page = Page(root, Mock(model=model))
+    try:
+        spinner = page.spinners[THRESHOLD]
+        entry = spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = model.get(THRESHOLD)
+        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert entry.get() == expected
+        assert model.get_input(THRESHOLD) == expected
+        assert model.get(THRESHOLD) == (before if raw in ('', '-', '12x') else int(expected))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('y', [1, 30])
+def test_external_threshold_long_integer_arrow(y):
+    """超出 Python 转换位数的草稿点击箭头不丢失或抛错。"""
+    from modules.gui.pages.external import Page, THRESHOLD
+
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    root = None
+    try:
+        root = tk.Tk()
+        model = EditorModel(new_document())
+        page = Page(root, Mock(model=model))
+        spinner = page.spinners[THRESHOLD]
+        raw = '9' * 641
+        errors = []
+        root.report_callback_exception = lambda *error: errors.append(error)
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, raw)
+        root.update()
+        before = model.get(THRESHOLD)
+        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert not errors
+        assert spinner.entry.get() == raw
+        assert model.get_input(THRESHOLD) == raw
+        assert model.get(THRESHOLD) == before
+        assert THRESHOLD in model.input_errors
+    finally:
+        if root is not None:
+            root.destroy()
+        sys.set_int_max_str_digits(previous)
+
+
+@pytest.mark.parametrize(('raw', 'saved'), [('', False), ('-', False),
+                                               ('12x', False), ('007', True),
+                                               ('100', True), ('-1', True),
+                                               pytest.param('9' * 4301, False,
+                                                            id='超长整数')])
+def test_external_threshold_save_preserves_draft(tmp_path, raw, saved):
+    """未完成数字阻断写盘，完整越界整数按原值写盘。"""
+    from modules.config_document import read_document
+    from modules.gui.pages.external import Page, THRESHOLD
+    from tests.test_gui_controller import make_controller
+
+    root = tk.Tk()
+    controller, _, _ = make_controller(tmp_path)
+    page = Page(root, Mock(model=controller.model))
+    try:
+        entry = page.spinners[THRESHOLD].entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        entry.event_generate('<Return>')
+        root.update()
+        assert controller.save() is saved
+        assert (tmp_path / 'a.yaml').exists() is saved
+        assert entry.get() == raw
+        assert controller.model.get_input(THRESHOLD) == raw
+        if saved:
+            assert read_document(tmp_path / 'a.yaml').tree['monitor']['common']['timeout_threshold'] == int(raw)
+        else:
+            assert THRESHOLD in controller.model.input_errors
     finally:
         root.destroy()
 
