@@ -73,6 +73,48 @@ def test_start_cli_reload_discard_stops_without_second_error(tmp_path, monkeypat
         root.destroy()
 
 
+def test_start_cli_reload_discard_cancel_preserves_draft_and_disk(tmp_path, monkeypatch):
+    """外部冲突选择重载但取消放弃时不改变草稿、代次和磁盘。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        choice = Mock(return_value=True)
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', choice)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        confirmations = []
+
+        def confirm(kind, detail):
+            """只拒绝本次外部冲突的放弃草稿确认。"""
+            confirmations.append(kind)
+            return 'cancel'
+
+        app.controller.confirm = confirm
+        path = app.model.document.path
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        generation = app.model.document_generation
+        external = read_document(path)
+        external.tree['monitor']['target'] = 'external.exe'
+        save_document(external, path, expected_fingerprint=external.fingerprint)
+        disk = path.read_bytes()
+
+        app.start_cli()
+
+        choice.assert_called_once()
+        assert confirmations == ['discard_external']
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.model.document_generation == generation
+        assert app.model.dirty
+        assert path.read_bytes() == disk
+        assert app.controller.conflicted
+        error.assert_not_called()
+        launch.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_start_cli_nested_cancel_does_not_hide_outer_block(tmp_path, monkeypatch):
     """内层取消不应将外层配置变动后的阻断当作取消。"""
     root = tk.Tk()
