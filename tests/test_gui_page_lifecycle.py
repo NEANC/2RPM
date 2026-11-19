@@ -4,6 +4,7 @@
 """GUI 页面行为（GUI 测试分片）。"""
 
 import ctypes
+from pathlib import Path
 import queue
 import subprocess
 import sys
@@ -21,9 +22,50 @@ from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestRequest as GuiTestRequest
 from modules.gui.protocol import TestResult as GuiTestResult
+from modules.gui.test_runner import CANCEL_REASON
+from modules.gui.test_runner import TestRunner as GuiTestRunner
 
 
 from tests.gui_support import make_app
+
+
+def _local_cli(app, monkeypatch):
+    """经 GUI 启动仅睡眠的本地 CLI，保留真实进程供测试回收。"""
+    original = subprocess.Popen
+    processes = []
+
+    def spawn(*args, **kwargs):
+        """保留 launcher 的真实创建参数和进程句柄。"""
+        process = original(*args, **kwargs)
+        processes.append((process, args, kwargs))
+        return process
+
+    app.controller.cli_command = (sys.executable, '-c',
+                                  'import time; time.sleep(30)')
+    with monkeypatch.context() as patches:
+        patches.setattr('modules.gui.launcher.subprocess.Popen', spawn)
+        patches.setattr('modules.gui.app.messagebox.showinfo', lambda *_args, **_kwargs: None)
+        app.start_cli()
+    try:
+        assert app.controller.launch_count == 1
+        assert len(processes) == 1
+        process, args, kwargs = processes[0]
+        assert args[0][-2:] == ['-c', str(app.model.document.path.resolve())]
+        assert kwargs['creationflags'] == subprocess.CREATE_NEW_CONSOLE
+        assert process.poll() is None
+        return process
+    except BaseException:
+        for process, _, _ in processes:
+            _stop_process(process)
+        raise
+
+
+def _stop_process(process):
+    """即使断言失败也回收本地探针进程。"""
+    if process is not None:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=5)
 
 
 def test_document_reload_refresh_keeps_lists_unselected(tmp_path):
@@ -206,37 +248,89 @@ def test_system_titlebar_close_does_not_reenter_during_confirmation(tmp_path):
         root.destroy()
 
 
-def test_system_titlebar_close_confirm_stops_worker_but_not_cli(tmp_path):
-    """系统关闭获最终确认后只结束测试 worker，不影响独立 CLI。"""
+def test_system_titlebar_close_cancel_then_confirm_reaps_worker_not_gui_cli(tmp_path, monkeypatch):
+    """GUI 创建的 CLI 两次关闭后存活，真实 worker 仅最终确认后回收。"""
     destroyed = []
-    cli = subprocess.Popen((sys.executable, '-c', 'import time; time.sleep(30)'),
-                           cwd=tmp_path, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
     root = tk.Tk()
+    cli = None
+    worker = None
+    runner = None
     try:
         app = make_app(root, tmp_path)
-        runner = app.controller.runner
-        runner.active = True
+        cli = _local_cli(app, monkeypatch)
+        runner = GuiTestRunner((sys.executable, '-c', 'import time; time.sleep(30)'),
+                               queue.Queue(), worker_cwd=Path(__file__).resolve().parents[1])
+        app.controller.runner = runner
+        app.test_session.runner = runner
+        original = subprocess.Popen
+        spawned = threading.Event()
+        processes = []
+
+        def spawn(*args, **kwargs):
+            """记录真实 worker 与其隔离管道。"""
+            process = original(*args, **kwargs)
+            processes.append(process)
+            spawned.set()
+            return process
+
+        request = GuiTestRequest('close-worker', 1, 1, 'notify', {}, str(tmp_path),
+                                 str(tmp_path / 'session'), None, None, None, 'on_end')
+        with monkeypatch.context() as patches:
+            patches.setattr('modules.gui.test_runner.subprocess.Popen', spawn)
+            runner.start(request)
+            assert spawned.wait(5)
+        worker = processes[0]
+        assert runner.active and worker.poll() is None
         app.model.set(('monitor', 'target'), 'draft.exe')
         prompts = []
+        approvals = iter(('cancel', 'confirm'))
 
         def confirm(kind, detail):
-            """验证 worker 只在最终确认之后结束。"""
+            """每次询问期间检查两个真实进程仍在运行。"""
             prompts.append(kind)
-            runner.close.assert_not_called()
-            return 'discard' if kind == 'unsaved' else 'confirm'
+            assert runner.active and worker.poll() is None
+            assert cli.poll() is None
+            if kind == 'unsaved':
+                return 'discard'
+            if kind == 'exit_test':
+                return next(approvals)
+            return 'confirm'
 
         app.controller.confirm = confirm
         root.bind('<Destroy>', lambda event: destroyed.append(event.widget))
         frame = int(root.tk.call('wm', 'frame', root._w), 0)
         assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
         root.update()
-        assert prompts == ['unsaved', 'exit_test', 'exit']
-        runner.close.assert_called_once()
+        assert prompts == ['unsaved', 'exit_test']
+        assert root.winfo_exists() and runner.active
+        assert worker.poll() is None and cli.poll() is None
+        assert not runner._closed
+
+        assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
+        root.update()
+        assert prompts == ['unsaved', 'exit_test', 'unsaved', 'exit_test', 'exit']
+        assert runner._closed
+        result = runner.results.get(timeout=5)
+        assert (result.request_id, result.document_generation, result.revision) == (
+            'close-worker', 1, 1)
+        assert result.status == 'failure' and result.reason == CANCEL_REASON
+        assert runner.results.empty()
+        runner._supervisor.join(timeout=5)
+        assert not runner._supervisor.is_alive() and not runner.active
+        assert worker.poll() is not None
+        assert all(stream is not None and stream.closed
+                   for stream in (worker.stdin, worker.stdout, worker.stderr))
+        assert not any(thread.name in ('gui-test-io', 'gui-test-supervisor')
+                       for thread in threading.enumerate())
         assert cli.poll() is None
         assert root in destroyed
     finally:
         if root not in destroyed:
             root.destroy()
-        cli.terminate()
-        cli.wait(timeout=5)
+        if runner is not None:
+            runner.close()
+            if runner._supervisor is not None:
+                runner._supervisor.join(timeout=5)
+        for process in processes if 'processes' in locals() else ():
+            _stop_process(process)
+        _stop_process(cli)
