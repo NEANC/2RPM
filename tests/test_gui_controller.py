@@ -8,7 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import ConfigDocument, new_document, read_document, save_document
+from modules.config_document import (ConfigDocument, ConfigSaveError, new_document,
+                                     read_document, save_document)
 from modules.gui.launcher import LaunchResult
 from modules.gui.model import EditorModel
 
@@ -201,6 +202,45 @@ def test_normalized_destination_conflict_after_overwrite(tmp_path):
     assert destination.read_bytes() == b'external'
     assert controller.model.document.path is None
     assert controller.model.dirty
+
+
+@pytest.mark.parametrize('outer', ['save', 'save_as'])
+def test_overwrite_reentrant_cancel_does_not_hide_outer_write_failure(tmp_path, monkeypatch,
+                                                                      outer):
+    """覆盖确认中的内层取消不得把外层写失败误报为取消。"""
+    source = save_document(new_document(), tmp_path / 'source.yaml', expected_fingerprint=None)
+    destination = tmp_path / 'destination.yaml'
+    destination.write_bytes(b'existing')
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    before = controller.model.document
+    source_bytes = source.path.read_bytes()
+    destination_bytes = destination.read_bytes()
+    write = Mock(side_effect=ConfigSaveError('写入失败'))
+    monkeypatch.setattr('modules.gui.controller.save_document', write)
+
+    def confirm(kind, detail):
+        """在外层覆盖确认中取消内层另存请求。"""
+        if kind == 'overwrite':
+            assert controller.save_as(lambda: None) is False
+            assert controller.save_cancelled is True
+        return 'confirm'
+
+    controller.confirm = confirm
+    if outer == 'save':
+        result = controller.save(destination)
+    else:
+        result = controller.save_as(lambda: destination)
+
+    assert result is False
+    assert controller.save_cancelled is False
+    write.assert_called_once()
+    assert controller.model.document == before
+    assert controller.model.document.fingerprint == before.fingerprint
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    assert source.path.read_bytes() == source_bytes
+    assert destination.read_bytes() == destination_bytes
 
 
 def test_normalization_requires_confirmation_on_saved_file(tmp_path, monkeypatch):

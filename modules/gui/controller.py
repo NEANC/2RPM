@@ -245,6 +245,7 @@ class Controller:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
                 return False
+        self.save_cancelled = False
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:
