@@ -166,6 +166,38 @@ def test_capture_selection_rejects_document_change_during_request(tmp_path, monk
         root.destroy()
 
 
+@pytest.mark.parametrize('changed', ['source', 'target'])
+def test_capture_selection_changed_during_request_is_not_sent(tmp_path, monkeypatch,
+                                                              changed):
+    """截图请求补存期间改变来源或目标时，不得提交先前选择。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.open_capture_selection()
+        dialogs = app.test_dialogs
+        dialogs.capture_target.insert(0, '旧窗口')
+        original = app.save_coordinator.flush
+        calls = 0
+
+        def flush():
+            """在选择提交后的第二次补存期间改变真实控件。"""
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                if changed == 'source':
+                    dialogs.capture_provider.set('ADB')
+                else:
+                    dialogs.capture_target.delete(0, 'end')
+                    dialogs.capture_target.insert(0, '新窗口')
+            return original()
+
+        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        dialogs.submit_capture()
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('changed', ['host', 'image'])
 def test_upload_selection_changed_during_confirmation_is_not_sent(tmp_path, monkeypatch,
                                                                   changed):

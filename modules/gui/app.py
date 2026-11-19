@@ -700,8 +700,16 @@ class App:
                 self.status.configure(text='配置已更新，请重新选择截图目标')
                 self.open_capture_selection()
                 return False
+            window = self.test_dialogs.selection_window
+            selection_unchanged = None
+            if window is not None and window.winfo_exists():
+                selection_unchanged = lambda: (
+                    window.winfo_exists() and self.test_dialogs.selection_window is window
+                    and self.test_dialogs.capture_provider.get() == {'window': '窗口', 'adb': 'ADB'}.get(provider)
+                    and self.test_dialogs.capture_target.get().strip() == target)
             return self._request('capture', capture_provider=provider,
-                                 capture_target=target, expected_identity=identity)
+                                 capture_target=target, expected_identity=identity,
+                                 selection_unchanged=selection_unchanged)
 
         self.test_dialogs.open_capture(submit)
 
