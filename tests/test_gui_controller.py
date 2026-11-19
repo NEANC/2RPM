@@ -902,6 +902,64 @@ def test_normalization_confirmed_rechecks_disk(tmp_path, monkeypatch):
     assert controller.model.document == before
 
 
+def test_repeat_confirmation_external_reload_invalid_config_blocks_launch(tmp_path, monkeypatch):
+    """重复启动确认中外部有效 YAML 重载后，旧校验不得放行无效配置。"""
+    document = save_document(new_document(), tmp_path / 'config.yaml',
+                             expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, document)
+    controller.launch_count = 1
+    launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    def confirm(kind, detail):
+        """在重复启动确认期间由外部写入可读取但业务无效的配置。"""
+        assert kind == 'repeat_launch'
+        changed = read_document(document.path)
+        changed.tree['monitor']['mode'] = 'invalid'
+        save_document(changed, document.path, expected_fingerprint=changed.fingerprint)
+        return 'confirm'
+
+    controller.confirm = confirm
+    assert controller.start_cli() is None
+    assert read_document(document.path).tree['monitor']['mode'] == 'invalid'
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize('reentry', ['edit', 'save_as'])
+def test_normalize_confirmation_reentry_does_not_replace_current_draft(
+        tmp_path, monkeypatch, reentry):
+    """规范化确认中修改草稿或另存后，旧磁盘候选不得写回并接管草稿。"""
+    controller, _, _ = make_controller(tmp_path)
+    controller.model.set(('monitor', 'common', 'max_wait'), '-30s')
+    assert controller.save()
+    source = controller.model.document.path
+    original = source.read_bytes()
+    destination = tmp_path / 'copy.yaml'
+    launch = Mock()
+    monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+
+    def confirm(kind, detail):
+        """在模态确认中触发 GUI 草稿编辑或另存为。"""
+        assert kind == 'normalize'
+        if reentry == 'edit':
+            controller.model.set(('monitor', 'target'), 'new-draft.exe')
+        else:
+            assert controller.save_as(lambda: destination)
+        return 'confirm'
+
+    controller.confirm = confirm
+    assert controller.start_cli() is None
+    assert source.read_bytes() == original
+    assert controller.model.get(('monitor', 'common', 'max_wait')) == '-30s'
+    if reentry == 'edit':
+        assert controller.model.get(('monitor', 'target')) == 'new-draft.exe'
+        assert controller.model.dirty
+    else:
+        assert controller.model.document.path == destination
+        assert read_document(destination).tree['monitor']['common']['max_wait'] == '-30s'
+    launch.assert_not_called()
+
+
 def test_dirty_start_invalid_is_saved_but_not_launched(tmp_path, monkeypatch):
     """完整但业务无效的草稿仍保存，启动由业务诊断阻断。"""
     controller, _, _ = make_controller(tmp_path, answers=['save'])

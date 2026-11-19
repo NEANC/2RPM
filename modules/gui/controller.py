@@ -376,9 +376,15 @@ class Controller:
                              'before': self._display_change(change.path, change.before),
                              'after': self._display_change(change.path, change.after)}
                             for change in candidate.changes)
+            generation, revision = self.model.document_generation, self.model.revision
             confirmed = self.confirm('normalize', summary) == 'confirm'
             self.cli_cancelled = not confirmed
             if not confirmed:
+                return None
+            if (self.model.document_generation != generation or self.model.revision != revision
+                    or self.model.dirty or self.conflicted
+                    or self.model.document.path != path
+                    or self.model.document.fingerprint != disk.fingerprint):
                 return None
             try:
                 normalized = patch_document(disk, candidate.changes)
@@ -403,7 +409,9 @@ class Controller:
             if not confirmed:
                 return None
             if (self.model.document_generation != generation or self.model.revision != revision
-                    or self.model.dirty or self.check_external()):
+                    or self.model.dirty or self.check_external()
+                    or self.model.document_generation != generation
+                    or self.model.revision != revision):
                 return None
         result = launch_cli(self.cli_command, path.resolve())
         if result.created:
