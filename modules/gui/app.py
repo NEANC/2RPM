@@ -604,6 +604,7 @@ class App:
                 messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。',
                                      parent=self.root)
             return
+        generation = self.model.document_generation
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
         if result is None:
