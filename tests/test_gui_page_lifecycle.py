@@ -3,7 +3,10 @@
 
 """GUI 页面行为（GUI 测试分片）。"""
 
+import ctypes
 import queue
+import subprocess
+import sys
 import tkinter as tk
 import threading
 import time
@@ -127,3 +130,113 @@ def test_after_heartbeat_continues_during_long_worker(tmp_path):
         if 'app' in locals():
             root.after_cancel(app._after_id)
         root.destroy()
+
+
+def test_system_titlebar_close_cancel_restores_draft_worker_and_autosave(tmp_path):
+    """系统关闭先问草稿再问测试，取消退出恢复自动保存。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        runner = app.controller.runner
+        runner.active = True
+        path = app.model.document.path
+        original = path.read_bytes()
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        assert app.save_coordinator.pending is not None
+        prompts = []
+
+        def confirm(kind, detail):
+            """在真实模态事件循环内尝试触发延迟写盘。"""
+            prompts.append(kind)
+            if kind == 'unsaved':
+                root.after(0, lambda: app.save_coordinator._save(app.model.document_generation))
+                root.update()
+                assert path.read_bytes() == original
+                return 'discard'
+            assert kind == 'exit_test'
+            assert path.read_bytes() == original
+            runner.close.assert_not_called()
+            return 'cancel'
+
+        app.controller.confirm = confirm
+        frame = int(root.tk.call('wm', 'frame', root._w), 0)
+        assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
+        root.update()
+        assert prompts == ['unsaved', 'exit_test']
+        assert root.winfo_exists()
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.model.dirty
+        assert path.read_bytes() == original
+        assert app.save_coordinator.pending is not None
+        runner.close.assert_not_called()
+        root.after(0, lambda: app.save_coordinator._save(app.model.document_generation))
+        root.update()
+        assert read_document(path).tree['monitor']['target'] == 'draft.exe'
+    finally:
+        root.destroy()
+
+
+def test_system_titlebar_close_does_not_reenter_during_confirmation(tmp_path):
+    """模态确认期间再次收到系统关闭消息不提前结束测试。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        runner = app.controller.runner
+        runner.active = True
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        prompts = []
+        frame = int(root.tk.call('wm', 'frame', root._w), 0)
+
+        def confirm(kind, detail):
+            """在首个草稿确认内再次投递真实窗口关闭消息。"""
+            prompts.append(kind)
+            if kind == 'unsaved' and len(prompts) == 1:
+                assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
+                root.update()
+            return 'discard' if kind == 'unsaved' else 'cancel'
+
+        app.controller.confirm = confirm
+        assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
+        root.update()
+        assert prompts == ['unsaved', 'exit_test']
+        assert root.winfo_exists()
+        assert app.model.dirty
+        runner.close.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_system_titlebar_close_confirm_stops_worker_but_not_cli(tmp_path):
+    """系统关闭获最终确认后只结束测试 worker，不影响独立 CLI。"""
+    destroyed = []
+    cli = subprocess.Popen((sys.executable, '-c', 'import time; time.sleep(30)'),
+                           cwd=tmp_path, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        runner = app.controller.runner
+        runner.active = True
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        prompts = []
+
+        def confirm(kind, detail):
+            """验证 worker 只在最终确认之后结束。"""
+            prompts.append(kind)
+            runner.close.assert_not_called()
+            return 'discard' if kind == 'unsaved' else 'confirm'
+
+        app.controller.confirm = confirm
+        root.bind('<Destroy>', lambda event: destroyed.append(event.widget))
+        frame = int(root.tk.call('wm', 'frame', root._w), 0)
+        assert ctypes.windll.user32.PostMessageW(frame, 0x10, 0, 0)
+        root.update()
+        assert prompts == ['unsaved', 'exit_test', 'exit']
+        runner.close.assert_called_once()
+        assert cli.poll() is None
+        assert root in destroyed
+    finally:
+        if root not in destroyed:
+            root.destroy()
+        cli.terminate()
+        cli.wait(timeout=5)

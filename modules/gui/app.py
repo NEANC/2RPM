@@ -859,10 +859,16 @@ class App:
 
     def close(self):
         """处理未保存草稿并正常关闭测试运行器。"""
-        if self.controller.close():
-            self.test_dialogs.clear()
-            self.save_coordinator.close()
-            self.root.after_cancel(self._after_id)
-            threading.Thread(target=shutil.rmtree, args=(self.session_dir,),
-                             kwargs={'ignore_errors': True}, name='gui-preview-cleanup').start()
-            self.root.destroy()
+        if getattr(self, '_closing', False):
+            return
+        self._closing = True
+        try:
+            if self.controller.close():
+                self.test_dialogs.clear()
+                self.save_coordinator.close()
+                self.root.after_cancel(self._after_id)
+                threading.Thread(target=shutil.rmtree, args=(self.session_dir,),
+                                 kwargs={'ignore_errors': True}, name='gui-preview-cleanup').start()
+                self.root.destroy()
+        finally:
+            self._closing = False
