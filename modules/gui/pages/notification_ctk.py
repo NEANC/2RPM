@@ -4,12 +4,12 @@
 """按原型重绘的消息推送设置：通道、事件消息与错误处理。"""
 
 from collections.abc import Mapping
+import re
 import tkinter as tk
 from tkinter import messagebox
 
 import ctk_kit
 
-from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.forms import (event_variables, preview_template,
@@ -170,12 +170,17 @@ class Page(ctk_kit.CTkScrollableFrame):
             self._text(row, label).pack(side='left')
             path = ('push', 'retry', name)
             if name == 'max_count':
+                self.retry_variable = tk.StringVar(master=self)
                 self.retry_spinner = ctk_kit.Spinner(
                     row, from_=0, to=99, as_int=True, width=140,
-                    value=self._retry_count(),
-                    command=lambda value, field=path: self._max_retry_changed(
-                        field, value))
+                    command=lambda _value: self._max_retry_changed())
+                self.retry_spinner.entry._entry.unbind('<Return>')
+                self.retry_spinner.entry._entry.unbind('<FocusOut>')
+                self.retry_spinner.entry.configure(textvariable=self.retry_variable)
+                self.retry_variable.trace_add('write', lambda *_: self._max_retry_changed())
+                self.retry_spinner._arrows.bind('<Button-1>', self._step_retry)
                 self.retry_spinner.pack(side='right')
+                self.fields[path] = (self.retry_variable, self.retry_spinner, 'int')
             else:
                 self._entry(row, path, side='right', expand=False, width=140)
         ctk_kit.CTkFrame(card, fg_color='transparent', height=(
@@ -209,18 +214,24 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.fields[path] = (variable, widget, 'int' if numeric else 'text')
         return widget
 
-    def _retry_count(self):
-        """读取最大重试次数；空串或非法原文回退默认值。"""
-        raw = str(self._safe_input(('push', 'retry', 'max_count')) or '').strip()
-        try:
-            return max(0, min(99, int(raw)))
-        except (TypeError, ValueError):
-            return int(DEFAULT_VALUES['push']['retry']['max_count'])
+    def _max_retry_changed(self):
+        """将可见数字原文交给模型，不由步进器提交时钳制。"""
+        path = ('push', 'retry', 'max_count')
+        if self._refreshing or not path_writable(self.model, path):
+            return
+        raw = self.retry_spinner.entry.get()
+        self.model.set_input(path, raw, kind='int')
 
-    def _max_retry_changed(self, path, value):
-        """Spinner 提交后写回已钳制的整数。"""
-        if not self._refreshing and path_writable(self.model, path):
-            self.model.set_input(path, str(value), kind='int')
+    def _step_retry(self, event):
+        """仅对完整整数按一步移动，并限制主动步进范围。"""
+        if self.retry_spinner.is_readonly():
+            return
+        raw = self.retry_spinner.entry.get()
+        if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            return
+        middle = max(1, self.retry_spinner._arrows.winfo_height()) / 2
+        delta = 1 if event.y < middle else -1
+        self.retry_spinner.set(max(0, min(99, int(raw) + delta)))
 
     def _changed(self, path, variable, numeric):
         """模型刷新期间或结构异常时不写回旧值。"""
@@ -735,10 +746,11 @@ class Page(ctk_kit.CTkScrollableFrame):
         try:
             self.fields = {path: value for path, value in self.fields.items()
                            if len(path) == 3 and path[:2] == ('push', 'retry')}
-            for path, (variable, _widget, kind) in self.fields.items():
-                variable.set(self._safe_input(path) if kind == 'int' else
-                             str(self._safe_get(path) or ''))
-            self.retry_spinner.set(str(self._retry_count()))
+            for path, (variable, widget, kind) in self.fields.items():
+                raw = self._safe_input(path) if kind == 'int' else str(self._safe_get(path) or '')
+                variable.set(raw)
+                if widget is self.retry_spinner and widget.entry.get() != raw:
+                    widget.set(raw)
             self.retry_spinner.set_readonly(
                 not path_writable(self.model, ('push', 'retry', 'max_count')))
             self._render_channels()
@@ -750,6 +762,8 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.add_channel_button.configure(
                 state='disabled' if push_invalid else 'normal')
             for path, (_variable, widget, _kind) in self.fields.items():
+                if widget is self.retry_spinner:
+                    continue
                 widget.configure(
                     state='normal' if path_writable(self.model, path) else 'disabled')
         finally:

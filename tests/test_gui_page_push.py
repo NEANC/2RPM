@@ -299,3 +299,99 @@ def test_retry_max_count_uses_native_spinner(tmp_path):
         assert app.model.get(path) == 5
     finally:
         root.destroy()
+
+
+@pytest.mark.parametrize('event', ['<Return>', '<FocusOut>'])
+@pytest.mark.parametrize('raw', ['', '-', '12x', '007', '1000', '-1'])
+def test_retry_max_count_native_event_keeps_raw_draft(tmp_path, event, raw):
+    """内部输入的真实提交事件保持原文与整数草稿。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = app.model.get(path)
+        entry.event_generate(event)
+        root.update()
+        assert page.retry_spinner.entry.get() == raw
+        assert app.model.get_input(path) == raw
+        assert app.model.get(path) == (int(raw) if raw.lstrip('-').isdigit() else before)
+        assert (path in app.model.input_errors) == (raw in ('', '-', '12x'))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('raw', 'saved'), [('', False), ('-', False),
+                                               ('12x', False), ('007', True),
+                                               ('1000', True), ('-1', True)])
+def test_retry_max_count_save_respects_native_draft(tmp_path, raw, saved):
+    """未完成草稿阻断保存，完整越界数字按原值写盘。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        entry.event_generate('<Return>')
+        root.update()
+        assert app.controller.save() is saved
+        assert read_document(tmp_path / 'a.yaml').tree['push']['retry']['max_count'] == (
+            int(raw) if saved else 3)
+        if not saved:
+            assert app.model.get_input(path) == raw
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('raw', 'y', 'expected'), [
+    ('007', 1, '8'), ('7', 30, '6'), ('99', 1, '99'),
+    ('0', 30, '0'), ('1000', 1, '99'), ('-1', 30, '0'),
+    ('', 1, ''), ('-', 1, '-'), ('12x', 1, '12x'),
+])
+def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, y, expected):
+    """真实箭头只步进完整整数，且上下界不越界。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = app.model.get(path)
+        page.retry_spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        root.update()
+        assert page.retry_spinner.entry.get() == expected
+        assert app.model.get_input(path) == expected
+        assert app.model.get(path) == (before if raw in ('', '-', '12x') else int(expected))
+    finally:
+        root.destroy()
+
+
+def test_retry_max_count_refresh_keeps_entry_and_cursor(tmp_path):
+    """切页刷新保持未完成原文与活动输入框的光标。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, '12x')
+        entry.icursor(1)
+        root.update()
+        app.show_page('监视设置')
+        app.show_page('消息推送设置')
+        root.update()
+        assert page.retry_spinner.entry._entry is entry
+        assert entry.get() == '12x'
+        assert entry.index('insert') == 1
+        assert app.model.get_input(('push', 'retry', 'max_count')) == '12x'
+    finally:
+        root.destroy()
