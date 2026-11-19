@@ -236,6 +236,7 @@ class Controller:
             except FileNotFoundError:
                 data = None
             except OSError:
+                self.save_cancelled = False
                 return False
             expected = hashlib.sha256(data).hexdigest() if data is not None else None
             if data is not None and self.confirm('overwrite', str(target)) != 'confirm':

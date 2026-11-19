@@ -243,6 +243,99 @@ def test_overwrite_reentrant_cancel_does_not_hide_outer_write_failure(tmp_path, 
     assert destination.read_bytes() == destination_bytes
 
 
+@pytest.mark.parametrize('outer', ['save', 'save_as'])
+def test_relocate_reentrant_cancel_does_not_hide_target_read_failure(tmp_path, monkeypatch,
+                                                                     outer):
+    """跨目录确认中的内层取消不得把外层目标读取失败误报为取消。"""
+    source_dir = tmp_path / 'source'
+    target_dir = tmp_path / 'target'
+    source_dir.mkdir()
+    target_dir.mkdir()
+    source = save_document(new_document(), source_dir / 'a.yaml', expected_fingerprint=None)
+    destination = target_dir / 'b.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    before = controller.model.document
+    source_bytes = source.path.read_bytes()
+    read = Path.read_bytes
+
+    def read_target(path):
+        """只对新目标模拟文件系统读取失败。"""
+        if path == destination:
+            raise OSError('目标不可读取')
+        return read(path)
+
+    def confirm(kind, detail):
+        """外层确认期间取消内层另存。"""
+        assert kind == 'relocate'
+        assert controller.save_as(lambda: None) is False
+        assert controller.save_cancelled is True
+        return 'confirm'
+
+    monkeypatch.setattr(Path, 'read_bytes', read_target)
+    controller.confirm = confirm
+    result = (controller.save(destination) if outer == 'save'
+              else controller.save_as(lambda: destination))
+
+    assert result is False
+    assert controller.save_cancelled is False
+    assert controller.model.document == before
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    assert source.path.read_bytes() == source_bytes
+    assert not destination.exists()
+
+
+def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch):
+    """内层取消后目标读取失败仍显示另存失败提示。"""
+    from modules.gui.app import App
+
+    source_dir = tmp_path / 'source'
+    target_dir = tmp_path / 'target'
+    source_dir.mkdir()
+    target_dir.mkdir()
+    source = save_document(new_document(), source_dir / 'a.yaml', expected_fingerprint=None)
+    destination = target_dir / 'b.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    source_bytes = source.path.read_bytes()
+    read = Path.read_bytes
+
+    def read_target(path):
+        """模拟目标文件不可读取。"""
+        if path == destination:
+            raise OSError('目标不可读取')
+        return read(path)
+
+    def confirm(kind, detail):
+        """外层路径变化确认期间取消内层另存。"""
+        assert kind == 'relocate'
+        assert controller.save_as(lambda: None) is False
+        return 'confirm'
+
+    controller.confirm = confirm
+    controller.runner.active = False
+    app = object.__new__(App)
+    app.controller = controller
+    app.status = Mock()
+    app.root = Mock()
+    alert = Mock()
+    monkeypatch.setattr(Path, 'read_bytes', read_target)
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                        lambda **_: str(destination))
+    monkeypatch.setattr('modules.gui.app.messagebox.showerror', alert)
+
+    app.save_as()
+
+    app.status.configure.assert_called_once_with(text='配置未另存')
+    alert.assert_called_once_with('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                  parent=app.root)
+    assert controller.model.document == source
+    assert controller.model.dirty
+    assert source.path.read_bytes() == source_bytes
+    assert not destination.exists()
+
+
 def test_normalization_requires_confirmation_on_saved_file(tmp_path, monkeypatch):
     """保存现有非法数值后，启动候选差异取消时不得清理磁盘。"""
     controller, confirm, _ = make_controller(tmp_path, answers=['cancel'])
