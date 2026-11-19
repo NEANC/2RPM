@@ -128,6 +128,8 @@ class App:
                 self.visible_pages[name] = page
                 if name == '消息推送设置':
                     self.actions['测试通知'] = page.notify_button
+                if name in ('截图设置', '消息推送设置'):
+                    self._sync_test_buttons()
                 return container
             return create
 

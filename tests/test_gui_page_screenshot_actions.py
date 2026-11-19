@@ -189,6 +189,44 @@ def test_real_test_buttons_follow_worker_and_terminal_state(tmp_path, monkeypatc
         root.destroy()
 
 
+@pytest.mark.parametrize('action, lazy_page, expected', [
+    ('notify', '截图设置', ('disabled', 'disabled')),
+    ('capture', '消息推送设置', ('disabled', '通知测试')),
+])
+def test_lazy_test_page_created_during_worker_uses_current_busy_state(
+        tmp_path, monkeypatch, action, lazy_page, expected):
+    """worker 运行时首次打开真实懒加载页立即同步其测试入口。"""
+    from modules.gui.app import App
+    from modules.gui.controller import Controller
+
+    root = tk.Tk()
+    try:
+        runner = Mock(active=False, results=queue.Queue())
+        model = EditorModel(save_document(new_document(), tmp_path / 'a.yaml',
+                                          expected_fingerprint=None))
+        controller = Controller(model, confirm=lambda *_: 'cancel',
+                                choose_path=lambda: tmp_path / 'a.yaml',
+                                cli_command=('python.exe',), runner=runner,
+                                program_dir=tmp_path)
+        app = App(root, controller)
+        assert lazy_page not in app.visible_pages
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        parameters = ({'template_key': 'on_end'} if action == 'notify' else
+                      {'capture_provider': 'window', 'capture_target': '测试窗口'})
+        assert app._request(action, **parameters)
+        runner.active = True
+        assert app.show_page(lazy_page)
+        if lazy_page == '截图设置':
+            page = app.visible_pages[lazy_page]
+            assert (page.capture_button.cget('state'),
+                    page.upload_button.cget('state')) == expected
+        else:
+            button = app.visible_pages[lazy_page].notify_button
+            assert (button.cget('state'), button.cget('text')) == expected
+    finally:
+        root.destroy()
+
+
 def test_failed_worker_start_restores_real_test_buttons(tmp_path, monkeypatch):
     """启动失败后真实截图、上传及通知入口均可再次使用。"""
     root = tk.Tk()
