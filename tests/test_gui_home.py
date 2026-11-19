@@ -19,6 +19,26 @@ NAMES = ('主页', '监视设置', '截图设置', '消息推送设置',
          '外部程序设置', '日志设置', '设置')
 
 
+@pytest.mark.parametrize(('created', 'message', 'kind'), [
+    (True, '已创建 CLI 进程', 'showinfo'),
+    (False, '无法创建 CLI 进程', 'showerror'),
+])
+def test_cli_creation_result_is_visible(tmp_path, monkeypatch, created, message, kind):
+    """主页启动只报告进程创建结果，不将结果藏在状态标签。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.controller.start_cli = Mock(return_value=SimpleNamespace(
+            created=created, message=message))
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.' + kind, popup)
+        app.start_cli()
+        popup.assert_called_once()
+        assert message in popup.call_args.args[1]
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('action', ['save', 'save_as'])
 def test_manual_save_failure_is_visible_without_leaking_exception(tmp_path, monkeypatch, action):
     """主动保存失败显示固定安全提示，保留草稿和磁盘内容。"""

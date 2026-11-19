@@ -577,6 +577,9 @@ class App:
             return
         result = self.controller.start_cli()
         self.status.configure(text=result.message if result else '未启动 CLI')
+        if result is not None:
+            popup = messagebox.showinfo if result.created else messagebox.showerror
+            popup('启动 CLI', result.message, parent=self.root)
 
     def _request(self, action, *, target_index=None, host_index=None,
                  image_path=None, template_key=None, capture_provider=None,
