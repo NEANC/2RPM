@@ -12,6 +12,7 @@ import sys
 import threading
 from unittest.mock import patch
 
+import psutil
 import pytest
 
 from modules.gui.protocol import TestRequest as GuiRequest
@@ -316,6 +317,30 @@ def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
                 process.wait(timeout=5)
             if runner._supervisor is not None:
                 runner._supervisor.join(timeout=5)
+
+
+@pytest.mark.parametrize('exit_code', (None, 2))
+def test_large_stdin_child_reaps_reported_worker_on_timeout_or_failure(tmp_path, exit_code):
+    """子 pytest 超时或失败时父进程回收已上报的真实 worker。"""
+    pid_path = tmp_path / 'worker.pid'
+    script = ('import subprocess, sys, time; '
+              'worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]); '
+              'open(sys.argv[1], "w").write(str(worker.pid)); '
+              f'{"time.sleep(30)" if exit_code is None else "sys.exit(2)"}')
+    command = (sys.executable, '-c', script, str(pid_path))
+    try:
+        with pytest.raises((subprocess.TimeoutExpired, AssertionError)):
+            run_large_stdin_child(command, pid_path, timeout=2)
+        assert pid_path.exists()
+        worker_pid = int(pid_path.read_text())
+        assert not psutil.pid_exists(worker_pid)
+    finally:
+        if pid_path.exists():
+            worker = psutil.Process(int(pid_path.read_text())) if psutil.pid_exists(
+                int(pid_path.read_text())) else None
+            if worker is not None:
+                worker.kill()
+                worker.wait(timeout=5)
 
 
 def test_cancel_after_terminal_commit_is_noop(tmp_path):
