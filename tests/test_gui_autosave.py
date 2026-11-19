@@ -176,11 +176,13 @@ def test_failed_file_transaction_ignores_cancelled_save_callback(tmp_path, monke
         destination_bytes = destination.read_bytes()
     else:
         original_replace = os.replace
+        replace_calls = []
 
         def fail_replace(source, target):
             """在真实临时文件写完后拒绝目标替换。"""
             assert Path(source).is_file()
             if Path(target) == destination:
+                replace_calls.append((Path(source), Path(target)))
                 raise OSError('write failed')
             return original_replace(source, target)
 
@@ -193,6 +195,9 @@ def test_failed_file_transaction_ignores_cancelled_save_callback(tmp_path, monke
         return destination
 
     assert not getattr(controller, action)(picker)
+    if action != 'open':
+        assert len(replace_calls) == 1
+        assert replace_calls[0][1] == destination
     assert original.read_bytes() == original_bytes
     assert destination.read_bytes() == destination_bytes
     assert controller.model.document.path == original
@@ -335,6 +340,40 @@ def test_discard_then_picker_cancel_keeps_draft(tmp_path, action):
     assert controller.model.document_generation == generation
 
 
+@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+def test_picker_cancel_invalidates_old_callback_and_reschedules_save(tmp_path, action):
+    """文件选择取消后旧回调失效，新回调满 500 毫秒才保存。"""
+    controller, coordinator, clock = setup(tmp_path)
+    original = controller.model.document.path
+    original_bytes = original.read_bytes()
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    stale = clock.events[coordinator.pending][1]
+    generation = controller.model.document_generation
+    controller.confirm = lambda kind, _: 'discard' if kind == 'unsaved' else 'confirm'
+
+    def picker():
+        """模拟选择器运行超过旧防抖期限后取消。"""
+        clock.advance(600)
+        assert original.read_bytes() == original_bytes
+        return None
+
+    assert not getattr(controller, action)(picker)
+    assert controller.model.document_generation == generation
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    assert coordinator.pending is not None
+    resumed = coordinator.pending
+    stale()
+    assert coordinator.pending == resumed
+    assert original.read_bytes() == original_bytes
+    clock.advance(499)
+    assert original.read_bytes() == original_bytes
+    clock.advance(1)
+    assert read_document(original).tree['monitor']['target'] == 'draft.exe'
+    assert not controller.model.dirty
+
+
 def test_discard_then_exit_cancel_keeps_draft(tmp_path):
     """放弃草稿之后取消最终退出不终止 worker。"""
     controller, _, _ = setup(tmp_path)
@@ -343,6 +382,46 @@ def test_discard_then_exit_cancel_keeps_draft(tmp_path):
     assert not controller.close()
     assert controller.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
     controller.runner.close.assert_not_called()
+
+
+@pytest.mark.parametrize('cancel_at', ['unsaved', 'exit_test', 'exit'])
+def test_close_cancel_invalidates_old_callback_and_reschedules_save(tmp_path, cancel_at):
+    """关闭各层确认取消后旧回调失效，新回调按防抖期限保存。"""
+    controller, coordinator, clock = setup(tmp_path)
+    original = controller.model.document.path
+    original_bytes = original.read_bytes()
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    stale = clock.events[coordinator.pending][1]
+    generation = controller.model.document_generation
+    if cancel_at == 'exit_test':
+        controller.runner.active = True
+    seen = []
+
+    def confirm(kind, detail):
+        """在指定确认层取消，并在模态对话期间推进时间。"""
+        seen.append(kind)
+        clock.advance(600)
+        assert original.read_bytes() == original_bytes
+        return 'cancel' if kind == cancel_at else 'discard' if kind == 'unsaved' else 'confirm'
+
+    controller.confirm = confirm
+    assert not controller.close()
+    assert cancel_at in seen
+    assert controller.model.document_generation == generation
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+    controller.runner.close.assert_not_called()
+    assert coordinator.pending is not None
+    resumed = coordinator.pending
+    stale()
+    assert coordinator.pending == resumed
+    assert original.read_bytes() == original_bytes
+    clock.advance(499)
+    assert original.read_bytes() == original_bytes
+    clock.advance(1)
+    assert read_document(original).tree['monitor']['target'] == 'draft.exe'
+    assert not controller.model.dirty
 
 
 @pytest.mark.parametrize('action', ['open', 'new'])
