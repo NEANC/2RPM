@@ -23,6 +23,46 @@ from modules.gui.protocol import encode_result
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def run_large_stdin_child(command, pid_path, *, timeout, env=None):
+    """运行隔离子进程，并在所有退出路径有界回收其 worker 进程树。"""
+    child = subprocess.Popen(command, cwd=ROOT, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+    try:
+        stdout, stderr = child.communicate(timeout=timeout)
+        assert child.returncode == 0, stdout + stderr
+    finally:
+        worker = None
+        if pid_path.exists():
+            try:
+                worker = psutil.Process(int(pid_path.read_text()))
+            except (ValueError, psutil.NoSuchProcess):
+                pass
+        targets = []
+        try:
+            targets.append(psutil.Process(child.pid))
+        except psutil.NoSuchProcess:
+            pass
+        if worker is not None:
+            targets.append(worker)
+        descendants = []
+        for process in tuple(targets):
+            try:
+                descendants.extend(process.children(recursive=True))
+            except psutil.NoSuchProcess:
+                pass
+        processes = tuple({process.pid: process for process in (*descendants, *targets)}.values())
+        for process in processes:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(processes, timeout=5)
+        if child.poll() is None:
+            child.kill()
+        child.communicate(timeout=5)
+        assert not alive, f'子测试进程树未回收: {[process.pid for process in alive]}'
+
+
 def request(tmp_path, *, request_id='first', config=None):
     """建立可追踪代次和目录的请求。"""
     return GuiRequest(request_id, 4, 7, 'notify', config or {},
@@ -239,12 +279,13 @@ def test_cancel_reaps_worker(tmp_path):
 def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
     """Windows 大请求写入不读 stdin 的真实 worker 后仍可取消或关闭回收。"""
     if os.environ.get('GUI_TEST_LARGE_STDIN_CHILD') != '1':
-        completed = subprocess.run(
+        pid_path = tmp_path / 'worker.pid'
+        run_large_stdin_child(
             (sys.executable, '-m', 'pytest',
              f'{__file__}::test_blocked_large_stdin_reaps_real_worker[{action}]',
-             '-q'), cwd=ROOT, env={**os.environ, 'GUI_TEST_LARGE_STDIN_CHILD': '1'},
-            capture_output=True, text=True, timeout=20)
-        assert completed.returncode == 0, completed.stdout + completed.stderr
+             '-q'), pid_path, timeout=20,
+            env={**os.environ, 'GUI_TEST_LARGE_STDIN_CHILD': '1',
+                 'GUI_TEST_LARGE_STDIN_PID_PATH': str(pid_path)})
         return
 
     from modules.gui.test_runner import CANCEL_REASON
@@ -264,6 +305,7 @@ def test_blocked_large_stdin_reaps_real_worker(tmp_path, action):
         """保留真实进程和管道，观察首次真实 stdin 写入入口。"""
         process = original(*args, **kwargs)
         processes.append(process)
+        Path(os.environ['GUI_TEST_LARGE_STDIN_PID_PATH']).write_text(str(process.pid))
         write = process._stdin_write
 
         def observed(data):
@@ -336,9 +378,9 @@ def test_large_stdin_child_reaps_reported_worker_on_timeout_or_failure(tmp_path,
         assert not psutil.pid_exists(worker_pid)
     finally:
         if pid_path.exists():
-            worker = psutil.Process(int(pid_path.read_text())) if psutil.pid_exists(
-                int(pid_path.read_text())) else None
-            if worker is not None:
+            worker_pid = int(pid_path.read_text())
+            if psutil.pid_exists(worker_pid):
+                worker = psutil.Process(worker_pid)
                 worker.kill()
                 worker.wait(timeout=5)
 
