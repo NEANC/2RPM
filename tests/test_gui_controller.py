@@ -336,6 +336,102 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
     assert not destination.exists()
 
 
+@pytest.mark.parametrize('phase', ['conflict', 'overwrite', 'relocate', 'read', 'write'])
+def test_reentrant_inner_cancel_does_not_cancel_outer_failure(tmp_path, monkeypatch, phase):
+    """各保存阶段的内层取消不应改变外层失败的归因。"""
+    source_dir = tmp_path / 'source'
+    target_dir = tmp_path / 'target'
+    source_dir.mkdir()
+    target_dir.mkdir()
+    source = save_document(new_document(), source_dir / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = target_dir / 'target.yaml'
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    original_read = Path.read_bytes
+    original_write = __import__('modules.gui.controller', fromlist=['save_document']).save_document
+    calls = []
+    entered = False
+
+    def cancel_inner():
+        """观察内层调用当下仍报告取消。"""
+        calls.append('inner')
+        assert controller.save_as(lambda: None) is False
+        assert controller.save_cancelled is True
+
+    def confirm(kind, detail):
+        """在覆盖或迁移确认里重入。"""
+        nonlocal entered
+        if kind == phase and not entered:
+            entered = True
+            cancel_inner()
+        return 'confirm'
+
+    def read(path):
+        """在外层目标读取期间重入。"""
+        if phase == 'read' and path == destination:
+            cancel_inner()
+            raise OSError('目标不可读取')
+        return original_read(path)
+
+    def write(document, path, *, expected_fingerprint):
+        """在外层写入期间重入。"""
+        if phase in ('overwrite', 'relocate', 'write'):
+            if phase == 'write':
+                cancel_inner()
+            raise ConfigSaveError('写入失败')
+        return original_write(document, path, expected_fingerprint=expected_fingerprint)
+
+    controller.confirm = confirm
+    if phase == 'conflict':
+        source.path.write_bytes(b'external')
+        controller.on_conflict = cancel_inner
+        target = source.path
+    else:
+        target = destination
+        if phase == 'overwrite':
+            destination.write_bytes(b'existing')
+        if phase == 'read':
+            monkeypatch.setattr(Path, 'read_bytes', read)
+        if phase in ('overwrite', 'relocate', 'write'):
+            monkeypatch.setattr('modules.gui.controller.save_document', write)
+
+    before = controller.model.document
+    assert controller.save(target) is False
+    assert calls == ['inner']
+    assert controller.save_cancelled is False
+    assert controller.model.document == before
+    assert controller.model.dirty
+
+
+@pytest.mark.parametrize('phase', ['overwrite', 'relocate'])
+def test_outer_confirmation_cancel_survives_inner_save(tmp_path, phase):
+    """内层成功保存不能把外层确认取消改判为失败。"""
+    source_dir = tmp_path / 'source'
+    target_dir = tmp_path / 'target'
+    source_dir.mkdir()
+    target_dir.mkdir()
+    source = save_document(new_document(), source_dir / 'source.yaml',
+                           expected_fingerprint=None)
+    destination = target_dir / 'target.yaml'
+    if phase == 'overwrite':
+        destination.write_bytes(b'existing')
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+
+    def confirm(kind, detail):
+        """外层确认时先保存内层新文件，再取消外层。"""
+        if kind == phase:
+            assert controller.save(source.path) is True
+            assert controller.save_cancelled is False
+            return 'cancel'
+        return 'confirm'
+
+    controller.confirm = confirm
+    assert controller.save(destination) is False
+    assert controller.save_cancelled is True
+
+
 def test_normalization_requires_confirmation_on_saved_file(tmp_path, monkeypatch):
     """保存现有非法数值后，启动候选差异取消时不得清理磁盘。"""
     controller, confirm, _ = make_controller(tmp_path, answers=['cancel'])

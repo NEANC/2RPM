@@ -191,12 +191,20 @@ class Controller:
 
     def save(self, destination: Path | None = None, *, as_new: bool = False) -> bool:
         """对最终规范化目标确认、检查指纹并原子保存。"""
+        cancelled = [False]
         self.save_cancelled = False
+        try:
+            return self._save(destination, as_new=as_new, cancelled=cancelled)
+        finally:
+            self.save_cancelled = cancelled[0]
+
+    def _save(self, destination: Path | None, *, as_new: bool, cancelled: list[bool]) -> bool:
+        """执行保存事务，取消状态仅归属于当前调用。"""
         if self.model.input_errors:
             return False
         selected = destination if as_new else destination or self.model.document.path or self.choose_path()
         if selected is None:
-            self.save_cancelled = True
+            cancelled[0] = True
             return False
         target = normalize_config_path(Path(selected), program_dir=self.program_dir)
         previous = self.model.document.path
@@ -226,7 +234,7 @@ class Controller:
                       'target': str(target), 'resolved_target': resolved_target,
                       'resolved_cwd': resolved_cwd}
             if self.confirm('relocate', detail) != 'confirm':
-                self.save_cancelled = True
+                cancelled[0] = True
                 return False
         if same:
             expected = self.model.document.fingerprint
@@ -236,17 +244,15 @@ class Controller:
             except FileNotFoundError:
                 data = None
             except OSError:
-                self.save_cancelled = False
                 return False
             expected = hashlib.sha256(data).hexdigest() if data is not None else None
             if data is not None and self.confirm('overwrite', str(target)) != 'confirm':
-                self.save_cancelled = True
+                cancelled[0] = True
                 return False
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
                 return False
-        self.save_cancelled = False
         try:
             saved = save_document(document, target, expected_fingerprint=expected)
         except ConfigConflictError:
