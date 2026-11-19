@@ -133,6 +133,27 @@ def test_capture_entry_clear_disables_start_and_cancel_does_not_request():
         root.destroy()
 
 
+def test_capture_cancel_with_valid_target_does_not_request():
+    """目标有效且开始按钮可用时，点击真实取消按钮不提交截图请求。"""
+    root = tk.Tk()
+    root.withdraw()
+    dialogs = GuiDialogs(root, GuiSession(Mock(active=False)))
+    callback = Mock()
+    try:
+        window = dialogs.open_capture(callback)
+        dialogs.capture_target.insert(0, '窗口标题')
+        assert dialogs.capture_provider.get() == '窗口'
+        assert dialogs.capture_start.cget('state') == 'normal'
+        cancel = next(child for child in window.winfo_children()
+                      if isinstance(child, ctk_kit.CTkButton) and child.cget('text') == '取消')
+        cancel.invoke()
+        assert not window.winfo_exists()
+        callback.assert_not_called()
+    finally:
+        dialogs.clear()
+        root.destroy()
+
+
 def test_capture_context_menu_clear_disables_start_and_cancel_does_not_request():
     """真实右键菜单点击清空后立即禁用，点击取消不创建请求。"""
     root = tk.Tk()
