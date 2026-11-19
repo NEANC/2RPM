@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -224,6 +225,30 @@ def test_busy_test_is_visible_without_resubmitting(tmp_path, monkeypatch, action
             app.notify()
         dialogs.assert_called_once()
         assert '已有测试正在运行' in dialogs.call_args.args[1]
+        app.controller.runner.start.assert_not_called()
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize(('action', 'running'), [
+    ('capture', 'upload'),
+    ('upload', 'capture'),
+])
+def test_other_test_kind_busy_is_visible(tmp_path, monkeypatch, action, running):
+    """运行其他种类测试时不静默吞掉截图和上传按钮操作。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        app.test_session.active_request = SimpleNamespace(action=running)
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', popup)
+        getattr(app, action)()
+        popup.assert_called_once()
+        assert '已有测试正在运行' in popup.call_args.args[1]
         app.controller.runner.start.assert_not_called()
     finally:
         root.destroy()

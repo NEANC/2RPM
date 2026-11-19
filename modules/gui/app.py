@@ -638,6 +638,8 @@ class App:
             if self.test_session.active_request.action == 'capture':
                 self.test_session.hidden = False
                 self.test_dialogs.show_result('capture')
+            else:
+                messagebox.showinfo('测试进行中', '已有测试正在运行，请等待完成。', parent=self.root)
             return
         if self.test_session.last_capture is not None:
             self.test_dialogs.show_result('capture', self.test_session.last_capture,
@@ -675,6 +677,8 @@ class App:
             if self.test_session.active_request.action == 'upload':
                 self.test_session.hidden = False
                 self.test_dialogs.show_result('upload')
+            else:
+                messagebox.showinfo('测试进行中', '已有测试正在运行，请等待完成。', parent=self.root)
             return
         if self.test_session.last_upload is not None:
             self.test_dialogs.show_result('upload', self.test_session.last_upload,
