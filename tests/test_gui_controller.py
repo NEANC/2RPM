@@ -467,7 +467,7 @@ def test_app_save_as_conflict_callback_saved_new_document_does_not_report_failur
 
 
 def test_conflict_reload_is_not_an_inner_save(tmp_path):
-    """冲突回调重载磁盘虽使草稿干净，也不能冒充另存成功。"""
+    """冲突回调重载磁盘虽使草稿干净，也不能冒充另存成功或写入失败。"""
     from modules.gui.controller import SaveResult
 
     source = save_document(new_document(), tmp_path / 'source.yaml',
@@ -480,7 +480,7 @@ def test_conflict_reload_is_not_an_inner_save(tmp_path):
     controller.on_conflict = lambda: controller.resolve_external('reload')
     controller.confirm = lambda kind, detail: 'confirm'
 
-    assert controller._save_result() is SaveResult.FAILED
+    assert controller._save_result() is SaveResult.RELOADED
     assert controller.model.get(('monitor', 'target')) == 'external.exe'
     assert not controller.model.dirty
 

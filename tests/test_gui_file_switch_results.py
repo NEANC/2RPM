@@ -14,6 +14,7 @@ from PIL import Image
 
 from modules.config_document import ConfigSaveError
 from modules.config_document import new_document
+from modules.config_document import read_document
 from modules.config_document import save_document
 from modules.gui.app import messagebox
 from modules.gui.protocol import TestResult as GuiResult
@@ -439,3 +440,56 @@ def test_running_worker_blocks_file_action_before_picker(window, monkeypatch, ac
     assert app.test_session.last_upload is upload
     assert app.test_dialogs.result_window is dialog
     assert app.preview_image is image
+
+
+def test_running_worker_conflict_dialog_save_as_is_blocked(window, monkeypatch, tmp_path):
+    """测试运行中从冲突弹窗另存须提示等待且不清除结果或关闭运行器。"""
+    app = window
+    original = app.model.document.path
+    generation = app.model.document_generation
+    capture, upload, dialog, image = seed_result(app)
+    request = GuiRequest('active', generation, app.model.revision, 'capture', {},
+                         str(tmp_path), str(app.session_dir), 0, None, None, None)
+    app.test_session.active_request = request
+    app.controller.runner.active = True
+    picker = Mock(return_value=str(tmp_path / 'saved.yaml'))
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                        lambda *_, **__: False)
+
+    app._show_conflict()
+
+    picker.assert_not_called()
+    assert app.model.document.path == original
+    assert app.model.document_generation == generation
+    assert app.test_session.active_request is request
+    assert app.test_session.last_capture is capture
+    assert app.test_session.last_upload is upload
+    assert app.test_dialogs.result_window is dialog
+    assert dialog.winfo_exists()
+    assert app.preview_image is image
+    assert app.result_text == '旧结果'
+    assert app.status.cget('text') == '请等待测试完成或取消测试后切换配置'
+    app.controller.runner.close.assert_not_called()
+
+
+def test_conflict_reload_from_save_does_not_report_unsaved_failure(window, monkeypatch):
+    """冲突中选择重新加载磁盘版本后不得提示配置未保存。"""
+    app = window
+    path = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    disk = read_document(path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, path, expected_fingerprint=disk.fingerprint)
+    app.controller.confirm = lambda *_: 'confirm'
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                        lambda *_, **__: True)
+
+    app.save()
+
+    messagebox.showerror.assert_not_called()
+    assert app.status.cget('text') != '配置未保存'
+    assert app.model.get(('monitor', 'target')) == 'external.exe'
+    assert app.model.snapshot() == read_document(path).tree
+    assert not app.model.dirty
+    assert not app.controller.conflicted

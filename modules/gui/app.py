@@ -303,8 +303,11 @@ class App:
         if choice is True:
             self.controller.resolve_external('reload')
         elif choice is False:
-            self.controller.save_as(lambda: filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None)
+            if self.controller.runner.active:
+                self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            else:
+                self.controller.save_as(lambda: filedialog.asksaveasfilename(
+                    parent=self.root, defaultextension='.yaml') or None)
         else:
             self.controller.resolve_external('later')
 
@@ -545,6 +548,9 @@ class App:
         result = self.controller._save_result()
         if result is SaveResult.CONFLICT:
             self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
+            return
+        if result is SaveResult.RELOADED:
+            self.status.configure(text='已重新加载磁盘配置')
             return
         if result is SaveResult.FAILED:
             self.status.configure(text='配置未保存')

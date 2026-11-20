@@ -22,13 +22,14 @@ from modules.monitor_target import resolve_monitor_target
 
 
 class SaveResult(Enum):
-    """单次保存调用的成功、取消、失败、冲突及被重入成功取代。"""
+    """单次保存调用的成功、取消、失败、冲突、被重入成功取代及用户重载丢弃。"""
 
     SAVED = 'saved'
     CANCELLED = 'cancelled'
     FAILED = 'failed'
     CONFLICT = 'conflict'
     SUPERSEDED = 'superseded'
+    RELOADED = 'reloaded'
 
 
 LAUNCH_FAILURE_MESSAGE = '未能启动 CLI，请检查配置、磁盘文件或保存状态。'
@@ -58,6 +59,7 @@ class Controller:
         self.cli_cancelled = False
         self._saved_identity = 0
         self._saved_document_identity = None
+        self._reload_count = 0
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
@@ -225,6 +227,7 @@ class Controller:
             return False
         self.model.replace_document(document)
         self.conflicted = False
+        self._reload_count += 1
         self.on_change()
         return True
 
@@ -244,6 +247,7 @@ class Controller:
 
     def _save(self, destination: Path | None, *, as_new: bool) -> SaveResult:
         """执行保存事务并直接返回本次调用的结果。"""
+        reloads = self._reload_count
         if self.model.input_errors:
             return SaveResult.FAILED
         selected = destination if as_new else destination or self.model.document.path or self.choose_path()
@@ -265,11 +269,15 @@ class Controller:
                         == self._saved_document_identity)
 
             if self.check_external():
+                if self._reload_count != reloads and not self.model.dirty:
+                    return SaveResult.RELOADED
                 if self.model.document_generation != generation and not self.model.dirty:
                     return (SaveResult.SUPERSEDED if inner_save_is_current()
                             else SaveResult.FAILED if dirty else SaveResult.SAVED)
                 return SaveResult.CONFLICT if self.conflicted else SaveResult.FAILED
             if self.model.document_generation != generation:
+                if self._reload_count != reloads and not self.model.dirty:
+                    return SaveResult.RELOADED
                 if self.model.dirty:
                     return SaveResult.FAILED
                 return (SaveResult.SUPERSEDED if inner_save_is_current()
@@ -309,6 +317,8 @@ class Controller:
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
+                if self._reload_count != reloads and not self.model.dirty:
+                    return SaveResult.RELOADED
                 return (SaveResult.SUPERSEDED if inner_save_is_current()
                         else SaveResult.CONFLICT if self.conflicted else SaveResult.FAILED)
         try:
