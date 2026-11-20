@@ -304,7 +304,8 @@ class App:
             self.controller.resolve_external('reload')
         elif choice is False:
             if self.controller.runner.active:
-                self.status.configure(text='请等待测试完成或取消测试后切换配置')
+                messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置',
+                                    parent=self.root)
             else:
                 self.controller.save_as(lambda: filedialog.asksaveasfilename(
                     parent=self.root, defaultextension='.yaml') or None)
