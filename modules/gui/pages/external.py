@@ -23,6 +23,9 @@ EVENTS = (
 )
 THRESHOLD = ('monitor', 'common', 'timeout_threshold')
 THRESHOLD_RANGE = (1, 99)
+# 窗口恢复后目标控件可能仍未完成映射，按固定间隔重试而不放弃焦点。
+FOCUS_RETRY_MS = 40
+FOCUS_RETRY_LIMIT = 25
 
 # 与主页保持同一套原型比例：圆角 20、2px 边框、28px 页边距与卡片内边距。
 PAGE_PAD = 28
@@ -214,13 +217,17 @@ class Page(ctk_kit.CTkScrollableFrame):
             if self.winfo_toplevel().winfo_viewable():
                 activate_and_focus(widget)
             else:
-                def focus_latest():
-                    """窗口恢复焦点稳定后只兑现最近一次导航。"""
-                    if (request == self._focus_request
-                            and self.app.current_page == '外部程序设置'
-                            and self.winfo_viewable()
-                            and widget.winfo_viewable()):
-                        activate_and_focus(widget)
+                def focus_latest(attempt=0):
+                    """窗口恢复后只兑现最近一次导航，控件未映射时继续等待。"""
+                    if (request != self._focus_request
+                            or self.app.current_page != '外部程序设置'):
+                        return
+                    if not self.winfo_viewable() or not widget.winfo_viewable():
+                        if attempt < FOCUS_RETRY_LIMIT:
+                            self.after(FOCUS_RETRY_MS,
+                                       lambda: focus_latest(attempt + 1))
+                        return
+                    activate_and_focus(widget)
 
                 def focus_on_map(event):
                     """窗口实际映射后再将焦点交给诊断字段。"""
