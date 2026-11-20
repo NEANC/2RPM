@@ -408,16 +408,14 @@ class Controller:
             self.cli_cancelled = not confirmed
             if not confirmed:
                 return None
-            if (self.model.document_generation != generation or self.model.revision != revision
-                    or self.model.dirty or self.check_external()):
-                return None
+            external = self.check_external()
             if self.model.document_generation != generation:
                 if (self.model.document.path == path and not self.model.dirty
                         and any(issue.severity == 'error' for issue in
                                 self.model.validate(path.parent).issues)):
                     return LaunchResult(False, '未能启动 CLI，请检查配置、磁盘文件或保存状态。')
                 return None
-            if self.model.revision != revision:
+            if external or self.model.revision != revision or self.model.dirty:
                 return None
         result = launch_cli(self.cli_command, path.resolve())
         if result.created:
