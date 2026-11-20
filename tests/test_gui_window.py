@@ -159,6 +159,28 @@ def test_light_sidebar_uses_light_surface_and_readable_navigation(tmp_path, monk
         tk._default_root = None
 
 
+@pytest.mark.parametrize('dark', [False, True])
+def test_sidebar_buttons_accept_hover_colors_in_both_themes(tmp_path, monkeypatch, dark):
+    """导航、底部设置和配置组悬停时不向 Tk 传递透明色。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path', lambda: tmp_path / 'gui.ini')
+    (tmp_path / 'gui.ini').write_text(
+        f'[appearance]\ndark = {str(dark).lower()}\nmaterial = none\n', encoding='utf-8')
+    tk._default_root = None
+    root = ctk_kit.App(title='2RPM 配置', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    try:
+        app = make_app(root, tmp_path)
+        root.update()
+        buttons = (app.sidebar._buttons['监视设置'],
+                   app.sidebar._bottom_buttons['设置'], app.config_group_button)
+        for button in buttons:
+            button._on_enter()
+            button._on_leave()
+    finally:
+        root.destroy()
+        tk._default_root = None
+
+
 def test_sidebar_width_stays_fixed_across_pages_and_resize(tmp_path):
     """配置组和底部设置不随切页或拉宽改变侧栏宽度。"""
     tk._default_root = None

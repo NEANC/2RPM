@@ -27,7 +27,7 @@ FONT_GROUP = (FONT_FAMILY, 17, 'bold')
 COLORS = {
     'panel_bg': ('#F3F3F3B3', '#1C1C1C99'),
     'card_bg': ('#FFFFFF99', '#2D2D2D66'),
-    'card_hover': ('#0000000D', '#FFFFFF0D'),
+    'card_hover': ('#E7E7E7', '#282828'),
     'border': ('#0000001A', '#FFFFFF1A'),
     'text_primary': ('#1A1A1A', '#F3F3F3'),
     'text_secondary': ('#5F5F5F', '#A0A0A0'),
