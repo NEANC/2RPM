@@ -163,7 +163,7 @@ def test_exit_confirms_worker_only_after_final_approval(tmp_path):
     runner.close.assert_called_once()
 
 
-def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
+def test_unsaved_or_conflicted_actions_are_blocked(tmp_path, monkeypatch):
     """未完整输入或冲突阻止业务操作，保留草稿。"""
     from tests.gui_support import make_app
     import tkinter as tk
@@ -172,10 +172,16 @@ def test_unsaved_or_conflicted_actions_are_blocked(tmp_path):
     root.withdraw()
     try:
         app = make_app(root, tmp_path)
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
         app.model.input_errors[('monitor', 'common', 'max_wait')] = '-'
         app.capture()
         app.upload()
         app.notify()
+        assert dialogs.call_count == 3
+        for call in dialogs.call_args_list:
+            assert call.args == ('配置未保存', '配置未保存，操作已停止。草稿已保留。')
+            assert call.kwargs == {'parent': root}
         app.controller.runner.start.assert_not_called()
         assert app.model.input_errors
     finally:

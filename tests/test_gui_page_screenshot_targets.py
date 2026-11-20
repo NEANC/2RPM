@@ -70,11 +70,13 @@ def test_list_operations_persist_immediately(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_list_edit_presave_failure_updates_status(tmp_path):
+def test_list_edit_presave_failure_updates_status(tmp_path, monkeypatch):
     """补存失败时截图与通知列表操作提示先保存或处理冲突。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
         screenshot = app.visible_pages['截图设置']
         channels = app.visible_pages['消息推送设置']
         app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
@@ -86,6 +88,10 @@ def test_list_edit_presave_failure_updates_status(tmp_path):
         assert '配置未保存' in app.status.cget('text')
         assert all(item.get('provider') != 'telegram'
                    for item in app.model.get(channels.channels_path))
+        assert dialogs.call_count == 2
+        for call in dialogs.call_args_list:
+            assert call.args == ('配置未保存', '配置未保存，操作已停止。草稿已保留。')
+            assert call.kwargs == {'parent': root}
     finally:
         root.destroy()
 
@@ -97,6 +103,8 @@ def test_list_entry_presaves_before_mutation(tmp_path, operation, monkeypatch):
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
         channels = app.visible_pages['消息推送设置']
         attachments = app.visible_pages['截图设置']
         targets_path = ('push', 'screenshot', 'targets')
@@ -130,6 +138,9 @@ def test_list_entry_presaves_before_mutation(tmp_path, operation, monkeypatch):
         assert app.model.get(('monitor', 'target')) == 'draft.exe'
         assert app.controller.conflicted
         assert path.read_bytes() == b'external: true\n'
+        assert dialogs.call_count == 1
+        assert dialogs.call_args.args == ('配置未保存', '配置未保存，操作已停止。草稿已保留。')
+        assert dialogs.call_args.kwargs == {'parent': root}
     finally:
         root.destroy()
 

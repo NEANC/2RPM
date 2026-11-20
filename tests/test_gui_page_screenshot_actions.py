@@ -1048,9 +1048,12 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
             return 'confirm'
 
         launch = Mock(return_value=LaunchResult(True, '已创建 CLI 进程'))
+        dialogs = Mock()
         app.controller.confirm = confirm
         monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', dialogs)
         app.start_cli()
+        dialogs.assert_called_once_with('启动 CLI', '已创建 CLI 进程', parent=root)
         assert 'normalize' in confirmations
         assert launch.call_count == 1, (app.status.cget('text'),
                                         [(change.path, change.operation) for change in app.model.validate(tmp_path).changes],
@@ -1063,16 +1066,22 @@ def test_real_gui_reorder_save_confirm_and_launch(tmp_path, monkeypatch):
         root.destroy()
 
 
-def test_request_with_non_json_yaml_value_is_rejected_before_worker(tmp_path):
+def test_request_with_non_json_yaml_value_is_rejected_before_worker(tmp_path, monkeypatch):
     """不兼容 JSON 的 YAML 值不进入 worker，且主线程保留草稿。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
         config = app.model.get(('push', 'screenshot', 'image_host'))
         config[0]['options'] = {1: object()}
         app.model.set(('push', 'screenshot', 'image_host'), config)
         app.visible_pages['截图设置'].add_target()
         app.capture()
+        assert dialogs.call_count == 2
+        for call in dialogs.call_args_list:
+            assert call.args == ('配置未保存', '配置未保存，操作已停止。草稿已保留。')
+            assert call.kwargs == {'parent': root}
         app.controller.runner.start.assert_not_called()
         assert not app.model.get(('push', 'screenshot', 'targets'))
         assert app.model.dirty
