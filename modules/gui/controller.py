@@ -31,6 +31,9 @@ class SaveResult(Enum):
     SUPERSEDED = 'superseded'
 
 
+LAUNCH_FAILURE_MESSAGE = '未能启动 CLI，请检查配置、磁盘文件或保存状态。'
+
+
 class Controller:
     """持有唯一草稿，只有磁盘事务成功才接受新基线。"""
 
@@ -413,7 +416,7 @@ class Controller:
                 if (self.model.document.path == path and not self.model.dirty
                         and any(issue.severity == 'error' for issue in
                                 self.model.validate(path.parent).issues)):
-                    return LaunchResult(False, '未能启动 CLI，请检查配置、磁盘文件或保存状态。')
+                    return LaunchResult(False, LAUNCH_FAILURE_MESSAGE)
                 return None
             if external or self.model.revision != revision or self.model.dirty:
                 return None
