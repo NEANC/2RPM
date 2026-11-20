@@ -485,6 +485,34 @@ def test_conflict_reload_is_not_an_inner_save(tmp_path):
     assert not controller.model.dirty
 
 
+def test_late_write_conflict_reload_returns_reload_result(tmp_path, monkeypatch):
+    """最终原子写入冲突后重载磁盘，结果不能仍标记为冲突。"""
+    from modules.config_document import ConfigConflictError
+    from modules.gui.controller import SaveResult
+
+    source = save_document(new_document(), tmp_path / 'source.yaml',
+                           expected_fingerprint=None)
+    controller, _, _ = make_controller(tmp_path, source)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    original_save = save_document
+
+    def late_conflict(document, path, *, expected_fingerprint):
+        """在最终替换检查之后模拟外部进程写入。"""
+        disk = read_document(source.path)
+        disk.tree['monitor']['target'] = 'external.exe'
+        original_save(disk, source.path, expected_fingerprint=disk.fingerprint)
+        raise ConfigConflictError('late conflict')
+
+    monkeypatch.setattr('modules.gui.controller.save_document', late_conflict)
+    controller.on_conflict = lambda: controller.resolve_external('reload')
+    controller.confirm = lambda *_: 'confirm'
+
+    assert controller._save_result() is SaveResult.RELOADED
+    assert controller.model.get(('monitor', 'target')) == 'external.exe'
+    assert not controller.model.dirty
+    assert not controller.conflicted
+
+
 def test_second_external_check_inner_save_as_is_superseded(tmp_path):
     """第二次外部检查期间另存成功应归因为被内层保存取代。"""
     from modules.gui.controller import SaveResult

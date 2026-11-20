@@ -45,8 +45,10 @@ def test_start_cli_reload_discard_stops_without_second_error(tmp_path, monkeypat
         monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
         choice = Mock(return_value=True)
         error = Mock()
+        info = Mock()
         monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', choice)
         monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
         confirmations = []
 
         def confirm(kind, detail):
@@ -68,9 +70,34 @@ def test_start_cli_reload_discard_stops_without_second_error(tmp_path, monkeypat
         assert confirmations == ['discard_external']
         launch.assert_not_called()
         error.assert_not_called()
+        info.assert_called_once_with('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                                     parent=root)
         assert app.model.document_generation != generation
         assert app.model.get(('monitor', 'target')) == 'external.exe'
         assert not app.controller.conflicted
+    finally:
+        root.destroy()
+
+
+def test_start_cli_clean_external_reload_requires_reselection(tmp_path, monkeypatch):
+    """干净配置自动重载后不按旧页面选择启动 CLI。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        info = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+        path = app.model.document.path
+        disk = read_document(path)
+        disk.tree['monitor']['target'] = 'external.exe'
+        save_document(disk, path, expected_fingerprint=disk.fingerprint)
+
+        app.start_cli()
+
+        launch.assert_not_called()
+        info.assert_called_once_with('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                                     parent=root)
     finally:
         root.destroy()
 
@@ -353,8 +380,10 @@ def test_start_cli_auto_reload_invalid_config_shows_safe_error(tmp_path, monkeyp
         app = make_app(root, tmp_path)
         launch = Mock()
         error = Mock()
+        info = Mock()
         monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
         monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
         path = app.model.document.path
         generation = app.model.document_generation
         external = read_document(path)
@@ -370,6 +399,7 @@ def test_start_cli_auto_reload_invalid_config_shows_safe_error(tmp_path, monkeyp
         error.assert_called_once_with('启动 CLI',
                                       '未能启动 CLI，请检查配置、磁盘文件或保存状态。',
                                       parent=root)
+        info.assert_not_called()
     finally:
         root.destroy()
 

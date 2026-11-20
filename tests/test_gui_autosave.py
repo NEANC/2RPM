@@ -9,8 +9,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import new_document, read_document, save_document
-from modules.gui.controller import Controller
+from modules.config_document import ConfigSaveError, new_document, read_document, save_document
+from modules.gui.controller import Controller, SaveResult
 from modules.gui.model import EditorModel
 from modules.gui.save_coordinator import SaveCoordinator
 
@@ -59,8 +59,8 @@ def setup(tmp_path, *, persisted=True):
 def test_debounce_coalesces_writes(tmp_path, monkeypatch):
     """连续编辑只在静默 500 毫秒后写一次。"""
     controller, coordinator, clock = setup(tmp_path)
-    save = Mock(wraps=controller.save)
-    monkeypatch.setattr(controller, 'save', save)
+    save = Mock(wraps=controller._save_result)
+    monkeypatch.setattr(controller, '_save_result', save)
     controller.model.set(('monitor', 'target'), 'first.exe')
     coordinator.edited()
     clock.advance(400)
@@ -87,12 +87,59 @@ def test_partial_number_keeps_raw_draft(tmp_path):
     assert controller.model.document.path.read_bytes() == before
 
 
+def test_debounced_write_failure_reports_once_per_revision(tmp_path, monkeypatch):
+    """延迟写盘失败通知当前草稿一次，新编辑才重新提示。"""
+    controller, coordinator, clock = setup(tmp_path)
+    failed = Mock()
+    coordinator.on_auto_save_failed = failed
+    monkeypatch.setattr('modules.gui.controller.save_document',
+                        Mock(side_effect=ConfigSaveError('secret-token')))
+    original = controller.model.document.path.read_bytes()
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    clock.advance(500)
+    failed.assert_called_once_with()
+    assert controller.model.document.path.read_bytes() == original
+    coordinator.edited()
+    clock.advance(500)
+    failed.assert_called_once_with()
+    controller.model.set(('monitor', 'target'), 'next.exe')
+    coordinator.edited()
+    clock.advance(500)
+    assert failed.call_count == 2
+
+
+def test_flush_preserves_reload_result(tmp_path):
+    """显式补存能区分用户放弃草稿的重载与真正写入失败。"""
+    controller, coordinator, _ = setup(tmp_path)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    disk = read_document(controller.model.document.path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+    controller.on_conflict = lambda: controller.resolve_external('reload')
+
+    assert coordinator.flush_result() is SaveResult.RELOADED
+    assert controller.model.get(('monitor', 'target')) == 'external.exe'
+    assert not controller.model.dirty
+
+
+def test_clean_external_reload_stops_pending_operation(tmp_path):
+    """干净配置被外部更新后不应当作当前选择已保存。"""
+    controller, coordinator, _ = setup(tmp_path)
+    disk = read_document(controller.model.document.path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+
+    assert coordinator.flush_result() is SaveResult.RELOADED
+    assert controller.model.get(('monitor', 'target')) == 'external.exe'
+
+
 def test_restored_number_restarts_debounce_with_other_dirty_field(tmp_path, monkeypatch):
     """数字恢复原值后，其他字段的待保存草稿从恢复输入重新计时。"""
     controller, coordinator, clock = setup(tmp_path)
     controller.model.on_edit = coordinator.edited
-    save = Mock(wraps=controller.save)
-    monkeypatch.setattr(controller, 'save', save)
+    save = Mock(wraps=controller._save_result)
+    monkeypatch.setattr(controller, '_save_result', save)
     path = ('monitor', 'common', 'timeout_threshold')
     original = controller.model.get(path)
     controller.model.set(('monitor', 'target'), 'draft.exe')

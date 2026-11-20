@@ -431,11 +431,15 @@ def test_running_worker_blocks_file_action_before_picker(window, monkeypatch, ac
     app.controller.runner.active = True
     picker_name = 'askopenfilename' if action == 'open' else 'asksaveasfilename'
     picker = Mock()
+    info = Mock()
     monkeypatch.setattr('modules.gui.app.filedialog.' + picker_name, picker)
+    monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
 
     getattr(app, action)()
 
     picker.assert_not_called()
+    info.assert_called_once_with('配置切换', '请等待测试完成或取消测试后切换配置',
+                                 parent=app.root)
     assert app.test_session.last_capture is capture
     assert app.test_session.last_upload is upload
     assert app.test_dialogs.result_window is dialog
@@ -496,3 +500,64 @@ def test_conflict_reload_from_save_does_not_report_unsaved_failure(window, monke
     assert app.model.snapshot() == read_document(path).tree
     assert not app.model.dirty
     assert not app.controller.conflicted
+
+
+def test_reload_during_request_flush_stops_without_claiming_draft_kept(window, monkeypatch):
+    """测试前补存重载后停止请求且不谎称草稿仍在。"""
+    app = window
+    path = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    disk = read_document(path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, path, expected_fingerprint=disk.fingerprint)
+    app.controller.confirm = lambda *_: 'confirm'
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                        lambda *_, **__: True)
+    info = Mock()
+    monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+
+    assert not app._require_saved()
+
+    messagebox.showerror.assert_not_called()
+    info.assert_any_call('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                         parent=app.root)
+    assert app.model.get(('monitor', 'target')) == 'external.exe'
+    assert not app.model.dirty
+
+
+def test_clean_reload_during_request_flush_stops(window, monkeypatch):
+    """无草稿外部自动重载时也不能按旧选择继续测试。"""
+    app = window
+    path = app.model.document.path
+    disk = read_document(path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, path, expected_fingerprint=disk.fingerprint)
+    info = Mock()
+    monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+
+    assert not app._require_saved()
+
+    info.assert_called_once_with('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                                 parent=app.root)
+    assert app.model.get(('monitor', 'target')) == 'external.exe'
+
+
+def test_reload_during_list_flush_shows_reselection(window, monkeypatch):
+    """列表补存重载必须明确告诉用户重新选择旧行。"""
+    app = window
+    path = app.model.document.path
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    disk = read_document(path)
+    disk.tree['monitor']['target'] = 'external.exe'
+    save_document(disk, path, expected_fingerprint=disk.fingerprint)
+    app.controller.confirm = lambda *_: 'confirm'
+    monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                        lambda *_, **__: True)
+    info = Mock()
+    monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+
+    assert not app._before_list_edit()
+
+    messagebox.showerror.assert_not_called()
+    info.assert_any_call('配置已更新', '配置已更新，请重新选择列表项。', parent=app.root)
+    assert app.model.get(('monitor', 'target')) == 'external.exe'

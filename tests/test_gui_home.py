@@ -10,7 +10,8 @@ from unittest.mock import Mock
 import ctk_kit
 import pytest
 
-from modules.config_document import ConfigReadError, ConfigSaveError, new_document, read_document
+from modules.config_document import (ConfigReadError, ConfigSaveError, new_document,
+                                     read_document, save_document)
 from modules.gui.home_summary import summary
 from tests.gui_support import make_app
 
@@ -269,8 +270,8 @@ def test_first_save_write_failure_displays_failure_and_keeps_draft(tmp_path, mon
         root.destroy()
 
 
-def test_background_save_failure_marks_visible_path_without_popups(tmp_path, monkeypatch):
-    """真实延迟回调和切页补存失败沿用可见路径行，不重复弹窗。"""
+def test_background_save_failure_is_visible_once_per_draft(tmp_path, monkeypatch):
+    """当前配置页的延迟写盘失败当下可见，重复补存不重复提示。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -288,6 +289,8 @@ def test_background_save_failure_marks_visible_path_without_popups(tmp_path, mon
         root.after(650, root.quit)
         root.mainloop()
         write.assert_called_once()
+        popup.assert_called_once_with('自动保存失败', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                                      parent=root)
         assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
         assert app.model.dirty
         assert path.read_bytes() == original
@@ -296,7 +299,7 @@ def test_background_save_failure_marks_visible_path_without_popups(tmp_path, mon
         app.show_page('监视设置')
         app.show_page('主页')
         assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
-        popup.assert_not_called()
+        popup.assert_called_once()
         assert app.model.dirty
         assert path.read_bytes() == original
         monkeypatch.undo()
@@ -336,6 +339,28 @@ def test_leave_page_before_debounce_write_failure_keeps_unsaved_draft(tmp_path, 
         assert path.read_bytes() == original
         assert app.model.dirty
         assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_leave_page_reload_does_not_claim_draft_preserved(tmp_path, monkeypatch):
+    """离开配置页的补存重载不能将已放弃草稿误报为保留。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        app.show_page('监视设置')
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        disk = read_document(app.model.document.path)
+        disk.tree['monitor']['target'] = 'external.exe'
+        save_document(disk, disk.path, expected_fingerprint=disk.fingerprint)
+        app.controller.confirm = lambda *_: 'confirm'
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                            lambda *_, **__: True)
+
+        app.show_page('主页')
+
+        assert app.model.get(('monitor', 'target')) == 'external.exe'
+        assert app.status.cget('text') != '配置未保存，已保留草稿'
     finally:
         root.destroy()
 

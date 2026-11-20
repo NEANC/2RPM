@@ -80,6 +80,7 @@ class App:
         self.controller = controller
         self.model = controller.model
         self.save_coordinator = SaveCoordinator(controller, root.after, root.after_cancel)
+        self.save_coordinator.on_auto_save_failed = self._auto_save_failed
         self.model.on_edit = self.save_coordinator.edited
         self.model.before_list_edit = self._before_list_edit
         self.model.on_list_edit = self.save_coordinator.flush
@@ -275,7 +276,10 @@ class App:
     def _page_changed(self, name):
         """侧栏切换时更新当前页，配置页离开时尝试补存。"""
         if getattr(self, 'current_page', '主页') != name and self.current_page != '主页':
-            if not self.save_coordinator.flush():
+            result = self.save_coordinator.flush_result()
+            if result is SaveResult.RELOADED:
+                self.status.configure(text='已重新加载磁盘配置')
+            elif result not in (SaveResult.SAVED, SaveResult.SUPERSEDED):
                 self.status.configure(text='配置未保存，已保留草稿')
         self.current_page = name
         if hasattr(self, 'config_group_button'):
@@ -408,6 +412,11 @@ class App:
         self.visible_pages['主页'].refresh()
         self._refresh_save_status()
 
+    def _auto_save_failed(self):
+        """后台写盘失败时在当前页面显示不含异常详情的提示。"""
+        messagebox.showerror('自动保存失败', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
+                             parent=self.root)
+
     def _refresh_save_status(self):
         """编辑时仅刷新保存标记，不重建正在输入的控件。"""
         self._invalidate_validation_if_stale()
@@ -444,8 +453,13 @@ class App:
 
     def _require_saved(self):
         """在业务操作前补存，不把未保存草稿当作磁盘配置。"""
-        if self.save_coordinator.flush():
+        result = self.save_coordinator.flush_result()
+        if result in (SaveResult.SAVED, SaveResult.SUPERSEDED):
             return True
+        if result is SaveResult.RELOADED:
+            messagebox.showinfo('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                                parent=self.root)
+            return False
         self.status.configure(text='配置未保存，操作已停止')
         messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。', parent=self.root)
         return False
@@ -453,13 +467,15 @@ class App:
     def _before_list_edit(self):
         """补存若替换草稿则停止列表操作并要求重新选择。"""
         identity = (self.model.document_generation, self.model.revision)
-        saved = self.save_coordinator.flush()
+        result = self.save_coordinator.flush_result()
+        saved = result in (SaveResult.SAVED, SaveResult.SUPERSEDED)
         if identity != (self.model.document_generation, self.model.revision):
             message_page = self.visible_pages.get('消息推送设置')
             if message_page is not None:
                 message_page._expanded_channel = None
                 message_page.refresh()
             self.status.configure(text='配置已更新，请重新选择列表项')
+            messagebox.showinfo('配置已更新', '配置已更新，请重新选择列表项。', parent=self.root)
             return False
         if not saved:
             self.status.configure(text='配置未保存，操作已停止')
@@ -522,6 +538,7 @@ class App:
         """由控制器确认旧草稿后建立新配置。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置', parent=self.root)
             return
         if self.controller.new(lambda: filedialog.asksaveasfilename(
                 parent=self.root, defaultextension='.yaml') or None):
@@ -531,6 +548,7 @@ class App:
         """用原始选择路径读取，不隐式添加后缀。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置', parent=self.root)
             return
 
         def picker():
@@ -562,6 +580,7 @@ class App:
         """选择另存为目标，由控制器规范化并检查冲突。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
+            messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置', parent=self.root)
             return
         result = self.controller._save_as_result(lambda: filedialog.asksaveasfilename(
             parent=self.root, defaultextension='.yaml') or None)
@@ -637,7 +656,17 @@ class App:
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
         generation = self.model.document_generation
-        if not self.save_coordinator.flush():
+        save_result = self.save_coordinator.flush_result()
+        if save_result not in (SaveResult.SAVED, SaveResult.SUPERSEDED):
+            if save_result is SaveResult.RELOADED:
+                path = self.model.document.path
+                candidate = self.model.validate(path.parent if path else self.controller.program_dir)
+                if any(issue.severity == 'error' for issue in candidate.issues):
+                    messagebox.showerror('启动 CLI', LAUNCH_FAILURE_MESSAGE, parent=self.root)
+                else:
+                    messagebox.showinfo('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
+                                        parent=self.root)
+                return
             self.status.configure(text='配置未保存，操作已停止')
             if not self.controller.conflicted and self.model.document_generation == generation:
                 messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。',

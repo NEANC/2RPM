@@ -3,6 +3,8 @@
 
 """无 Tk 的自动保存及磁盘变更协调器。"""
 
+from modules.gui.controller import SaveResult
+
 
 class SaveCoordinator:
     """将延迟回调绑定文档代次，并在事务中暂停自动写入。"""
@@ -17,6 +19,8 @@ class SaveCoordinator:
         self.poll = None
         self.depth = 0
         self.closed = False
+        self.on_auto_save_failed = lambda: None
+        self._reported_failure = None
         controller.coordinator = self
         self._watch()
 
@@ -54,20 +58,34 @@ class SaveCoordinator:
                 or serial is not None and serial != self._save_serial):
             return
         self.pending = None
-        self.flush()
+        revision = (generation, self.controller.model.revision)
+        if (self.flush_result() is SaveResult.FAILED and self.controller.model.dirty
+                and not self.controller.model.input_errors
+                and self.controller.model.document.path is not None
+                and revision != self._reported_failure):
+            self._reported_failure = revision
+            self.on_auto_save_failed()
 
     def flush(self) -> bool:
         """在可写时立即尝试提交当前草稿。"""
+        return self.flush_result() in (SaveResult.SAVED, SaveResult.SUPERSEDED)
+
+    def flush_result(self) -> SaveResult:
+        """保留补存的重载、失败和取消归因。"""
         if self.closed or self.depth or self.controller.conflicted or self.controller.model.input_errors:
-            return False
+            return SaveResult.FAILED
         if self.pending is not None:
             self.cancel(self.pending)
             self.pending = None
         if not self.controller.model.dirty:
-            return not self.controller.check_external()
+            generation = self.controller.model.document_generation
+            if self.controller.check_external():
+                return SaveResult.CONFLICT
+            return (SaveResult.RELOADED if self.controller.model.document_generation != generation
+                    else SaveResult.SAVED)
         if self.controller.model.document.path is None:
-            return False
-        return self.controller.save()
+            return SaveResult.FAILED
+        return self.controller._save_result()
 
     def begin_transaction(self) -> None:
         """暂停自动写入及自动重载直到文件事务结束。"""

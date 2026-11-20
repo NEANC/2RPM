@@ -326,6 +326,8 @@ class Controller:
         except ConfigConflictError:
             if same:
                 self._mark_conflict()
+                if self._reload_count != reloads and not self.model.dirty:
+                    return SaveResult.RELOADED
                 return SaveResult.CONFLICT
             return SaveResult.FAILED
         except ConfigSaveError:
