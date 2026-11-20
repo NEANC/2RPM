@@ -129,7 +129,10 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not path_writable(self.model, path):
             return
         spinner = self.spinners[path]
-        raw = spinner.entry.get()
+        try:
+            raw = self.model.get_input(path)
+        except KeyError:
+            raw = str(DEFAULT_VALUES['log'][path[1]])
         if not re.fullmatch(r'[+-]?\d+', raw.strip()):
             return
         try:
