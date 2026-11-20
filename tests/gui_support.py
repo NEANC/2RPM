@@ -36,6 +36,24 @@ def make_app(root, tmp_path):
     return app
 
 
+def arrow_y(spinner, direction):
+    """按箭头画布的实际高度推导上下箭头点击坐标。
+
+    开启 DPI 感知后控件高度随系统缩放变化，写死的像素可能落到相反半边；
+    这里与 Spinner._on_arrow 使用同一判据（画布高度的一半）。
+
+    参数:
+        spinner: ctk-kit ``Spinner``。
+        direction: ``'up'`` 点上箭头，``'down'`` 点下箭头。
+
+    返回:
+        相对箭头画布的 y 坐标。
+    """
+    spinner.update_idletasks()
+    height = spinner._arrows.winfo_height()
+    return 4 if direction == 'up' else height - 4
+
+
 def monitor_page():
     """创建真实窗口中的监视表单（cfg 页测试用）。"""
     import tkinter as tk

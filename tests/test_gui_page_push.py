@@ -20,7 +20,7 @@ from modules.gui.protocol import TestRequest as GuiTestRequest
 from modules.gui.protocol import TestResult as GuiTestResult
 
 
-from tests.gui_support import descendants, make_app
+from tests.gui_support import descendants, make_app, arrow_y
 
 
 def test_pages_bind_variables_without_default_root(tmp_path, monkeypatch):
@@ -397,12 +397,12 @@ def test_retry_max_count_save_respects_native_draft(tmp_path, raw, saved):
         root.destroy()
 
 
-@pytest.mark.parametrize(('raw', 'y', 'expected'), [
-    ('007', 1, '8'), ('7', 30, '6'), ('99', 1, '99'),
-    ('0', 30, '0'), ('1000', 1, '99'), ('-1', 30, '0'),
-    ('', 1, ''), ('-', 1, '-'), ('12x', 1, '12x'),
+@pytest.mark.parametrize(('raw', 'direction', 'expected'), [
+    ('007', 'up', '8'), ('7', 'down', '6'), ('99', 'up', '99'),
+    ('0', 'down', '0'), ('1000', 'up', '99'), ('-1', 'down', '0'),
+    ('', 'up', ''), ('-', 'up', '-'), ('12x', 'up', '12x'),
 ])
-def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, y, expected):
+def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, direction, expected):
     """真实箭头只步进完整整数，且上下界不越界。"""
     root = tk.Tk()
     try:
@@ -414,7 +414,8 @@ def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, y, expect
         entry.insert(0, raw)
         root.update()
         before = app.model.get(path)
-        page.retry_spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        page.retry_spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.retry_spinner, direction))
         root.update()
         assert page.retry_spinner.entry.get() == expected
         assert app.model.get_input(path) == expected
@@ -437,7 +438,8 @@ def test_retry_max_count_oversized_draft_survives_arrow_and_blocks_save(tmp_path
         entry.delete(0, 'end')
         entry.insert(0, raw)
         root.update()
-        page.retry_spinner._arrows.event_generate('<Button-1>', x=5, y=1)
+        page.retry_spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.retry_spinner, 'up'))
         root.update()
 
         assert not errors

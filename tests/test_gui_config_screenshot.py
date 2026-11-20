@@ -14,6 +14,7 @@ from modules.config_document import new_document
 from modules.gui.appearance import FONT_TITLE
 from modules.gui.model import EditorModel
 from modules.gui.pages.monitor import Page
+from tests.gui_support import arrow_y
 from tests.gui_support import make_app
 from tests.gui_support import descendants as _descendants
 
@@ -568,7 +569,8 @@ def test_screenshot_numeric_arrow_keeps_draft_or_steps_valid_value(field, raw, e
         spinner.entry._entry.insert(0, raw)
         root.update()
         revision = model.revision
-        spinner._arrows.event_generate('<Button-1>', x=5, y=1)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, 'up'))
         root.update()
         current = page.target_rows[0]['port'] if field == 'port' else page.days
         assert current.entry.get() == (raw if raw in ('', '-', '12x') else
@@ -582,13 +584,13 @@ def test_screenshot_numeric_arrow_keeps_draft_or_steps_valid_value(field, raw, e
         root.destroy()
 
 
-@pytest.mark.parametrize('raw, y, expected', [
-    ('999999999', 1, '1000000000'),
-    ('1000000000', 1, '1000000000'),
-    ('1000000000', 30, '999999999'),
-    ('1', 30, '1'),
+@pytest.mark.parametrize('raw, direction, expected', [
+    ('999999999', 'up', '1000000000'),
+    ('1000000000', 'up', '1000000000'),
+    ('1000000000', 'down', '999999999'),
+    ('1', 'down', '1'),
 ])
-def test_retention_days_arrow_respects_spinner_bounds(raw, y, expected):
+def test_retention_days_arrow_respects_spinner_bounds(raw, direction, expected):
     """真实箭头到达上下界后停住，不越过控件声明范围。"""
     from unittest.mock import Mock
     from modules.gui.pages.screenshot import Page as ScreenshotPage
@@ -603,7 +605,8 @@ def test_retention_days_arrow_respects_spinner_bounds(raw, y, expected):
         page.days.entry._entry.delete(0, 'end')
         page.days.entry._entry.insert(0, raw)
         root.update()
-        page.days._arrows.event_generate('<Button-1>', x=5, y=y)
+        page.days._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.days, direction))
         root.update()
         assert page.days.entry.get() == expected
         assert model.get(('push', 'screenshot', 'retention', 'max_days')) == int(expected)

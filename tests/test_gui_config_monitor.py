@@ -14,6 +14,7 @@ from modules.config_document import new_document
 from modules.gui.model import EditorModel
 from modules.gui.pages.monitor import Page
 from tests.gui_support import make_app
+from tests.gui_support import arrow_y
 from tests.gui_support import monitor_page as _page
 from tests.gui_support import descendants as _descendants
 
@@ -90,11 +91,11 @@ def test_lookback_native_event_keeps_raw_input(event, raw):
         root.destroy()
 
 
-@pytest.mark.parametrize(('raw', 'y', 'expected'), [
-    ('007', 1, '8'), ('7', 30, '6'), ('999', 1, '999'),
-    ('0', 30, '0'), ('', 1, ''), ('-', 1, ''), ('12x', 1, ''),
+@pytest.mark.parametrize(('raw', 'direction', 'expected'), [
+    ('007', 'up', '8'), ('7', 'down', '6'), ('999', 'up', '999'),
+    ('0', 'down', '0'), ('', 'up', ''), ('-', 'up', ''), ('12x', 'up', ''),
 ])
-def test_lookback_arrow_steps_only_parseable_input(raw, y, expected):
+def test_lookback_arrow_steps_only_parseable_input(raw, direction, expected):
     """真实箭头仅对可解析数字按一步移动，非法草稿不被覆盖。"""
     root, model, page = _page()
     path = ('monitor', 'watch', 'lookback_minutes')
@@ -103,7 +104,8 @@ def test_lookback_arrow_steps_only_parseable_input(raw, y, expected):
         page.lookback.entry._entry.insert(0, raw)
         root.update()
         before = model.get(path)
-        page.lookback._arrows.event_generate('<Button-1>', x=5, y=y)
+        page.lookback._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.lookback, direction))
         root.update()
         assert page.lookback.entry.get() == (raw if raw in ('', '-', '12x') else expected)
         assert model.get(path) == (before if raw in ('', '-', '12x') else int(expected))
@@ -112,8 +114,8 @@ def test_lookback_arrow_steps_only_parseable_input(raw, y, expected):
         root.destroy()
 
 
-@pytest.mark.parametrize('y', [1, 30])
-def test_lookback_real_arrow_preserves_integer_over_dynamic_limit(y):
+@pytest.mark.parametrize('direction', ['up', 'down'])
+def test_lookback_real_arrow_preserves_integer_over_dynamic_limit(direction):
     """真实箭头遇到超过当前整数位数限制的原文时不抛异常、不覆写。"""
     previous_limit = sys.get_int_max_str_digits()
     sys.set_int_max_str_digits(640)
@@ -129,7 +131,8 @@ def test_lookback_real_arrow_preserves_integer_over_dynamic_limit(y):
         entry.insert(0, raw)
         root.update()
         before = model.get(path)
-        page.lookback._arrows.event_generate('<Button-1>', x=5, y=y)
+        page.lookback._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.lookback, direction))
         root.update()
         assert not errors
         assert entry.get() == raw

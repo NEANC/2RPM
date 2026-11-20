@@ -14,6 +14,7 @@ import pytest
 from modules.config_document import new_document
 from modules.gui.model import EditorModel
 from tests.gui_support import make_app
+from tests.gui_support import arrow_y
 
 
 def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):
@@ -103,11 +104,11 @@ def test_logs_number_real_event_preserves_raw(path, event, raw):
 @pytest.mark.parametrize(('path', 'top'), [
     (('log', 'max_log_files'), 9999), (('log', 'retention_days'), 3650),
 ])
-@pytest.mark.parametrize(('raw', 'y', 'expected'), [
-    ('007', 1, '8'), ('7', 30, '6'), ('', 1, ''),
-    ('-', 1, '-'), ('12x', 1, '12x'),
+@pytest.mark.parametrize(('raw', 'direction', 'expected'), [
+    ('007', 'up', '8'), ('7', 'down', '6'), ('', 'up', ''),
+    ('-', 'up', '-'), ('12x', 'up', '12x'),
 ])
-def test_logs_number_real_arrow(path, top, raw, y, expected):
+def test_logs_number_real_arrow(path, top, raw, direction, expected):
     """日志箭头只操作可解析整数且不替换非法草稿。"""
     from modules.gui.pages.logs import Page
 
@@ -121,7 +122,8 @@ def test_logs_number_real_arrow(path, top, raw, y, expected):
         entry.insert(0, raw)
         root.update()
         before = model.get(path)
-        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, direction))
         root.update()
         assert entry.get() == expected
         assert model.get_input(path) == expected
@@ -146,7 +148,8 @@ def test_logs_number_arrow_stays_in_range(path, top, upper):
         spinner.entry._entry.delete(0, 'end')
         spinner.entry._entry.insert(0, str(top if upper else 1))
         root.update()
-        spinner._arrows.event_generate('<Button-1>', x=5, y=1 if upper else 30)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, 'up' if upper else 'down'))
         root.update()
         assert spinner.entry.get() == str(top if upper else 1)
         assert model.get(path) == (top if upper else 1)
@@ -155,8 +158,8 @@ def test_logs_number_arrow_stays_in_range(path, top, upper):
 
 
 @pytest.mark.parametrize('path', [('log', 'max_log_files'), ('log', 'retention_days')])
-@pytest.mark.parametrize('y', [1, 30])
-def test_logs_number_long_integer_arrow(path, y):
+@pytest.mark.parametrize('direction', ['up', 'down'])
+def test_logs_number_long_integer_arrow(path, direction):
     """过长整数在真实箭头操作下保留草稿并且不抛错。"""
     from modules.gui.pages.logs import Page
 
@@ -175,7 +178,8 @@ def test_logs_number_long_integer_arrow(path, y):
         spinner.entry._entry.insert(0, raw)
         root.update()
         before = model.get(path)
-        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, direction))
         root.update()
         assert not errors
         assert spinner.entry.get() == raw
@@ -220,12 +224,12 @@ def test_logs_number_save_preserves_draft(tmp_path, path, raw, saved):
         root.destroy()
 
 
-@pytest.mark.parametrize(('raw', 'y', 'expected'), [
-    ('007', 1, '8'), ('7', 30, '6'), ('99', 1, '99'),
-    ('1', 30, '1'), ('', 1, ''), ('-', 1, '-'), ('12x', 1, '12x'),
-    ('100', 1, '99'),
+@pytest.mark.parametrize(('raw', 'direction', 'expected'), [
+    ('007', 'up', '8'), ('7', 'down', '6'), ('99', 'up', '99'),
+    ('1', 'down', '1'), ('', 'up', ''), ('-', 'up', '-'), ('12x', 'up', '12x'),
+    ('100', 'up', '99'),
 ])
-def test_external_threshold_real_arrow(raw, y, expected):
+def test_external_threshold_real_arrow(raw, direction, expected):
     """真实箭头仅步进完整整数，且限制主动步进范围。"""
     from modules.gui.pages.external import Page, THRESHOLD
 
@@ -239,7 +243,8 @@ def test_external_threshold_real_arrow(raw, y, expected):
         entry.insert(0, raw)
         root.update()
         before = model.get(THRESHOLD)
-        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, direction))
         root.update()
         assert entry.get() == expected
         assert model.get_input(THRESHOLD) == expected
@@ -248,8 +253,8 @@ def test_external_threshold_real_arrow(raw, y, expected):
         root.destroy()
 
 
-@pytest.mark.parametrize('y', [1, 30])
-def test_external_threshold_long_integer_arrow(y):
+@pytest.mark.parametrize('direction', ['up', 'down'])
+def test_external_threshold_long_integer_arrow(direction):
     """超出 Python 转换位数的草稿点击箭头不丢失或抛错。"""
     from modules.gui.pages.external import Page, THRESHOLD
 
@@ -268,7 +273,8 @@ def test_external_threshold_long_integer_arrow(y):
         spinner.entry._entry.insert(0, raw)
         root.update()
         before = model.get(THRESHOLD)
-        spinner._arrows.event_generate('<Button-1>', x=5, y=y)
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, direction))
         root.update()
         assert not errors
         assert spinner.entry.get() == raw
