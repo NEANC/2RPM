@@ -591,6 +591,8 @@ class App:
             self._clear_test_results()
         elif result is SaveResult.FAILED:
             messagebox.showerror('打开配置', '无法打开配置', parent=self.root)
+        elif result is SaveResult.CANCELLED and self.controller.unsaved_input_blocked:
+            self._show_incomplete_input()
 
     def save(self):
         """只通过控制器保存编辑文档，未完成输入先提示并定位字段。"""

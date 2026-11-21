@@ -16,7 +16,7 @@ from modules.config_document import ConfigSaveError
 from modules.config_document import new_document
 from modules.config_document import read_document
 from modules.config_document import save_document
-from modules.gui.app import messagebox
+from modules.gui.app import INCOMPLETE_INPUT_MESSAGE, messagebox
 from modules.gui.protocol import TestResult as GuiResult
 from modules.gui.protocol import TestRequest as GuiRequest
 from tests.gui_support import make_app
@@ -168,6 +168,24 @@ def test_open_cancel_does_not_show_failure(window, monkeypatch, cancel_at):
         picker.assert_called_once()
     assert app.model.document_generation == generation
     assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.model.dirty
+
+
+def test_open_with_incomplete_input_after_save_choice_shows_field_hint(window, monkeypatch):
+    """打开时选择保存但输入未完成，提示并定位字段而不打开选择器。"""
+    app = window
+    path = ('monitor', 'common', 'timeout_threshold')
+    app.model.set_input(path, '-', kind='int')
+    app.controller.confirm = lambda kind, _: 'save' if kind == 'unsaved' else 'confirm'
+    picker = Mock(return_value='')
+    monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', picker)
+    error = messagebox.showerror
+
+    app.open()
+
+    error.assert_called_once_with('保存配置', INCOMPLETE_INPUT_MESSAGE, parent=app.root)
+    picker.assert_not_called()
+    assert app.model.get_input(path) == '-'
     assert app.model.dirty
 
 
