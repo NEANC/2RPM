@@ -22,6 +22,13 @@ def release(widget):
     widget.event_generate('<KeyRelease-s>', state=0x4)
 
 
+def release_on_root(root):
+    """正文控件会被保存后的页面重建销毁时，改由主窗接收释放事件。"""
+    root.focus_force()
+    root.update()
+    root.event_generate('<KeyRelease-s>', state=0x4)
+
+
 def _focused_input(root, app, case):
     """装配一种输入控件并返回承载焦点的内部控件。"""
     if case == 'entry':
@@ -50,19 +57,28 @@ def _focused_input(root, app, case):
         widget = page.lookback.entry._entry
         widget.focus_force()
         return widget
-    raise AssertionError(f'未知用例：{case}')
+    app.show_page('消息推送设置')
+    root.update()
+    page = app.visible_pages['消息推送设置']
+    page.expand_event('on_end')
+    root.update()
+    widget = page.fields[('push', 'templates', 'on_end', 'content')][1]._textbox
+    widget.focus_force()
+    widget.insert('1.0', '事件正文草稿')
+    return widget
 
 
 EXPECTED = {
     'entry': lambda tree: tree['monitor']['common']['max_wait'] == '30s',
     'search': lambda tree: tree['monitor']['target'] == 'C:/tools/target.exe',
     'number': lambda tree: tree['monitor']['watch']['lookback_minutes'] == 37,
+    'text': lambda tree: tree['push']['templates']['on_end']['content'] == '事件正文草稿',
 }
 
 
-@pytest.mark.parametrize('case', ['entry', 'search', 'number'])
+@pytest.mark.parametrize('case', ['entry', 'search', 'number', 'text'])
 def test_ctrl_s_saves_latest_focused_input(tmp_path, case):
-    """输入控件焦点下按下并释放 Ctrl+S，最新实际输入全部落盘。"""
+    """四类输入控件焦点下按下并释放 Ctrl+S，最新实际输入全部落盘。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path, blank=True)
@@ -70,9 +86,34 @@ def test_ctrl_s_saves_latest_focused_input(tmp_path, case):
         root.update()
         press(widget)
         root.update()
-        release(widget)
+        if case == 'text':
+            release_on_root(root)
+        else:
+            release(widget)
         root.update()
         assert EXPECTED[case](read_document(tmp_path / 'a.yaml').tree)
+    finally:
+        root.destroy()
+
+
+def test_ctrl_s_untouched_text_keeps_empty_mapping(tmp_path):
+    """未编辑的空正文经快捷键保存后仍不生成配置键。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        app.show_page('消息推送设置')
+        root.update()
+        page = app.visible_pages['消息推送设置']
+        page.expand_event('on_end')
+        root.update()
+        widget = page.fields[('push', 'templates', 'on_end', 'content')][1]._textbox
+        widget.focus_force()
+        root.update()
+        press(widget)
+        root.update()
+        release_on_root(root)
+        root.update()
+        assert read_document(tmp_path / 'a.yaml').tree == {}
     finally:
         root.destroy()
 

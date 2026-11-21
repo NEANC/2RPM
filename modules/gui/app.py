@@ -579,6 +579,9 @@ class App:
 
     def save(self):
         """只通过控制器保存编辑文档，未完成输入先提示并定位字段。"""
+        message_page = self.visible_pages.get('消息推送设置')
+        if message_page is not None:
+            message_page.sync_pending_edits()
         if self.model.input_errors:
             self._show_incomplete_input()
             return

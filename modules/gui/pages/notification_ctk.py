@@ -265,6 +265,12 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         self.model.set(path, text)
 
+    def sync_pending_edits(self):
+        """保存前同步已展开事件正文中尚未经释放或失焦写回的内容。"""
+        for path, (_variable, widget, kind) in tuple(self.fields.items()):
+            if kind == 'multiline':
+                self._text_changed(path, widget)
+
     # ---------------------------------------------------------------- 通道
     def _source_index(self, display_index):
         """把可见行号转换为原始列表索引，结构异常项保持原位置。"""
