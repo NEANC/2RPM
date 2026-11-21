@@ -123,6 +123,8 @@ class EditorModel:
             return
         if current in ('watch', 'launch'):
             self._targets[current] = monitor.get('target')
+        elif current is None and monitor.get('target') is not None:
+            self._targets[mode] = monitor.get('target')
         target = self._targets.get(mode, self._original_target)
         monitor['mode'] = mode
         if target is not None:

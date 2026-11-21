@@ -262,3 +262,33 @@ def test_blank_mode_targets_survive_save_not_reopen(tmp_path):
     model.set_input(number_path, '9', kind='int')
     model.set_input(number_path, '', kind='int')
     assert model.get_input(number_path) == ''
+
+
+@pytest.mark.parametrize('mode', ['watch', 'launch'])
+def test_blank_target_set_before_mode_survives_switch(mode):
+    """未选模式先填目标，切换模式时保留该目标到对应分支。"""
+    model = EditorModel(new_blank_document())
+    model.set(('monitor', 'target'), '填写的程序.exe')
+
+    model.switch_mode(mode)
+
+    assert model.get(('monitor', 'mode')) == mode
+    assert model.get(('monitor', 'target')) == '填写的程序.exe'
+
+
+def test_target_written_before_mode_selection_is_preserved():
+    """未选运行方式时填写的目标在切换后保留，且不复制到另一分支。"""
+    model = EditorModel(new_blank_document())
+    model.set(('monitor', 'target'), '预填程序.exe')
+    assert 'mode' not in model.snapshot()['monitor']
+
+    model.switch_mode('watch')
+
+    assert model.get(('monitor', 'mode')) == 'watch'
+    assert model.snapshot()['monitor'].get('target') == '预填程序.exe'
+
+    model.switch_mode('launch')
+    assert 'target' not in model.snapshot()['monitor']
+
+    model.switch_mode('watch')
+    assert model.snapshot()['monitor'].get('target') == '预填程序.exe'
