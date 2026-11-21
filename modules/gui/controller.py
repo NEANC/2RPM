@@ -58,6 +58,7 @@ class Controller:
         self.coordinator = None
         self.conflicted = False
         self.save_cancelled = False
+        self.unsaved_input_blocked = False
         self.cli_cancelled = False
         self._saved_identity = 0
         self._saved_document_identity = None
@@ -65,11 +66,14 @@ class Controller:
 
     def _resolve_unsaved(self) -> bool:
         """保存、放弃或取消旧草稿，取消时不改变原模型。"""
+        self.unsaved_input_blocked = False
         if not self.model.dirty and not self.model.input_errors:
             return True
         choice = self.confirm('unsaved', self.model.document.path)
         if choice == 'save':
-            return self.save()
+            saved = self.save()
+            self.unsaved_input_blocked = not saved and bool(self.model.input_errors)
+            return saved
         return choice == 'discard'
 
     def _transaction(self, operation):

@@ -248,6 +248,41 @@ def test_new_and_close_save_with_incomplete_input_shows_hint(tmp_path, monkeypat
         root.destroy()
 
 
+def test_cancel_unsaved_with_incomplete_input_shows_no_hint(tmp_path, monkeypatch):
+    """未保存确认中选择取消时不得把未完成输入当作保存失败提示。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = ('monitor', 'watch', 'lookback_minutes')
+        app.model.set_input(path, '-', kind='int')
+        app.controller.confirm = lambda kind, _detail: (
+            'cancel' if kind == 'unsaved' else 'confirm')
+        original_path = app.model.document.path
+        original_tree = app.model.snapshot()
+        generation = app.model.document_generation
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        app.new()
+
+        assert app.model.document.path == original_path
+        assert app.model.document_generation == generation
+        assert app.model.snapshot() == original_tree
+        assert app.model.get_input(path) == '-'
+        popup.assert_not_called()
+
+        app.close()
+
+        assert root.winfo_exists()
+        assert app.model.document.path == original_path
+        assert app.model.document_generation == generation
+        assert app.model.snapshot() == original_tree
+        assert app.model.get_input(path) == '-'
+        popup.assert_not_called()
+    finally:
+        root.destroy()
+
+
 def test_saved_blank_reopens_pages_and_save_as_again(tmp_path, monkeypatch):
     """保存的空映射重开后控件仍为空，再次另存只写入实际编辑。"""
     monkeypatch.setattr('modules.gui.app.preferences_path',

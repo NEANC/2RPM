@@ -552,7 +552,7 @@ class App:
             return
         if self.controller.new():
             self._clear_test_results()
-        elif self.model.input_errors:
+        elif self.controller.unsaved_input_blocked:
             self._show_incomplete_input()
 
     def open(self):
@@ -932,7 +932,7 @@ class App:
                 threading.Thread(target=shutil.rmtree, args=(self.session_dir,),
                                  kwargs={'ignore_errors': True}, name='gui-preview-cleanup').start()
                 self.root.destroy()
-            elif self.model.input_errors:
+            elif self.controller.unsaved_input_blocked:
                 self._show_incomplete_input()
         finally:
             self._closing = False
