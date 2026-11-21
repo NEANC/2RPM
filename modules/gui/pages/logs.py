@@ -13,7 +13,8 @@ import ctk_kit
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import (COLORS, FONT_BODY, FONT_CARD_TITLE,
                                     FONT_SMALL, FONT_TITLE)
-from modules.gui.widgets import STRUCTURE_HINT, path_writable, scroll_to_widget
+from modules.gui.widgets import (NUMBER_HINT, STRUCTURE_HINT,
+                                 path_writable, scroll_to_widget)
 
 
 DIRECTORY = ('log', 'log_directory')
@@ -53,6 +54,8 @@ class Page(ctk_kit.CTkScrollableFrame):
                           command=app.open_logs).pack(side='right')
         self.structure_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', padx=PAGE_PAD)
+        self.number_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.number_hint.pack(fill='x', padx=PAGE_PAD)
         card = self._card()
         ctk_kit.CTkLabel(card, text='保存位置', font=FONT_CARD_TITLE).pack(
             anchor='w', padx=CARD_PAD, pady=(CARD_PAD, 4))
@@ -129,19 +132,19 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not path_writable(self.model, path):
             return
         spinner = self.spinners[path]
-        try:
-            raw = self.model.get_input(path)
-        except KeyError:
-            raw = str(DEFAULT_VALUES['log'][path[1]])
+        raw = spinner.entry.get()
         if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         try:
             current = int(raw)
         except ValueError:
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         limits = NUMBER_RANGES[path]
         value = max(limits[0], min(limits[1], current + delta))
         spinner.set(value)
+        self.number_hint.configure(text='')
 
     def choose_directory(self):
         """选择目录只更新草稿，结构异常时不修改显示。"""

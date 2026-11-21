@@ -12,7 +12,7 @@ import ctk_kit
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import (COLORS, FONT_BODY, FONT_CARD_TITLE,
                                     FONT_SMALL, FONT_TITLE)
-from modules.gui.widgets import (STRUCTURE_HINT, activate_and_focus,
+from modules.gui.widgets import (NUMBER_HINT, STRUCTURE_HINT, activate_and_focus,
                                  path_writable, scroll_to_widget)
 
 
@@ -58,6 +58,9 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.structure_hint = ctk_kit.CTkLabel(
             self, text='', font=FONT_BODY, anchor='w')
         self.structure_hint.pack(fill='x', padx=PAGE_PAD)
+        self.number_hint = ctk_kit.CTkLabel(
+            self, text='', font=FONT_BODY, anchor='w')
+        self.number_hint.pack(fill='x', padx=PAGE_PAD)
         for event, title, hint in EVENTS:
             card = self._card()
             ctk_kit.CTkLabel(card, text=title, font=FONT_CARD_TITLE).pack(
@@ -145,18 +148,18 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not path_writable(self.model, path):
             return
         spinner = self.spinners[path]
-        try:
-            raw = self.model.get_input(path)
-        except KeyError:
-            raw = str(DEFAULT_VALUES['monitor']['common']['timeout_threshold'])
+        raw = spinner.entry.get()
         if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         try:
             current = int(raw)
         except ValueError:
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         value = max(THRESHOLD_RANGE[0], min(THRESHOLD_RANGE[1], current + delta))
         spinner.set(value)
+        self.number_hint.configure(text='')
 
     def choose_file(self, event):
         """系统选择器取消时保持原输入，结构异常时不修改显示。"""

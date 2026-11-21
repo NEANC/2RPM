@@ -6,15 +6,84 @@
 import shutil
 import sys
 import tkinter as tk
+from pathlib import Path
 from unittest.mock import Mock
 
 import ctk_kit
 import pytest
 
-from modules.config_document import new_document
+from modules.config_document import new_blank_document, new_document
 from modules.gui.model import EditorModel
 from tests.gui_support import make_app
 from tests.gui_support import arrow_y
+
+
+def _blank_page(name, root, model):
+    """按页面名装配空白草稿下的外部程序或日志页面。"""
+    if name == 'external':
+        from modules.gui.pages.external import Page
+        return Page(root, Mock(model=model))
+    from modules.gui.pages.logs import Page
+    return Page(root, Mock(model=model, open_logs=Mock()))
+
+
+@pytest.mark.parametrize(('page_name', 'path'), [
+    ('external', ('monitor', 'common', 'timeout_threshold')),
+    ('logs', ('log', 'max_log_files')),
+    ('logs', ('log', 'retention_days')),
+])
+def test_blank_spinner_does_not_seed_default(page_name, path):
+    """缺失数字的箭头只显示提示，不创建键、不写默认值或零。"""
+    root = tk.Tk()
+    root.withdraw()
+    root.geometry('900x700')
+    try:
+        model = EditorModel(new_blank_document())
+        page = _blank_page(page_name, root, model)
+        page.pack(fill='both', expand=True)
+        root.update()
+        spinner = page.spinners[path]
+        assert spinner.entry.get() == ''
+        before = model.revision
+        for direction in ('up', 'down'):
+            spinner._arrows.event_generate(
+                '<Button-1>', x=5, y=arrow_y(spinner, direction))
+        root.update()
+        assert spinner.entry.get() == ''
+        assert model.snapshot() == {}
+        assert model.revision == before
+        assert page.number_hint.cget('text') == '请先输入数字'
+    finally:
+        root.destroy()
+
+
+def test_incomplete_hidden_number_is_preserved():
+    """隐藏后刷新仍保留未完成数字原文，不填空也不创建配置键。"""
+    from modules.gui.pages.logs import Page
+
+    root = tk.Tk()
+    root.withdraw()
+    model = EditorModel(new_blank_document())
+    page = Page(root, Mock(model=model, open_logs=Mock()))
+    path = ('log', 'max_log_files')
+    try:
+        page.pack(fill='both', expand=True)
+        root.update()
+        entry = page.spinners[path].entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, '-')
+        root.update()
+        assert model.get_input(path) == '-'
+        page.pack_forget()
+        page.refresh()
+        assert entry.get() == '-'
+        assert model.get_input(path) == '-'
+        assert path in model.input_errors
+        assert model.snapshot() == {}
+        assert any(issue.code == 'incomplete_input'
+                   for issue in model.validate(Path('C:/config')).issues)
+    finally:
+        root.destroy()
 
 
 def test_external_page_edits_paths_and_threshold_without_running(monkeypatch):

@@ -10,13 +10,62 @@ from pathlib import Path
 import pytest
 import ctk_kit
 
-from modules.config_document import new_document
+from modules.config_document import new_blank_document, new_document
 from modules.gui.model import EditorModel
 from modules.gui.pages.monitor import Page
 from tests.gui_support import make_app
 from tests.gui_support import arrow_y
 from tests.gui_support import monitor_page as _page
 from tests.gui_support import descendants as _descendants
+
+
+def _blank_page():
+    """创建空白草稿下的真实监视表单。"""
+    root = tk.Tk()
+    root.withdraw()
+    model = EditorModel(new_blank_document())
+    page = Page(root, model)
+    page.pack(fill='both', expand=True)
+    return root, model, page
+
+
+def test_target_disabled_until_mode_selected():
+    """未选运行方式时目标与类型禁用并提示，选择后才可编辑。"""
+    root, model, page = _blank_page()
+    try:
+        assert page.mode.get() == '未选择'
+        assert page.mode_hint.cget('text') == '请先选择运行方式'
+        assert not page.file_entry.is_enabled()
+        assert page.task_entry.cget('state') == 'disabled'
+        assert page.target_type.cget('state') == 'disabled'
+        assert page.browse_button.cget('state') == 'disabled'
+        page.set_field(('monitor', 'target'), r'C:\Apps\demo.exe')
+        assert model.snapshot() == {}
+        page._switch('等待目标运行')
+        assert model.snapshot() == {'monitor': {'mode': 'watch'}}
+        assert page.mode_hint.cget('text') == ''
+        assert page.file_entry.is_enabled()
+        assert page.task_entry.cget('state') == 'normal'
+        assert page.target_type.cget('state') == 'normal'
+    finally:
+        root.destroy()
+
+
+def test_blank_monitor_spinner_does_not_seed_default():
+    """空白任务回溯的箭头只提示输入数字，不写入零或默认值。"""
+    root, model, page = _blank_page()
+    try:
+        page._switch('等待目标运行')
+        before = model.revision
+        page.lookback._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.lookback, 'up'))
+        root.update()
+        assert page.lookback.entry.get() == ''
+        assert 'watch' not in model.snapshot()['monitor']
+        assert model.revision == before
+        assert page.number_hint.cget('text') == '请先输入数字'
+    finally:
+        root.destroy()
 
 
 def test_monitor_uses_ctk_business_controls():

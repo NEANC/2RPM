@@ -13,7 +13,8 @@ import ctk_kit
 
 from modules.config import DEFAULT_VALUES
 from modules.gui.appearance import COLORS, FONT_BODY, FONT_CARD_TITLE, FONT_TITLE
-from modules.gui.widgets import (STRUCTURE_HINT, activate_and_focus,
+from modules.gui.widgets import (MODE_HINT, MODE_PLACEHOLDER, NUMBER_HINT,
+                                 STRUCTURE_HINT, activate_and_focus,
                                  path_writable, scroll_to_widget)
 from modules.monitor_target import resolve_monitor_target
 
@@ -77,13 +78,15 @@ class Page(ctk_kit.CTkScrollableFrame):
             **kwargs)
 
     def _build_mode_card(self):
-        """运行方式：两个互斥选项的分段控件。"""
+        """运行方式：含未选占位的互斥分段控件与提示。"""
         card = self._card('运行方式')
         self._mode_card = card
         self.mode = ctk_kit.CTkSegmentedButton(
-            card, values=['等待目标运行', '主动启动并监视'],
+            card, values=[MODE_PLACEHOLDER, '等待目标运行', '主动启动并监视'],
             command=self._switch, font=FONT_BODY)
-        self.mode.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
+        self.mode.pack(fill='x', padx=CARD_PAD, pady=(0, 8))
+        self.mode_hint = self._text(card, '', muted=True, anchor='w')
+        self.mode_hint.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
 
     def _build_target_card(self):
         """监视目标：类型下拉、按类型切换的输入与主动启动参数。"""
@@ -176,6 +179,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.lookback._arrows.bind('<Button-1>', self._step_lookback)
         self.lookback.pack(side='left')
         self.fields[path] = (self.lookback_variable, self.lookback, 'int')
+        self.number_hint = self._text(card, '', muted=True, anchor='w')
+        self.number_hint.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
 
     def _build_advanced(self):
         """不能定位到可见字段的问题统一落到 YAML 提示。"""
@@ -241,6 +246,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         """对启动文件目标的主动编辑同步工作目录。"""
         if self._refreshing or not path_writable(self.model, ('monitor', 'target')):
             return
+        if self._monitor().get('mode') not in ('watch', 'launch'):
+            return
         self.model.set(('monitor', 'target'), value)
         self.model._gui_target_types[self._monitor().get('mode')] = self._target_type
         if self._monitor().get('mode') == 'launch' and self._target_type == 'file':
@@ -278,12 +285,17 @@ class Page(ctk_kit.CTkScrollableFrame):
         if not path_writable(self.model, ('monitor', 'mode')):
             return
         mode = {'等待目标运行': 'watch', '主动启动并监视': 'launch'}.get(value, value)
+        if mode not in ('watch', 'launch'):
+            self.refresh()
+            return
         self.model.switch_mode(mode)
         self.refresh()
 
     def _select_type(self, value):
         """用户选择任务目标时清空启动参数，不碰工作目录。"""
         if not path_writable(self.model, ('monitor', 'target')):
+            return
+        if self._monitor().get('mode') not in ('watch', 'launch'):
             return
         self._target_type = 'task' if value in ('task', '计划任务') else 'file'
         self.model._gui_target_types[self._monitor().get('mode')] = self._target_type
@@ -343,6 +355,9 @@ class Page(ctk_kit.CTkScrollableFrame):
     def _update_preview(self):
         """只显示安全的目标类型提示，不执行目标。"""
         monitor = self._monitor()
+        if monitor.get('mode') not in ('watch', 'launch'):
+            self.preview.configure(text='')
+            return
         launch = monitor.get('launch')
         cwd = launch.get('cwd') if isinstance(launch, Mapping) else None
         try:
@@ -372,15 +387,18 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         raw = self.lookback.entry.get()
         if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         middle = max(1, self.lookback._arrows.winfo_height()) / 2
         delta = 1 if event.y < middle else -1
         try:
             value = int(raw)
         except ValueError:
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         value = max(0, min(999, value + delta))
         self.lookback.set(value)
+        self.number_hint.configure(text='')
 
     def _set_advanced(self, expanded):
         """保持旧页面问题定位接口且不显示 ttk 控件。"""
@@ -395,15 +413,21 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.lookback.set_readonly(False)
             monitor = self._monitor()
             mode = monitor.get('mode')
-            self.mode.set('主动启动并监视' if mode == 'launch' else '等待目标运行')
+            mode_ready = mode in ('watch', 'launch')
+            self.mode.set({'watch': '等待目标运行',
+                           'launch': '主动启动并监视'}.get(mode, MODE_PLACEHOLDER))
+            self.mode_hint.configure(text='' if mode_ready else MODE_HINT)
             target = monitor.get('target')
             text = '' if target is None else str(target)
-            try:
-                kind = resolve_monitor_target(mode, target, self._config_dir()).kind
-            except (ValueError, TypeError):
-                kind = self._target_type
-            self._target_type = 'task' if kind == 'task' else 'file'
-            self.target_type.set('计划任务' if self._target_type == 'task' else '程序文件')
+            if mode_ready:
+                try:
+                    kind = resolve_monitor_target(mode, target, self._config_dir()).kind
+                except (ValueError, TypeError):
+                    kind = self._target_type
+                self._target_type = 'task' if kind == 'task' else 'file'
+                self.target_type.set('计划任务' if self._target_type == 'task' else '程序文件')
+            else:
+                self.target_type.set(MODE_PLACEHOLDER)
             self.file_variable.set(text)
             self.file_entry.set(text)
             self.task_variable.set(text)
@@ -427,6 +451,10 @@ class Page(ctk_kit.CTkScrollableFrame):
                 text='高级字段请在 YAML 中编辑' +
                      ('（已配置）' if self._configured_advanced() else ''))
             writable = {path: path_writable(self.model, path) for path in self.fields}
+            hint = '' if all(writable.values()) else STRUCTURE_HINT
+            if not mode_ready:
+                writable[('monitor', 'watch', 'lookback_minutes')] = False
+                writable[('monitor', 'launch', 'args')] = False
             for path, (_variable, widget, _kind) in self.fields.items():
                 if path == ('monitor', 'target'):
                     continue
@@ -434,14 +462,13 @@ class Page(ctk_kit.CTkScrollableFrame):
                     widget.set_readonly(not writable[path])
                 else:
                     widget.configure(state='normal' if writable[path] else 'disabled')
-            target_state = writable.get(('monitor', 'target'), False)
+            target_state = writable.get(('monitor', 'target'), False) and mode_ready
             self.file_entry.set_enabled(target_state)
             self.task_entry.configure(state='normal' if target_state else 'disabled')
             self.browse_button.configure(state='normal' if target_state else 'disabled')
             self.mode.configure(
                 state='normal' if path_writable(self.model, ('monitor', 'mode')) else 'disabled')
             self.target_type.configure(state='normal' if target_state else 'disabled')
-            hint = '' if all(writable.values()) else STRUCTURE_HINT
             self.structure_hint.configure(text=hint)
             if hint:
                 self.structure_hint.pack(fill='x', padx=PAGE_PAD, pady=(6, 0),

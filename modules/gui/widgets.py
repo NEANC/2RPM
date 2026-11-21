@@ -12,6 +12,10 @@ import ctk_kit
 
 STRUCTURE_HINT = '配置结构异常，请在 YAML 中修复'
 PRESAVE_HINT = '配置未保存，请先保存或处理冲突后再修改列表'
+NUMBER_HINT = '请先输入数字'
+MODE_HINT = '请先选择运行方式'
+MODE_PLACEHOLDER = '未选择'
+OPTIONAL_BOOL_CHOICES = ('未设置', '开启', '关闭')
 
 
 def path_writable(model, path) -> bool:
@@ -35,6 +39,27 @@ def path_writable(model, path) -> bool:
         if not isinstance(node, Mapping):
             return False
     return isinstance(node, Mapping)
+
+
+def set_optional_bool(model, path, selection: str) -> None:
+    """按“未设置／开启／关闭”三态写入业务布尔字段。
+
+    Args:
+        model: `EditorModel` 实例。
+        path: 布尔字段路径元组。
+        selection: 三态选择文字，必须是 `OPTIONAL_BOOL_CHOICES` 之一。
+
+    Raises:
+        ValueError: 选择文字不属于三态选项。
+    """
+    if selection == OPTIONAL_BOOL_CHOICES[0]:
+        model.unset(path)
+    elif selection == OPTIONAL_BOOL_CHOICES[1]:
+        model.set(path, True)
+    elif selection == OPTIONAL_BOOL_CHOICES[2]:
+        model.set(path, False)
+    else:
+        raise ValueError(f'无效的布尔三态选择: {selection!r}')
 
 
 def activate_and_focus(widget) -> None:
