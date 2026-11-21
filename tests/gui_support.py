@@ -7,19 +7,28 @@ import queue
 from unittest.mock import Mock
 
 
-def make_app(root, tmp_path):
-    """使用真实 Tk 与无进程运行器搭建界面。"""
+def make_app(root, tmp_path, *, blank=False):
+    """使用真实 Tk 与无进程运行器搭建界面。
+
+    Args:
+        root: 真实 Tk 根窗口。
+        tmp_path: 测试临时目录。
+        blank: 为 True 时装配无路径的空白草稿，否则使用默认模板文档。
+    """
     from modules.gui.app import App
     from modules.gui.controller import Controller
-    from modules.config_document import new_document, save_document
+    from modules.config_document import (new_blank_document, new_document,
+                                         save_document)
     from modules.gui.model import EditorModel
 
     runner = Mock()
     runner.results = queue.Queue()
     runner.active = False
     tmp_path.mkdir(parents=True, exist_ok=True)
-    model = EditorModel(save_document(new_document(), tmp_path / 'a.yaml',
-                                      expected_fingerprint=None))
+    document = (new_blank_document() if blank else
+                save_document(new_document(), tmp_path / 'a.yaml',
+                              expected_fingerprint=None))
+    model = EditorModel(document)
     controller = Controller(model, confirm=lambda kind, _: 'confirm' if kind == 'exit' else 'cancel',
                             choose_path=lambda: tmp_path / 'a.yaml', cli_command=('python.exe',),
                             runner=runner, program_dir=tmp_path)

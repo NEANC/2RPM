@@ -453,6 +453,77 @@ def test_retry_max_count_oversized_draft_survives_arrow_and_blocks_save(tmp_path
         root.destroy()
 
 
+def test_text_focus_without_edit_keeps_missing_key(tmp_path):
+    """未编辑正文只聚焦或离焦不创建 content，真正编辑后才写回。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        root.deiconify()
+        assert app.show_page('消息推送设置')
+        root.update()
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'templates', 'on_end', 'content')
+        page.focus_issue(path)
+        root.update()
+        widget = page.fields[path][1]
+        revision = app.model.revision
+
+        widget._textbox.event_generate('<KeyRelease>')
+        widget._textbox.event_generate('<FocusOut>')
+        root.update()
+
+        assert app.model.snapshot() == {}
+        assert app.model.revision == revision
+
+        widget.insert('1.0', '正文内容')
+        widget._textbox.event_generate('<KeyRelease>')
+        root.update()
+        assert app.model.get(path) == '正文内容'
+
+        widget.delete('1.0', 'end')
+        widget._textbox.event_generate('<KeyRelease>')
+        root.update()
+        assert app.model.get(path) == ''
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('event', ['on_end', 'on_timeout', 'on_wait_timeout',
+                                   'on_external'])
+def test_event_enable_uses_tri_state(tmp_path, event):
+    """事件启用布尔以未设置/开启/关闭三态表达缺失与真假。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'templates', event, 'enable')
+        page.expand_event(event)
+        root.update()
+        choice = page.event_choices[event]
+
+        assert choice.get() == '未设置'
+        assert app.model.snapshot() == {}
+
+        choice.set('开启')
+        page._change_event_enable(event)
+        assert app.model.get(path) is True
+        page.refresh()
+        assert page.event_choices[event].get() == '开启'
+
+        page.event_choices[event].set('关闭')
+        page._change_event_enable(event)
+        assert app.model.get(path) is False
+        page.refresh()
+        assert page.event_choices[event].get() == '关闭'
+
+        page.event_choices[event].set('未设置')
+        page._change_event_enable(event)
+        with pytest.raises(KeyError):
+            app.model.get(path)
+    finally:
+        root.destroy()
+
+
 def test_retry_max_count_refresh_keeps_entry_and_cursor(tmp_path):
     """切页刷新保持未完成原文与活动输入框的光标。"""
     root = tk.Tk()

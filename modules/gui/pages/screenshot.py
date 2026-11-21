@@ -17,16 +17,17 @@ from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
-from modules.gui.widgets import (PRESAVE_HINT, activate_and_focus,
-                                 scroll_to_widget)
+from modules.gui.widgets import (OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
+                                 activate_and_focus, optional_bool_choice,
+                                 scroll_to_widget, set_optional_bool)
 
 
 TARGETS = ('push', 'screenshot', 'targets')
 HOSTS = ('push', 'screenshot', 'image_host')
 RETENTION = ('push', 'screenshot', 'retention')
 PROVIDERS = ('wmimg', 'beeimg', 'beeimg_cn', 'superbed', 'boltp')
-DEFAULT_RETENTION_DAYS = 14
 MAX_RETENTION_DAYS = 10 ** 9
+UNSELECTED = '未选择'
 # 与主页一致的页面、卡片比例；截图页三张卡片间距取 20，内容更紧凑。
 PAGE_PAD = 28
 CARD_GAP = 20
@@ -147,13 +148,15 @@ class Page(ctk_kit.CTkScrollableFrame):
         row = ctk_kit.CTkFrame(card, fg_color='transparent')
         row.pack(fill='x', padx=CARD_PAD, pady=(0, 14))
         self._text(row, '清理过期自动截图').pack(side='left')
-        self.cleanup = ctk_kit.Switch(row, command=self._change_cleanup)
+        self.cleanup = ctk_kit.CTkOptionMenu(
+            row, values=list(OPTIONAL_BOOL_CHOICES), width=110,
+            height=CONTROL_HEIGHT, font=FONT_BODY,
+            command=self._change_cleanup)
         self.cleanup.pack(side='right')
         row = ctk_kit.CTkFrame(card, fg_color='transparent')
         row.pack(fill='x', padx=CARD_PAD, pady=(0, CARD_PAD))
         self._text(row, '保留天数').pack(side='left')
-        self.days_value = tk.StringVar(master=self,
-                                       value=str(DEFAULT_RETENTION_DAYS))
+        self.days_value = tk.StringVar(master=self, value='')
         self._refreshing_days = False
         self.days = ctk_kit.Spinner(
             row, from_=1, to=MAX_RETENTION_DAYS, as_int=True, width=PORT_WIDTH,
@@ -162,7 +165,6 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._keep_spinner_text(self.days)
         self.days.entry.configure(font=FONT_BODY,
                                   textvariable=self.days_value)
-        self.days_value.set(str(DEFAULT_RETENTION_DAYS))
         self.days_value.trace_add(
             'write', lambda *_: self._edit_days(self.days_value.get()))
         self.days._arrows.bind(
@@ -242,14 +244,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         return items if isinstance(items, list) else None
 
     def add_target(self):
-        """新增空窗口目标，留给用户填写完整标题。"""
+        """新增空目标项，不预填来源类型或目标标题。"""
         if not self._before():
             return
         targets = self._items(TARGETS)
         if targets is None:
             self.targets_hint.configure(text='截图目标配置结构无效，请在 YAML 中修复')
             return
-        targets.append({'provider': 'window', 'target': ''})
+        targets.append({})
         self.model.set(TARGETS, targets)
         self._commit_list()
 
@@ -289,14 +291,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         self._commit_list()
 
     def add_host(self):
-        """新增默认 beeimg 图床，不改动旧 catbox。"""
+        """新增空图床项，不预填服务商或凭证。"""
         if not self._before():
             return
         hosts = self._items(HOSTS)
         if hosts is None:
             self.hosts_hint.configure(text='图床配置结构无效，请在 YAML 中修复')
             return
-        hosts.append({'provider': 'beeimg', 'token': ''})
+        hosts.append({})
         self.model.set(HOSTS, hosts)
         self._commit_list()
 
@@ -445,9 +447,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper = self._stepper(row, lambda delta: self.move_target(index, delta),
                                 index + 1, total)
         stepper.pack(side='left')
-        provider = item.get('provider', 'window')
-        provider = provider if isinstance(provider, str) else '未知'
-        current = PROVIDER_LABELS.get(provider, provider)
+        raw_provider = item.get('provider')
+        if raw_provider is None:
+            provider = 'window'
+            current = UNSELECTED
+        elif isinstance(raw_provider, str):
+            provider = raw_provider
+            current = PROVIDER_LABELS.get(provider, provider)
+        else:
+            provider = '未知'
+            current = '未知'
         chooser = self._provider_field(
             row, [label for _value, label in TARGET_PROVIDERS], current,
             lambda value: self._change_provider(index, value))
@@ -503,8 +512,13 @@ class Page(ctk_kit.CTkScrollableFrame):
                                  'source_index': index if source_index is None else source_index})
 
     def _change_provider(self, index, value):
-        """主动修改来源时保留可编辑的原始目标。"""
+        """主动修改来源时保留可编辑的原始目标；未选择不写入来源键。"""
         value = {'窗口': 'window', 'ADB': 'adb'}.get(value, value)
+        source_index = self._source_index(TARGETS, index)
+        if value == UNSELECTED:
+            self.model.unset((*TARGETS, source_index, 'provider'))
+            self.refresh()
+            return
         if self._item_at(TARGETS, index).get('provider') == 'adb' and value != 'adb':
             path = (*TARGETS, self._source_index(TARGETS, index), 'target')
             self.model.raw_inputs.pop(path, None)
@@ -581,11 +595,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         stepper = self._stepper(row, lambda delta: self.move_host(index, delta),
                                 index + 1, total)
         stepper.pack(side='left')
-        current = item.get('provider', 'beeimg')
-        current = current if isinstance(current, str) else '未知'
+        raw_provider = item.get('provider')
+        if raw_provider is None:
+            current = UNSELECTED
+        elif isinstance(raw_provider, str):
+            current = raw_provider
+        else:
+            current = '未知'
         provider = self._provider_field(
             row, list(PROVIDERS), current,
-            lambda value: self._set_item(HOSTS, index, 'provider', value))
+            lambda value: self._change_host_provider(index, value))
         provider.pack(side='left', padx=(8, 10))
         self._text(row, 'API Key' if current == 'beeimg' else '凭证').pack(
             side='left')
@@ -595,6 +614,14 @@ class Page(ctk_kit.CTkScrollableFrame):
                                'token': token, 'source_index': source_index})
         ctk_kit.DangerButton(row, '删除', lambda: self.remove_host(index)).pack(
             side='right')
+
+    def _change_host_provider(self, index, value):
+        """修改图床服务商；未选择不写入服务商键。"""
+        if value == UNSELECTED:
+            self.model.unset((*HOSTS, self._source_index(HOSTS, index), 'provider'))
+            self.refresh()
+            return
+        self._set_item(HOSTS, index, 'provider', value)
 
     def _retention(self):
         """返回保留节及是否可编辑；节缺失允许创建，结构异常禁用。"""
@@ -608,15 +635,16 @@ class Page(ctk_kit.CTkScrollableFrame):
             return retention, True
         return None, False
 
-    def _change_cleanup(self):
-        """将本地清理开关写入既有保留字段。"""
+    def _change_cleanup(self, selection=None):
+        """按三态选择写入本地清理布尔，未设置时删除该键。"""
         _retention, editable = self._retention()
         if not editable:
             return
-        self.model.set((*RETENTION, 'enabled'), bool(self.cleanup.get()))
+        set_optional_bool(self.model, (*RETENTION, 'enabled'),
+                          self.cleanup.get() if selection is None else selection)
 
     def _change_days(self, delta):
-        """以相同窄步进控件更改保留天数，缺失时从默认值开始。"""
+        """仅对已显示的完整天数步进，缺失时保持空白。"""
         retention, editable = self._retention()
         if not editable:
             return
@@ -703,21 +731,16 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.add_target_button.configure(state=buttons)
         self.add_host_button.configure(state=buttons)
         retention, editable = self._retention()
-        if editable and retention.get('enabled'):
-            self.cleanup.select()
-        else:
-            self.cleanup.deselect()
-        if editable:
-            self.cleanup.enable()
-        else:
-            self.cleanup.disable()
+        self.cleanup.set(optional_bool_choice(retention.get('enabled'))
+                         if editable else OPTIONAL_BOOL_CHOICES[0])
+        self.cleanup.configure(state='normal' if editable else 'disabled')
         self.days.set_readonly(not editable)
         days = retention.get('max_days') if editable else None
         self._refreshing_days = True
         try:
             self.days_value.set(self.model.raw_inputs.get(
-                (*RETENTION, 'max_days'), str(days) if isinstance(days, int) else
-                str(DEFAULT_RETENTION_DAYS)) if editable else '--')
+                (*RETENTION, 'max_days'),
+                str(days) if isinstance(days, int) else '') if editable else '--')
         finally:
             self._refreshing_days = False
 

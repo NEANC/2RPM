@@ -41,6 +41,22 @@ def path_writable(model, path) -> bool:
     return isinstance(node, Mapping)
 
 
+def optional_bool_choice(value) -> str:
+    """把模型里的布尔值映射为三态显示文字。
+
+    Args:
+        value: 草稿中的布尔值或缺失标记。
+
+    Returns:
+        ``True`` 为“开启”，``False`` 为“关闭”，其余为“未设置”。
+    """
+    if value is True:
+        return OPTIONAL_BOOL_CHOICES[1]
+    if value is False:
+        return OPTIONAL_BOOL_CHOICES[2]
+    return OPTIONAL_BOOL_CHOICES[0]
+
+
 def set_optional_bool(model, path, selection: str) -> None:
     """按“未设置／开启／关闭”三态写入业务布尔字段。
 

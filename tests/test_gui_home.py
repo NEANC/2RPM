@@ -385,8 +385,7 @@ def test_list_edit_flush_failure_marks_visible_path(tmp_path, monkeypatch):
         app.visible_pages['截图设置'].add_target_button.invoke()
 
         write.assert_called_once()
-        assert app.model.get(('push', 'screenshot', 'targets'))[-1] == {
-            'provider': 'window', 'target': ''}
+        assert app.model.get(('push', 'screenshot', 'targets'))[-1] == {}
         assert app.model.dirty
         assert path.read_bytes() == original
         assert '（未保存）' in app.visible_pages['主页'].path_value.cget('text')
@@ -496,6 +495,41 @@ def test_all_unmet_conditions_are_shown():
     assert end[1] == '条件未满足'
     assert '事件或事件截图未启用' in end[2]
     assert len(end[2]) >= 2
+
+
+def test_sparse_summary_distinguishes_missing_and_invalid():
+    """空白缺失显示未选择/未配置与 0，损坏结构仍显示待校验。"""
+    text, details = summary({})
+    assert '运行方式：未选择' in text
+    assert '目标位置：未配置' in text
+    assert '最长等待：未配置' in text
+    assert '通知通道：0 个' in text
+    assert '截图目标：0 个' in text
+    assert all('未配置' in line for line in text.splitlines()[5:9])
+    assert all('未配置' in line for line in text.splitlines()[9:12])
+    assert all(state == '未配置' for _name, state, _reasons in details)
+
+    invalid = {
+        'monitor': {'mode': ['watch'], 'target': []},
+        'push': 'broken',
+        'external': 'broken',
+    }
+    text, details = summary(invalid)
+    assert '运行方式：待校验' in text
+    assert '目标位置：待校验' in text
+    assert '通知通道：待校验' in text
+    assert '截图目标：待校验' in text
+    assert all('待校验' in line for line in text.splitlines()[5:9])
+    assert all('待校验' in line for line in text.splitlines()[9:12])
+    assert all(state == '待校验' for _name, state, _reasons in details)
+
+    broken_lists = {
+        'push': {'push_channel_settings': {'channels': 'broken'},
+                 'screenshot': {'targets': 'broken'}},
+    }
+    text, _details = summary(broken_lists)
+    assert '通知通道：待校验' in text
+    assert '截图目标：待校验' in text
 
 
 def test_summary_tolerates_non_mapping_push():

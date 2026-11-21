@@ -14,8 +14,10 @@ from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.forms import (event_variables, preview_template,
                                provider_fields, screenshot_conditions)
-from modules.gui.widgets import (PRESAVE_HINT, STRUCTURE_HINT, activate_and_focus,
-                                 path_writable, scroll_to_widget)
+from modules.gui.widgets import (OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
+                                 STRUCTURE_HINT, activate_and_focus,
+                                 optional_bool_choice, path_writable,
+                                 scroll_to_widget, set_optional_bool)
 from modules.notification import _configured_screenshot_names
 
 
@@ -46,12 +48,7 @@ CARD_BORDER_COLOR = ('#E1E1E1', '#3A3A3A')
 ROW_SURFACE = ('#F1F1F1', '#2C2C2C')
 LABEL_WIDTH = 110
 ROW_PAD_Y = 4
-SWITCH_STYLE = {
-    'fg_color': ('#A0A0A0', '#5F5F5F'),
-    'progress_color': COLORS['accent'],
-    'button_color': ('#FFFFFF', '#000000'),
-    'button_hover_color': ('#FFFFFF', '#333333'),
-}
+BOOL_WIDTH = 96
 
 
 class Page(ctk_kit.CTkScrollableFrame):
@@ -72,7 +69,7 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.preview_warning_labels = {}
         self.preview_buttons = {}
         self.variables = {}
-        self._event_switches = {}
+        self.event_choices = {}
         self._refreshing = False
         self._expanded_channel = None
         self._expanded_events = set()
@@ -245,10 +242,28 @@ class Page(ctk_kit.CTkScrollableFrame):
             else:
                 self.model.set(path, variable.get())
 
+    def _change_event_enable(self, event, selection=None):
+        """按三态选择写入事件启用布尔，未设置时删除该键。"""
+        if self._refreshing:
+            return
+        path = ('push', 'templates', event, 'enable')
+        if not path_writable(self.model, path):
+            return
+        if selection is None:
+            selection = self.event_choices[event].get()
+        set_optional_bool(self.model, path, selection)
+
     def _text_changed(self, path, widget):
-        """同步正文编辑器的当前文本。"""
-        if not self._refreshing and path_writable(self.model, path):
-            self.model.set(path, widget.get('1.0', 'end-1c'))
+        """仅在正文实际变化时写回，未编辑的空控件不创建键。"""
+        if self._refreshing or not path_writable(self.model, path):
+            return
+        text = widget.get('1.0', 'end-1c')
+        current = self._safe_get(path, None)
+        if current is None and text == '':
+            return
+        if current == text:
+            return
+        self.model.set(path, text)
 
     # ---------------------------------------------------------------- 通道
     def _source_index(self, display_index):
@@ -555,11 +570,12 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.preview_warning_labels = {}
         self.preview_buttons = {}
         self.variables = {}
-        self._event_switches = {}
+        self.event_choices = {}
         raw = self._safe_get(('push', 'templates'), None)
         templates = raw if isinstance(raw, Mapping) else {}
         self.events_hint.configure(
-            text='' if isinstance(raw, Mapping) else '通知事件配置缺失或结构无效，请在 YAML 中检查')
+            text='' if raw is None or isinstance(raw, Mapping)
+            else '通知事件配置缺失或结构无效，请在 YAML 中检查')
         for event, label in EVENTS:
             path = ('push', 'templates', event)
             expanded = event in self._expanded_events
@@ -587,19 +603,18 @@ class Page(ctk_kit.CTkScrollableFrame):
                 hover_color=COLORS['card_hover'],
                 text_color=COLORS['accent'], font=FONT_SMALL)
             edit.pack(side='right')
-            enabled = ctk_kit.CTkSwitch(row, text='', font=FONT_BODY,
-                                        **SWITCH_STYLE)
-            enabled.configure(command=lambda key=event, widget=enabled:
-                              self.model.set(('push', 'templates', key, 'enable'),
-                                             bool(widget.get())))
-            enabled.pack(side='right', padx=(8, 12))
-            self._event_switches[event] = enabled
+            choice = ctk_kit.CTkOptionMenu(
+                row, values=list(OPTIONAL_BOOL_CHOICES), width=BOOL_WIDTH,
+                height=32, font=FONT_SMALL,
+                command=lambda value, key=event:
+                self._change_event_enable(key, value))
+            choice.pack(side='right', padx=(8, 12))
+            self.event_choices[event] = choice
+            event_value = templates.get(event) if isinstance(templates, Mapping) else None
+            enable = event_value.get('enable') if isinstance(event_value, Mapping) else None
+            choice.set(optional_bool_choice(enable))
             if not path_writable(self.model, (*path, 'enable')):
-                enabled.configure(state='disabled')
-            if (isinstance(templates, Mapping) and isinstance(templates.get(event),
-                                                             Mapping)
-                    and templates[event].get('enable')):
-                enabled.select()
+                choice.configure(state='disabled')
             for widget in (name, row):
                 widget.bind('<Button-1>', lambda _event=None, key=event:
                             self.expand_event(key))

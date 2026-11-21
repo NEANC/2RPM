@@ -176,7 +176,7 @@ def test_screenshot_page_retention_and_credentials():
         assert model.revision == old_revision
         page._change_days(1)
         assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 15
-        page.cleanup.select()
+        page.cleanup.set('开启')
         page._change_cleanup()
         assert model.get(('push', 'screenshot', 'retention', 'enabled')) is True
         assert page.host_rows[0]['provider'].get() == 'catbox'
@@ -278,14 +278,14 @@ def test_retention_missing_or_scalar_is_safe():
     revision = model.revision
     page = ScreenshotPage(root, Mock(model=model))
     try:
-        assert page.days.number.get() == '14'
+        assert page.days.number.get() == ''
         assert model.revision == revision
         page._change_days(1)
-        assert model.get(('push', 'screenshot', 'retention', 'max_days')) == 15
+        assert 'retention' not in model.get(('push', 'screenshot'))
         model.set(('push', 'screenshot', 'retention'), 'broken')
         page.refresh()
         assert page.days.number.get() == '--'
-        assert not page.cleanup.is_enabled()
+        assert page.cleanup.cget('state') == 'disabled'
         assert page.days.is_readonly()
         page._change_cleanup()
         page._change_days(1)
@@ -399,9 +399,9 @@ def test_scalar_screenshot_section_disables_controls_and_keeps_model(tmp_path):
         assert '结构无效' in page.hosts_hint.cget('text')
         assert page.add_target_button.cget('state') == 'disabled'
         assert page.add_host_button.cget('state') == 'disabled'
-        assert not page.cleanup.is_enabled()
+        assert page.cleanup.cget('state') == 'disabled'
         assert page.days.is_readonly()
-        page.cleanup.toggle()
+        page._change_cleanup('开启')
         page._change_days(1)
         assert model.snapshot() == before
         assert read_document(path).tree['push']['screenshot'] == 'bad'
@@ -1108,11 +1108,71 @@ def test_screenshot_page_visible_and_safe_operations(monkeypatch):
              'expiration': 7}])
         page.refresh()
         page.add_host()
-        assert model.get(('push', 'screenshot', 'image_host'))[1]['provider'] == 'beeimg'
+        assert model.get(('push', 'screenshot', 'image_host'))[1] == {}
         page.move_host(0, 1)
         assert model.get(('push', 'screenshot', 'image_host'))[1] == {
             'provider': 'catbox', 'token': 'secret',
             'options': {'x': 1}, 'expiration': 7}
+    finally:
+        root.destroy()
+
+
+def test_blank_screenshot_page_keeps_display_empty(tmp_path):
+    """空白草稿下保留天数为空、清理为未设置，新增项不预填来源或凭证。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        app.model.before_list_edit = lambda: True
+        app.model.on_list_edit = lambda: None
+        page = app.visible_pages['截图设置']
+
+        assert app.model.snapshot() == {}
+        assert page.days.number.get() == ''
+        assert page.cleanup.get() == '未设置'
+
+        page.add_target()
+        page.add_host()
+        assert app.model.get(('push', 'screenshot', 'targets')) == [{}]
+        assert app.model.get(('push', 'screenshot', 'image_host')) == [{}]
+        assert page.target_rows[0]['provider'].get() == '未选择'
+        assert page.host_rows[0]['provider'].get() == '未选择'
+        assert page.target_rows[0]['entry'].get() == ''
+        assert page.host_rows[0]['token'].get() == ''
+        page.refresh()
+        assert page.target_rows[0]['provider'].get() == '未选择'
+        assert page.host_rows[0]['provider'].get() == '未选择'
+    finally:
+        root.destroy()
+
+
+def test_screenshot_cleanup_uses_tri_state(tmp_path):
+    """本地清理开关以未设置/开启/关闭三态表达缺失与真假。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        page = app.visible_pages['截图设置']
+        path = ('push', 'screenshot', 'retention', 'enabled')
+
+        assert page.cleanup.get() == '未设置'
+        assert app.model.snapshot() == {}
+
+        page.cleanup.set('开启')
+        page._change_cleanup()
+        assert app.model.get(path) is True
+        page.refresh()
+        assert page.cleanup.get() == '开启'
+
+        page.cleanup.set('关闭')
+        page._change_cleanup()
+        assert app.model.get(path) is False
+        page.refresh()
+        assert page.cleanup.get() == '关闭'
+
+        page.cleanup.set('未设置')
+        page._change_cleanup()
+        with pytest.raises(KeyError):
+            app.model.get(path)
+        assert app.model.get(('push', 'screenshot', 'retention')) == {}
     finally:
         root.destroy()
 
