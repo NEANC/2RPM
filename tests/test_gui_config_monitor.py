@@ -39,7 +39,7 @@ def test_target_disabled_until_mode_selected():
         assert page.task_entry.cget('state') == 'disabled'
         assert page.target_type.cget('state') == 'disabled'
         assert page.browse_button.cget('state') == 'disabled'
-        page.set_field(('monitor', 'target'), r'C:\Apps\demo.exe')
+        page._target_changed(r'C:\Apps\demo.exe')
         assert model.snapshot() == {}
         page._switch('等待目标运行')
         assert model.snapshot() == {'monitor': {'mode': 'watch'}}
@@ -47,6 +47,27 @@ def test_target_disabled_until_mode_selected():
         assert page.file_entry.is_enabled()
         assert page.task_entry.cget('state') == 'normal'
         assert page.target_type.cget('state') == 'normal'
+        page._target_changed(r'C:\Apps\demo.exe')
+        assert model.get(('monitor', 'target')) == r'C:\Apps\demo.exe'
+    finally:
+        root.destroy()
+
+
+def test_target_text_hidden_without_mode():
+    """有目标无运行方式时只隐藏显示，不删除已有配置值。"""
+    document = new_blank_document()
+    document.tree['monitor'] = {'target': r'C:\Apps\legacy.exe'}
+    root = tk.Tk()
+    root.withdraw()
+    model = EditorModel(document)
+    page = Page(root, model)
+    page.pack(fill='both', expand=True)
+    try:
+        assert page.mode.get() == '未选择'
+        assert page.file_entry.get() == ''
+        assert page.task_entry.get() == ''
+        assert not page.file_entry.is_enabled()
+        assert model.snapshot() == {'monitor': {'target': r'C:\Apps\legacy.exe'}}
     finally:
         root.destroy()
 

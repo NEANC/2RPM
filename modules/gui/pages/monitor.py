@@ -229,6 +229,13 @@ class Page(ctk_kit.CTkScrollableFrame):
         monitor = self.model.snapshot().get('monitor')
         return monitor if isinstance(monitor, Mapping) else {}
 
+    def _target_display_text(self, monitor):
+        """未选运行方式或目标缺失时显示空白，不回显无关配置值。"""
+        target = monitor.get('target')
+        if monitor.get('mode') not in ('watch', 'launch') or target is None:
+            return ''
+        return str(target)
+
     def _target_command(self, text):
         """SearchBox 的输入、清除与粘贴都从 command 写回草稿。"""
         if self._refreshing or self._target_type != 'file':
@@ -304,8 +311,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                       and path_writable(self.model, ('monitor', 'launch', 'args')))
         if clear_args:
             self.model.set(('monitor', 'launch', 'args'), None)
-        target = self.model.get(('monitor', 'target'))
-        text = '' if target is None else str(target)
+        text = self._target_display_text(self._monitor())
         self._refreshing = True
         try:
             self.file_variable.set(text)
@@ -418,7 +424,7 @@ class Page(ctk_kit.CTkScrollableFrame):
                            'launch': '主动启动并监视'}.get(mode, MODE_PLACEHOLDER))
             self.mode_hint.configure(text='' if mode_ready else MODE_HINT)
             target = monitor.get('target')
-            text = '' if target is None else str(target)
+            text = self._target_display_text(monitor)
             if mode_ready:
                 try:
                     kind = resolve_monitor_target(mode, target, self._config_dir()).kind
