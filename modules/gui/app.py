@@ -29,6 +29,7 @@ from modules.gui.pages import (external, home, logs, monitor, notification_ctk,
                                screenshot, settings)
 from modules.gui.protocol import TestRequest, encode_request
 from modules.gui.save_coordinator import SaveCoordinator
+from modules.gui.save_shortcuts import SaveShortcuts
 from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
 from modules.screenshot.retention import FORMAT_SUFFIX
@@ -69,6 +70,8 @@ class App:
         try:
             self._initialize(root, controller)
         except Exception:
+            if hasattr(self, 'save_shortcuts'):
+                self.save_shortcuts.close()
             if hasattr(self, 'save_coordinator'):
                 self.save_coordinator.close()
             raise
@@ -181,6 +184,7 @@ class App:
         self.controller.on_saved = self._refresh_saved_home
         self.controller.on_conflict = self._show_conflict
         root.protocol('WM_DELETE_WINDOW', self.close)
+        self.save_shortcuts = SaveShortcuts(root, self.save)
         self._paint_sidebar()
         self.refresh()
         session_dir = Path(tempfile.mkdtemp(prefix='2rpm-gui-'))
@@ -927,6 +931,7 @@ class App:
         try:
             if self.controller.close():
                 self.test_dialogs.clear()
+                self.save_shortcuts.close()
                 self.save_coordinator.close()
                 self.root.after_cancel(self._after_id)
                 threading.Thread(target=shutil.rmtree, args=(self.session_dir,),
