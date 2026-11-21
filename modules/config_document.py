@@ -72,6 +72,11 @@ def new_document() -> ConfigDocument:
     return ConfigDocument(None, get_default_config(for_file_creation=True), None)
 
 
+def new_blank_document() -> ConfigDocument:
+    """仅在内存中生成无路径、无指纹的空白业务草稿。"""
+    return ConfigDocument(None, CommentedMap(), None)
+
+
 def patch_document(document: ConfigDocument,
                    changes: tuple[Change, ...]) -> ConfigDocument:
     """复制原始树，仅按明确的变化路径更新或删除叶节点。"""

@@ -60,7 +60,26 @@ class EditorModel:
         self.revision += 1
         self.dirty = True
         if path == ('monitor', 'target'):
-            self._targets[self.get(('monitor', 'mode'))] = copy.deepcopy(value)
+            monitor = self._tree.get('monitor')
+            mode = monitor.get('mode') if isinstance(monitor, Mapping) else None
+            if mode in ('watch', 'launch'):
+                self._targets[mode] = copy.deepcopy(value)
+        self.on_edit()
+
+    def unset(self, path: tuple[str | int, ...]) -> None:
+        """仅删除已存在的叶键，缺失时不做任何改变。"""
+        node = self._tree
+        for key in path[:-1]:
+            if not isinstance(node, Mapping) or key not in node:
+                return
+            node = node[key]
+        if not isinstance(node, Mapping) or path[-1] not in node:
+            return
+        del node[path[-1]]
+        self.raw_inputs.pop(path, None)
+        self.input_errors.pop(path, None)
+        self.revision += 1
+        self.dirty = True
         self.on_edit()
 
     def set_input(self, path: tuple[str | int, ...], raw: str, *, kind: str = 'text') -> None:
@@ -97,14 +116,19 @@ class EditorModel:
             raise ValueError('无效的监视模式')
         monitor = self._tree.get('monitor')
         if not isinstance(monitor, Mapping):
-            return
+            monitor = {}
+            self._tree['monitor'] = monitor
         current = monitor.get('mode')
         if mode == current:
             return
         if current in ('watch', 'launch'):
             self._targets[current] = monitor.get('target')
-        self._tree['monitor']['mode'] = mode
-        self._tree['monitor']['target'] = self._targets.get(mode, self._original_target)
+        target = self._targets.get(mode, self._original_target)
+        monitor['mode'] = mode
+        if target is not None:
+            monitor['target'] = target
+        else:
+            monitor.pop('target', None)
         self.revision += 1
         self.dirty = True
         self.on_edit()

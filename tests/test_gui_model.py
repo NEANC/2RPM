@@ -7,7 +7,7 @@ import copy
 
 import pytest
 
-from modules.config_document import ConfigDocument, new_document
+from modules.config_document import ConfigDocument, new_blank_document, new_document
 from modules.gui.model import EditorModel
 
 
@@ -211,3 +211,54 @@ def test_oversized_integer_keeps_raw_draft_and_blocks_validation(tmp_path):
     assert model.get_input(path) == '007'
     assert model.get(path) == 7
     assert path not in model.input_errors
+
+
+def test_sparse_model_set_and_unset():
+    """空白草稿支持稀疏写入与叶键删除，重复删除不增加修订。"""
+    model = EditorModel(new_blank_document())
+    model.set(('monitor', 'common', 'enabled'), True)
+    model.set(('monitor', 'common', 'keep'), '保留')
+
+    revision_before = model.revision
+    model.unset(('monitor', 'common', 'enabled'))
+
+    assert model.get(('monitor', 'common')) == {'keep': '保留'}
+    assert model.revision == revision_before + 1
+    assert model.dirty is True
+
+    revision_after = model.revision
+    model.unset(('monitor', 'common', 'enabled'))
+    assert model.revision == revision_after
+
+    model.unset(('monitor', 'common', 'keep'))
+    assert model.get(('monitor', 'common')) == {}
+    assert model.get(('monitor',)) == {'common': {}}
+
+
+def test_blank_mode_targets_survive_save_not_reopen(tmp_path):
+    """空白草稿模式分支仅在同会话内恢复，重开后只保留磁盘目标。"""
+    model = EditorModel(new_blank_document())
+
+    model.switch_mode('watch')
+    assert model.snapshot() == {'monitor': {'mode': 'watch'}}
+
+    model.set(('monitor', 'target'), 'watch.exe')
+    model.switch_mode('launch')
+    assert 'target' not in model.snapshot()['monitor']
+
+    model.set(('monitor', 'target'), 'launch.exe')
+    saved = ConfigDocument(tmp_path / 'config.yaml', model.materialize().tree, 'fp')
+    model.accept_saved(saved)
+
+    model.switch_mode('watch')
+    assert model.get(('monitor', 'target')) == 'watch.exe'
+
+    reloaded = EditorModel(saved)
+    assert reloaded.get(('monitor', 'target')) == 'launch.exe'
+    reloaded.switch_mode('watch')
+    assert reloaded.get(('monitor', 'target')) == 'launch.exe'
+
+    number_path = ('monitor', 'common', 'timeout_threshold')
+    model.set_input(number_path, '9', kind='int')
+    model.set_input(number_path, '', kind='int')
+    assert model.get_input(number_path) == ''

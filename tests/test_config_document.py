@@ -17,6 +17,7 @@ from modules.config_document import (
     ConfigConflictError,
     ConfigReadError,
     ConfigSaveError,
+    new_blank_document,
     new_document,
     normalize_config_path,
     patch_document,
@@ -762,3 +763,11 @@ def test_cleanup_failure_without_active_exception_raises_safe_save_error(tmp_pat
     assert path.read_bytes() == original
     for temporary in tmp_path.glob(f'.{path.name}.*.tmp'):
         temporary.unlink()
+
+
+def test_blank_document_has_no_defaults():
+    """空白草稿不含项目默认值，路径与指纹均为空。"""
+    document = new_blank_document()
+    assert document.tree == {}
+    assert document.path is None
+    assert document.fingerprint is None
