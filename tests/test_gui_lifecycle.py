@@ -165,7 +165,8 @@ def test_exit_confirms_worker_only_after_final_approval(tmp_path):
 
 
 def test_unsaved_or_conflicted_actions_are_blocked(tmp_path, monkeypatch):
-    """未完整输入或冲突阻止业务操作，保留草稿。"""
+    """未完整输入阻止业务操作，提示补全字段且保留草稿。"""
+    from modules.gui.app import INCOMPLETE_INPUT_MESSAGE
     from tests.gui_support import make_app
     import tkinter as tk
 
@@ -175,16 +176,40 @@ def test_unsaved_or_conflicted_actions_are_blocked(tmp_path, monkeypatch):
         app = make_app(root, tmp_path)
         dialogs = Mock()
         monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
-        app.model.input_errors[('monitor', 'common', 'max_wait')] = '-'
+        app.model.set_input(('monitor', 'common', 'max_wait'), '-', kind='int')
         app.capture()
         app.upload()
         app.notify()
         assert dialogs.call_count == 3
         for call in dialogs.call_args_list:
-            assert call.args == ('配置未保存', '配置未保存，操作已停止。草稿已保留。')
+            assert call.args == ('保存配置', INCOMPLETE_INPUT_MESSAGE)
             assert call.kwargs == {'parent': root}
         app.controller.runner.start.assert_not_called()
         assert app.model.input_errors
+    finally:
+        root.destroy()
+
+
+def test_conflicted_actions_are_blocked_without_generic_error(tmp_path, monkeypatch):
+    """已标记磁盘冲突时只更新状态，不弹通用错误框也不启动动作。"""
+    from tests.gui_support import make_app
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path)
+        dialogs = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', dialogs)
+        app.model.set(('monitor', 'target'), 'draft.exe')
+        app.controller.conflicted = True
+        app.capture()
+        app.upload()
+        app.notify()
+        dialogs.assert_not_called()
+        app.controller.runner.start.assert_not_called()
+        assert app.status.cget('text') == '磁盘配置已变化，原文件保存已暂停'
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
     finally:
         root.destroy()
 
@@ -404,7 +429,7 @@ def test_capture_selection_rejects_changed_document(tmp_path):
         app.test_dialogs.open_capture = Mock()
         app.capture()
         submit = app.test_dialogs.open_capture.call_args.args[0]
-        app.model.replace_document(new_document())
+        app.model.replace_document(read_document(app.model.document.path))
         app.refresh()
         assert not submit('window', '测试窗口')
         app.controller.runner.start.assert_not_called()

@@ -179,10 +179,10 @@ def test_capture_selection_rejects_document_change_during_request(tmp_path, monk
         app.test_dialogs.open_capture = Mock()
         app.capture()
         submit = app.test_dialogs.open_capture.call_args.args[0]
-        original = app.save_coordinator.flush
+        original = app.save_coordinator.flush_result
         calls = 0
 
-        def flush():
+        def flush_result():
             """模拟选择提交与请求冻结之间发生文档重载。"""
             nonlocal calls
             calls += 1
@@ -190,7 +190,7 @@ def test_capture_selection_rejects_document_change_during_request(tmp_path, monk
                 app.model.replace_document(read_document(app.model.document.path))
             return original()
 
-        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        monkeypatch.setattr(app.save_coordinator, 'flush_result', flush_result)
         assert not submit('window', '旧窗口')
         app.controller.runner.start.assert_not_called()
     finally:
@@ -207,10 +207,10 @@ def test_capture_selection_changed_during_request_is_not_sent(tmp_path, monkeypa
         app.open_capture_selection()
         dialogs = app.test_dialogs
         dialogs.capture_target.insert(0, '旧窗口')
-        original = app.save_coordinator.flush
+        original = app.save_coordinator.flush_result
         calls = 0
 
-        def flush():
+        def flush_result():
             """在选择提交后的第二次补存期间改变真实控件。"""
             nonlocal calls
             calls += 1
@@ -222,7 +222,7 @@ def test_capture_selection_changed_during_request_is_not_sent(tmp_path, monkeypa
                     dialogs.capture_target.insert(0, '新窗口')
             return original()
 
-        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        monkeypatch.setattr(app.save_coordinator, 'flush_result', flush_result)
         dialogs.submit_capture()
         app.controller.runner.start.assert_not_called()
     finally:
@@ -261,18 +261,18 @@ def test_upload_selection_changed_during_request_flush_is_not_sent(tmp_path, mon
         dialogs.upload_host.set('01 beeimg')
         dialogs.upload_image.set(str(tmp_path / 'one.png'))
         monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
-        original = app.save_coordinator.flush
+        original = app.save_coordinator.flush_result
         calls = 0
 
-        def flush():
+        def flush_result():
             """在请求冻结前的补存期间改选图床。"""
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if calls == 2:
                 dialogs.upload_host.set('02 catbox')
             return original()
 
-        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        monkeypatch.setattr(app.save_coordinator, 'flush_result', flush_result)
         dialogs.submit_upload()
         app.controller.runner.start.assert_not_called()
     finally:
@@ -294,14 +294,14 @@ def test_upload_callback_rejects_window_closed_during_flush(tmp_path, monkeypatc
         dialogs.upload_host.set('01 beeimg')
         dialogs.upload_image.set(image)
         monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
-        original = app.save_coordinator.flush
+        original = app.save_coordinator.flush_result
         calls = 0
 
-        def flush():
+        def flush_result():
             """模拟模态补存时关闭旧窗并选择性重开同配置的新窗。"""
             nonlocal calls
             calls += 1
-            if calls == 1:
+            if calls == 2:
                 old_window.destroy()
                 if reopen:
                     app.open_upload_selection()
@@ -309,7 +309,7 @@ def test_upload_callback_rejects_window_closed_during_flush(tmp_path, monkeypatc
                     dialogs.upload_image.set(image)
             return original()
 
-        monkeypatch.setattr(app.save_coordinator, 'flush', flush)
+        monkeypatch.setattr(app.save_coordinator, 'flush_result', flush_result)
         assert not old_callback(0, image)
         app.controller.runner.start.assert_not_called()
         if reopen:
@@ -1102,7 +1102,7 @@ def test_relocation_confirmation_does_not_show_private_target(tmp_path):
         app = make_app(root, tmp_path)
         saved = save_document(new_document(), source / 'a.yaml', expected_fingerprint=None)
         app.model.replace_document(saved)
-        app.model.set(('monitor', 'target'), 'demo.exe')
+        app.model.set(('monitor', 'target'), '.\\demo.exe')
         app.controller.confirm = Mock(return_value='cancel')
         assert not app.controller.save(target / 'b.yaml')
         assert app.controller.confirm.call_args.args[1]['to'] == str(target)
