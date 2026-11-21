@@ -501,51 +501,83 @@ def test_new_blank_transaction_replaces_old_draft(window, monkeypatch, choice):
     assert app.model.snapshot() == {}
 
 
-@pytest.mark.parametrize('failure', ['save-failure', 'incomplete-input'])
+@pytest.mark.parametrize('failure', [
+    'save-failure', 'incomplete-input', 'picker-cancel', 'conflict', 'reload',
+])
 def test_new_blank_transaction_failure_keeps_old_document(window, monkeypatch, failure):
-    """旧草稿保存失败或输入未完成时不替换文档，也不清理旧结果。"""
+    """旧草稿保存失败、取消、冲突或重载时不替换文档，也不清理旧结果。"""
     app = window
-    path = app.model.document.path
-    old_bytes = path.read_bytes()
-    app.controller.confirm = lambda kind, _: 'save' if kind == 'unsaved' else 'confirm'
+    original_path = app.model.document.path
+    original_bytes = original_path.read_bytes()
+    app.controller.confirm = lambda kind, _detail: (
+        'save' if kind == 'unsaved' else 'confirm')
     picker = Mock(return_value='')
     monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
-    if failure == 'incomplete-input':
+
+    if failure == 'picker-cancel':
+        # 未绑定路径的旧草稿在新建时选择保存，但用户取消保存选择器。
+        assert app.controller.new()
+        app.controller.choose_path = Mock(return_value=None)
+        app.model.set(('monitor', 'target'), 'draft.exe')
+    elif failure == 'incomplete-input':
         app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
     else:
         app.model.set(('monitor', 'target'), 'draft.exe')
     capture, upload, dialog, image = seed_result(app)
-    if failure == 'incomplete-input':
-        monkeypatch.setattr('modules.gui.controller.save_document',
-                            Mock(side_effect=AssertionError('未完成输入不应写盘')))
-    else:
+    expected_path = None if failure == 'picker-cancel' else original_path
+    expected_bytes = original_bytes
+
+    if failure == 'save-failure':
         monkeypatch.setattr('modules.gui.controller.save_document',
                             Mock(side_effect=ConfigSaveError('写入失败')))
+    elif failure == 'incomplete-input':
+        monkeypatch.setattr('modules.gui.controller.save_document',
+                            Mock(side_effect=AssertionError('未完成输入不应写盘')))
+    elif failure == 'conflict':
+        # 保存前外部进程改写原文件，使补存返回冲突而不作为保存成功。
+        original_path.write_bytes(b'external')
+        expected_bytes = original_path.read_bytes()
+    elif failure == 'reload':
+        # 保存触发外部变更，用户在冲突提示中选择重新加载。
+        disk = read_document(original_path)
+        disk.tree['monitor']['target'] = 'external.exe'
+        save_document(disk, original_path, expected_fingerprint=disk.fingerprint)
+        expected_bytes = original_path.read_bytes()
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel',
+                            lambda *args, **kwargs: True)
     generation = app.model.document_generation
-    revision = app.model.revision
     serial = app.save_coordinator._save_serial
 
     app.new()
 
     picker.assert_not_called()
-    assert app.model.document.path == path
-    assert app.model.document_generation == generation
-    assert app.model.revision == revision
-    assert app.model.dirty
-    if failure == 'incomplete-input':
+    assert app.model.document.path == expected_path
+    assert app.model.snapshot() != {}
+    if failure == 'picker-cancel':
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+        assert app.controller.choose_path.call_count == 1
+    elif failure == 'incomplete-input':
         assert app.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
+    elif failure == 'reload':
+        assert app.model.get(('monitor', 'target')) == 'external.exe'
+        assert app.model.snapshot() == read_document(original_path).tree
+        assert not app.model.dirty
     else:
         assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    if failure != 'reload':
+        assert app.model.document_generation == generation
+        assert app.model.dirty
     assert app.test_session.last_capture is capture
     assert app.test_session.last_upload is upload
     assert app.test_dialogs.result_window is dialog
     assert dialog.winfo_exists()
     assert app.preview_image is image
     assert app.result_text == '旧结果'
-    assert path.read_bytes() == old_bytes
-    assert app.save_coordinator.pending is not None
+    assert original_path.read_bytes() == expected_bytes
+    if failure in ('save-failure', 'incomplete-input'):
+        assert app.save_coordinator.pending is not None
     app.save_coordinator._save(generation, serial)
-    assert path.read_bytes() == old_bytes
+    assert original_path.read_bytes() == expected_bytes
 
 
 @pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
