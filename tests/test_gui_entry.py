@@ -61,6 +61,40 @@ def test_gui_no_args_starts_blank_draft(tmp_path, monkeypatch):
     assert not list(tmp_path.glob('*.yaml'))
 
 
+def test_first_save_picker_suggests_config_yaml_without_repo_path(tmp_path, monkeypatch):
+    """首次保存选择器建议 config.yaml，且不隐式绑定仓库内路径。"""
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_picker', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = Mock()
+    root.mainloop = Mock()
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('modules.gui.app.App', Mock())
+    from modules.gui.controller import Controller
+    controllers = []
+
+    def capture_controller(*args, **kwargs):
+        """保留入口创建的真实控制器供断言。"""
+        controller = Controller(*args, **kwargs)
+        controllers.append(controller)
+        return controller
+
+    monkeypatch.setattr('modules.gui.controller.Controller', capture_controller)
+    monkeypatch.chdir(tmp_path)
+    assert module.main([]) == 0
+
+    dialog = Mock(return_value=str(tmp_path / 'chosen.yaml'))
+    monkeypatch.setattr('tkinter.filedialog.asksaveasfilename', dialog)
+    selected = controllers[0].choose_path()
+
+    assert selected == tmp_path / 'chosen.yaml'
+    kwargs = dialog.call_args.kwargs
+    assert kwargs['initialfile'] == 'config.yaml'
+    assert kwargs['defaultextension'] == '.yaml'
+    assert 'initialdir' not in kwargs
+
+
 def test_gui_config_option_opens_explicit_file(tmp_path, monkeypatch):
     """-c/--config 仍按指定路径读取已有配置。"""
     from modules.config_document import new_document, read_document, save_document

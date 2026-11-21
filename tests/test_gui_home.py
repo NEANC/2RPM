@@ -176,6 +176,77 @@ def test_manual_save_failure_is_visible_without_leaking_exception(tmp_path, monk
         root.destroy()
 
 
+def test_first_save_incomplete_input_locates_field_before_picker(tmp_path, monkeypatch):
+    """未完成数字输入阻断首次保存，提示并聚焦字段而不打开选择器。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        picker = Mock(side_effect=AssertionError('不应打开保存选择器'))
+        app.controller.choose_path = picker
+        path = ('monitor', 'watch', 'lookback_minutes')
+        app.model.set_input(path, '-', kind='int')
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        app.visible_pages['主页'].save_button.invoke()
+
+        picker.assert_not_called()
+        popup.assert_called_once_with('保存配置', '输入尚未完成，请补全数字后保存',
+                                      parent=root)
+        assert app.current_page == '监视设置'
+        monitor = app.visible_pages['监视设置']
+        assert monitor.widget_for_issue is monitor.lookback.entry._entry
+        assert app.model.get_input(path) == '-'
+        assert app.model.document.path is None
+        assert app.model.snapshot() == {}
+        assert '输入尚未完成' in app.status.cget('text')
+    finally:
+        root.destroy()
+
+
+def test_saved_blank_reopens_pages_and_save_as_again(tmp_path, monkeypatch):
+    """保存的空映射重开后控件仍为空，再次另存只写入实际编辑。"""
+    monkeypatch.setattr('modules.gui.app.preferences_path',
+                        lambda: tmp_path / 'gui.ini')
+    root = ctk_kit.App(title='测试', remember_geometry=False,
+                       remember_theme=False, notifier=False, backdrop='none')
+    root.withdraw()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        target = tmp_path / 'blank.yaml'
+        copy = tmp_path / 'copy.yaml'
+        app.controller.choose_path = lambda: target
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        app.visible_pages['主页'].save_button.invoke()
+
+        popup.assert_not_called()
+        assert app.model.document.path == target
+        raw = target.read_bytes()
+        assert raw and raw.decode('utf-8').strip() == '{}'
+        assert app.model.snapshot() == {}
+
+        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
+                            lambda **_: str(target))
+        app.open()
+        assert app.model.snapshot() == {}
+        for name in NAMES:
+            assert app.show_page(name)
+            assert app.model.snapshot() == {}
+
+        app.model.set(('log', 'log_directory'), 'saved-logs')
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
+                            lambda **_: str(copy))
+        app.visible_pages['主页'].save_as_button.invoke()
+
+        assert app.model.document.path == copy
+        assert read_document(copy).tree == {'log': {'log_directory': 'saved-logs'}}
+        assert target.read_bytes() == raw
+    finally:
+        root.destroy()
+
+
 def test_save_as_cancel_does_not_display_failure(tmp_path, monkeypatch):
     """用户取消文件选择不被误报为保存失败。"""
     root = tk.Tk()
@@ -205,7 +276,8 @@ def test_manual_save_cancel_preserves_draft_without_failure_popup(
         source_bytes = source.read_bytes()
         if action == 'save':
             app.model.replace_document(new_document())
-        app.model.set(('monitor', 'target'), 'draft.exe')
+        app.model.set(('monitor', 'target'),
+                      '.\\draft.exe' if confirmation == 'relocate' else 'draft.exe')
         draft = app.model.snapshot()
         revision = app.model.revision
         generation = app.model.document_generation
@@ -411,7 +483,7 @@ def test_home_buttons_restore_all_fields_through_mainloop(tmp_path, monkeypatch)
                    if isinstance(child, ctk_kit.CTkButton)}
         buttons.update({button.cget('text'): button
                         for button in (home.save_button, home.save_as_button)})
-        destinations = iter((tmp_path / 'new.yaml', tmp_path / 'copy.yaml'))
+        destinations = iter((tmp_path / 'copy.yaml',))
         monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename',
                             lambda **_: str(next(destinations)))
         monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename',
@@ -438,8 +510,8 @@ def test_home_buttons_restore_all_fields_through_mainloop(tmp_path, monkeypatch)
                 buttons['保存'].invoke()
                 assert read_document(tmp_path / 'a.yaml').tree == original
                 buttons['新建配置'].invoke()
-                assert app.model.document.path == tmp_path / 'new.yaml'
-                assert app.model.snapshot() != original
+                assert app.model.document.path is None
+                assert app.model.snapshot() == {}
                 buttons['打开配置'].invoke()
                 assert app.model.snapshot() == original
                 for name in ('监视设置', '消息推送设置', '截图设置',

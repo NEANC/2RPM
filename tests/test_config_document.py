@@ -771,3 +771,22 @@ def test_blank_document_has_no_defaults():
     assert document.tree == {}
     assert document.path is None
     assert document.fingerprint is None
+
+
+def test_blank_document_saves_readable_empty_mapping(tmp_path):
+    """空草稿保存为 UTF-8 空映射，重开仍为空而不写入默认配置。"""
+    destination = tmp_path / 'blank.yaml'
+    document = new_blank_document()
+
+    saved = save_document(document, destination, expected_fingerprint=None)
+
+    raw = destination.read_bytes()
+    assert raw
+    assert raw.decode('utf-8').strip() == '{}'
+    assert saved.tree == {}
+    assert saved.path == destination
+    assert saved.fingerprint == hashlib.sha256(raw).hexdigest()
+
+    reopened = read_document(destination)
+    assert reopened.tree == {}
+    assert reopened.fingerprint == saved.fingerprint

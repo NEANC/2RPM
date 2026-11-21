@@ -310,7 +310,7 @@ def test_external_change_during_confirmation_blocks_write(tmp_path):
     """覆盖确认期间外部改动原路径时必须保护其字节。"""
     controller, _, _ = setup(tmp_path)
     path = controller.model.document.path
-    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set(('monitor', 'target'), '.\\draft.exe')
 
     def confirm(kind, detail):
         """模拟模态确认窗口期间外部写入。"""

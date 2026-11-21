@@ -8,7 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import (ConfigDocument, ConfigSaveError, new_document,
+from modules.config_document import (ConfigDocument, ConfigSaveError,
+                                     new_blank_document, new_document,
                                      read_document, save_document)
 from modules.gui.launcher import LaunchResult
 from modules.gui.model import EditorModel
@@ -24,6 +25,167 @@ def make_controller(tmp_path, document=None, answers=None):
                       choose_path=lambda: tmp_path / 'a.yaml',
                       cli_command=('python.exe', '2RPM.py'), runner=runner,
                       program_dir=tmp_path), confirm, runner
+
+
+def make_blank_controller(tmp_path, *, picker=None):
+    """创建无路径空白草稿的控制器，并允许观察真实路径选择次数。"""
+    from modules.gui.controller import Controller
+
+    confirm = Mock()
+    runner = Mock()
+    runner.active = False
+    controller = Controller(EditorModel(new_blank_document()), confirm=confirm,
+                            choose_path=picker or Mock(return_value=tmp_path / 'config.yaml'),
+                            cli_command=('python.exe',), runner=runner,
+                            program_dir=tmp_path)
+    return controller, confirm, runner
+
+
+def test_pristine_blank_save_selects_path_and_writes_mapping(tmp_path):
+    """干净空白草稿首次保存也选路径并写入可解析的 UTF-8 空映射。"""
+    from modules.gui.controller import SaveResult
+
+    picker = Mock(return_value=tmp_path / 'config.yaml')
+    controller, _confirm, _runner = make_blank_controller(tmp_path, picker=picker)
+    target = tmp_path / 'config.yaml'
+    assert controller.model.dirty is False
+    assert controller.model.document.path is None
+
+    assert controller._save_result() is SaveResult.SAVED
+
+    picker.assert_called_once_with()
+    raw = target.read_bytes()
+    assert raw and raw.decode('utf-8').strip() == '{}'
+    parsed = read_document(target)
+    assert parsed.tree == {}
+    assert controller.model.document.path == target
+    assert controller.model.document.fingerprint == parsed.fingerprint
+    assert not controller.model.dirty
+
+    controller.model.set(('log', 'log_directory'), 'logs')
+    assert controller._save_result() is SaveResult.SAVED
+    picker.assert_called_once_with()
+    assert read_document(target).tree == {'log': {'log_directory': 'logs'}}
+
+
+def test_first_save_cancel_does_not_bind(tmp_path):
+    """首次保存取消不写盘、不绑定路径，也不改变草稿。"""
+    from modules.gui.controller import SaveResult
+
+    picker = Mock(return_value=None)
+    controller, _confirm, _runner = make_blank_controller(tmp_path, picker=picker)
+
+    assert controller._save_result() is SaveResult.CANCELLED
+    assert controller.save_cancelled is True
+    picker.assert_called_once_with()
+    assert controller.model.document.path is None
+    assert controller.model.document.fingerprint is None
+    assert controller.model.snapshot() == {}
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('content', ['empty', 'log'])
+def test_sparse_save_as_other_directory(tmp_path, content):
+    """空映射或仅日志草稿跨目录另存不读取 monitor，也不弹迁移确认。"""
+    source = tmp_path / 'source'
+    destination = tmp_path / 'target'
+    source.mkdir()
+    destination.mkdir()
+    controller, confirm, _runner = make_blank_controller(
+        tmp_path, picker=Mock(return_value=source / 'config.yaml'))
+    assert controller.save()
+    if content == 'log':
+        controller.model.set(('log', 'log_directory'), 'custom-logs')
+
+    confirm.reset_mock()
+    assert controller.save_as(lambda: destination / 'moved.yaml')
+
+    confirm.assert_not_called()
+    expected = {} if content == 'empty' else {'log': {'log_directory': 'custom-logs'}}
+    saved = read_document(destination / 'moved.yaml')
+    assert saved.tree == expected
+    assert controller.model.document.path == destination / 'moved.yaml'
+    assert read_document(source / 'config.yaml').tree == {}
+    assert controller.save()
+    assert read_document(destination / 'moved.yaml').tree == expected
+
+
+def test_same_path_save_as_keeps_loaded_fingerprint(tmp_path):
+    """已关联文档同路径另存仍用加载指纹，不覆盖外部改动。"""
+    from modules.gui.controller import SaveResult
+
+    document = save_document(new_document(), tmp_path / 'config.yaml',
+                             expected_fingerprint=None)
+    controller, _confirm, _runner = make_controller(tmp_path, document)
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    loaded = controller.model.document
+    external = b'monitor:\n  target: external.exe\n'
+    document.path.write_bytes(external)
+
+    result = controller._save_as_result(lambda: document.path)
+
+    assert result is SaveResult.CONFLICT
+    assert document.path.read_bytes() == external
+    assert controller.model.document == loaded
+    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.dirty
+
+
+@pytest.mark.parametrize('change', ['modified', 'deleted', 'created'])
+def test_new_destination_changes_after_baseline(tmp_path, monkeypatch, change):
+    """新目标在基线建立后变化、删除或创建时不得覆盖。"""
+    from modules.gui.controller import SaveResult
+
+    target = tmp_path / 'config.yaml'
+    if change != 'created':
+        target.write_bytes(b'old-target')
+    controller, confirm, _runner = make_blank_controller(
+        tmp_path, picker=Mock(return_value=target))
+    if change == 'modified':
+        controller.confirm = lambda kind, detail: (target.write_bytes(b'external'),
+                                                   'confirm')[1]
+    elif change == 'deleted':
+        controller.confirm = lambda kind, detail: (target.unlink(), 'confirm')[1]
+    else:
+        import modules.gui.controller as controller_module
+        real_save = controller_module.save_document
+
+        def create_before_replace(document, destination, *, expected_fingerprint):
+            """在最终替换前模拟另一进程创建目标。"""
+            target.write_bytes(b'external')
+            return real_save(document, destination,
+                             expected_fingerprint=expected_fingerprint)
+
+        monkeypatch.setattr(controller_module, 'save_document', create_before_replace)
+
+    result = controller._save_result()
+
+    assert result is SaveResult.FAILED
+    assert controller.model.document.path is None
+    assert controller.model.document.fingerprint is None
+    if change == 'deleted':
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == b'external'
+    if change == 'created':
+        confirm.assert_not_called()
+
+
+def test_incomplete_input_blocks_before_picker(tmp_path):
+    """未完成数字输入在打开选择器前阻断保存和另存。"""
+    from modules.gui.controller import SaveResult
+
+    picker = Mock(return_value=tmp_path / 'config.yaml')
+    controller, _confirm, _runner = make_blank_controller(tmp_path, picker=picker)
+    controller.model.set_input(('monitor', 'watch', 'lookback_minutes'), '-',
+                               kind='int')
+
+    assert controller._save_result() is SaveResult.FAILED
+    picker.assert_not_called()
+    assert controller._save_as_result(picker) is SaveResult.FAILED
+    picker.assert_not_called()
+    assert controller.model.document.path is None
+    assert not (tmp_path / 'config.yaml').exists()
 
 
 def test_dirty_start_saves_or_cancels(tmp_path, monkeypatch):
@@ -119,6 +281,7 @@ def test_relocation_previews_new_base(tmp_path):
     target.mkdir()
     document = save_document(new_document(), source / 'a.yaml', expected_fingerprint=None)
     controller, confirm, _ = make_controller(tmp_path, document, ['cancel'])
+    controller.model.set(('monitor', 'target'), '.\\demo.exe')
     assert not controller.save(target / 'b.yaml')
     assert confirm.call_args.args[0] == 'relocate'
     assert confirm.call_args.args[1]['to'] == str(target)
@@ -126,7 +289,7 @@ def test_relocation_previews_new_base(tmp_path):
 
 
 def test_business_invalid_target_can_save_as_another_directory(tmp_path):
-    """业务无效目标也允许跨目录另存，并保留路径变化确认。"""
+    """业务无效的相对目标也允许跨目录另存，并保留路径变化确认。"""
     source = tmp_path / 'source'
     target = tmp_path / 'target'
     source.mkdir()
@@ -134,12 +297,12 @@ def test_business_invalid_target_can_save_as_another_directory(tmp_path):
     document = save_document(new_document(), source / 'a.yaml', expected_fingerprint=None)
     controller, confirm, _ = make_controller(tmp_path, document, ['confirm'])
     controller.model.set(('monitor', 'mode'), 'launch')
-    controller.model.set(('monitor', 'target'), 'invalid-target')
+    controller.model.set(('monitor', 'target'), '.\\invalid-target')
     before = document.path.read_bytes()
     assert controller.save_as(lambda: target / 'b.yaml')
     assert confirm.call_args.args[0] == 'relocate'
     assert confirm.call_args.args[1]['resolved_target'] == '待校验'
-    assert read_document(target / 'b.yaml').tree['monitor']['target'] == 'invalid-target'
+    assert read_document(target / 'b.yaml').tree['monitor']['target'] == '.\\invalid-target'
     assert document.path.read_bytes() == before
     assert controller.model.document.path == target / 'b.yaml'
 
@@ -262,7 +425,7 @@ def test_overwrite_reentrant_cancel_does_not_hide_outer_write_failure(tmp_path, 
 @pytest.mark.parametrize('outer', ['save', 'save_as'])
 def test_relocate_reentrant_cancel_does_not_hide_target_read_failure(tmp_path, monkeypatch,
                                                                      outer):
-    """跨目录确认中的内层取消不得把外层目标读取失败误报为取消。"""
+    """跨目录确认中的内层取消不得把外层最终读取失败误报为取消。"""
     source_dir = tmp_path / 'source'
     target_dir = tmp_path / 'target'
     source_dir.mkdir()
@@ -270,22 +433,26 @@ def test_relocate_reentrant_cancel_does_not_hide_target_read_failure(tmp_path, m
     source = save_document(new_document(), source_dir / 'a.yaml', expected_fingerprint=None)
     destination = target_dir / 'b.yaml'
     controller, _, _ = make_controller(tmp_path, source)
-    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set(('monitor', 'target'), '.\\draft.exe')
     before = controller.model.document
     source_bytes = source.path.read_bytes()
     read = Path.read_bytes
+    reads = 0
 
     def read_target(path):
-        """只对新目标模拟文件系统读取失败。"""
+        """首次基线读取正常，最终替换前的复验读取失败。"""
+        nonlocal reads
         if path == destination:
-            raise OSError('目标不可读取')
+            reads += 1
+            if reads > 1:
+                raise OSError('目标不可读取')
         return read(path)
 
     def confirm(kind, detail):
         """外层确认期间取消内层另存。"""
-        assert kind == 'relocate'
-        assert controller.save_as(lambda: None) is False
-        assert controller.save_cancelled is True
+        if kind == 'relocate':
+            assert controller.save_as(lambda: None) is False
+            assert controller.save_cancelled is True
         return 'confirm'
 
     monkeypatch.setattr(Path, 'read_bytes', read_target)
@@ -295,15 +462,16 @@ def test_relocate_reentrant_cancel_does_not_hide_target_read_failure(tmp_path, m
 
     assert result is False
     assert controller.save_cancelled is False
+    assert reads >= 2
     assert controller.model.document == before
-    assert controller.model.get(('monitor', 'target')) == 'draft.exe'
+    assert controller.model.get(('monitor', 'target')) == '.\\draft.exe'
     assert controller.model.dirty
     assert source.path.read_bytes() == source_bytes
     assert not destination.exists()
 
 
 def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch):
-    """内层取消后目标读取失败仍显示另存失败提示。"""
+    """内层取消后目标复验读取失败仍显示另存失败提示。"""
     from modules.gui.app import App
 
     source_dir = tmp_path / 'source'
@@ -313,20 +481,24 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
     source = save_document(new_document(), source_dir / 'a.yaml', expected_fingerprint=None)
     destination = target_dir / 'b.yaml'
     controller, _, _ = make_controller(tmp_path, source)
-    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set(('monitor', 'target'), '.\\draft.exe')
     source_bytes = source.path.read_bytes()
     read = Path.read_bytes
+    reads = 0
 
     def read_target(path):
-        """模拟目标文件不可读取。"""
+        """首次基线读取正常，最终替换前的复验读取失败。"""
+        nonlocal reads
         if path == destination:
-            raise OSError('目标不可读取')
+            reads += 1
+            if reads > 1:
+                raise OSError('目标不可读取')
         return read(path)
 
     def confirm(kind, detail):
         """外层路径变化确认期间取消内层另存。"""
-        assert kind == 'relocate'
-        assert controller.save_as(lambda: None) is False
+        if kind == 'relocate':
+            assert controller.save_as(lambda: None) is False
         return 'confirm'
 
     controller.confirm = confirm
@@ -344,6 +516,7 @@ def test_relocate_target_read_failure_shows_save_as_error(tmp_path, monkeypatch)
 
     app.save_as()
 
+    assert reads >= 2
     app.status.configure.assert_called_once_with(text='配置未另存')
     alert.assert_called_once_with('另存配置', '配置未保存，请检查输入或文件写入权限。草稿已保留。',
                                   parent=app.root)
@@ -711,7 +884,8 @@ def test_reentrant_inner_cancel_does_not_cancel_outer_failure(tmp_path, monkeypa
                            expected_fingerprint=None)
     destination = target_dir / 'target.yaml'
     controller, _, _ = make_controller(tmp_path, source)
-    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set(('monitor', 'target'),
+                         '.\\draft.exe' if phase == 'relocate' else 'draft.exe')
     original_read = Path.read_bytes
     original_write = __import__('modules.gui.controller', fromlist=['save_document']).save_document
     calls = []
@@ -781,7 +955,8 @@ def test_outer_confirmation_cancel_survives_inner_save(tmp_path, phase):
     if phase == 'overwrite':
         destination.write_bytes(b'existing')
     controller, _, _ = make_controller(tmp_path, source)
-    controller.model.set(('monitor', 'target'), 'draft.exe')
+    controller.model.set(('monitor', 'target'),
+                         '.\\draft.exe' if phase == 'relocate' else 'draft.exe')
 
     def confirm(kind, detail):
         """外层确认时先保存内层新文件，再取消外层。"""
@@ -1087,7 +1262,7 @@ def test_save_as_relocation_keeps_secret_out_of_confirmation(tmp_path):
     second.mkdir()
     document = save_document(new_document(), first / 'a.yaml', expected_fingerprint=None)
     controller, confirm, _ = make_controller(tmp_path, document, answers=['cancel'])
-    controller.model.set(('monitor', 'target'), 'demo.exe')
+    controller.model.set(('monitor', 'target'), '.\\demo.exe')
     assert not controller.save(second / 'b.yaml')
     assert str(second) in confirm.call_args.args[1]['to']
 

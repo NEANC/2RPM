@@ -7,6 +7,7 @@ import copy
 import hashlib
 import math
 import re
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
 from typing import Callable
@@ -19,7 +20,7 @@ from modules.config_document import (ConfigConflictError, ConfigReadError,
 from modules.gui.launcher import LaunchResult, launch_cli
 from modules.gui.model import EditorModel
 from modules.gui.test_runner import TestRunner
-from modules.monitor_target import resolve_monitor_target
+from modules.monitor_target import RELATIVE_PATH_PREFIXES, resolve_monitor_target
 
 
 class SaveResult(Enum):
@@ -155,6 +156,9 @@ class Controller:
         """返回本次另存的局部结果，不读取重入调用的共享取消标志。"""
         if self.runner.active is True:
             return SaveResult.FAILED
+        if self.model.input_errors:
+            self.save_cancelled = False
+            return SaveResult.FAILED
 
         def operation():
             """在事务内执行路径选择与写盘。"""
@@ -289,32 +293,33 @@ class Controller:
             return SaveResult.CONFLICT
         if self.conflicted and not as_new and previous is not None:
             return SaveResult.CONFLICT
-        if not same and previous is not None and target.parent != previous.parent:
-            mode = self.model.get(('monitor', 'mode'))
-            monitor = self.model.get(('monitor', 'target'))
-            cwd = self.model.get(('monitor', 'launch', 'cwd'))
-            try:
-                resolved = resolve_monitor_target(mode, monitor, str(target.parent), cwd)
-                resolved_target, resolved_cwd = resolved.value, resolved.cwd
-            except (ValueError, TypeError):
-                resolved_target, resolved_cwd = '待校验', '待校验'
-            detail = {'from': str(previous.parent), 'to': str(target.parent),
-                      'target': str(target), 'resolved_target': resolved_target,
-                      'resolved_cwd': resolved_cwd}
-            if self.confirm('relocate', detail) != 'confirm':
-                return SaveResult.CANCELLED
         if same:
             expected = self.model.document.fingerprint
+            existing = None
         else:
             try:
-                data = target.read_bytes()
+                existing = target.read_bytes()
             except FileNotFoundError:
-                data = None
+                existing = None
             except OSError:
                 return SaveResult.FAILED
-            expected = hashlib.sha256(data).hexdigest() if data is not None else None
-            if data is not None and self.confirm('overwrite', str(target)) != 'confirm':
-                return SaveResult.CANCELLED
+            expected = hashlib.sha256(existing).hexdigest() if existing is not None else None
+        if not same and previous is not None and target.parent != previous.parent:
+            relative = self._relative_paths(document.tree)
+            if relative is not None:
+                try:
+                    resolved = resolve_monitor_target(relative['mode'], relative['target'],
+                                                      str(target.parent), relative['cwd'])
+                    resolved_target, resolved_cwd = resolved.value, resolved.cwd
+                except (ValueError, TypeError):
+                    resolved_target, resolved_cwd = '待校验', '待校验'
+                detail = {'from': str(previous.parent), 'to': str(target.parent),
+                          'target': str(target), 'resolved_target': resolved_target,
+                          'resolved_cwd': resolved_cwd}
+                if self.confirm('relocate', detail) != 'confirm':
+                    return SaveResult.CANCELLED
+        if not same and existing is not None and self.confirm('overwrite', str(target)) != 'confirm':
+            return SaveResult.CANCELLED
         if same and previous is not None and not self.conflicted:
             generation = self.model.document_generation
             if self.check_external() or self.model.document_generation != generation:
@@ -349,13 +354,34 @@ class Controller:
             self.model.input_errors = input_errors
             self.model.dirty = True
             self.model.revision += 1
-            self.model._targets = {draft['monitor']['mode']: copy.deepcopy(draft['monitor']['target'])}
+            monitor = draft.get('monitor') if isinstance(draft, Mapping) else None
+            if isinstance(monitor, Mapping) and monitor.get('mode') in ('watch', 'launch'):
+                self.model._targets = {
+                    monitor['mode']: copy.deepcopy(monitor.get('target'))}
         self.conflicted = False
         if same and not changed_tree:
             self.on_saved()
         else:
             self.on_change()
         return SaveResult.SAVED
+
+    @staticmethod
+    def _relative_paths(tree) -> dict | None:
+        """返回受配置目录影响的相对目标或工作目录，没有时返回 None。"""
+        monitor = tree.get('monitor') if isinstance(tree, Mapping) else None
+        if not isinstance(monitor, Mapping):
+            return None
+        mode = monitor.get('mode')
+        target = monitor.get('target')
+        launch = monitor.get('launch')
+        cwd = launch.get('cwd') if isinstance(launch, Mapping) else None
+        relative_target = (isinstance(target, str)
+                           and target.startswith(RELATIVE_PATH_PREFIXES))
+        relative_cwd = (mode == 'launch' and isinstance(cwd, str)
+                        and cwd.startswith(RELATIVE_PATH_PREFIXES))
+        if not relative_target and not relative_cwd:
+            return None
+        return {'mode': mode, 'target': target, 'cwd': cwd}
 
     def start_cli(self) -> LaunchResult | None:
         """先保存并复验磁盘候选，再创建独立 CLI 控制台。"""

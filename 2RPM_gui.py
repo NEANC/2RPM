@@ -56,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
                     'repeat_launch': '再次启动会创建另一独立 CLI 控制台，继续？'}[kind]
         return 'confirm' if messagebox.askyesno('确认操作', text, parent=root) else 'cancel'
 
+    def choose_config_path():
+        """首次保存建议 config.yaml，不把对话框默认值绑定到仓库路径。"""
+        name = filedialog.asksaveasfilename(parent=root, initialfile='config.yaml',
+                                            defaultextension='.yaml')
+        return Path(name) if name else None
+
     try:
         command = resolve_cli_command(executable=Path(sys.executable),
                                       frozen=bool(getattr(sys, 'frozen', False)),
@@ -70,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runner = TestRunner(worker_command, queue.Queue(), worker_cwd=program_dir)
         controller = Controller(EditorModel(new_blank_document()), confirm=confirm,
-                                choose_path=lambda: Path(name) if (name := filedialog.asksaveasfilename(parent=root)) else None,
+                                choose_path=choose_config_path,
                                 cli_command=command, runner=runner, program_dir=program_dir)
         App(root, controller)
         if options.config is not None:

@@ -33,6 +33,8 @@ from modules.gui.test_dialogs import TestDialogs
 from modules.gui.test_session import TestSession
 from modules.screenshot.retention import FORMAT_SUFFIX
 
+INCOMPLETE_INPUT_MESSAGE = '输入尚未完成，请补全数字后保存'
+
 
 class _MonitorInfo(ctypes.Structure):
     """Win32 显示器工作区结构。"""
@@ -570,7 +572,10 @@ class App:
             messagebox.showerror('打开配置', '无法打开配置', parent=self.root)
 
     def save(self):
-        """只通过控制器保存编辑文档。"""
+        """只通过控制器保存编辑文档，未完成输入先提示并定位字段。"""
+        if self.model.input_errors:
+            self._show_incomplete_input()
+            return
         result = self.controller._save_result()
         if result is SaveResult.CONFLICT:
             self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
@@ -588,6 +593,9 @@ class App:
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置', parent=self.root)
+            return
+        if self.model.input_errors:
+            self._show_incomplete_input()
             return
         result = self.controller._save_as_result(lambda: filedialog.asksaveasfilename(
             parent=self.root, defaultextension='.yaml') or None)
@@ -619,19 +627,8 @@ class App:
 
         counts = {name: [0, 0] for name in self.page_names}
         by_page = {name: [] for name in self.page_names}
-        def destination(issue):
-            """结构问题归主页，高级隐藏字段归相关业务页。"""
-            path = issue.path
-            if not path or getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping'):
-                return '主页'
-            if path[:3] == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
-                return '外部程序设置'
-            if path[:2] == ('push', 'screenshot'):
-                return '截图设置'
-            return {'monitor': '监视设置', 'push': '消息推送设置',
-                    'log': '日志设置'}.get(path[0], '主页')
         for issue in candidate.issues:
-            name = destination(issue)
+            name = self._issue_page(issue)
             counts[name][0 if issue.severity == 'error' else 1] += 1
             by_page[name].append(issue)
         groups = [(name, error_count, other_count, by_page[name])
@@ -643,8 +640,28 @@ class App:
         errors = [issue for issue in candidate.issues if issue.severity == 'error']
         if errors:
             issue = errors[0]
-            self.focus_validation_issue(destination(issue), issue)
+            self.focus_validation_issue(self._issue_page(issue), issue)
         return candidate
+
+    @staticmethod
+    def _issue_page(issue):
+        """把诊断路径归入承载页面，供校验与保存定位共用。"""
+        path = issue.path
+        if not path or getattr(issue, 'code', None) in ('root_type', 'legacy', 'mapping'):
+            return '主页'
+        if path[:3] == ('monitor', 'common', 'timeout_threshold') or path[0] == 'external':
+            return '外部程序设置'
+        if path[:2] == ('push', 'screenshot'):
+            return '截图设置'
+        return {'monitor': '监视设置', 'push': '消息推送设置',
+                'log': '日志设置'}.get(path[0], '主页')
+
+    def _show_incomplete_input(self):
+        """主动保存被未完成数字阻断时提示并定位首个字段。"""
+        messagebox.showerror('保存配置', INCOMPLETE_INPUT_MESSAGE, parent=self.root)
+        issue = next(iter(self.model.input_errors.values()))
+        self.focus_validation_issue(self._issue_page(issue), issue)
+        self.status.configure(text=INCOMPLETE_INPUT_MESSAGE)
 
     def focus_validation_issue(self, name, issue):
         """从主页诊断行前往实际字段，隐藏字段只指向所属页。"""
