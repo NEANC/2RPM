@@ -3,12 +3,14 @@
 
 """窗口级 Ctrl+S 与保存前正文同步的真实 Tk 事件回归。"""
 
+import time
 import tkinter as tk
 from unittest.mock import Mock
 
 import pytest
 
 from modules.config_document import read_document
+from modules.gui import controller as controller_module
 from tests.gui_support import make_app
 
 
@@ -119,7 +121,7 @@ def test_ctrl_s_untouched_text_keeps_empty_mapping(tmp_path):
 
 
 def test_ctrl_s_repeat_and_modal_release(tmp_path, monkeypatch):
-    """长按只保存一次，模态中释放与失焦后下一次完整按键仍有效。"""
+    """长按只保存一次，模态内释放与聚焦对账后下一次完整按键仍有效。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path, blank=True)
@@ -131,41 +133,63 @@ def test_ctrl_s_repeat_and_modal_release(tmp_path, monkeypatch):
         root.update()
         saves = Mock()
         app.save_shortcuts.save = saves
+        shortcuts = app.save_shortcuts
 
+        # 长按：自动重复的 KeyPress 只算一次请求。
         press(widget)
         press(widget)
         press(widget)
         root.update()
         assert saves.call_count == 1
-        release(widget)
-        root.update()
+        assert shortcuts._held is True
 
+        # 无模态时在主窗上释放即清锁，下一次完整按键有效。
+        release_on_root(root)
+        root.update()
+        assert shortcuts._held is False
         press(widget)
         release(widget)
         root.update()
         assert saves.call_count == 2
 
+        # 模态框内的真实释放不进入主窗绑定，按下锁必须保持。
         press(widget)
-        dialog = tk.Toplevel(root)
-        dialog.grab_set()
         root.update()
         assert saves.call_count == 3
+        # 焦点移出主窗时物理键仍按住，焦点对账不得清锁。
+        monkeypatch.setattr('modules.gui.save_shortcuts.save_key_down',
+                            lambda: True)
+        dialog = tk.Toplevel(root)
+        marker = tk.Label(dialog, text='模态')
+        marker.pack()
+        root.update()
+        marker.focus_force()
+        dialog.grab_set()
+        root.update()
+        assert root.focus_get() is marker
+        assert shortcuts._held is True
+        # 随后在模态框内松开物理键，释放事件不进入主窗绑定。
         monkeypatch.setattr('modules.gui.save_shortcuts.save_key_down',
                             lambda: False)
-        dialog.event_generate('<KeyRelease-s>', state=0x4)
+        release(marker)
         root.update()
+        assert shortcuts._held is True
+
+        # 物理键已在模态框内松开：焦点回流主窗时按状态对账清锁。
+        root.event_generate('<FocusIn>')
+        root.update()
+        assert shortcuts._held is False
         dialog.grab_release()
         dialog.destroy()
         root.update()
         widget.focus_force()
-        root.update()
-        widget.event_generate('<FocusIn>')
         root.update()
         press(widget)
         release(widget)
         root.update()
         assert saves.call_count == 4
 
+        # 仍按住时对话框关闭不重触发：焦点对账保留锁。
         press(widget)
         assert saves.call_count == 5
         monkeypatch.setattr('modules.gui.save_shortcuts.save_key_down',
@@ -181,27 +205,32 @@ def test_ctrl_s_repeat_and_modal_release(tmp_path, monkeypatch):
         widget.event_generate('<FocusIn>')
         widget.event_generate('<FocusOut>')
         root.update()
+        assert shortcuts._held is True
         press(widget)
         root.update()
         assert saves.call_count == 5
-        release(widget)
+        release_on_root(root)
         root.update()
+        assert shortcuts._held is False
         press(widget)
         release(widget)
         root.update()
         assert saves.call_count == 6
 
+        # 失焦且物理键已松开时清锁。
         press(widget)
         assert saves.call_count == 7
         monkeypatch.setattr('modules.gui.save_shortcuts.save_key_down',
                             lambda: False)
         widget.event_generate('<FocusOut>')
         root.update()
+        assert shortcuts._held is False
         press(widget)
         release(widget)
         root.update()
         assert saves.call_count == 8
 
+        # 选择器取消后下一次完整按键仍能保存。
         app.save_shortcuts.save = app.save
         app.model.set(('log', 'log_directory'), 'logs')
         app.controller.choose_path = Mock(return_value=None)
@@ -264,5 +293,62 @@ def test_ctrl_s_modal_guard_allows_explicit_save_choice(tmp_path):
         destination = tmp_path / 'conflict.yaml'
         assert app.controller.resolve_external('save_as', destination)
         assert read_document(destination).tree['log']['log_directory'] == 'logs-elsewhere'
+    finally:
+        root.destroy()
+
+
+def test_ctrl_s_save_runs_inside_transaction(tmp_path, monkeypatch):
+    """快捷键保存包进既有事务：执行中暂停自动保存，结束后不再写第二次。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        app.show_page('监视设置')
+        root.update()
+        widget = app.visible_pages['监视设置'].fields[
+            ('monitor', 'common', 'max_wait')][1]._entry
+        widget.focus_force()
+        widget.insert(0, '30s')
+        root.update()
+        press(widget)
+        release(widget)
+        root.update()
+        path = tmp_path / 'a.yaml'
+        assert read_document(path).tree['monitor']['common']['max_wait'] == '30s'
+
+        real_save = controller_module.save_document
+        writes = []
+
+        def counted(document, target, **kwargs):
+            """记录每次真实写盘的目标路径。"""
+            writes.append(target)
+            return real_save(document, target, **kwargs)
+
+        monkeypatch.setattr('modules.gui.controller.save_document', counted)
+        depths = []
+        original = app.controller._save_result
+
+        def observed(*args, **kwargs):
+            """在保存执行期间记录协调器事务深度。"""
+            depths.append(app.save_coordinator.depth)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(app.controller, '_save_result', observed)
+        app.model.set(('monitor', 'common', 'max_wait'), '45s')
+        assert app.save_coordinator.pending is not None
+        assert writes == []
+
+        press(widget)
+        release(widget)
+        root.update()
+        assert depths == [1]
+        assert app.save_coordinator.depth == 0
+        assert app.save_coordinator.pending is None
+        assert writes == [path]
+        assert read_document(path).tree['monitor']['common']['max_wait'] == '45s'
+        assert not app.model.dirty
+
+        time.sleep(0.6)
+        root.update()
+        assert writes == [path]
     finally:
         root.destroy()

@@ -585,7 +585,7 @@ class App:
         if self.model.input_errors:
             self._show_incomplete_input()
             return
-        result = self.controller._save_result()
+        result = self.controller._transaction(self.controller._save_result)
         if result is SaveResult.CONFLICT:
             self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
             return

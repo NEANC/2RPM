@@ -65,22 +65,28 @@ class SaveShortcuts:
             self._bindings.append(
                 (sequence, root.bind(sequence, self._on_focus, add='+')))
 
-    def _owns(self, event) -> bool:
-        """只接受主窗 toplevel 内的事件，模态 grab 期间忽略新的保存请求。"""
+    def _in_main_window(self, event) -> bool:
+        """事件是否来自主窗 toplevel，不判断模态 grab。"""
         widget = getattr(event, 'widget', None)
         if widget is None:
             return False
         try:
-            if widget.winfo_toplevel() is not self.root:
-                return False
-            grab = self.root.grab_current()
+            return widget.winfo_toplevel() is self.root
         except tk.TclError:
             return False
-        return grab is None
+
+    def _owns_save(self, event) -> bool:
+        """新的保存请求只接受主窗内且没有模态 grab 的事件。"""
+        if not self._in_main_window(event):
+            return False
+        try:
+            return self.root.grab_current() is None
+        except tk.TclError:
+            return False
 
     def _on_press(self, event):
         """锁住本次按下，自动重复事件被拦截并返回事件终止标志。"""
-        if not self._owns(event):
+        if not self._owns_save(event):
             return None
         if event.keysym not in PRESS_KEYSYMS:
             return None
@@ -92,7 +98,7 @@ class SaveShortcuts:
 
     def _on_release(self, event):
         """看到 s/S 的释放即清锁，不消费其他控件的释放行为。"""
-        if not self._owns(event):
+        if not self._in_main_window(event):
             return None
         if event.keysym in SAVE_KEYSYMS:
             self._held = False
@@ -100,7 +106,7 @@ class SaveShortcuts:
 
     def _on_focus(self, event):
         """焦点变化时按物理键状态清锁，避免锁永久残留或仍按住时重触发。"""
-        if not self._owns(event):
+        if not self._in_main_window(event):
             return None
         if not save_key_down():
             self._held = False
