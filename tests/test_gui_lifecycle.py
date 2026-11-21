@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
+from modules.config_document import ConfigSaveError
 from modules.config_document import new_document
 from modules.config_document import read_document
 from modules.config_document import save_document
@@ -374,13 +375,19 @@ def test_operation_flush_failure_is_visible(tmp_path, monkeypatch, action):
     try:
         app = make_app(root, tmp_path)
         app.model.set_input(('monitor', 'common', 'max_wait'), '-')
-        app.save_coordinator.flush = Mock(return_value=False)
+
+        def fail_save(*args, **kwargs):
+            """仅在真实控制器的写盘边界模拟失败。"""
+            raise ConfigSaveError('写入失败')
+
+        monkeypatch.setattr('modules.gui.controller.save_document', fail_save)
         popup = Mock()
         monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
         assert not getattr(app, action)()
         popup.assert_called_once()
         assert '未保存' in popup.call_args.args[1]
         assert app.model.get_input(('monitor', 'common', 'max_wait')) == '-'
+        assert app.model.dirty
     finally:
         root.destroy()
 

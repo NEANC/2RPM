@@ -323,8 +323,13 @@ def test_review_screenshot_requires_all_effective_conditions(tmp_path):
         app.model.set(('push', 'templates', event, 'content'), '{screenshot}')
         app.model.set(('push', 'push_channel_settings', 'channels'),
                       [{'provider': 'serverchan', 'sckey': 'private-key'}])
-        app.visible_pages['截图设置'].add_target()
-        app.visible_pages['截图设置']._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
+        screenshot = app.visible_pages['截图设置']
+        screenshot.add_target()
+        assert screenshot.target_rows[0]['provider'].get() == '未选择'
+        with pytest.raises(KeyError):
+            app.model.get(('push', 'screenshot', 'targets', 0, 'provider'))
+        screenshot._change_provider(0, '窗口')
+        screenshot._set_item(('push', 'screenshot', 'targets'), 0, 'target', '测试窗口')
         app.refresh()
         assert all(screenshot_conditions(app.model.snapshot(), event).values())
         assert home.screenshot_rows['目标结束']['reasons'] is None
