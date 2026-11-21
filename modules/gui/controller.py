@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Callable
 
 from modules.config_document import (ConfigConflictError, ConfigReadError,
-                                     ConfigSaveError, new_document,
-                                     normalize_config_path, patch_document,
-                                     read_document, save_document)
+                                     ConfigSaveError, new_blank_document,
+                                     new_document, normalize_config_path,
+                                     patch_document, read_document,
+                                     save_document)
 from modules.gui.launcher import LaunchResult, launch_cli
 from modules.gui.model import EditorModel
 from modules.gui.test_runner import TestRunner
@@ -88,7 +89,7 @@ class Controller:
             if not self._resolve_unsaved():
                 return False
             if picker is None:
-                self.model.replace_document(new_document())
+                self.model.replace_document(new_blank_document())
                 self.conflicted = False
                 self.on_change()
                 return True

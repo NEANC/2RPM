@@ -83,7 +83,7 @@ class App:
         self.save_coordinator.on_auto_save_failed = self._auto_save_failed
         self.model.on_edit = self.save_coordinator.edited
         self.model.before_list_edit = self._before_list_edit
-        self.model.on_list_edit = self.save_coordinator.flush
+        self.model.on_list_edit = self._after_list_edit
         self.test_session = TestSession(controller.runner)
         self.test_dialogs = TestDialogs(root, self.test_session)
         self.generation = self.model.document_generation
@@ -466,6 +466,8 @@ class App:
 
     def _before_list_edit(self):
         """补存若替换草稿则停止列表操作并要求重新选择。"""
+        if self.model.document.path is None:
+            return True
         identity = (self.model.document_generation, self.model.revision)
         result = self.save_coordinator.flush_result()
         saved = result in (SaveResult.SAVED, SaveResult.SUPERSEDED)
@@ -481,6 +483,12 @@ class App:
             self.status.configure(text='配置未保存，操作已停止')
             messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。', parent=self.root)
         return saved
+
+    def _after_list_edit(self):
+        """列表编辑写入内存后补存；未绑定路径时不触发任何写盘。"""
+        if self.model.document.path is None:
+            return
+        self.save_coordinator.flush()
 
     def drain_results(self):
         """待 worker 回收后只接纳最近请求及当前文档代次的终态。"""
@@ -535,13 +543,12 @@ class App:
                     self.preview_label.configure(text='无法显示预览图片')
 
     def new(self):
-        """由控制器确认旧草稿后建立新配置。"""
+        """由控制器确认旧草稿后建立无路径空白草稿。"""
         if self.controller.runner.active:
             self.status.configure(text='请等待测试完成或取消测试后切换配置')
             messagebox.showinfo('配置切换', '请等待测试完成或取消测试后切换配置', parent=self.root)
             return
-        if self.controller.new(lambda: filedialog.asksaveasfilename(
-                parent=self.root, defaultextension='.yaml') or None):
+        if self.controller.new():
             self._clear_test_results()
 
     def open(self):

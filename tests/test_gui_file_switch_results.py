@@ -83,7 +83,7 @@ def seed_preview(app, tmp_path):
     return preview, upload, business
 
 
-@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('action', ['open', 'save_as'])
 @pytest.mark.parametrize('damage', ['invalid', 'missing'])
 def test_dirty_picker_unavailable_bytes_preserve_draft(window, monkeypatch, action, damage):
     """真实选择器返回坏 YAML 或缺失路径时保留草稿代次并冻结原路径。"""
@@ -118,7 +118,7 @@ def test_dirty_picker_unavailable_bytes_preserve_draft(window, monkeypatch, acti
         assert not path.exists()
 
 
-@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('action', ['open', 'save_as'])
 def test_dirty_picker_valid_update_preserves_full_disk_bytes(window, monkeypatch, action):
     """有效 YAML 的任意原始字节更新在选择期间都不被旧草稿覆盖。"""
     app = window
@@ -259,7 +259,7 @@ def test_open_modal_reentry_keeps_failure_with_its_own_call(
     assert app.result_text == '旧结果'
 
 
-@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('action', ['open', 'save_as'])
 def test_successful_switch_deletes_only_owned_preview(window, tmp_path, monkeypatch,
                                                        action):
     """成功切换只删除会话截图，保留上传原图和业务截图。"""
@@ -345,12 +345,12 @@ def test_replaced_session_directory_does_not_delete_outside_preview(
 
 
 @pytest.mark.parametrize('action,same_path', [
-    ('new', False), ('new', True), ('open', False), ('open', True),
+    ('open', False), ('open', True),
     ('save_as', False), ('save_as', True),
 ])
 def test_explicit_file_success_clears_old_results(window, tmp_path, monkeypatch,
                                                    action, same_path):
-    """成功显式新建、打开或另存后，即使仍为原路径也丢弃旧窗口图片。"""
+    """成功显式打开或另存后，即使仍为原路径也丢弃旧窗口图片。"""
     app = window
     original = app.model.document.path
     target = original if same_path else tmp_path / 'other.yaml'
@@ -374,7 +374,7 @@ def test_explicit_file_success_clears_old_results(window, tmp_path, monkeypatch,
     assert app.result_text == ''
 
 
-@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('action', ['open', 'save_as'])
 def test_cancelled_file_action_keeps_old_results(window, monkeypatch, action):
     """文件选择取消不得清除原配置的结果和图片。"""
     app = window
@@ -394,7 +394,7 @@ def test_cancelled_file_action_keeps_old_results(window, monkeypatch, action):
     assert app.result_text == '旧结果'
 
 
-@pytest.mark.parametrize('action', ['new', 'open', 'save_as'])
+@pytest.mark.parametrize('action', ['open', 'save_as'])
 def test_failed_file_action_keeps_old_results(window, tmp_path, monkeypatch, action):
     """真实文件读取或写入失败不能销毁当前测试结果。"""
     app = window
@@ -421,6 +421,131 @@ def test_failed_file_action_keeps_old_results(window, tmp_path, monkeypatch, act
     assert dialog.winfo_exists()
     assert app.preview_image is image
     assert app.result_text == '旧结果'
+
+
+def _seed_dirty_draft(app):
+    """让旧文档带有未保存编辑、待保存回调和可见测试结果。"""
+    app.model.set(('monitor', 'target'), 'draft.exe')
+    assert app.save_coordinator.pending is not None
+    return seed_result(app)
+
+
+def test_new_blank_transaction_cancel_keeps_old_document(window, monkeypatch):
+    """新建确认取消时保留旧文档、输入原文和旧结果，迟到回调不写盘。"""
+    app = window
+    path = app.model.document.path
+    old_bytes = path.read_bytes()
+    capture, upload, dialog, image = _seed_dirty_draft(app)
+    app.controller.confirm = lambda *_: 'cancel'
+    picker = Mock(return_value='')
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    generation = app.model.document_generation
+    revision = app.model.revision
+    serial = app.save_coordinator._save_serial
+
+    app.new()
+
+    picker.assert_not_called()
+    assert app.model.document.path == path
+    assert app.model.document_generation == generation
+    assert app.model.revision == revision
+    assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.model.dirty
+    assert app.test_session.last_capture is capture
+    assert app.test_session.last_upload is upload
+    assert app.test_dialogs.result_window is dialog
+    assert dialog.winfo_exists()
+    assert app.preview_image is image
+    assert app.result_text == '旧结果'
+    assert path.read_bytes() == old_bytes
+    app.save_coordinator._save(generation, serial)
+    assert path.read_bytes() == old_bytes
+    assert app.model.get(('monitor', 'target')) == 'draft.exe'
+
+
+@pytest.mark.parametrize('choice', ['discard', 'save'])
+def test_new_blank_transaction_replaces_old_draft(window, monkeypatch, choice):
+    """保存或放弃旧草稿成功后才建立无路径空草稿并清理旧结果。"""
+    app = window
+    path = app.model.document.path
+    old_bytes = path.read_bytes()
+    app.controller.confirm = lambda kind, _: choice if kind == 'unsaved' else 'confirm'
+    picker = Mock(return_value='')
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    capture, upload, dialog, image = _seed_dirty_draft(app)
+    generation = app.model.document_generation
+    serial = app.save_coordinator._save_serial
+
+    app.new()
+
+    picker.assert_not_called()
+    assert app.model.document.path is None
+    assert app.model.document.fingerprint is None
+    assert app.model.snapshot() == {}
+    assert app.model.document_generation == generation + 1
+    assert not app.model.dirty
+    assert app.test_session.last_capture is None
+    assert app.test_session.last_upload is None
+    assert app.test_dialogs.result_window is None
+    assert not dialog.winfo_exists()
+    assert app.preview_image is None
+    assert app.result_text == ''
+    assert app.save_coordinator.pending is None
+    if choice == 'discard':
+        assert path.read_bytes() == old_bytes
+    else:
+        assert read_document(path).tree['monitor']['target'] == 'draft.exe'
+    saved_bytes = path.read_bytes()
+    app.save_coordinator._save(generation, serial)
+    assert path.read_bytes() == saved_bytes
+    assert app.model.snapshot() == {}
+
+
+@pytest.mark.parametrize('failure', ['save-failure', 'incomplete-input'])
+def test_new_blank_transaction_failure_keeps_old_document(window, monkeypatch, failure):
+    """旧草稿保存失败或输入未完成时不替换文档，也不清理旧结果。"""
+    app = window
+    path = app.model.document.path
+    old_bytes = path.read_bytes()
+    app.controller.confirm = lambda kind, _: 'save' if kind == 'unsaved' else 'confirm'
+    picker = Mock(return_value='')
+    monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', picker)
+    if failure == 'incomplete-input':
+        app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')
+    else:
+        app.model.set(('monitor', 'target'), 'draft.exe')
+    capture, upload, dialog, image = seed_result(app)
+    if failure == 'incomplete-input':
+        monkeypatch.setattr('modules.gui.controller.save_document',
+                            Mock(side_effect=AssertionError('未完成输入不应写盘')))
+    else:
+        monkeypatch.setattr('modules.gui.controller.save_document',
+                            Mock(side_effect=ConfigSaveError('写入失败')))
+    generation = app.model.document_generation
+    revision = app.model.revision
+    serial = app.save_coordinator._save_serial
+
+    app.new()
+
+    picker.assert_not_called()
+    assert app.model.document.path == path
+    assert app.model.document_generation == generation
+    assert app.model.revision == revision
+    assert app.model.dirty
+    if failure == 'incomplete-input':
+        assert app.model.get_input(('monitor', 'common', 'timeout_threshold')) == '-'
+    else:
+        assert app.model.get(('monitor', 'target')) == 'draft.exe'
+    assert app.test_session.last_capture is capture
+    assert app.test_session.last_upload is upload
+    assert app.test_dialogs.result_window is dialog
+    assert dialog.winfo_exists()
+    assert app.preview_image is image
+    assert app.result_text == '旧结果'
+    assert path.read_bytes() == old_bytes
+    assert app.save_coordinator.pending is not None
+    app.save_coordinator._save(generation, serial)
+    assert path.read_bytes() == old_bytes
 
 
 @pytest.mark.parametrize('action', ['new', 'open', 'save_as'])

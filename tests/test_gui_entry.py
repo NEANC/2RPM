@@ -27,6 +27,74 @@ def test_gui_no_args_does_not_create_default(tmp_path, monkeypatch):
     assert not list(tmp_path.glob('*.yaml'))
 
 
+def test_gui_no_args_starts_blank_draft(tmp_path, monkeypatch):
+    """无参启动装配无路径空映射草稿，且不调用保存选择器。"""
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_blank', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = Mock()
+    root.mainloop = Mock()
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('modules.gui.app.App', Mock())
+    from modules.gui.controller import Controller
+    controllers = []
+
+    def capture_controller(*args, **kwargs):
+        """保留入口创建的真实控制器供断言。"""
+        controller = Controller(*args, **kwargs)
+        controllers.append(controller)
+        return controller
+
+    monkeypatch.setattr('modules.gui.controller.Controller', capture_controller)
+    picker = Mock()
+    monkeypatch.setattr('tkinter.filedialog.asksaveasfilename', picker)
+    monkeypatch.chdir(tmp_path)
+
+    assert module.main([]) == 0
+
+    model = controllers[0].model
+    assert model.document.path is None
+    assert model.document.fingerprint is None
+    assert model.snapshot() == {}
+    picker.assert_not_called()
+    assert not list(tmp_path.glob('*.yaml'))
+
+
+def test_gui_config_option_opens_explicit_file(tmp_path, monkeypatch):
+    """-c/--config 仍按指定路径读取已有配置。"""
+    from modules.config_document import new_document, read_document, save_document
+
+    target = tmp_path / 'given.yaml'
+    document = read_document(save_document(new_document(), target,
+                                           expected_fingerprint=None).path)
+    entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'
+    spec = importlib.util.spec_from_file_location('gui_entry_config', entry)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = Mock()
+    root.mainloop = Mock()
+    monkeypatch.setattr('ctk_kit.App', lambda **kwargs: root)
+    monkeypatch.setattr('modules.gui.app.App', Mock())
+    from modules.gui.controller import Controller
+    controllers = []
+
+    def capture_controller(*args, **kwargs):
+        """保留入口创建的真实控制器供断言。"""
+        controller = Controller(*args, **kwargs)
+        controllers.append(controller)
+        return controller
+
+    monkeypatch.setattr('modules.gui.controller.Controller', capture_controller)
+
+    assert module.main(['-c', str(target)]) == 0
+
+    model = controllers[0].model
+    assert model.document.path == target.absolute()
+    assert model.snapshot() == document.tree
+    assert not model.dirty
+
+
 def test_gui_entry_uses_ctk_window_without_geometry_persistence(monkeypatch):
     """入口创建 ctk-kit 窗口，几何与主题交给独立偏好处理。"""
     entry = Path(__file__).resolve().parents[1] / '2RPM_gui.py'

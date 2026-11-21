@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import ctk_kit
 
-    from modules.config_document import normalize_config_path, new_document
+    from modules.config_document import new_blank_document, normalize_config_path
     from modules.gui.app import App
     from modules.gui.build_identity import BUILD_TAG, BUILD_TOOL
     from modules.gui.controller import Controller
@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     runner = None
     try:
         runner = TestRunner(worker_command, queue.Queue(), worker_cwd=program_dir)
-        controller = Controller(EditorModel(new_document()), confirm=confirm,
+        controller = Controller(EditorModel(new_blank_document()), confirm=confirm,
                                 choose_path=lambda: Path(name) if (name := filedialog.asksaveasfilename(parent=root)) else None,
                                 cli_command=command, runner=runner, program_dir=program_dir)
         App(root, controller)

@@ -9,7 +9,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from modules.config_document import ConfigSaveError, new_document, read_document, save_document
+from modules.config_document import (ConfigSaveError, new_blank_document, new_document,
+                                     read_document, save_document)
 from modules.gui.controller import Controller, SaveResult
 from modules.gui.model import EditorModel
 from modules.gui.save_coordinator import SaveCoordinator
@@ -47,7 +48,7 @@ class Clock:
 def setup(tmp_path, *, persisted=True):
     """建立真实文档、控制器和虚拟时钟。"""
     document = (save_document(new_document(), tmp_path / 'old.yaml', expected_fingerprint=None)
-                if persisted else new_document())
+                if persisted else new_blank_document())
     controller = Controller(EditorModel(document), confirm=lambda *_: 'confirm',
                             choose_path=lambda: tmp_path / 'new.yaml', cli_command=(),
                             runner=Mock(), program_dir=tmp_path)
@@ -666,15 +667,39 @@ def test_reload_invalid_conflict_preserves_draft(tmp_path):
 
 
 def test_autosave_without_path_does_not_open_picker(tmp_path):
-    """无路径的新草稿自动保存不弹出系统选择器。"""
+    """无路径的新草稿不安排写入，也不弹出系统选择器。"""
     controller, coordinator, clock = setup(tmp_path, persisted=False)
     picker = Mock(return_value=None)
     controller.choose_path = picker
     controller.model.set(('monitor', 'target'), 'draft.exe')
     coordinator.edited()
+    assert coordinator.pending is None
     clock.advance(500)
     picker.assert_not_called()
+    assert coordinator.pending is None
     assert controller.model.dirty
+
+
+def test_new_without_picker_creates_blank_draft(tmp_path):
+    """无选择器的新建只替换内存草稿，不写盘也不保留旧路径。"""
+    controller, coordinator, _ = setup(tmp_path)
+    old_path = controller.model.document.path
+    old_bytes = old_path.read_bytes()
+    generation = controller.model.document_generation
+    controller.confirm = lambda *_: 'discard'
+    controller.model.set(('monitor', 'target'), 'draft.exe')
+    coordinator.edited()
+    assert coordinator.pending is not None
+
+    assert controller.new()
+
+    assert controller.model.document.path is None
+    assert controller.model.document.fingerprint is None
+    assert controller.model.snapshot() == {}
+    assert controller.model.document_generation == generation + 1
+    assert not controller.model.dirty
+    assert old_path.read_bytes() == old_bytes
+    assert coordinator.pending is None
 
 
 def test_unsaved_state_updates_on_user_edit(tmp_path):

@@ -46,7 +46,8 @@ class SaveCoordinator:
         if self.pending is not None:
             self.cancel(self.pending)
             self.pending = None
-        if self.closed or self.depth or self.controller.conflicted:
+        if (self.closed or self.depth or self.controller.conflicted
+                or self.controller.model.document.path is None):
             return
         generation = self.controller.model.document_generation
         serial = self._save_serial
