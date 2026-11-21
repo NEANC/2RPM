@@ -74,6 +74,7 @@ def test_cli_button_never_creates_process_without_saved_config(tmp_path, monkeyp
         launch = Mock()
         monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
         monkeypatch.setattr('modules.gui.app.messagebox.showerror', Mock())
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', Mock())
         monkeypatch.setattr('modules.gui.app.messagebox.askyesnocancel', lambda *_, **__: None)
         if reason == 'incomplete':
             app.model.set_input(('monitor', 'common', 'timeout_threshold'), '-', kind='int')

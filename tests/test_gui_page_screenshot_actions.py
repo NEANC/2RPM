@@ -1110,6 +1110,38 @@ def test_relocation_confirmation_does_not_show_private_target(tmp_path):
         root.destroy()
 
 
+def test_action_checks_only_its_required_fields(tmp_path, monkeypatch):
+    """通知渠道缺失只阻断通知，合法手填截图目标仍可启动独立测试。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        info = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+        monkeypatch.setattr('modules.gui.app.messagebox.askyesno', lambda *args, **kwargs: True)
+        app.model.set(('push', 'push_channel_settings', 'channels'), [])
+        assert app.model.dirty
+        notify = app.visible_pages['消息推送设置'].notify_button
+
+        notify.invoke()
+
+        info.assert_called_once_with('通知测试', '请先添加推送通道', parent=root)
+        app.controller.runner.start.assert_not_called()
+        assert app.test_session.active_request is None
+
+        app.open_capture_selection()
+        dialogs = app.test_dialogs
+        dialogs.capture_target.insert(0, '手填窗口')
+        dialogs.capture_start.invoke()
+
+        request = app.controller.runner.start.call_args.args[0]
+        assert request.action == 'capture'
+        assert (request.capture_provider, request.capture_target) == ('window', '手填窗口')
+        assert request.config['push']['push_channel_settings']['channels'] == []
+        assert app.test_session.active_request is request
+    finally:
+        root.destroy()
+
+
 def test_capture_request_requires_selected_target(tmp_path):
     """截图测试必须在选择弹窗填写窗口标题或 ADB 地址。"""
     root = tk.Tk()

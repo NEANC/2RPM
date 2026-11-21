@@ -7,7 +7,9 @@ import tkinter as tk
 from unittest.mock import Mock
 
 import ctk_kit
+import pytest
 
+from modules.gui.app import SAVE_GUIDANCE_MESSAGE
 from modules.gui.pages.notification_ctk import EVENTS
 from tests.gui_support import descendants, make_app
 
@@ -70,6 +72,60 @@ def test_all_pages_keep_blank_tree(tmp_path):
         assert all('示例' not in hint.cget('text') for hint in
                    (push.channel_hint, push.events_hint,
                     screenshot.targets_hint, screenshot.hosts_hint))
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('edited', [False, True], ids=['blank', 'edited'])
+@pytest.mark.parametrize('entry', ['capture', 'upload', 'notify', 'cli'])
+def test_unbound_actions_show_save_guidance(tmp_path, monkeypatch, entry, edited):
+    """无绑定路径时四类业务入口只显示首次保存指导，不产生任何副作用。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        info = Mock()
+        error = Mock()
+        choose = Mock()
+        open_picker = Mock()
+        save_picker = Mock()
+        worker = Mock()
+        runner_start = app.controller.runner.start
+        launch = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        monkeypatch.setattr('modules.gui.app.filedialog.askopenfilename', open_picker)
+        monkeypatch.setattr('modules.gui.app.filedialog.asksaveasfilename', save_picker)
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr(app.test_session, 'start', worker)
+        app.controller.choose_path = choose
+        app.test_dialogs.open_capture = Mock()
+        app.test_dialogs.open_upload = Mock()
+        if edited:
+            app.model.set(('log', 'log_directory'), 'logs')
+            assert app.model.dirty
+
+        if entry == 'capture':
+            app.visible_pages['截图设置'].capture_button.invoke()
+        elif entry == 'upload':
+            app.visible_pages['截图设置'].upload_button.invoke()
+        elif entry == 'notify':
+            app.visible_pages['消息推送设置'].notify_button.invoke()
+        else:
+            app.start_cli()
+
+        info.assert_called_once_with('首次保存', SAVE_GUIDANCE_MESSAGE, parent=root)
+        error.assert_not_called()
+        choose.assert_not_called()
+        open_picker.assert_not_called()
+        save_picker.assert_not_called()
+        worker.assert_not_called()
+        runner_start.assert_not_called()
+        launch.assert_not_called()
+        app.test_dialogs.open_capture.assert_not_called()
+        app.test_dialogs.open_upload.assert_not_called()
+        assert app.test_session.active_request is None
+        assert app.model.document.path is None
+        assert app.status.cget('text') == SAVE_GUIDANCE_MESSAGE
     finally:
         root.destroy()
 

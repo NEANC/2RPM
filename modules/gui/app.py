@@ -35,6 +35,7 @@ from modules.gui.test_session import TestSession
 from modules.screenshot.retention import FORMAT_SUFFIX
 
 INCOMPLETE_INPUT_MESSAGE = '输入尚未完成，请补全数字后保存'
+SAVE_GUIDANCE_MESSAGE = '请先按 Ctrl+S 或点击保存，选择配置文件路径'
 
 
 class _MonitorInfo(ctypes.Structure):
@@ -457,14 +458,28 @@ class App:
             text='发送中…' if action == 'notify' else '通知测试',
             state='disabled' if busy else 'normal')
 
+    def _show_save_guidance(self):
+        """未绑定路径时指导用户先完成首次保存，不启动选择器或业务动作。"""
+        self.status.configure(text=SAVE_GUIDANCE_MESSAGE)
+        messagebox.showinfo('首次保存', SAVE_GUIDANCE_MESSAGE, parent=self.root)
+
     def _require_saved(self):
         """在业务操作前补存，不把未保存草稿当作磁盘配置。"""
+        if self.model.document.path is None:
+            self._show_save_guidance()
+            return False
         result = self.save_coordinator.flush_result()
         if result in (SaveResult.SAVED, SaveResult.SUPERSEDED):
             return True
         if result is SaveResult.RELOADED:
             messagebox.showinfo('配置已更新', '磁盘配置已重新加载，操作已停止，请重新选择。',
                                 parent=self.root)
+            return False
+        if self.model.input_errors:
+            self._show_incomplete_input()
+            return False
+        if self.controller.conflicted:
+            self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
             return False
         self.status.configure(text='配置未保存，操作已停止')
         messagebox.showerror('配置未保存', '配置未保存，操作已停止。草稿已保留。', parent=self.root)
@@ -688,6 +703,15 @@ class App:
 
     def start_cli(self):
         """反馈进程创建结果但不跟踪其生命周期。"""
+        if self.model.document.path is None:
+            self._show_save_guidance()
+            return
+        if self.model.input_errors:
+            self._show_incomplete_input()
+            return
+        if self.controller.conflicted:
+            self.status.configure(text='磁盘配置已变化，原文件保存已暂停')
+            return
         generation = self.model.document_generation
         save_result = self.save_coordinator.flush_result()
         if save_result not in (SaveResult.SAVED, SaveResult.SUPERSEDED):

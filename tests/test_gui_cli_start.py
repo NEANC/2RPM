@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from modules.config_document import read_document, save_document
+from modules.gui.app import LAUNCH_FAILURE_MESSAGE
 from tests.gui_support import make_app
 
 
@@ -400,6 +401,76 @@ def test_start_cli_auto_reload_invalid_config_shows_safe_error(tmp_path, monkeyp
                                       '未能启动 CLI，请检查配置、磁盘文件或保存状态。',
                                       parent=root)
         info.assert_not_called()
+    finally:
+        root.destroy()
+
+
+def test_saved_blank_does_not_launch_using_implicit_defaults(tmp_path, monkeypatch):
+    """保存空映射不等同可运行，启动被业务校验阻断且不写入默认字段。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        launch = Mock()
+        error = Mock()
+        info = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', info)
+        destination = tmp_path / 'blank.yaml'
+        app.controller.choose_path = Mock(return_value=destination)
+
+        app.save()
+
+        assert app.model.document.path == destination
+        before = destination.read_bytes()
+        assert read_document(destination).tree == {}
+
+        app.start_cli()
+
+        launch.assert_not_called()
+        error.assert_called_once_with('启动 CLI', LAUNCH_FAILURE_MESSAGE, parent=root)
+        assert destination.read_bytes() == before
+        assert read_document(destination).tree == {}
+        assert app.model.snapshot() == {}
+        assert app.controller.launch_count == 0
+        assert not app.model.dirty
+    finally:
+        root.destroy()
+
+
+def test_cli_normalization_cancel_does_not_write_or_launch(tmp_path, monkeypatch):
+    """规范化必须显式确认，取消后不写盘也不创建 CLI。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        launch = Mock()
+        error = Mock()
+        monkeypatch.setattr('modules.gui.controller.launch_cli', launch)
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', error)
+        path = ('push', 'screenshot', 'image_host')
+        hosts = app.model.get(path)
+        hosts.append({'provider': 'beeimg'})
+        app.model.set(path, hosts)
+        app.save()
+        assert app.model.validate(tmp_path).changes
+        before = app.model.document.path.read_bytes()
+        confirmations = []
+
+        def confirm(kind, detail):
+            """只拒绝规范化确认。"""
+            confirmations.append(kind)
+            return 'cancel'
+
+        app.controller.confirm = confirm
+
+        app.start_cli()
+
+        assert confirmations == ['normalize']
+        launch.assert_not_called()
+        error.assert_not_called()
+        assert app.model.document.path.read_bytes() == before
+        assert read_document(app.model.document.path).tree['push']['screenshot']['image_host'] == hosts
+        assert app.status.cget('text') == '未启动 CLI'
     finally:
         root.destroy()
 
