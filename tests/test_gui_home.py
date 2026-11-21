@@ -204,6 +204,50 @@ def test_first_save_incomplete_input_locates_field_before_picker(tmp_path, monke
         root.destroy()
 
 
+def test_new_and_close_save_with_incomplete_input_shows_hint(tmp_path, monkeypatch):
+    """新建或关闭时选择保存遇未完成输入，提示定位且不新建、不退出。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        path = ('monitor', 'watch', 'lookback_minutes')
+        app.model.set_input(path, '-', kind='int')
+        app.controller.confirm = lambda kind, _detail: (
+            'save' if kind == 'unsaved' else 'confirm')
+        original_path = app.model.document.path
+        original_tree = app.model.snapshot()
+        generation = app.model.document_generation
+        popup = Mock()
+        monkeypatch.setattr('modules.gui.app.messagebox.showerror', popup)
+
+        app.new()
+
+        assert app.model.document.path == original_path
+        assert app.model.document_generation == generation
+        assert app.model.snapshot() == original_tree
+        assert app.model.get_input(path) == '-'
+        popup.assert_called_once_with('保存配置', '输入尚未完成，请补全数字后保存',
+                                      parent=root)
+        assert app.current_page == '监视设置'
+        monitor = app.visible_pages['监视设置']
+        assert monitor.widget_for_issue is monitor.lookback.entry._entry
+        assert '输入尚未完成' in app.status.cget('text')
+
+        popup.reset_mock()
+        app.close()
+
+        assert root.winfo_exists()
+        assert app.model.document.path == original_path
+        assert app.model.document_generation == generation
+        assert app.model.snapshot() == original_tree
+        assert app.model.get_input(path) == '-'
+        popup.assert_called_once_with('保存配置', '输入尚未完成，请补全数字后保存',
+                                      parent=root)
+        assert app.current_page == '监视设置'
+        assert monitor.widget_for_issue is monitor.lookback.entry._entry
+    finally:
+        root.destroy()
+
+
 def test_saved_blank_reopens_pages_and_save_as_again(tmp_path, monkeypatch):
     """保存的空映射重开后控件仍为空，再次另存只写入实际编辑。"""
     monkeypatch.setattr('modules.gui.app.preferences_path',
