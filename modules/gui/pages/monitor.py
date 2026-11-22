@@ -419,9 +419,9 @@ class Page(ctk_kit.CTkScrollableFrame):
             self.lookback.set_readonly(False)
             monitor = self._monitor()
             mode = monitor.get('mode')
-            mode_ready = mode in ('watch', 'launch')
-            self.mode.set({'watch': '等待目标运行',
-                           'launch': '主动启动并监视'}.get(mode, MODE_PLACEHOLDER))
+            mode_ready = isinstance(mode, str) and mode in ('watch', 'launch')
+            labels = {'watch': '等待目标运行', 'launch': '主动启动并监视'}
+            self.mode.set(labels[mode] if mode_ready else MODE_PLACEHOLDER)
             self.mode_hint.configure(text='' if mode_ready else MODE_HINT)
             target = monitor.get('target')
             text = self._target_display_text(monitor)
