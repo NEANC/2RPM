@@ -288,6 +288,26 @@ def test_relocation_previews_new_base(tmp_path):
     assert controller.model.document == document
 
 
+def test_watch_mode_relative_launch_cwd_requires_relocation(tmp_path):
+    """watch 模式下保留的相对 launch.cwd 跨目录另存也必须确认。"""
+    source = tmp_path / 'source'
+    target = tmp_path / 'target'
+    source.mkdir()
+    target.mkdir()
+    document = save_document(new_document(), source / 'a.yaml', expected_fingerprint=None)
+    controller, confirm, _ = make_controller(tmp_path, document, ['cancel'])
+    controller.model.set(('monitor', 'mode'), 'watch')
+    controller.model.set(('monitor', 'target'), 'demo.exe')
+    controller.model.set(('monitor', 'launch', 'cwd'), '.\\work')
+    before = document.path.read_bytes()
+
+    assert not controller.save_as(lambda: target / 'b.yaml')
+
+    assert confirm.call_args.args[0] == 'relocate'
+    assert document.path.read_bytes() == before
+    assert controller.model.document.path == source / 'a.yaml'
+
+
 def test_business_invalid_target_can_save_as_another_directory(tmp_path):
     """业务无效的相对目标也允许跨目录另存，并保留路径变化确认。"""
     source = tmp_path / 'source'

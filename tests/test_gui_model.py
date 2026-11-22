@@ -256,7 +256,7 @@ def test_blank_mode_targets_survive_save_not_reopen(tmp_path):
     reloaded = EditorModel(saved)
     assert reloaded.get(('monitor', 'target')) == 'launch.exe'
     reloaded.switch_mode('watch')
-    assert reloaded.get(('monitor', 'target')) == 'launch.exe'
+    assert 'target' not in reloaded.snapshot()['monitor']
 
     number_path = ('monitor', 'common', 'timeout_threshold')
     model.set_input(number_path, '9', kind='int')
@@ -292,3 +292,18 @@ def test_target_written_before_mode_selection_is_preserved():
 
     model.switch_mode('watch')
     assert model.snapshot()['monitor'].get('target') == '预填程序.exe'
+
+
+def test_switch_mode_preserves_non_mapping_monitor():
+    """monitor 为非映射结构时切换模式不改树、不递增修订。"""
+    document = new_blank_document()
+    document.tree['monitor'] = []
+    model = EditorModel(document)
+    before = model.snapshot()
+    revision = model.revision
+
+    model.switch_mode('watch')
+
+    assert model.snapshot() == before
+    assert model.revision == revision
+    assert model.dirty is False

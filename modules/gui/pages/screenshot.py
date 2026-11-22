@@ -17,7 +17,7 @@ from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.target_order import (delete_screenshot_target, move_screenshot_target,
                                       swap_screenshot_targets)
-from modules.gui.widgets import (OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
+from modules.gui.widgets import (NUMBER_HINT, OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
                                  activate_and_focus, optional_bool_choice,
                                  scroll_to_widget, set_optional_bool)
 
@@ -76,6 +76,8 @@ class Page(ctk_kit.CTkScrollableFrame):
         self.upload_button.pack(side='right')
         self.capture_button = self._primary(header, '截图测试', self.app.capture)
         self.capture_button.pack(side='right', padx=(0, 10))
+        self.number_hint = ctk_kit.CTkLabel(self, text='', font=FONT_BODY, anchor='w')
+        self.number_hint.pack(fill='x', padx=PAGE_PAD)
         self._build_targets_card()
         self._build_hosts_card()
         self._build_retention_card()
@@ -574,11 +576,14 @@ class Page(ctk_kit.CTkScrollableFrame):
         """步进合法数字端口且保留地址。"""
         raw = self.target_rows[index]['port'].entry.get()
         if not re.fullmatch(r'\d+', raw):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         try:
             current = int(raw)
         except ValueError:
+            self.number_hint.configure(text=NUMBER_HINT)
             return
+        self.number_hint.configure(text='')
         address, port = self._split_adb(self._item_at(TARGETS, index).get('target', ''))
         if port is not None and 1 <= current + delta <= 65535:
             path = (*TARGETS, self._source_index(TARGETS, index), 'target')
@@ -650,7 +655,9 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         raw = self.days_value.get()
         if not re.fullmatch(r'\d+', raw):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
+        self.number_hint.configure(text='')
         days = int(raw)
         if 1 <= days + delta <= MAX_RETENTION_DAYS:
             self.days_value.set(str(days + delta))

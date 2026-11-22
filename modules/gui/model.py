@@ -114,8 +114,11 @@ class EditorModel:
         """切换模式时只在内存中保存与恢复各分支目标。"""
         if mode not in ('watch', 'launch'):
             raise ValueError('无效的监视模式')
-        monitor = self._tree.get('monitor')
-        if not isinstance(monitor, Mapping):
+        if 'monitor' in self._tree:
+            monitor = self._tree['monitor']
+            if not isinstance(monitor, Mapping):
+                return
+        else:
             monitor = {}
             self._tree['monitor'] = monitor
         current = monitor.get('mode')
@@ -123,9 +126,9 @@ class EditorModel:
             return
         if current in ('watch', 'launch'):
             self._targets[current] = monitor.get('target')
-        elif current is None and monitor.get('target') is not None:
+        elif monitor.get('target') is not None:
             self._targets[mode] = monitor.get('target')
-        target = self._targets.get(mode, self._original_target)
+        target = self._targets.get(mode)
         monitor['mode'] = mode
         if target is not None:
             monitor['target'] = target
@@ -223,10 +226,8 @@ class EditorModel:
         self._tree = copy.deepcopy(document.tree)
         monitor = self._tree.get('monitor')
         if isinstance(monitor, Mapping):
-            self._original_target = monitor.get('target')
             mode = monitor.get('mode')
-            self._targets = {mode: self._original_target} if mode in ('watch', 'launch') else {}
+            self._targets = {mode: monitor.get('target')} if mode in ('watch', 'launch') else {}
         else:
-            self._original_target = None
             self._targets = {}
         self.dirty = False

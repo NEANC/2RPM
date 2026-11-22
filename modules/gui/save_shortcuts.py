@@ -11,7 +11,6 @@ from typing import Callable
 VK_CONTROL = 0x11
 VK_S = 0x53
 SAVE_KEYSYMS = frozenset(('s', 'S'))
-PRESS_KEYSYMS = frozenset(('s', 'S'))
 
 
 def key_is_down(virtual_key: int) -> bool:
@@ -41,7 +40,8 @@ class SaveShortcuts:
     """在主窗 toplevel 上消费 Ctrl+S，一次按下至释放只保存一次。"""
 
     PRESS_SEQUENCES = ('<Control-KeyPress-s>', '<Control-KeyPress-S>')
-    RELEASE_SEQUENCES = ('<Control-KeyRelease-s>', '<Control-KeyRelease-S>')
+    RELEASE_SEQUENCES = ('<Control-KeyRelease-s>', '<Control-KeyRelease-S>',
+                         '<KeyRelease>')
     FOCUS_SEQUENCES = ('<FocusIn>', '<FocusOut>')
 
     def __init__(self, root, save: Callable[[], None]):
@@ -88,7 +88,7 @@ class SaveShortcuts:
         """锁住本次按下，自动重复事件被拦截并返回事件终止标志。"""
         if not self._owns_save(event):
             return None
-        if event.keysym not in PRESS_KEYSYMS:
+        if event.keysym not in SAVE_KEYSYMS:
             return None
         if self._held:
             return 'break'

@@ -424,6 +424,60 @@ def test_retry_max_count_arrow_steps_only_valid_integer(tmp_path, raw, direction
         root.destroy()
 
 
+@pytest.mark.parametrize('raw', ['', '-', '12x'])
+def test_retry_max_count_arrow_shows_number_hint(tmp_path, raw):
+    """空或未完成的最大重试次数点箭头时提示先输入数字且不写模型。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, raw)
+        root.update()
+        before = app.model.get(path)
+        revision = app.model.revision
+        page.retry_spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.retry_spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == '请先输入数字'
+        assert app.model.get(path) == before
+        assert app.model.revision == revision
+        assert entry.get() == raw
+    finally:
+        root.destroy()
+
+
+def test_retry_max_count_arrow_clears_number_hint(tmp_path):
+    """有效整数步进后清空“请先输入数字”提示并按原步长变化。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path)
+        page = app.visible_pages['消息推送设置']
+        path = ('push', 'retry', 'max_count')
+        entry = page.retry_spinner.entry._entry
+        entry.delete(0, 'end')
+        entry.insert(0, '')
+        root.update()
+        page.retry_spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.retry_spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == '请先输入数字'
+
+        entry.delete(0, 'end')
+        entry.insert(0, '5')
+        root.update()
+        page.retry_spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(page.retry_spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == ''
+        assert page.retry_spinner.entry.get() == '6'
+        assert app.model.get(path) == 6
+    finally:
+        root.destroy()
+
+
 def test_retry_max_count_oversized_draft_survives_arrow_and_blocks_save(tmp_path):
     """超长数字点击真实箭头不报错、不覆盖原文，并阻断落盘。"""
     root = tk.Tk()

@@ -14,7 +14,7 @@ from modules.gui.appearance import (COLORS, FONT_BODY, FONT_BUTTON,
                                     FONT_CARD_TITLE, FONT_SMALL, FONT_TITLE)
 from modules.gui.forms import (event_variables, preview_template,
                                provider_fields, screenshot_conditions)
-from modules.gui.widgets import (OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
+from modules.gui.widgets import (NUMBER_HINT, OPTIONAL_BOOL_CHOICES, PRESAVE_HINT,
                                  STRUCTURE_HINT, activate_and_focus,
                                  optional_bool_choice, path_writable,
                                  scroll_to_widget, set_optional_bool)
@@ -95,6 +95,10 @@ class Page(ctk_kit.CTkScrollableFrame):
             self, text='', font=FONT_BODY, anchor='w',
             text_color=COLORS['text_secondary'])
         self.structure_hint.pack(fill='x', padx=PAGE_PAD, pady=(6, 0))
+        self.number_hint = ctk_kit.CTkLabel(
+            self, text='', font=FONT_BODY, anchor='w',
+            text_color=COLORS['text_secondary'])
+        self.number_hint.pack(fill='x', padx=PAGE_PAD)
         self._build_channels_card()
         self._build_events_card()
         self._build_retry_card()
@@ -225,13 +229,16 @@ class Page(ctk_kit.CTkScrollableFrame):
             return
         raw = self.retry_spinner.entry.get()
         if not re.fullmatch(r'[+-]?\d+', raw.strip()):
+            self.number_hint.configure(text=NUMBER_HINT)
             return
         middle = max(1, self.retry_spinner._arrows.winfo_height()) / 2
         delta = 1 if event.y < middle else -1
         try:
             value = int(raw)
         except ValueError:
+            self.number_hint.configure(text=NUMBER_HINT)
             return
+        self.number_hint.configure(text='')
         self.retry_spinner.set(max(0, min(99, value + delta)))
 
     def _changed(self, path, variable, numeric):

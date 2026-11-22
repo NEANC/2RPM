@@ -381,7 +381,7 @@ class Controller:
         cwd = launch.get('cwd') if isinstance(launch, Mapping) else None
         relative_target = (isinstance(target, str)
                            and target.startswith(RELATIVE_PATH_PREFIXES))
-        relative_cwd = (mode == 'launch' and isinstance(cwd, str)
+        relative_cwd = (isinstance(cwd, str)
                         and cwd.startswith(RELATIVE_PATH_PREFIXES))
         if not relative_target and not relative_cwd:
             return None

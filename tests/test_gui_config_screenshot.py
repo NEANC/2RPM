@@ -584,6 +584,85 @@ def test_screenshot_numeric_arrow_keeps_draft_or_steps_valid_value(field, raw, e
         root.destroy()
 
 
+@pytest.mark.parametrize('field, raw', [
+    ('port', ''), ('port', '-'), ('port', '12x'),
+    ('days', ''), ('days', '-'), ('days', '12x'),
+])
+def test_screenshot_numeric_arrow_shows_number_hint(field, raw):
+    """空或未完成的天数/端口点箭头时提示先输入数字且不写模型。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    root.geometry('1200x1200')
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    page.pack(fill='both', expand=True)
+    path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
+            else ('push', 'screenshot', 'retention', 'max_days'))
+    try:
+        root.update()
+        spinner = page.target_rows[0]['port'] if field == 'port' else page.days
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, raw)
+        root.update()
+        before = model.get(path)
+        revision = model.revision
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == '请先输入数字'
+        assert model.get(path) == before
+        assert model.revision == revision
+    finally:
+        root.destroy()
+
+
+@pytest.mark.parametrize('field, raw, expected', [
+    ('port', '16384', '16385'),
+    ('days', '7', '8'),
+])
+def test_screenshot_numeric_arrow_clears_number_hint(field, raw, expected):
+    """有效数字步进后清空“请先输入数字”提示并按原步长变化。"""
+    from unittest.mock import Mock
+    from modules.gui.pages.screenshot import Page as ScreenshotPage
+
+    root = tk.Tk()
+    root.geometry('1200x1200')
+    model = EditorModel(new_document())
+    model.set(('push', 'screenshot', 'targets'), [
+        {'provider': 'adb', 'target': '127.0.0.1:16384'}])
+    page = ScreenshotPage(root, Mock(model=model))
+    page.pack(fill='both', expand=True)
+    path = (('push', 'screenshot', 'targets', 0, 'target') if field == 'port'
+            else ('push', 'screenshot', 'retention', 'max_days'))
+    try:
+        root.update()
+        spinner = page.target_rows[0]['port'] if field == 'port' else page.days
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, '')
+        root.update()
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == '请先输入数字'
+
+        spinner.entry._entry.delete(0, 'end')
+        spinner.entry._entry.insert(0, raw)
+        root.update()
+        spinner._arrows.event_generate(
+            '<Button-1>', x=5, y=arrow_y(spinner, 'up'))
+        root.update()
+        assert page.number_hint.cget('text') == ''
+        current = page.target_rows[0]['port'] if field == 'port' else page.days
+        assert current.entry.get() == expected
+        assert model.get(path) == ('127.0.0.1:16385' if field == 'port' else 8)
+    finally:
+        root.destroy()
+
+
 @pytest.mark.parametrize('raw, direction, expected', [
     ('999999999', 'up', '1000000000'),
     ('1000000000', 'up', '1000000000'),

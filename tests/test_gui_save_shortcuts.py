@@ -297,6 +297,43 @@ def test_ctrl_s_modal_guard_allows_explicit_save_choice(tmp_path):
         root.destroy()
 
 
+def test_ctrl_s_release_without_control_clears_lock(tmp_path):
+    """先松 Ctrl 再松 S 时释放事件仍清锁，下一次完整按键有效。"""
+    root = tk.Tk()
+    try:
+        app = make_app(root, tmp_path, blank=True)
+        app.show_page('监视设置')
+        root.update()
+        widget = app.visible_pages['监视设置'].fields[
+            ('monitor', 'common', 'max_wait')][1]._entry
+        widget.focus_force()
+        root.update()
+        saves = Mock()
+        app.save_shortcuts.save = saves
+
+        widget.event_generate('<KeyPress-s>', state=0x4)
+        root.update()
+        assert saves.call_count == 1
+        assert app.save_shortcuts._held is True
+
+        widget.event_generate('<KeyRelease-s>', state=0)
+        root.update()
+        assert app.save_shortcuts._held is False
+
+        widget.event_generate('<KeyPress-s>', state=0x4)
+        root.update()
+        assert saves.call_count == 2
+        widget.event_generate('<KeyRelease-s>', state=0)
+        root.update()
+        assert app.save_shortcuts._held is False
+
+        event = type('Event', (), {'keysym': 's', 'widget': widget})()
+        assert app.save_shortcuts._on_press(event) == 'break'
+        assert saves.call_count == 3
+    finally:
+        root.destroy()
+
+
 def test_ctrl_s_save_runs_inside_transaction(tmp_path, monkeypatch):
     """快捷键保存包进既有事务：执行中暂停自动保存，结束后不再写第二次。"""
     root = tk.Tk()
