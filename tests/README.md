@@ -36,6 +36,17 @@
 .\.venv\Scripts\python.exe -B -m pytest tests/test_gui_page_*.py tests/test_gui_config_*.py -q
 ```
 
+## 全量 GUI 套件（真实 Tk，顺序执行）
+
+GUI 用例会创建真实 Tk 窗口，必须顺序执行，不要加 `-n` 并行。完整套件要显式展开所有 `test_gui*.py`，否则会漏掉 `test_gui_window.py`、`test_gui_appearance.py` 等非分片文件：
+
+```powershell
+$guiTests = @(Get-ChildItem .\tests\test_gui*.py -File | Sort-Object Name | ForEach-Object FullName)
+.\.venv\Scripts\python.exe -B -m pytest @guiTests -q --tb=short -p no:cacheprovider
+```
+
+长顺序运行偶发 `tk.tcl`／`ttk/*.tcl` 瞬时缺失导致环境异常，用同一条命令复跑确认；首次运行的失败记录不要被复跑结果覆盖。
+
 ## 本机沙箱说明
 
 DSH 沙箱会拒绝再次访问 `mode=0o700` 创建的目录，pytest 的 `tmp_path` 因此在部分环境不可用。
