@@ -14,6 +14,7 @@ import pytest
 import ctk_kit
 
 from modules.config_document import new_document, read_document, save_document
+from modules.gui.controller import SaveResult
 from modules.gui.model import EditorModel
 from modules.gui.forms import screenshot_conditions
 from modules.gui.protocol import TestRequest as GuiTestRequest
@@ -159,7 +160,7 @@ def test_leaving_config_page_flush_failure_keeps_draft_and_warns(tmp_path):
         app = make_app(root, tmp_path)
         assert app.show_page('监视设置')
         app.model.set(('monitor', 'target'), 'draft.exe')
-        app.save_coordinator.flush = Mock(return_value=False)
+        app.save_coordinator.flush_result = Mock(return_value=SaveResult.FAILED)
         assert app.show_page('主页')
         assert '配置未保存，已保留草稿' in app.status.cget('text')
         assert app.current_page == '主页'

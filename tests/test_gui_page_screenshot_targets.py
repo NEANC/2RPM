@@ -260,8 +260,8 @@ def test_six_image_hosts_edit_and_reorder(tmp_path):
         root.destroy()
 
 
-def test_step_creates_missing_middle_sections(tmp_path):
-    """common/log 缺失时步进从默认值起步并创建缺失节。"""
+def test_step_missing_middle_sections_does_not_create(tmp_path):
+    """common/log 缺失时步进只提示输入数字，不创建节也不写入默认值。"""
     root = tk.Tk()
     try:
         app = make_app(root, tmp_path)
@@ -273,16 +273,17 @@ def test_step_creates_missing_middle_sections(tmp_path):
         external_page = app.visible_pages['外部程序设置']
         external_page._step(1)
         threshold = ('monitor', 'common', 'timeout_threshold')
-        assert app.model.get(threshold) == 4
-        external_page._step(-1)
-        assert app.model.get(threshold) == 3
+        with pytest.raises(KeyError):
+            app.model.get(threshold)
+        assert external_page.number_hint.cget('text') == '请先输入数字'
         assert app.show_page('日志设置')
         logs_page = app.visible_pages['日志设置']
         files = ('log', 'max_log_files')
         logs_page._step(files, 1)
-        assert app.model.get(files) == 16
-        logs_page._step(files, -1)
-        assert app.model.get(files) == 15
+        with pytest.raises(KeyError):
+            app.model.get(files)
+        assert logs_page.number_hint.cget('text') == '请先输入数字'
+        assert not app.model.dirty
     finally:
         root.destroy()
 

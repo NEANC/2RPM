@@ -42,6 +42,7 @@ def test_list_entry_reselects_after_clean_draft_external_reload(tmp_path, operat
                             lambda *a, **k: True)
         monkeypatch.setattr('modules.gui.pages.screenshot.messagebox.askyesno',
                             lambda *a, **k: True)
+        monkeypatch.setattr('modules.gui.app.messagebox.showinfo', Mock())
         list_path, action = {
             'channel_remove': (channels.channels_path, lambda: channels.remove_channel(0)),
             'target_remove': (targets_path, lambda: attachments.remove_target(0)),

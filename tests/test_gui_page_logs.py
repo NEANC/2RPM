@@ -56,8 +56,8 @@ def test_open_missing_push_and_log_sections_refreshes_empty_state(tmp_path):
                         'external: {}\n', encoding='utf-8')
         assert app.controller.open(path)
         app.show_page('主页')
-        assert '通知通道：待校验' in app.summary_text
-        assert '截图目标：待校验' in app.summary_text
+        assert '通知通道：0 个' in app.summary_text
+        assert '截图目标：0 个' in app.summary_text
         assert app.show_page('消息推送设置')
         assert app.visible_pages['消息推送设置'].channel_rows == []
         assert app.show_page('日志设置')
